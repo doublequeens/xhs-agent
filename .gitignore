@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+
+# Java
+*.class
+*.log
+*.jar
+target/
+
+
+# --- 编辑器/IDE ---
+.vscode/       
+.idea/          
+*.swp         
+*.swo        
+
+# --- 编译产物/临时文件 ---
+*.log
+*.tmp
+*.temp
