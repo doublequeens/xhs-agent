@@ -18,7 +18,7 @@ def title_lab_node(state: AgentState) -> AgentState:
     system_prompt = all_prompts["NODE_F_TITLE_LAB"]
     template = PromptTemplate(
         input_variables=["draft_results"],
-        template="这是初稿列表 draft_results：{draft_results}, 请按 system 规则生成小红书标题与封面钩子文案。 "
+        template="这是初稿列表 draft_results：{draft_results}, 请按 system 规则处理 "
     )
     human_prompt = template.format(draft_results=draft_results)
 
@@ -27,7 +27,7 @@ def title_lab_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    titles_json = get_model("deepseek").execute(messages)
+    titles_json = get_model("glm").execute(messages)
     try:
         titles_options = [DraftTitles(**titles) for titles in titles_json]
     except Exception as e:

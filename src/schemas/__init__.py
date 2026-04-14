@@ -1,41 +1,39 @@
 from .agent_state import AgentState
 from .topic import TopicItem
-from .id_images import IdImageItems
-from .image_script import ImageScriptItem
-from .image import ImageItem
 from .angle import AngleStrategy, ContentAngle
 from .angle_score import ScoreBreakdown, ScoreResult
 from .outline import OutlineItem
 from .draft import DraftItem
 from .title import DraftTitles
-from .title_ranker import R1Input, TitleRankResult
-from .r1_output import R1Output, R1Scores, RevisionMeta, Recommendation
-from .r2_output import R2Output, R2ContentSnapShoot, R2Decision, R2RequiredFix, R2SuggestedFix, R2ComplianceAudit, R2ComplianceIssue
+from .title_ranker import R1Input, TitleRankResult, TitleWinner
+from .r1_output import R1Output, R1Scores, TaskReport
+from .r2_output import R2ComplianceIssue, R2ComplianceAudit, R2Output, R2FixTask, R2ContentSnapShoot
+from .id_images import IdImageItems
+from .image_sourcing import RetrievedImageItem, IDMatchedImageItems, ImageCandidateItem, ImageCandidates
+from .image import ImageItem
+from .visual_director import ImageScriptList
+from .decision import DecisionTrace, NormalizedInput, HashTagInput, DecisionOutput, DecisionOutput, RevisionMeta
+from .hashtag import HashTagOutput
+from .image_qa import FinalImages, FinalImageItem 
+
 
 __all__ = [
     "AgentState",
     "TopicItem",
-    "IdImageItems",
-    "ImageScriptItem",
-    "ImageItem",
-    "AngleStrategy",
-    "ContentAngle",
-    "ScoreBreakdown",
-    "ScoreResult",
+    "AngleStrategy", "ContentAngle",
+    "ScoreBreakdown", "ScoreResult",
     "OutlineItem",
     "DraftItem",
     "DraftTitles",
-    "TitleRankResult",
-    "R1Input",
-    "R1Output",
-    "R1Scores",
+    "R1Input", "TitleRankResult", "TitleWinner"
+    "R1Output", "R1Scores", "TaskReport",
+    "R2ComplianceIssue", "R2ComplianceAudit", "R2Output", "R2FixTask", "R2ContentSnapShoot",
+    "IdImageItems",
+    "RetrievedImageItem", "IDMatchedImageItems", "ImageCandidateItem", "ImageCandidates",
+    "ImageItem",
+    "ImageScriptList",
+    "DecisionTrace", "NormalizedInput", "HashTagInput", "DecisionOutput",
     "RevisionMeta",
-    "Recommendation",
-    "R2Output",
-    "R2ContentSnapShoot",
-    "R2Decision",
-    "R2RequiredFix",
-    "R2SuggestedFix",
-    "R2ComplianceAudit",
-    "R2ComplianceIssue"
+    "HashTagOutput",
+    "FinalImages", "FinalImageItem"
 ]

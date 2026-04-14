@@ -1,20 +1,19 @@
 import os
 import httpx
 from langchain_core.tools import tool
-from src.schemas.image import ImageItem
-from src.schemas.image_script import ImageScriptItem
-from src.schemas.id_images import IdImageItems
+from src.schemas import ImageScriptList, RetrievedImageItem, IDMatchedImageItems, ImageItem
 from typing import List
 
+PEXELS_API_KEY = os.getenv("PEXELS_API_KEY")
 
 @tool
-def pexels_search(image_script: List[ImageScriptItem]) -> List[dict]:
+def pexels_search(image_scripts: ImageScriptList) -> List[dict]:
     """
     根据image_scroipt多维度搜索 Pexels 素材。
     
     Args:
-        image_script: List[ImageScriptItem] 包含多个图片检索需求的字典。
-        列表元素包含：
+        image_scripts: ImageScriptList 包含多个图片检索需求的字典。
+        列表每个元素ImageScriptItem核心字段包含：
             img_id: str
             purpose: str
             style: str
@@ -34,14 +33,10 @@ def pexels_search(image_script: List[ImageScriptItem]) -> List[dict]:
     endpoint = "search"
     url = base_url + endpoint
     
-    api_key = os.getenv("PEXELS_API_KEY")
-    if not api_key:
-        raise ValueError("PEXELS_API_KEY environment variable not set")
-
-    headers = {"Authorization": f"{api_key}"}
+    headers = {"Authorization": f"{PEXELS_API_KEY}"}
     id_imageItems_list = []
     with httpx.Client(timeout=20, headers=headers) as client:
-        for script in image_script:
+        for script in image_scripts.image_scripts:
             img_id = script.img_id
             query = script.search_query
             neg_constraints = [k.lower() for k in script.negative_constraints]
@@ -63,9 +58,9 @@ def pexels_search(image_script: List[ImageScriptItem]) -> List[dict]:
                     height = p["height"]
                     if any(k in p_description for k in neg_constraints):
                         continue
-                    img_list.append(ImageItem(image_url=img_url, description=p_description, width=width, height=height))
-                id_img_items = IdImageItems(image_id=img_id, image_items=img_list, caption_hint=caption_hint, style=style, negative_constraints=neg_constraints)
-                id_imageItems_list.append(id_img_items.model_dump())
+                    img_list.append(RetrievedImageItem(image_url=img_url, description=p_description, width=width, height=height))
+                id_img_items = IDMatchedImageItems(image_id=img_id, image_items=img_list, caption_hint=caption_hint, style=style, negative_constraints=neg_constraints)
+                id_imageItems_list.append(id_img_items)
             except Exception as e:
                 print(f"Error fetching image for {img_id}: {e}")
                 continue

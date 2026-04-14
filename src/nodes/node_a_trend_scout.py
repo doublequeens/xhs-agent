@@ -15,15 +15,18 @@ def trend_scout_node(state: AgentState) -> AgentState:
         List[TopicItem]: A list of TopicItem objects representing the scouted trends.
     """
     system_prompt = all_prompts["NODE_A_TREND_SCOUT"]
-    template = PromptTemplate(input_variables=["number"], template="根据system规则生成{number}个当前最流行的趋势话题")
-    human_prompt = template.format(number="5")
+    template = PromptTemplate(input_variables=["trends_num"], template="根据system规则生成{trends_num}个当前最流行的趋势话题")
+    trends_num = state.get("trends_num", None)
+
+    human_prompt = template.format(trends_num=trends_num)
 
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
     ]
 
-    trend_json = get_model("gemini").execute(messages)
+    trend_json = get_model("glm").execute(messages)
+
     try:
         trend_options = [TopicItem(**trend) for trend in trend_json]
     except Exception as e:

@@ -1,5 +1,4 @@
 from pydantic import BaseModel
-from tomlkit import string
 
 class TopicItem(BaseModel):
     topic_id: str

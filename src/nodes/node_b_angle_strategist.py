@@ -18,7 +18,7 @@ def angle_strategist_node(state: AgentState) -> AgentState:
     trend_options = state.get("trends", [])
     template = PromptTemplate(
         input_variables=["trends"],
-        template="按照system规则， 针对以下趋势话题，生成每个话题的内容切入角度策略：{trends}"
+        template="读取候选选题列表: {trends}， 根据system规则生成传播角度"
     )
     human_prompt = template.format(trends=trend_options)
 
@@ -27,7 +27,7 @@ def angle_strategist_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    angle_json = get_model("gemini").execute(messages)
+    angle_json = get_model("glm").execute(messages)
     try:
         angle_strategies = [AngleStrategy(**angle) for angle in angle_json]
     except Exception as e:

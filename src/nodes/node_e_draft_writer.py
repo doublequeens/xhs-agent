@@ -18,14 +18,14 @@ def draft_writer_node(state: AgentState) -> AgentState:
     system_prompt = all_prompts["NODE_E_DRAFT_WRITER"]
     template = PromptTemplate(
         input_variables=["outline_results"],
-        template="这是outline_results：{outline_results}。根据system 规则，生成内容初稿。"
+        template="这是图文大纲 outline_results：{outline_results}。根据system 规则进行处理。"
         )
     human_prompt = template.format(outline_results=outline_results)
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
     ]
-    llm = get_model("gemini")
+    llm = get_model("glm")
     draft_json = llm.execute(messages)
     try:
         draft_results = [DraftItem(**draft) for draft in draft_json]

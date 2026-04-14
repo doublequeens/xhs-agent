@@ -1,23 +1,33 @@
-from langchain_community.chat_models import ChatZhipuAI
+from langchain_openai import ChatOpenAI
+from langchain_core.messages import BaseMessage
+from typing import List
 from .base import BaseLLMModel
 import os, getpass
+import warnings
+import json_repair
+
+# 忽略由于智谱 API Key secret 长度不足 32 字节而导致的 PyJWT 警告
+warnings.filterwarnings("ignore", message=".*The HMAC key is.*")
 
 class ZhipuModel(BaseLLMModel):
     """
     A wrapper class for Zhipu AI models.
     """
 
-    def __init__(self, model_name: str = "chatglm_pro", temperature: float = 0.7, **kwargs):
+    def __init__(self, model_name: str = "GLM-5.1", temperature: float = 0.7, tools: list = None, **kwargs):
         """
         Initializes the ZhipuModel with the specified parameters.
 
         Args:
             model_name (str): The name of the Zhipu model to use.
             temperature (float): The temperature setting for the model.
+            tools (list): A list of tools to bind to the model.
         """
+        self._chat_model = None
         self.temperature = temperature
         self.model_name = model_name
-        self.api_key = os.getenv("ZHIPU_API_KEY")
+        self.api_key = os.getenv("ZHIPUAI_API_KEY")
+        self.tools = tools
         self.extra_kwargs = kwargs
         if not self.api_key:
             self.api_key = getpass.getpass("Please enter your Zhipu API Key: ")
@@ -26,15 +36,44 @@ class ZhipuModel(BaseLLMModel):
 
     def get_chat_model(self):
         """
-        Creates and returns a ChatZhipuAI model instance.
+        Creates and returns a ChatOpenAI model instance configured for Zhipu API.
 
         Returns:
-            ChatZhipuAI: An instance of the chat model.
+            ChatOpenAI: An instance of the chat model.
         """
+        if self._chat_model is None:
+            model = ChatOpenAI(
+                model=self.model_name,
+                api_key=self.api_key,
+                base_url="https://open.bigmodel.cn/api/coding/paas/v4/",
+                timeout=360, 
+                temperature=self.temperature,
+                max_retries=3,
+                **self.extra_kwargs
+            )
+            if self.tools:
+                model = model.bind_tools(self.tools)
+            self._chat_model = model
 
-        return ChatZhipuAI(
-            model=self.model_name,
-            api_key=self.api_key,
-            temperature=self.temperature,
-            **self.extra_kwargs
-        )
+        return self._chat_model
+    
+    def execute(self, messages: List[BaseMessage]) -> List[dict]:
+        chat_model = self.get_chat_model()
+        response = chat_model.invoke(messages)
+        content = response.content
+
+        # Clean up potential markdown code block wrappers from the response
+        content = str(content).strip()
+        if content.startswith("```json"):
+            content = content[7:]
+        elif content.startswith("```"):
+            content = content[3:]
+        if content.endswith("```"):
+            content = content[:-3]
+        content = content.strip()
+
+        try:
+            return json_repair.loads(content)
+        except Exception as e:
+            print(f"解析 JSON 失败！原始输出内容为: {content}")
+            exit()

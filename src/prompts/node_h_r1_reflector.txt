@@ -48,7 +48,6 @@
 - best_title_id
 - safer_title
 - safer_title_id
-- best_cover_copy
 - why_win: List[str]
 - topic_id
 - topic_name
@@ -56,6 +55,7 @@
 - angle_name
 - target_group
 - core_pain
+- best_cover_copy
 
 ② editorial_tasks（由 Decision Engine 归一化）
 - mandatory: SingleTask[]
@@ -144,7 +144,7 @@ should_run_R1_again = true 的常见触发条件：
 should_run_R1_again = false
 
 ------------------------------------------------
-【输出要求（必须严格 JSON；不要输出多余文字）】
+【输出要求（必须严格 JSON；不要输出多余文字，不需要添加代码块标签（如 ```json））】
 {
   "draft_id": "string",
   "revised_title": "string",
@@ -155,6 +155,7 @@ should_run_R1_again = false
   "angle_name": "string",
   "target_group": "string",
   "core_pain": "string",
+  "best_cover_copy": "string",
   "scores": {
     "clarity_score": number,
     "save_value_score": number,

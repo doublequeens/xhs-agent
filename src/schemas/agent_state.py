@@ -5,22 +5,31 @@ from .angle_score import ScoreResult
 from .outline import OutlineItem
 from .draft import DraftItem
 from .title import DraftTitles
-from .title_ranker import R1Input
 from .r1_output import R1Output
-
+from .r2_output import R2Output
+from .title_ranker import TitleWinner
+from .decision import DecisionOutput, HashTagInput
+from .hashtag import HashTagOutput
+from .visual_director import ImageScriptList
+from .image_sourcing import ImageCandidates
+from .image_qa import FinalImages
 
 class AgentState(TypedDict):
+    trends_num: int
     trends: List[TopicItem]
     angles: List[AngleStrategy]
     scores: List[ScoreResult]
     outlines: List[OutlineItem]
     drafts: List[DraftItem]
     title_options: List[DraftTitles]
-    title_winner: Optional[R1Input]
-    r1_output: Optional[R1Output]
-    r2_output: List[dict]
-    hashtags: List[dict]
-    image_scripts: List[dict]
-    image_options: List[dict]
-    image_selected: List[dict]
-    publish_package: List[dict]
+    title_winner: TitleWinner
+    current_node: Optional[str]
+    decision_output: DecisionOutput
+    r1_output: R1Output
+    r2_output: R2Output
+    final_content: HashTagInput
+    hashtags: HashTagOutput
+    image_scripts: ImageScriptList
+    image_candidates: ImageCandidates
+    final_images: FinalImages
+    publish_package: dict

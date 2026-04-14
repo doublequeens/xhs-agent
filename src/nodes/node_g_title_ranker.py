@@ -1,7 +1,7 @@
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
-from src.schemas import AgentState, TitleRankResult, R1Input
+from src.schemas import AgentState, TitleWinner
 from src.prompts import all_prompts
 
 def title_ranker_node(state: AgentState) -> AgentState:
@@ -19,7 +19,7 @@ def title_ranker_node(state: AgentState) -> AgentState:
     system_prompt = all_prompts["NODE_G_TITLE_RANKER"]
     template = PromptTemplate(
         input_variables=["draft_results", "title_options"],
-        template="这是初稿 draft_results：{draft_results}, 这是title_options：{title_options}, 请按 system 规则进行评审并选择最佳。"
+        template="这是初稿 draft_results：{draft_results}, 这是title_options：{title_options}, 请按 system 规则进行处理。"
     )
     human_prompt = template.format(draft_results=draft_results, title_options=title_options)
 
@@ -28,28 +28,16 @@ def title_ranker_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    title_rank_json = get_model("gemini").execute(messages)
+    llm = get_model("glm")
+    title_rank_json = llm.execute(messages)
 
     try:
-        title_rank_results = TitleRankResult(**title_rank_json)
-        title_winner = title_rank_results.winner
-        winner_score = [r.scores for r in title_rank_results.ranking if r.draft_id == title_winner.draft_id ][0]
-
+        winner = TitleWinner(**title_rank_json["winner"])
     except Exception as e:
-        print(f"Failed to transform to TitleRankResult schema, please check the detail: {e}")
-        title_rank_results = []
-        exit()
-
-    try:
-        r1_input_data = {
-            "winner": title_winner,
-            "winner_scores": winner_score
-        }
-        r1_input = R1Input(**r1_input_data)
-    except Exception as e:
-        print(f"Failed to transform to R1Input schema, please check the detail: {e}")
-        r1_input = []
+        print(f"Failed to transform to TitleWinner schema, please check the detail: {e}")
+        winner = {}
         exit()
 
 
-    return {"title_winner": r1_input}
+    return {"title_winner": winner,
+           "current_node": "TITLE_RANKER"}

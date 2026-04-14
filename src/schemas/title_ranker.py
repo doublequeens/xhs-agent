@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import List
+from typing import List, Optional
 
 class TitleScore(BaseModel):
     click_score: float
@@ -27,6 +27,8 @@ class Recommendation(BaseModel):
     severity: str
     location_hint: str
     rationale: str
+    before: Optional[str] = None
+    after_hint: Optional[str] = None
     
 class TitleWinner(BaseModel):
     draft_id: str

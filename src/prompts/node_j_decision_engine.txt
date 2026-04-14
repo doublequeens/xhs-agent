@@ -168,11 +168,11 @@ next_node 只能是以下之一：
       "content_candidate": {
         "draft_id": "string",
         "draft_md": "string",
-        "best_title": "string",
-        "best_title_id": "string",
-        "safer_title": "string",
-        "safer_title_id": "string",
-        "why_win": ["string"],
+        "best_title": "string | null",
+        "best_title_id": "string | null",
+        "safer_title": "string | null",
+        "safer_title_id": "string | null",
+        "why_win": ["string"] | null,
         "topic_id": "string",
         "topic_name": "string",
         "angle_id": "string",
@@ -258,5 +258,5 @@ next_node 只能是以下之一：
 }
 
 说明：
-- 你只需填充 next_node 对应的那一段 input；其余段可留空对象或省略（但必须保持 JSON 合法）。
+- 你只需填充 next_node 对应的那一段 input；其余无关的段（如 next_node 是 R1_REFLECTOR，则 r2_input 和 hashtag_input）必须直接省略字段，或赋值为 null。**千万不要输出空对象 {}**，否则会导致严格的结构校验失败。
 - 当 next_node != "R1_REFLECTOR" 时，editorial_tasks 必须为空或不出现。

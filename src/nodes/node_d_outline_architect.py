@@ -18,14 +18,14 @@ def outline_architect_node(state: AgentState) -> AgentState:
     system_prompt = all_prompts["NODE_D_OUTLINE_ARCHITECT"]
     template = PromptTemplate(
         input_variables=["score_results"],
-        template="这是score_results：{score_results}。根据system 规则，生成图文大纲。"
+        template="这是score_results：{score_results}。根据system 规则进行处理。"
         )
     human_prompt = template.format(score_results=score_results)
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
     ]
-    llm = get_model("gemini")
+    llm = get_model("glm")
     outline_json = llm.execute(messages)
     try:
         outline_results = [OutlineItem(**outline) for outline in outline_json]
