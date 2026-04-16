@@ -36,6 +36,6 @@ def image_qa_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to FinalImages schema, please check the detail: {e}")
         image_final_choices = None    
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
     
     return {"final_images": image_final_choices}

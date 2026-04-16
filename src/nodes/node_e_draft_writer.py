@@ -32,5 +32,5 @@ def draft_writer_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to Draft schema, please check the detail: {e}")
         draft_results = []
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
     return {"drafts": draft_results}

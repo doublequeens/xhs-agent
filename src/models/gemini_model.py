@@ -95,5 +95,4 @@ class GeminiModel(BaseLLMModel):
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
-            print(f"解析 JSON 失败！原始输出内容为: {content}")
-            exit()
+            raise ValueError(f"Failed to parse JSON from model response: {e}. Content: {content}")

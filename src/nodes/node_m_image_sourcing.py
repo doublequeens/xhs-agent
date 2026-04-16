@@ -49,7 +49,7 @@ def image_sourcing_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to ImageCandidates schema, please check the detail: {e}")
         image_candidates = None    
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {
         "image_candidates": image_candidates

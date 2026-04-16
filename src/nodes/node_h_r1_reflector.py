@@ -35,7 +35,7 @@ def r1_reflector_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to extract reflection from model output, please check the detail: {e}")
         r1_output = None
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {"r1_output": r1_output,
             "current_node": "R1_REFLECTOR"}
