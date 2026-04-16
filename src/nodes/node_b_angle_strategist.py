@@ -33,6 +33,6 @@ def angle_strategist_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to AngleStrategy schema, please check the detail: {e}")
         angle_strategies = []
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {"angles": angle_strategies}

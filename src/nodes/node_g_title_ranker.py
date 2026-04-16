@@ -36,7 +36,7 @@ def title_ranker_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to TitleWinner schema, please check the detail: {e}")
         winner = {}
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
 
     return {"title_winner": winner,

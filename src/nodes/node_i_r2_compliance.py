@@ -36,7 +36,7 @@ def r2_compliance_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to R2Output schema, please check the detail: {e}")
         r2_output = None    
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {
         "r2_output": r2_output,

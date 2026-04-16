@@ -32,6 +32,6 @@ def trend_scout_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to tranform to TopicItem schema, please check the detail: {e}")
         trend_options = []
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {"trends": trend_options}
