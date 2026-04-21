@@ -37,7 +37,7 @@ def hashtag_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to HashTagOutput schema, please check the detail: {e}") 
         hashtag_output = None
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {
         "hashtags": hashtag_output,

@@ -5,7 +5,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, ToolMessage
 from src.models.base import BaseLLMModel
-from langchain.agents import create_agent
 
 
 
@@ -95,5 +94,4 @@ class GeminiModel(BaseLLMModel):
         try:
             return json.loads(content)
         except json.JSONDecodeError as e:
-            print(f"解析 JSON 失败！原始输出内容为: {content}")
-            exit()
+            raise ValueError(f"Failed to parse JSON from model response: {e}. Content: {content}")

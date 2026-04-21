@@ -48,7 +48,7 @@ def decision_engine_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to DecisionOutput schema, please check the detail: {e}")
         decision_output = None
-        exit()  
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {
         "decision_output": decision_output

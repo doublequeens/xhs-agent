@@ -32,6 +32,6 @@ def outline_architect_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to OutlineItem schema, please check the detail: {e}")
         outline_results = []
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
     return {"outlines": outline_results}
         

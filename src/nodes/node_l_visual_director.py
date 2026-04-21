@@ -36,6 +36,6 @@ def visual_director_node(state: AgentState) -> AgentState:
     except Exception as e:
         print(f"Failed to transform to ImageScriptList schema, please check the detail: {e}")
         image_scripts = None    
-        exit()
+        raise RuntimeError(f"Process terminated due to error: {e}")
 
     return {"image_scripts": image_scripts}
