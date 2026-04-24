@@ -22,6 +22,7 @@ from src.nodes import (
     virality_scorer_node,
     visual_director_node,
 )
+
 conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
 MEMORY = SqliteSaver(conn)
 MEMORY.setup() # 必须调用 setup 初始化数据库表结构，否则无法落盘

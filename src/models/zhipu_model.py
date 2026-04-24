@@ -1,5 +1,5 @@
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import BaseMessage, ToolMessage
 from typing import List
 from .base import BaseLLMModel
 import os, getpass
@@ -54,16 +54,33 @@ class ZhipuModel(BaseLLMModel):
             if self.tools:
                 model = model.bind_tools(self.tools)
             self._chat_model = model
-
         return self._chat_model
     
     def execute(self, messages: List[BaseMessage]) -> List[dict]:
         chat_model = self.get_chat_model()
         response = chat_model.invoke(messages)
-        content = response.content
 
+        if self.tools and response.tool_calls:
+            messages.append(response)
+            for tool_call in response.tool_calls:
+                tool_name = tool_call["name"]
+                tool_args = tool_call["args"]
+                tool_id = tool_call["id"]
+                tool_instance = next((t for t in self.tools if getattr(t, "name", "") == tool_name), None)
+                if tool_instance:
+                    print(f"Executing tool: {tool_name} ...")
+                    tool_response = tool_instance.invoke(tool_args)
+                    messages.append(ToolMessage(
+                        content=str(tool_response), 
+                        name=tool_name,
+                        tool_call_id=tool_id
+                    ))
+            response = chat_model.invoke(messages)
+
+
+        content = response.content
         # Clean up potential markdown code block wrappers from the response
-        content = str(content).strip()
+        # content = str(content).strip()
         if content.startswith("```json"):
             content = content[7:]
         elif content.startswith("```"):

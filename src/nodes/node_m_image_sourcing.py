@@ -26,22 +26,13 @@ def image_sourcing_node(state: AgentState) -> AgentState:
     )
     human_prompt = template.format(image_scripts=image_scripts)
 
-    llm = get_model("gemini", tools=[pexels_search])  
+    llm = get_model("glm", tools=[pexels_search])  
     
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
     ]
     
-    # img_agent = create_agent(
-    #     llm,
-    #     system_prompt= SystemMessage(content=system_prompt),
-    #     tools=[pexels_search]
-    # )
-    
-
-
-
     image_candidates_json = llm.execute(messages)
 
     try:

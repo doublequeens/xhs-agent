@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 import json
 from src.graph import create_graph
@@ -48,7 +49,7 @@ def main():
     }
 
     # 如果想完全从头重新跑一次，请修改此处的 thread_id（如 "xhs_conversation_2"）
-    index = "5_glm"
+    index = "7_glm"
     config = {"configurable": {"thread_id": "xhs_conversation_"+ str(index)}}
 
     currentState = graph.get_state(config)
@@ -64,8 +65,13 @@ def main():
                 print("该任务已经全部执行完毕，直接从历史状态导出 publish_package.json...")
                 print("The final publish package title is:")
                 print(currentState.values["publish_package"]["publish_package"]["title"])
-            
-                with open("publish_package_" + str(index) + ".json", "w") as f:
+
+                title = currentState.values["publish_package"]["publish_package"]["title"]
+                dir_path = "outputs/publish/{post_dir}".format(post_dir=title)
+                if not os.path.exists(dir_path):
+                    os.makedirs(dir_path)
+
+                with open(dir_path + "/" + str(title) + ".json", "w") as f:
                     json.dump(currentState.values["publish_package"]["publish_package"], f, ensure_ascii=False, indent=4)
                 return # 直接退出，不需要再跑 stream
             
@@ -80,9 +86,15 @@ def main():
             for key, value in output.items():
                 print(f"Finished processing node: {key}")
                 if key == "assembler":
-                    print("Final output from assembler node:")
-                    print(value)
-                    with open("publish_package_" + str(index) + ".json", "w") as f:
+                    print("Final post from assembler node:")
+                    title = value["publish_package"]["publish_package"]["title"]
+                    print(title)
+                    
+                    dir_path = "outputs/publish/{post_dir}".format(post_dir=title)
+                    if not os.path.exists(dir_path):
+                        os.makedirs(dir_path)
+                    
+                    with open(dir_path + "/" + str(title) + ".json", "w") as f:
                         json.dump(value["publish_package"]["publish_package"], f, ensure_ascii=False, indent=4)
 
     except Exception as e:
