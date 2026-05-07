@@ -28,7 +28,7 @@ def title_ranker_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    llm = get_model("glm")
+    llm = get_model()
     title_rank_json = llm.execute(messages)
 
     try:

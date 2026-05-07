@@ -39,12 +39,11 @@ def decision_engine_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    model = get_model("glm")
+    model = get_model()
     decision_output_json = model.execute(messages8)
 
     try:
         decision_output = DecisionOutput(**decision_output_json)
-        print(f"Decision Engine Node - finished. ")
     except Exception as e:
         print(f"Failed to transform to DecisionOutput schema, please check the detail: {e}")
         decision_output = None

@@ -25,7 +25,7 @@ def virality_scorer_node(state: AgentState) -> AgentState:
     messages = [SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)]
     
-    llm = get_model("glm")
+    llm = get_model()
     scores_json = llm.execute(messages)
 
     try:

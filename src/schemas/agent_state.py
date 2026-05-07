@@ -1,4 +1,6 @@
 from typing import TypedDict, List, Optional
+
+from memory.memory_manager import XHSMemoryManager
 from .topic import TopicItem
 from .angle import AngleStrategy
 from .angle_score import ScoreResult
@@ -16,6 +18,8 @@ from .image_qa import FinalImages
 
 class AgentState(TypedDict):
     trends_num: int
+    focus_keyword: Optional[str]
+    memory_context: Optional[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]
     scores: List[ScoreResult]
@@ -33,3 +37,7 @@ class AgentState(TypedDict):
     image_candidates: ImageCandidates
     final_images: FinalImages
     publish_package: dict
+    review_status: Optional[str]
+    review_feedback: Optional[str]
+    review_round: Optional[int]
+    data_writed: Optional[bool]

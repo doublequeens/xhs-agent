@@ -11,18 +11,29 @@ __all__ = [
 ]
 
 _model_cache = {}
+_default_provider = "glm"
 
-def get_model(provider: str, tools: list = None, **kwargs):
+def set_default_provider(provider: str):
+    """接收来自 main.py 启动参数的 provider"""
+    global _default_provider
+    _default_provider = provider
+
+def get_model(provider: str = "glm", tools: list = None, **kwargs):
     """
     Factory function to get the appropriate model instance based on model_type.
 
     Args:
-        provider (str): The provider of the model to instantiate. Options are 'deepseek', 'gemini', 'zhipu'.
+        provider (str): The provider of the model. Defaults to 'glm'. Options: 'deepseek', 'gemini', 'glm'.
         **kwargs: Additional keyword arguments to pass to the model constructor.
 
     Returns:
         An instance of the requested model.
     """
+    # 核心逻辑：如果调用者没有传参（使用了默认值 "glm"）
+    # 我们让它优先使用从启动参数获取的全局 _default_provider
+    if provider == "glm":
+        provider = _default_provider
+
     provider = provider.lower()
     
     # Create a unique cache key based on provider, tools, and kwargs

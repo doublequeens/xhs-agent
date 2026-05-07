@@ -28,7 +28,7 @@ def image_qa_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    llm = get_model("glm")
+    llm = get_model()
     image_qa_json = llm.execute(messages)
 
     try:

@@ -29,7 +29,7 @@ def assembler_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    llm = get_model("glm")
+    llm = get_model()
     publish_package_json = llm.execute(messages)
     return {
         "publish_package": publish_package_json

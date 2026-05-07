@@ -26,7 +26,7 @@ def image_sourcing_node(state: AgentState) -> AgentState:
     )
     human_prompt = template.format(image_scripts=image_scripts)
 
-    llm = get_model("glm", tools=[pexels_search])  
+    llm = get_model(tools=[pexels_search])  
     
     messages = [
         SystemMessage(content=system_prompt),

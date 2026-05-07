@@ -27,7 +27,7 @@ def angle_strategist_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    angle_json = get_model("glm").execute(messages)
+    angle_json = get_model().execute(messages)
     try:
         angle_strategies = [AngleStrategy(**angle) for angle in angle_json]
     except Exception as e:

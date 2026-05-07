@@ -11,12 +11,22 @@ dist/
 build/
 outputs/
 *.sqlite
+references/
+checkpoints*
 
 # Java
 *.class
 *.log
 *.jar
 target/
+
+# --- 忽略 SQLite 数据库文件---
+*.db
+*.sqlite
+*.sqlite3
+
+# 如果 data 文件夹只用来存放本地生成的数据，也可以直接忽略整个 data 目录
+data/
 
 
 # --- 编辑器/IDE ---

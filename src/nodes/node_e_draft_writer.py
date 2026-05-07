@@ -25,7 +25,7 @@ def draft_writer_node(state: AgentState) -> AgentState:
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)
     ]
-    llm = get_model("glm")
+    llm = get_model()
     draft_json = llm.execute(messages)
     try:
         draft_results = [DraftItem(**draft) for draft in draft_json]

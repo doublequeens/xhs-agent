@@ -27,7 +27,7 @@ def title_lab_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    titles_json = get_model("glm").execute(messages)
+    titles_json = get_model().execute(messages)
     try:
         titles_options = [DraftTitles(**titles) for titles in titles_json]
     except Exception as e:

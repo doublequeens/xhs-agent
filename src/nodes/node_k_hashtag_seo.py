@@ -30,7 +30,7 @@ def hashtag_node(state: AgentState) -> AgentState:
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)]
 
-    llm = get_model("glm")
+    llm = get_model()
     hashtag_json = llm.execute(messages)
     try:
         hashtag_output = HashTagOutput(**hashtag_json)

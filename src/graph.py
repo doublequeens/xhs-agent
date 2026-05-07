@@ -6,6 +6,7 @@ from langgraph.checkpoint.sqlite import SqliteSaver
 import sqlite3
 from src.schemas import AgentState
 from src.nodes import (
+    retrieve_memory_node,
     assembler_node,
     angle_strategist_node,
     decision_engine_node,
@@ -21,6 +22,9 @@ from src.nodes import (
     trend_scout_node,
     virality_scorer_node,
     visual_director_node,
+    content_writer_node,
+    human_review_node,
+    storyboards_generator_node
 )
 
 conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
@@ -36,6 +40,7 @@ def create_graph():
     Builds the LangGraph workflow.
     """
     builder = StateGraph(AgentState)
+    builder.add_node("memory_retriever", retrieve_memory_node)
     builder.add_node("trend_scout", trend_scout_node)
     builder.add_node("angle_strategist", angle_strategist_node)
     builder.add_node("virality_score", virality_scorer_node)
@@ -47,10 +52,14 @@ def create_graph():
     builder.add_node("r1_reflector", r1_reflector_node)
     builder.add_node("r2_compliance", r2_compliance_node)
     builder.add_node("hashtag", hashtag_node)
-    builder.add_node("visual_director", visual_director_node)
-    builder.add_node("image_sourcing", image_sourcing_node)
-    builder.add_node("image_qa", image_qa_node)
+    builder.add_node("storyboard_generator", storyboards_generator_node)
+    # builder.add_node("visual_director", visual_director_node)
+    # builder.add_node("image_sourcing", image_sourcing_node)
+    # builder.add_node("image_qa", image_qa_node)
     builder.add_node("assembler", assembler_node)
+    builder.add_node("human_review", human_review_node)
+    builder.add_node("content_writer", content_writer_node)
+    builder.add_edge("memory_retriever", "trend_scout")
     builder.add_edge("trend_scout", "angle_strategist")
     builder.add_edge("angle_strategist", "virality_score")
     builder.add_edge("virality_score", "outline_architect")
@@ -65,12 +74,14 @@ def create_graph():
                                 {"R1_REFLECTOR": "r1_reflector", 
                                 "R2_COMPLIANCE": "r2_compliance", 
                                 "HASHTAG_SEO": "hashtag"})
-    builder.add_edge("hashtag", "visual_director")
-    builder.add_edge("visual_director", "image_sourcing")
-    builder.add_edge("image_sourcing", "image_qa")
-    builder.add_edge("image_qa", "assembler")
-    builder.add_edge("assembler", END)
-
-    builder.set_entry_point("trend_scout")
+    builder.add_edge("hashtag", "assembler")
+    # builder.add_edge("visual_director", "image_sourcing")
+    # builder.add_edge("image_sourcing", "image_qa")
+    # builder.add_edge("image_qa", "assembler")
+    builder.add_edge("assembler", "storyboard_generator")
+    builder.add_edge("storyboard_generator", "human_review")
+    builder.add_edge("human_review", "content_writer")
+    builder.add_edge("content_writer", END)
+    builder.set_entry_point("memory_retriever")
 
     return builder.compile(checkpointer=MEMORY)
