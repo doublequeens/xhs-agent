@@ -27,9 +27,9 @@ A) 来自 Title Ranker：
 - safer_title_id
 - why_win
 - topic_id
-- topic_name
+- topic
 - angle_id
-- angle_name
+- angle
 - target_group
 - core_pain
 - best_cover_copy
@@ -41,9 +41,9 @@ B) 来自 R1 Reflector：
 - revised_title
 - revised_md
 - topic_id
-- topic_name
+- topic
 - angle_id
-- angle_name
+- angle
 - target_group
 - core_pain
 - best_cover_copy
@@ -67,9 +67,9 @@ C) 来自 R2 Compliance（只审不改版本）：
     - revised_title
     - revised_md
     - topic_id
-    - topic_name
+    - topic
     - angle_id
-    - angle_name
+    - angle
     - target_group
     - core_pain
     - best_cover_copy
@@ -174,9 +174,9 @@ next_node 只能是以下之一：
         "safer_title_id": "string | null",
         "why_win": ["string"] | null,
         "topic_id": "string",
-        "topic_name": "string",
+        "topic": "string",
         "angle_id": "string",
-        "angle_name": "string",
+        "angle": "string",
         "target_group": "string",
         "core_pain": "string",
         "best_cover_copy": "string"
@@ -224,9 +224,9 @@ next_node 只能是以下之一：
         "revised_title": "string",
         "revised_md": "string",
         "topic_id": "string",
-        "topic_name": "string",
+        "topic": "string",
         "angle_id": "string",
-        "angle_name": "string",
+        "angle": "string",
         "target_group": "string",
         "core_pain": "string",
         "best_cover_copy": "string"
@@ -247,9 +247,9 @@ next_node 只能是以下之一：
         "final_title": "string",
         "final_md": "string",
         "topic_id": "string",
-        "topic_name": "string",
+        "topic": "string",
         "angle_id": "string",
-        "angle_name": "string",
+        "angle": "string",
         "target_group": "string",
         "core_pain": "string",
         "best_cover_copy": "string"

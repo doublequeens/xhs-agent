@@ -7,8 +7,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
+from memory.embedding import build_embedding_text
+from memory.vector_memory import XHSVectorMemory
 from memory.memory_manager import XHSMemoryManager, utc_now_iso
 from memory.models import ContentRecord
 from memory.memory_context import memory_context_to_prompt_payload
@@ -112,7 +115,13 @@ def delete_record(content_id: str) -> None:
     memory = XHSMemoryManager("data/xhs_memory.db")
     memory.init_db("memory/schema.sql")
     memory.delete_content_by_id(content_id)
-    print(f"Content with ID {content_id} has been deleted.")
+    print(f"Content with ID {content_id} has been deleted from structured memory.")
+
+    vector_memory = XHSVectorMemory("data/chroma")
+    vector_memory.delete_content_by_id(content_id)
+    print(f"Content with ID {content_id} has been deleted from vector memory.")
+
+
 
 def mark_published(content_id: str, post_id: str, url: str, published_at: str = None) -> None:
     memory = XHSMemoryManager("data/xhs_memory.db")
@@ -129,7 +138,8 @@ def update_record_metrics(content_id: str, post_id: str, url: str, views: int, l
     memory = XHSMemoryManager("data/xhs_memory.db")
     memory.init_db("memory/schema.sql")
     # memory.update_content_field(content_id, "title", "新的标题：别催！涂完防晒等这步，不然真白涂")
-
+    vector_memory = XHSVectorMemory("data/chroma")
+    
     metrics = memory.update_metrics(
         content_id=content_id,
         views=views,
@@ -143,22 +153,51 @@ def update_record_metrics(content_id: str, post_id: str, url: str, views: int, l
     print("Metrics:")
     print(metrics)
 
+    content = memory.get_content_by_id(content_id)
+
+    if content:
+        embedding_text = content["embedding_text"] or build_embedding_text(
+            topic=content["topic"],
+            angle=content.get("angle"),
+            title=content.get("title"),
+            target_group=content.get("target_group"),
+            core_pain=content.get("core_pain"),
+            hashtags=content.get("hashtags", []),
+        )
+
+        vector_memory.upsert_content(
+            content_id=content_id,
+            embedding_text=embedding_text,
+            metadata={
+                "content_id": content_id,
+                "status": content.get("status", ""),
+                "topic": content.get("topic", ""),
+                "angle": content.get("angle", ""),
+                "title": content.get("title", ""),
+                "created_at": content.get("created_at", ""),
+                "published_at": content.get("published_at", ""),
+                "performance_level": metrics.performance_level,
+                "save_rate": metrics.save_rate,
+                "engagement_rate": metrics.engagement_rate,
+            },
+        )
+
 if __name__ == "__main__":
     # add_column_to_db()
     # main()
-    # delete_record("local_20260505_134002_685564")
-    # mark_published(content_id="local_20260507_120221_206a67", 
-    #                post_id="69fc13ab000000001f000247", 
-    #                url="https://www.xiaohongshu.com/explore/69fc13ab000000001f000247?xsec_token=YBochRtxIIVsUtnMci7Yu695Mx7ueDkXLeFPO0SU0eb0k%3D&xsec_source=pc_creatormng",
+    delete_record("local_20260509_002948_7b6266") 
+    # mark_published(content_id="local_20260508_113633_561c05", 
+    #                post_id="69fd5fc5000000001b02151a", 
+    #                url="https://www.xiaohongshu.com/explore/69fd5fc5000000001b02151a?xsec_token=GBGWy7oEyOmLpNLTygwab4RNn6ZUjdSZbIeS0Q4Ywxb6Y=&xsec_source=pc_creatormng"
     #                )
-    update_record_metrics(
-        content_id="local_20260506_083957_9538fe",
-        post_id="69fb1e4f000000003603352c",
-        url="https://www.xiaohongshu.com/explore/69fb1e4f000000003603352c?xsec_token=YBNzxnoTinfuy8Smb3pskbuZJ-jOdNouPO-yrJKyG3Cuc%3D&xsec_source=pc_creatormng",
-        views=11,
-        likes=0,
-        saves=0,
-        comments=0,
-        shares=0,
-        followers_gained=0,
-    )
+    # update_record_metrics(
+    #     content_id="local_20260507_144752_f1a6f7", 
+    #     post_id="69fc3c220000000023006396", 
+    #     url="https://www.xiaohongshu.com/explore/69fc3c220000000023006396?xsec_token=YBochRtxIIVsUtnMci7Yu698wSvcHJRrOdfLT4gp3pBoo%3D&xsec_source=pc_creatormng",
+    #     views=3,
+    #     likes=1,
+    #     saves=0,
+    #     comments=0,
+    #     shares=0,
+    #     followers_gained=0,
+    # )

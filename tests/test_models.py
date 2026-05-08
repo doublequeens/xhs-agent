@@ -34,6 +34,9 @@ for mod_name in mock_modules:
     if mod_name not in sys.modules:
         sys.modules[mod_name] = MagicMock()
 
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 import pytest
 from unittest.mock import patch
 from src.models import get_model, _model_cache

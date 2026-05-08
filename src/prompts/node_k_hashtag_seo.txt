@@ -5,8 +5,8 @@
 你将收到一个结构化对象 hashtag_input, 其核心字段如下：
 - final_title
 - final_md
-- topic_name
-- angle_name
+- topic
+- angle
 - target_group
 - core_pain
 - best_cover_copy

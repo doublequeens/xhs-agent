@@ -1,0 +1,103 @@
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+from langchain_core.prompts import PromptTemplate
+from typing import List
+
+from memory import vector_memory
+from src.models import get_model
+from src.schemas import AgentState, AngleStrategy, NoveltyCheckResults, NoveltyMatches
+from src.prompts import all_prompts
+from memory.vector_memory import XHSVectorMemory
+from memory.embedding import build_embedding_text
+
+
+
+def get_memory_matches(angle_options: List[AngleStrategy]) -> List[NoveltyMatches]:
+    """
+    A helper function to retrieve relevant past content from memory based on topic-angle pairs.
+    Args:
+        angle_options (List[AngleStrategy]): the result of node angle strategist
+    Returns:
+        topic_angles_memory_matches: List of memory records that are relevant to the given topic-angle pairs, including their embedding similarity scores.
+    """
+    memory_matches = []
+    vector_memory = XHSVectorMemory("data/chroma")  
+
+    for topic in angle_options:
+        for angle in topic.angles:
+            query_text = build_embedding_text(
+                topic=topic.topic,
+                angle=angle.angle,
+                title="",
+                target_group=topic.target_group,
+                core_pain=topic.core_pain,
+            )
+
+            similar_items = vector_memory.query_similar(
+                query_text=query_text,
+                n_results=3
+            )
+
+            memory_matches.append({
+                "topic_id": topic.topic_id,
+                "angle_id": angle.angle_id,
+
+                "matches": [
+                    {
+                        "content_id": item["content_id"],
+                        "topic": item["metadata"].get("topic", ""),
+                        "angle": item["metadata"].get("angle", ""),
+                        "title": item["metadata"].get("title", ""),
+                        "created_at": item["metadata"].get("created_at", ""),
+                        "published_at": item["metadata"].get("published_at", ""),
+                        "similarity": item["similarity"],
+                        "performance_level": item["metadata"].get("performance_level", "unknown")
+                    }
+                    for item in similar_items
+                ]
+            })
+    memory_matches = [NoveltyMatches(**match) for match in memory_matches]
+
+    return memory_matches
+
+
+def novelty_guard_node(state: AgentState) -> AgentState:
+    """
+    A node that checks the novelty of content topic-angles using Gemini models.
+
+    Args:
+        state (AgentState): The current state of the agent containing generated angle strategies and memory manager instance.
+    Returns:
+        AgentState: Updated agent state with novelty check results.
+    """
+    system_prompt = all_prompts["NODE_B_NOVELTY_GUARD"]
+
+    angle_options = state.get("angles", [])
+    memory_matches = get_memory_matches(angle_options)
+    MEMORY_POLICY = {
+        "reject_similarity_threshold": 0.86,
+        "warn_similarity_threshold": 0.78,
+        "recent_days_strict": 14,
+        "recent_days_soft": 30
+        }
+
+    template = PromptTemplate(
+        input_variables=["angle_options", "memory_matches", "MEMORY_POLICY"],
+        template="这是angle_options: {angle_options}， 这时 memory_matches: {memory_matches},  这是 MEMORY_POLICY: {MEMORY_POLICY},  根据system规则进行处理."
+    )
+    human_prompt = template.format(angle_options=angle_options, memory_matches=memory_matches, MEMORY_POLICY=MEMORY_POLICY)
+
+    messages = [
+        SystemMessage(content=system_prompt),
+        HumanMessage(content=human_prompt)
+    ]
+
+    novelty_result_json = get_model().execute(messages)
+
+    try:
+        novelty_check_results = NoveltyCheckResults(**novelty_result_json)
+    except Exception as e:
+        print(f"Failed to transform to NoveltyCheckResult schema, please check the detail: {e}")
+        novelty_check_results = []
+        raise RuntimeError(f"Process terminated due to error: {e}")
+
+    return {"novelty_check_results": novelty_check_results}

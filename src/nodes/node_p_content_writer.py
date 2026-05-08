@@ -5,6 +5,7 @@ from examples.memory_demo import make_content_id
 import memory
 from memory.memory_manager import XHSMemoryManager, utc_now_iso
 from memory.models import ContentRecord
+from memory.vector_memory import XHSVectorMemory
 from src.schemas.agent_state import AgentState
 
 def content_writer_node(state: AgentState) -> AgentState:
@@ -51,10 +52,20 @@ def content_writer_node(state: AgentState) -> AgentState:
             " ".join(publish_package["hashtags"]),
         ]),
     )
-    database.save_generated_content(record)
+    # save structured content to database
+    try:
+        database.save_generated_content(record)
+    except Exception as e:
+        raise Exception(f"Error occurred while saving generated content to structured database sqlite: {e}")
 
-    if database.get_content_by_id(record.content_id):
-        print(f"Content with ID {record.content_id} successfully saved to the database.")
+    # save semantic embedding content to vector database
+    try:
+        database.save_embedding_content(record)
+    except Exception as e:
+        raise Exception(f"Error occurred while saving generated content to vector database chromadb: {e}")
+    
+    if database.get_content_by_id(record.content_id) and database.get_embedding_content_by_id(record.content_id):
+        print(f"Content with ID {record.content_id}, with title {record.title} successfully saved to the structured and embedding database.")
         return {"data_writed": True}
     
     return {"data_writed": False}

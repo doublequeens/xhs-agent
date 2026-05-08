@@ -19,9 +19,9 @@ class R1Output(BaseModel):
     revised_title: str
     revised_md: str
     topic_id: str
-    topic_name: str
+    topic: str
     angle_id: str
-    angle_name: str
+    angle: str
     target_group: str
     core_pain: str
     best_cover_copy: str

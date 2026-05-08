@@ -3,7 +3,8 @@ from typing import TypedDict, List, Optional
 from memory.memory_manager import XHSMemoryManager
 from .topic import TopicItem
 from .angle import AngleStrategy
-from .angle_score import ScoreResult
+from .novelty_guard import NoveltyCheckResults
+from .virality_score import ScoreResult
 from .outline import OutlineItem
 from .draft import DraftItem
 from .title import DraftTitles
@@ -22,6 +23,7 @@ class AgentState(TypedDict):
     memory_context: Optional[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]
+    novelty_check_results: NoveltyCheckResults
     scores: List[ScoreResult]
     outlines: List[OutlineItem]
     drafts: List[DraftItem]

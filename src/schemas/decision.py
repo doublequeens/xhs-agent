@@ -25,9 +25,9 @@ class ContentCandidate(BaseModel):
     best_cover_copy: str
     why_win: Optional[List[str]] = None
     topic_id: str
-    topic_name: str
+    topic: str
     angle_id: str
-    angle_name: str
+    angle: str
     target_group: str
     core_pain: str
 
@@ -52,9 +52,9 @@ class R2ContentSnapShoot(BaseModel):
     revised_title: str
     revised_md: str
     topic_id: str
-    topic_name: str
+    topic: str
     angle_id: str
-    angle_name: str
+    angle: str
     target_group: str
     core_pain: str
     best_cover_copy: str
@@ -67,8 +67,8 @@ class R2Input(BaseModel):
 class HashTagInput(BaseModel):
     final_title: str
     final_md: str
-    topic_name: str
-    angle_name: str
+    topic: str
+    angle: str
     target_group: str
     core_pain: str
     best_cover_copy: str

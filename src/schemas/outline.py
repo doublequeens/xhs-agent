@@ -4,8 +4,8 @@ class OutlineItem(BaseModel):
     outline_id: str
     outline_md: str
     topic_id: str
-    topic_name: str
+    topic: str
     angle_id: str
-    angle_name: str
+    angle: str
     target_group: str
     core_pain: str   

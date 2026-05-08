@@ -46,26 +46,27 @@
 [
   {
     "topic_id": "string",
+    "topic": "string",
     "target_group": "string",
     "core_pain": "string",
     "angles": [
       {
         "angle_id": "ag_001",
-        "angle_name": "角度的简短命名（用于内部区分）",
+        "angle": "角度的简短命名（用于内部区分）",
         "opening_hook": "3–5 行内的开头钩子，体现该角度的独特切入",
         "value_promise": "一句话说明读者看完能解决什么问题或获得什么判断方法",
         "suggested_structure": "建议的内容结构轮廓（如：经历 → 对比 → 总结清单）"
       },
       {
         "angle_id": "ag_002",
-        "angle_name": "string",
+        "angle": "string",
         "opening_hook": "string",
         "value_promise": "string",
         "suggested_structure": "string"
       },
       {
         "angle_id": "ag_003",
-        "angle_name": "string",
+        "angle": "string",
         "opening_hook": "string",
         "value_promise": "string",
         "suggested_structure": "string"

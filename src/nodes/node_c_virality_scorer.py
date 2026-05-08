@@ -15,12 +15,14 @@ def virality_scorer_node(state: AgentState) -> AgentState:
         AgentState: Updated agent state with virality scores for each angle.
     """
 
-    angle_options = state.get("angles", [])
-    trends_options = state.get("trends", [])
+    # angle_options = state.get("angles", [])
+    novelty_check_results = state.get("novelty_check_results", [])
+    # trends_options = state.get("trends", [])
+
     system_prompt = all_prompts["NODE_C_VIRALITY_SCORER"]
-    template = PromptTemplate(input_variables=["angles", "trends"], 
-                              template="读取候选选题列表: {trends}，以及对应的每个选题的传播切入角度列表{angles}，根据“选题 + 切入角度”的传播潜力，做评估")
-    human_prompt = template.format(angles=angle_options, trends=trends_options)
+    template = PromptTemplate(input_variables=["novelty_check_results"], 
+                              template="这时novelty_check_results: {novelty_check_results}， 根据“选题 + 切入角度”的传播潜力，做评估")
+    human_prompt = template.format(novelty_check_results=novelty_check_results)
 
     messages = [SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)]

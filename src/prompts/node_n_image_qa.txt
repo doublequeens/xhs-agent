@@ -12,8 +12,8 @@
 final_content核心字段包括：
 - final_title（最终标题）
 - final_md（已编辑后的正文 Markdown）
-- topic_name (文章主题)
-- angle_name（切入角度）
+- topic (文章主题)
+- angle（切入角度）
 - target_group (目标受众)
 - core_pain （痛点）
 - best_cover_copy (头图文案)

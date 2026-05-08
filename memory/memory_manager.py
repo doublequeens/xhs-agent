@@ -7,8 +7,12 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-from memory.models import ContentRecord, MetricsRecord, MemoryContext
+from matplotlib.pylab import record
 
+from memory import vector_memory
+from memory.models import ContentRecord, MetricsRecord, MemoryContext
+from memory.vector_memory import XHSVectorMemory
+from memory.embedding import build_embedding_text
 
 def utc_now_iso() -> str:
     return datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -155,6 +159,39 @@ class XHSMemoryManager:
                 "status": record.status,
             },
         )
+    
+    def save_embedding_content(self, record: ContentRecord) -> None:
+        vector_memory = XHSVectorMemory("data/chroma")
+        embedding_text = build_embedding_text(
+            topic=record.topic,
+            angle=record.angle,
+            title=record.title,
+            target_group=record.target_group,
+            core_pain=record.core_pain,
+            hashtags=record.hashtags        
+            )
+
+        vector_memory.upsert_content(
+            content_id=record.content_id,
+            embedding_text=embedding_text,
+            metadata={
+                "content_id": record.content_id,
+                "status": record.status,
+                "topic": record.topic,
+                "angle": record.angle or "",
+                "title": record.title or "",
+                "target_group": record.target_group or "",
+                "created_at": record.created_at,
+                "published_at": record.published_at or "",
+                "performance_level": "unknown",
+            }
+        )
+
+    def get_embedding_content_by_id(self, content_id: str) -> bool:
+        vector_memory = XHSVectorMemory("data/chroma")
+        result = vector_memory.collection.get(ids=[content_id])
+        
+        return len(result["ids"]) > 0
     
     def delete_content_by_id(self, content_id: str) -> None:
         with self.connect() as conn:

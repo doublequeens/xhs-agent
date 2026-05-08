@@ -9,6 +9,7 @@ from src.nodes import (
     retrieve_memory_node,
     assembler_node,
     angle_strategist_node,
+    novelty_guard_node,
     decision_engine_node,
     draft_writer_node,
     hashtag_node,
@@ -43,6 +44,7 @@ def create_graph():
     builder.add_node("memory_retriever", retrieve_memory_node)
     builder.add_node("trend_scout", trend_scout_node)
     builder.add_node("angle_strategist", angle_strategist_node)
+    builder.add_node("novelty_guard", novelty_guard_node)
     builder.add_node("virality_score", virality_scorer_node)
     builder.add_node("outline_architect", outline_architect_node)
     builder.add_node("draft_writer", draft_writer_node)
@@ -61,7 +63,8 @@ def create_graph():
     builder.add_node("content_writer", content_writer_node)
     builder.add_edge("memory_retriever", "trend_scout")
     builder.add_edge("trend_scout", "angle_strategist")
-    builder.add_edge("angle_strategist", "virality_score")
+    builder.add_edge("angle_strategist", "novelty_guard")
+    builder.add_edge("novelty_guard", "virality_score")
     builder.add_edge("virality_score", "outline_architect")
     builder.add_edge("outline_architect", "draft_writer")
     builder.add_edge("draft_writer", "title_lab")

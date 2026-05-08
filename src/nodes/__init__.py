@@ -1,6 +1,7 @@
 from .node_a_01_retrieve_memory import retrieve_memory_node
 from .node_a_trend_scout import trend_scout_node
 from .node_b_angle_strategist import angle_strategist_node
+from .node_b_novelty_guard import novelty_guard_node
 from .node_c_virality_scorer import virality_scorer_node
 from .node_d_outline_architect import outline_architect_node
 from .node_e_draft_writer import draft_writer_node
@@ -26,6 +27,7 @@ __all__ = [
     "retrieve_memory_node",
     "trend_scout_node",
     "angle_strategist_node",
+    "novelty_guard_node",
     "virality_scorer_node",
     "outline_architect_node",
     "draft_writer_node",

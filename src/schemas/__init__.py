@@ -1,7 +1,8 @@
 from .agent_state import AgentState
 from .topic import TopicItem
 from .angle import AngleStrategy, ContentAngle
-from .angle_score import ScoreBreakdown, ScoreResult
+from .virality_score import ScoreBreakdown, ScoreResult
+from .novelty_guard import MatchedHistoryItem, MemorySignalResult, NoveltyCheckResult, NoveltyCheckResults, NoveltyMatches
 from .outline import OutlineItem
 from .draft import DraftItem
 from .title import DraftTitles
@@ -21,6 +22,7 @@ __all__ = [
     "AgentState",
     "TopicItem",
     "AngleStrategy", "ContentAngle",
+    "MatchedHistoryItem", "MemorySignalResult", "NoveltyCheckResult", "NoveltyCheckResults", "NoveltyMatches"
     "ScoreBreakdown", "ScoreResult",
     "OutlineItem",
     "DraftItem",

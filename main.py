@@ -105,7 +105,6 @@ def stream_graph_until_stop(graph, run_input, config):
                     break
 
                 print(f"Finished processing node: {key}")
-                print(f"next node is: {value.get('next_node')}")
                 if key in {"storyboard_generator", "human_review"} and value.get("publish_package"):
                     print("The final publish package title is:")
                     print(value["publish_package"]["title"])
@@ -184,7 +183,7 @@ def main():
     }
 
     # 如果想完全从头重新跑一次，请修改此处的 thread_id（如 "xhs_conversation_2"）
-    index = "database_20260507_03"
+    index = "database_20260509_01"
     config = {"configurable": {"thread_id": "xhs_conversation_"+ str(index)}}
 
     currentState = graph.get_state(config)

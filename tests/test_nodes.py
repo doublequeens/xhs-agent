@@ -1,3 +1,6 @@
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from src.nodes.node_j_decision_engine import decision_engine_node
 
 # 1. 构造一个 mock_state (根据你的 AgentState 结构伪造假数据)
@@ -37,9 +40,9 @@ mock_state = {
         'before': '你平时哪支防晒或者粉底液让你觉得疯狂搓泥？',
         'after_hint': '改为“你平时哪支防晒或者粉底液让你觉得疯狂搓泥？直接带名字来评论区吐槽，我帮你看看是不是手法踩坑了！”'}],
         'topic_id': 'tp_002',
-        'topic_name': '防晒搓泥大拯救：底妆打架原来是涂法惹的祸',
+        'topic': '防晒搓泥大拯救：底妆打架原来是涂法惹的祸',
         'angle_id': 'ag_001',
-        'angle_name': '认知纠偏：防晒上脸手法误区',
+        'angle': '认知纠偏：防晒上脸手法误区',
         'target_group': '日常通勤党、有化妆需求的早八人',
         'core_pain': '涂完防晒再上粉底，脸上搓出泥条，妆面斑驳不服帖'
     }
