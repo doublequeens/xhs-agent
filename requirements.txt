@@ -1,8 +1,12 @@
 langgraph
 langgraph-checkpoint-sqlite
 langchain
+langchain-deepseek
 langchain-google-genai
 langchain-openai
+json-repair
+chromadb
+sentence-transformers
 python-dotenv
 requests
 pydantic
