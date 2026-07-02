@@ -1,7 +1,28 @@
 import os, sys
+import importlib
+from importlib import util
+from pathlib import Path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.nodes.node_j_decision_engine import decision_engine_node
+for module_name in list(sys.modules):
+    if module_name == "langchain_core" or module_name.startswith("langchain_core."):
+        if type(sys.modules[module_name]).__name__ == "MagicMock":
+            sys.modules.pop(module_name, None)
+
+for module_name in [
+    "langchain_core",
+    "langchain_core.language_models",
+    "langchain_core.messages",
+    "langchain_core.prompts",
+]:
+    importlib.import_module(module_name)
+
+module_path = Path(__file__).resolve().parents[1] / "src" / "nodes" / "node_j_decision_engine.py"
+spec = util.spec_from_file_location("node_j_decision_engine", module_path)
+module = util.module_from_spec(spec)
+assert spec and spec.loader
+spec.loader.exec_module(module)
+decision_engine_node = module.decision_engine_node
 
 # 1. 构造一个 mock_state (根据你的 AgentState 结构伪造假数据)
 mock_state = {
@@ -48,6 +69,7 @@ mock_state = {
     }
 }
 
-# 2. 直接调用该节点并打印结果
-result = decision_engine_node(mock_state)
-print(result)
+if __name__ == "__main__":
+    # 2. 直接调用该节点并打印结果
+    result = decision_engine_node(mock_state)
+    print(result)

@@ -7,12 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-from matplotlib.pylab import record
-
-from memory import vector_memory
 from memory.models import ContentRecord, MetricsRecord, MemoryContext
-from memory.vector_memory import XHSVectorMemory
-from memory.embedding import build_embedding_text
 
 def utc_now_iso() -> str:
     return datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -161,6 +156,9 @@ class XHSMemoryManager:
         )
     
     def save_embedding_content(self, record: ContentRecord) -> None:
+        from memory.embedding import build_embedding_text
+        from memory.vector_memory import XHSVectorMemory
+
         vector_memory = XHSVectorMemory("data/chroma")
         embedding_text = build_embedding_text(
             topic=record.topic,
@@ -188,6 +186,8 @@ class XHSMemoryManager:
         )
 
     def get_embedding_content_by_id(self, content_id: str) -> bool:
+        from memory.vector_memory import XHSVectorMemory
+
         vector_memory = XHSVectorMemory("data/chroma")
         result = vector_memory.collection.get(ids=[content_id])
         
