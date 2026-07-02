@@ -240,6 +240,8 @@ def main():
         "domain_context": None,
         "content_policy": None,
         "memory_context": None,
+        "evidence_briefs": {},
+        "final_policy_issues": [],
         "trends_num": args.topic_num,
         "focus_keyword": args.focus_keyword if args.focus_keyword else "",
         "trends": [],

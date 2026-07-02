@@ -25,6 +25,8 @@ class AgentState(TypedDict):
     domain_context: Optional[DomainContext]
     content_policy: Optional[ContentPolicy]
     memory_context: Optional[dict]
+    evidence_briefs: dict[str, dict]
+    final_policy_issues: list[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]
     novelty_check_results: NoveltyCheckResults

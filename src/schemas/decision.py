@@ -1,5 +1,8 @@
+from typing import Any, List, Optional
+
 from pydantic import BaseModel, field_validator
-from typing import List, Optional, Any
+
+from src.domain.models import ContentIntent, DomainName, RiskLevel
 
 class SingleTask(BaseModel):
     task_id: str
@@ -67,8 +70,15 @@ class R2Input(BaseModel):
 class HashTagInput(BaseModel):
     final_title: str
     final_md: str
+    topic_id: str
+    angle_id: str
     topic: str
     angle: str
+    domain: DomainName
+    subdomain: str
+    content_intent: ContentIntent
+    risk_level: RiskLevel
+    risk_flags: list[str]
     target_group: str
     core_pain: str
     best_cover_copy: str
