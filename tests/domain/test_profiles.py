@@ -3,8 +3,7 @@ import re
 
 import pytest
 
-from src.domain import DomainContext, DomainProfile
-from src.domain.registry import build_content_policy, get_domain_profile
+from src.domain import DomainContext, DomainProfile, build_content_policy, get_domain_profile
 
 
 def test_get_domain_profile_returns_expected_domain_profiles():
@@ -135,6 +134,65 @@ def test_domain_profile_rejects_invalid_shape():
             default_subdomain="skincare",
             allowed_subdomains=("skincare",),
             keyword_map={"invalid": ("护肤",)},
+            prohibited_topics=("疾病诊断",),
+            prohibited_claims=("保证有效",),
+            required_disclaimers=("免责声明",),
+            hashtag_seeds=("美容",),
+            visual_guidelines=("真实场景",),
+            evidence_domains=("who.int",),
+        )
+
+
+def test_domain_profile_rejects_empty_keyword_map():
+    with pytest.raises(ValueError, match="DomainProfile invariant check failed"):
+        DomainProfile(
+            domain="beauty",
+            version="beauty-v1",
+            default_subdomain="skincare",
+            allowed_subdomains=("skincare",),
+            keyword_map={},
+            prohibited_topics=("疾病诊断",),
+            prohibited_claims=("保证有效",),
+            required_disclaimers=("免责声明",),
+            hashtag_seeds=("美容",),
+            visual_guidelines=("真实场景",),
+            evidence_domains=("who.int",),
+        )
+
+
+def test_domain_profile_rejects_missing_subdomain_mapping():
+    with pytest.raises(ValueError, match="DomainProfile invariant check failed"):
+        DomainProfile(
+            domain="beauty",
+            version="beauty-v1",
+            default_subdomain="skincare",
+            allowed_subdomains=("skincare", "haircare"),
+            keyword_map={"skincare": ("护肤",)},
+            prohibited_topics=("疾病诊断",),
+            prohibited_claims=("保证有效",),
+            required_disclaimers=("免责声明",),
+            hashtag_seeds=("美容",),
+            visual_guidelines=("真实场景",),
+            evidence_domains=("who.int",),
+        )
+
+
+@pytest.mark.parametrize(
+    "domain, version",
+    [
+        ("beauty", "wellness-v1"),
+        ("wellness", "healthy-lifestyle-v1"),
+        ("healthy_lifestyle", "beauty-v1"),
+    ],
+)
+def test_domain_profile_rejects_cross_domain_version(domain, version):
+    with pytest.raises(ValueError, match="DomainProfile invariant check failed"):
+        DomainProfile(
+            domain=domain,
+            version=version,
+            default_subdomain="skincare" if domain == "beauty" else "daily_routine",
+            allowed_subdomains=("skincare",) if domain == "beauty" else ("daily_routine",),
+            keyword_map={"skincare" if domain == "beauty" else "daily_routine": ("x",)},
             prohibited_topics=("疾病诊断",),
             prohibited_claims=("保证有效",),
             required_disclaimers=("免责声明",),
