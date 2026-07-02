@@ -13,7 +13,7 @@ def get_domain_profile(domain: str, version: str | None = None) -> DomainProfile
             f"Unsupported profile version: {version} for domain {domain}; expected {profile.version}"
         )
 
-    return profile
+    return profile.model_copy(deep=True)
 
 
 def build_content_policy(profile: DomainProfile, risk_level: RiskLevel = "low") -> ContentPolicy:

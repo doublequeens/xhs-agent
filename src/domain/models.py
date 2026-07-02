@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 DomainName = Literal["beauty", "wellness", "healthy_lifestyle"]
 RiskLevel = Literal["low", "medium"]
@@ -28,13 +28,31 @@ class ContentPolicy(BaseModel):
 
 class DomainProfile(BaseModel):
     domain: DomainName
-    version: str
+    version: str = Field(min_length=1, pattern=r"^[a-z0-9-]+-v[1-9][0-9]*$")
     default_subdomain: str
-    allowed_subdomains: tuple[str, ...]
+    allowed_subdomains: tuple[str, ...] = Field(min_length=1)
     keyword_map: dict[str, tuple[str, ...]]
-    prohibited_topics: tuple[str, ...]
-    prohibited_claims: tuple[str, ...]
-    required_disclaimers: tuple[str, ...]
-    hashtag_seeds: tuple[str, ...]
-    visual_guidelines: tuple[str, ...]
-    evidence_domains: tuple[str, ...]
+    prohibited_topics: tuple[str, ...] = Field(min_length=1)
+    prohibited_claims: tuple[str, ...] = Field(min_length=1)
+    required_disclaimers: tuple[str, ...] = Field(min_length=1)
+    hashtag_seeds: tuple[str, ...] = Field(min_length=1)
+    visual_guidelines: tuple[str, ...] = Field(min_length=1)
+    evidence_domains: tuple[str, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_invariants(self) -> "DomainProfile":
+        errors: list[str] = []
+
+        if self.default_subdomain not in self.allowed_subdomains:
+            errors.append("default_subdomain must be in allowed_subdomains")
+
+        for subdomain, keywords in self.keyword_map.items():
+            if subdomain not in self.allowed_subdomains:
+                errors.append(f"keyword_map key not allowed: {subdomain}")
+            if not keywords:
+                errors.append(f"keyword_map keywords must be non-empty: {subdomain}")
+
+        if errors:
+            raise ValueError("DomainProfile invariant check failed: " + "; ".join(errors))
+
+        return self

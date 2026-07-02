@@ -1,12 +1,9 @@
 import json
-import os
-import sys
+import re
 
 import pytest
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
-
-from src.domain import ContentPolicy, DomainContext
+from src.domain import DomainContext, DomainProfile
 from src.domain.registry import build_content_policy, get_domain_profile
 
 
@@ -43,6 +40,16 @@ def test_get_domain_profile_returns_expected_domain_profiles():
         assert profile.allowed_subdomains == expected_subdomains
         assert profile.prohibited_topics
         assert profile.evidence_domains
+
+
+def test_get_domain_profile_returns_deep_copy():
+    first = get_domain_profile("beauty")
+    first.keyword_map["skincare"] = ("mutated",)
+
+    second = get_domain_profile("beauty")
+
+    assert second.keyword_map["skincare"] == ("护肤", "防晒", "保湿", "清洁", "抗老")
+    assert second is not first
 
 
 def test_get_domain_profile_rejects_unknown_domain():
@@ -97,4 +104,41 @@ def test_domain_context_rejects_out_of_bounds_confidence(confidence):
             classification_confidence=confidence,
             profile_version="beauty-v1",
             risk_level="low",
+        )
+
+
+def test_domain_profile_invariants_for_built_profiles():
+    version_pattern = re.compile(r"^[a-z0-9-]+-v[1-9][0-9]*$")
+
+    for domain in ("beauty", "wellness", "healthy_lifestyle"):
+        profile = get_domain_profile(domain)
+        assert profile.version
+        assert version_pattern.fullmatch(profile.version)
+        assert profile.allowed_subdomains
+        assert profile.prohibited_topics
+        assert profile.prohibited_claims
+        assert profile.required_disclaimers
+        assert profile.hashtag_seeds
+        assert profile.visual_guidelines
+        assert profile.evidence_domains
+        assert profile.default_subdomain in profile.allowed_subdomains
+        for subdomain, keywords in profile.keyword_map.items():
+            assert subdomain in profile.allowed_subdomains
+            assert keywords
+
+
+def test_domain_profile_rejects_invalid_shape():
+    with pytest.raises(ValueError, match="DomainProfile invariant check failed"):
+        DomainProfile(
+            domain="beauty",
+            version="beauty-v1",
+            default_subdomain="skincare",
+            allowed_subdomains=("skincare",),
+            keyword_map={"invalid": ("护肤",)},
+            prohibited_topics=("疾病诊断",),
+            prohibited_claims=("保证有效",),
+            required_disclaimers=("免责声明",),
+            hashtag_seeds=("美容",),
+            visual_guidelines=("真实场景",),
+            evidence_domains=("who.int",),
         )
