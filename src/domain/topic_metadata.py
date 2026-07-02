@@ -1,15 +1,27 @@
-from src.schemas.topic import TopicItem
+from typing import Any, Protocol, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.domain.models import ContentIntent, DomainName, RiskLevel
 
 
-def get_topic_metadata(topics: list[TopicItem], topic_id: str) -> dict[str, object]:
-    matches = [topic for topic in topics if topic.topic_id == topic_id]
+class TopicMetadataLike(Protocol):
+    topic_id: str
+    domain: "DomainName"
+    subdomain: str
+    content_intent: "ContentIntent"
+    risk_level: "RiskLevel"
+    risk_flags: list[str]
+
+
+def get_topic_metadata(topics: list[Any], topic_id: str) -> dict[str, object]:
+    matches = [topic for topic in topics if getattr(topic, "topic_id", None) == topic_id]
 
     if not matches:
         raise ValueError(f"Unknown topic_id: {topic_id}")
     if len(matches) > 1:
         raise ValueError(f"Duplicate topic_id: {topic_id}")
 
-    topic = matches[0]
+    topic: TopicMetadataLike = matches[0]
     return {
         "domain": topic.domain,
         "subdomain": topic.subdomain,

@@ -3,6 +3,7 @@ import sys
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from src.domain import get_topic_metadata
 from src.schemas.decision import HashTagInput
@@ -167,7 +168,7 @@ def test_hashtag_input_requires_complete_domain_metadata():
 
 
 def test_hashtag_input_rejects_missing_domain_metadata():
-    with pytest.raises(Exception):
+    with pytest.raises(ValidationError) as exc_info:
         HashTagInput(
             final_title="睡眠改善指南",
             final_md="content",
@@ -182,7 +183,9 @@ def test_hashtag_input_rejects_missing_domain_metadata():
             target_group="上班族",
             core_pain="熬夜失眠",
             best_cover_copy="今晚就能试",
-        )
+    )
+
+    assert [error["loc"] for error in exc_info.value.errors()] == [("domain",)]
 
 
 def test_main_initial_state_includes_metadata_briefs(monkeypatch):

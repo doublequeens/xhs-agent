@@ -5,6 +5,12 @@ from src.models import get_model
 from src.schemas import AgentState, TopicItem
 from src.prompts import all_prompts
 
+
+def _get_value(payload, key):
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
 def trend_scout_node(state: AgentState) -> AgentState:
     """
     A node that scouts for trends using Google Gemini models.
@@ -46,7 +52,15 @@ def trend_scout_node(state: AgentState) -> AgentState:
     trend_json = get_model().execute(messages)
 
     try:
-        trend_options = [TopicItem(**trend) for trend in trend_json]
+        trend_options = []
+        for trend in trend_json:
+            normalized_trend = dict(trend)
+            if domain_context:
+                normalized_trend["domain"] = _get_value(domain_context, "domain")
+                normalized_trend["subdomain"] = _get_value(domain_context, "subdomain")
+            if normalized_trend.get("content_intent") == "basic_science":
+                normalized_trend["risk_level"] = "medium"
+            trend_options.append(TopicItem(**normalized_trend))
     except Exception as e:
         print(f"Failed to tranform to TopicItem schema, please check the detail: {e}")
         trend_options = []

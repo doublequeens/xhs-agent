@@ -54,3 +54,11 @@ def test_real_graph_constructs_without_model_instantiation():
 
     assert result.returncode == 0, result.stderr
     assert result.stdout == ""
+
+
+def test_src_packages_import_in_either_order():
+    result_forward = _run_clean_python("import src.domain; import src.schemas")
+    result_reverse = _run_clean_python("import src.schemas; import src.domain")
+
+    assert result_forward.returncode == 0, result_forward.stderr
+    assert result_reverse.returncode == 0, result_reverse.stderr

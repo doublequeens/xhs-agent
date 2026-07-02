@@ -30,6 +30,33 @@ def _select_topic_angle_ids(source, decision_input):
 
     return topic_id, angle_id
 
+
+def _extract_selected_content_fields(source, decision_input):
+    if source == "TITLE_RANKER":
+        payload = _get_value(decision_input, "winner") or _get_value(decision_input, "content_candidate") or decision_input
+    elif source == "R1_REFLECTOR":
+        payload = _get_value(decision_input, "content_candidate") or _get_value(decision_input, "content_snapshot") or decision_input
+    elif source == "R2_COMPLIANCE":
+        payload = _get_value(decision_input, "content_snapshot") or decision_input
+    else:
+        raise ValueError(f"Unsupported decision source: {source}")
+
+    fields = {
+        "topic_id": _get_value(payload, "topic_id"),
+        "angle_id": _get_value(payload, "angle_id"),
+        "topic": _get_value(payload, "topic"),
+        "angle": _get_value(payload, "angle"),
+        "target_group": _get_value(payload, "target_group"),
+        "core_pain": _get_value(payload, "core_pain"),
+        "best_cover_copy": _get_value(payload, "best_cover_copy"),
+    }
+
+    missing = [name for name, value in fields.items() if value in (None, "")]
+    if missing:
+        raise ValueError(f"Missing selected content fields for source {source}: {', '.join(missing)}")
+
+    return fields
+
 def decision_engine_node(state: AgentState) -> AgentState:
     """
     A node that makes decisions based on the outputs of previous nodes. It evaluates the outputs from the title ranker, R1 reflector, and R2 compliance nodes to determine the best course of action for content creation.
@@ -51,6 +78,9 @@ def decision_engine_node(state: AgentState) -> AgentState:
     else:
         source = "R2_COMPLIANCE"
         decision_input = state["r2_output"]
+
+    selected_fields = _extract_selected_content_fields(source, decision_input)
+    topic_metadata = get_topic_metadata(state.get("trends", []), selected_fields["topic_id"])
     
     system_prompt = all_prompts["NODE_J_DECISION_ENGINE"]
     template = PromptTemplate(
@@ -75,12 +105,18 @@ def decision_engine_node(state: AgentState) -> AgentState:
             normalized_input = decision_output_json.get("normalized_input", {})
             hashtag_input = normalized_input.get("hashtag_input") if isinstance(normalized_input, dict) else None
             if hashtag_input is not None:
-                topic_id, angle_id = _select_topic_angle_ids(source, decision_input)
-                hashtag_input.update({
-                    "topic_id": topic_id,
-                    "angle_id": angle_id,
-                    **get_topic_metadata(state.get("trends", []), topic_id),
-                })
+                hashtag_input.update(
+                    {
+                        "topic_id": selected_fields["topic_id"],
+                        "angle_id": selected_fields["angle_id"],
+                        "topic": selected_fields["topic"],
+                        "angle": selected_fields["angle"],
+                        "target_group": selected_fields["target_group"],
+                        "core_pain": selected_fields["core_pain"],
+                        "best_cover_copy": selected_fields["best_cover_copy"],
+                        **topic_metadata,
+                    }
+                )
             decision_output = DecisionOutput(**decision_output_json)
             # 解析成功，跳出循环并返回
             return {"decision_output": decision_output}

@@ -1,6 +1,5 @@
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
-from src.domain import get_topic_metadata
 from src.models import get_model
 from src.schemas import AgentState
 from src.prompts import all_prompts
@@ -38,15 +37,24 @@ def assembler_node(state: AgentState) -> AgentState:
 
     llm = get_model()
     publish_package_json = llm.execute(messages)
-    final_topic_id = _get_value(final_content, "topic_id")
-    if final_topic_id:
-        publish_package_json.update(
-            {
-                "topic_id": final_topic_id,
-                "angle_id": _get_value(final_content, "angle_id"),
-                **get_topic_metadata(state.get("trends", []), final_topic_id),
-            }
-        )
+    publish_package_json.update(
+        {
+            "title": _get_value(final_content, "final_title"),
+            "content": _get_value(final_content, "final_md"),
+            "topic_id": _get_value(final_content, "topic_id"),
+            "topic": _get_value(final_content, "topic"),
+            "angle_id": _get_value(final_content, "angle_id"),
+            "angle": _get_value(final_content, "angle"),
+            "target_group": _get_value(final_content, "target_group"),
+            "core_pain": _get_value(final_content, "core_pain"),
+            "cover_copy": _get_value(final_content, "best_cover_copy"),
+            "domain": _get_value(final_content, "domain"),
+            "subdomain": _get_value(final_content, "subdomain"),
+            "content_intent": _get_value(final_content, "content_intent"),
+            "risk_level": _get_value(final_content, "risk_level"),
+            "risk_flags": list(_get_value(final_content, "risk_flags") or []),
+        }
+    )
     return {
         "publish_package": publish_package_json
     }
