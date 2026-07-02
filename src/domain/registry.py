@@ -18,10 +18,10 @@ def get_domain_profile(domain: str, version: str | None = None) -> DomainProfile
 
 def build_content_policy(profile: DomainProfile, risk_level: RiskLevel = "low") -> ContentPolicy:
     return ContentPolicy(
-        allowed_topics=profile.allowed_subdomains,
-        prohibited_topics=profile.prohibited_topics,
-        prohibited_claims=profile.prohibited_claims,
-        required_disclaimers=profile.required_disclaimers,
+        allowed_topics=list(profile.allowed_subdomains),
+        prohibited_topics=list(profile.prohibited_topics),
+        prohibited_claims=list(profile.prohibited_claims),
+        required_disclaimers=list(profile.required_disclaimers),
         risk_level=risk_level,
         require_evidence_brief=profile.domain != "beauty",
         require_human_review=True,
