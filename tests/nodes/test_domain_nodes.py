@@ -1,4 +1,5 @@
 import importlib
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
@@ -151,3 +152,71 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("domain_router", "domain_confirmation") in added_edges
     assert ("domain_confirmation", "memory_retriever") in added_edges
     assert entry_points == ["domain_router"]
+
+
+def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch):
+    graph_module = importlib.import_module("src.graph")
+    checkpoint_path = tmp_path / "checkpoints.sqlite"
+    compiled_checkpointers = []
+    fake_node = object()
+
+    class FakeBuilder:
+        def __init__(self, _state_type):
+            pass
+
+        def add_node(self, _name, _node):
+            pass
+
+        def add_edge(self, _source, _target):
+            pass
+
+        def add_conditional_edges(self, _source, _fn, _mapping):
+            pass
+
+        def set_entry_point(self, _name):
+            pass
+
+        def compile(self, checkpointer=None):
+            compiled_checkpointers.append(checkpointer)
+            return SimpleNamespace(checkpointer=checkpointer)
+
+    monkeypatch.setattr(graph_module, "StateGraph", FakeBuilder)
+    monkeypatch.setattr(
+        graph_module,
+        "nodes",
+        SimpleNamespace(
+            domain_router_node=fake_node,
+            domain_confirmation_node=fake_node,
+            retrieve_memory_node=fake_node,
+            trend_scout_node=fake_node,
+            angle_strategist_node=fake_node,
+            novelty_guard_node=fake_node,
+            virality_scorer_node=fake_node,
+            outline_architect_node=fake_node,
+            draft_writer_node=fake_node,
+            title_lab_node=fake_node,
+            title_ranker_node=fake_node,
+            decision_engine_node=fake_node,
+            r1_reflector_node=fake_node,
+            r2_compliance_node=fake_node,
+            hashtag_node=fake_node,
+            assembler_node=fake_node,
+            human_review_node=fake_node,
+            content_writer_node=fake_node,
+            storyboards_generator_node=fake_node,
+        ),
+    )
+
+    try:
+        first = graph_module.create_graph(checkpoint_path=checkpoint_path)
+        second = graph_module.create_graph(checkpoint_path=checkpoint_path)
+
+        assert checkpoint_path.exists()
+        assert first.checkpointer is second.checkpointer
+        assert compiled_checkpointers == [first.checkpointer, second.checkpointer]
+        first.checkpointer.conn.execute("SELECT 1")
+    finally:
+        graph_module.close_checkpointers(checkpoint_path)
+
+    with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
+        first.checkpointer.conn.execute("SELECT 1")

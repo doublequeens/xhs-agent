@@ -3,13 +3,34 @@ import os
 import sys
 import json
 from datetime import datetime, timezone, timedelta
+from typing import get_args
+from uuid import uuid4
 
 from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
-from src.domain import get_domain_profile
+from src.domain import DomainName, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.prompts import all_prompts
+
+SUPPORTED_DOMAINS = get_args(DomainName)
+
+
+def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
+    if explicit_id is not None:
+        return explicit_id
+    timestamp = (now or datetime.now(timezone.utc)).strftime("%Y%m%dT%H%M%S")
+    return f"xhs_conversation_{timestamp}_{uuid4().hex}"
+
+
+def build_run_config(thread_id: str | None) -> dict:
+    return {"configurable": {"thread_id": build_thread_id(thread_id)}}
+
+
+def load_run_state(graph, config: dict, initial_state: dict):
+    current_state = graph.get_state(config)
+    run_input = None if current_state.values else initial_state
+    return current_state, run_input
 
 
 def export_publish_package(publish_package: dict) -> None:
@@ -96,16 +117,14 @@ def collect_domain_confirmation(interrupt_value: dict) -> dict:
     print(interrupt_value["message"])
     print(json.dumps(context, ensure_ascii=False, indent=2))
 
-    valid_domains = ("beauty", "wellness", "healthy_lifestyle")
-
     while True:
         selected_domain = (
             input(
-                f"请输入 domain {valid_domains}，直接回车使用当前值 {context['domain']}: "
+                f"请输入 domain {SUPPORTED_DOMAINS}，直接回车使用当前值 {context['domain']}: "
             ).strip()
             or context["domain"]
         )
-        if selected_domain not in valid_domains:
+        if selected_domain not in SUPPORTED_DOMAINS:
             print("无效 domain，请重新输入。")
             continue
 
@@ -169,8 +188,13 @@ def main():
     parser.add_argument(
         "--domain",
         type=str,
-        choices=("beauty", "wellness", "healthy_lifestyle"),
+        choices=SUPPORTED_DOMAINS,
         help="Explicit domain for routing",
+    )
+    parser.add_argument(
+        "--thread-id",
+        type=str,
+        help="Existing conversation thread ID to resume",
     )
     parser.add_argument("--focus_keyword", type=str,help="Focus keyword for the post")
     parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
@@ -242,11 +266,8 @@ def main():
         "data_writed": None
     }
 
-    # 如果想完全从头重新跑一次，请修改此处的 thread_id（如 "xhs_conversation_2"）
-    index = "database_20260517_01"
-    config = {"configurable": {"thread_id": "xhs_conversation_"+ str(index)}}
-
-    currentState = graph.get_state(config)
+    config = build_run_config(args.thread_id)
+    currentState, run_input = load_run_state(graph, config, initial_state)
     # print(currentState.value
     
     # 判断是否已有历史状态，如果有则传入 None 恢复执行，否则传入 initial_state 全新启动
@@ -267,10 +288,8 @@ def main():
                 export_publish_package(currentState.values["publish_package"])
                 return # 直接退出，不需要再跑 stream
             
-        run_input = None
     else:
         print("No existing state found, starting a new run...")
-        run_input = initial_state
 
     # Run the graph
     try:

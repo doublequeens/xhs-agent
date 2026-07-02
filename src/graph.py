@@ -1,3 +1,7 @@
+import atexit
+import sqlite3
+from pathlib import Path
+from threading import Lock
 from typing import Literal
 
 from langgraph.graph import StateGraph, END
@@ -6,26 +10,55 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - exercised in tests via injection
     SqliteSaver = None
 
-import sqlite3
 from src.schemas import AgentState
 import src.nodes as nodes
+
+DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
+_CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
+_CHECKPOINTER_LOCK = Lock()
+
 
 def next_node(state:AgentState)-> Literal["R1_REFLECTOR", "R2_COMPLIANCE", "HASHTAG_SEO"]:
     next_node_value = state["decision_output"].next_node
     return next_node_value
 
-def _create_checkpointer():
+
+def _create_checkpointer(checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     if SqliteSaver is None:
         raise ModuleNotFoundError(
             "langgraph.checkpoint.sqlite is required unless create_graph receives a checkpointer."
         )
-    conn = sqlite3.connect("checkpoints.sqlite", check_same_thread=False)
-    memory = SqliteSaver(conn)
-    memory.setup()
-    return memory
+    resolved_path = Path(checkpoint_path).expanduser().resolve()
+    with _CHECKPOINTER_LOCK:
+        cached = _CHECKPOINTERS.get(resolved_path)
+        if cached is not None:
+            return cached[1]
+
+        conn = sqlite3.connect(resolved_path, check_same_thread=False)
+        checkpointer = SqliteSaver(conn)
+        checkpointer.setup()
+        _CHECKPOINTERS[resolved_path] = (conn, checkpointer)
+        return checkpointer
 
 
-def create_graph(checkpointer=None):
+def close_checkpointers(checkpoint_path=None) -> None:
+    with _CHECKPOINTER_LOCK:
+        if checkpoint_path is None:
+            cached_items = list(_CHECKPOINTERS.items())
+            _CHECKPOINTERS.clear()
+        else:
+            resolved_path = Path(checkpoint_path).expanduser().resolve()
+            cached = _CHECKPOINTERS.pop(resolved_path, None)
+            cached_items = [] if cached is None else [(resolved_path, cached)]
+
+    for _path, (conn, _checkpointer) in cached_items:
+        conn.close()
+
+
+atexit.register(close_checkpointers)
+
+
+def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     """
     Builds the LangGraph workflow.
     """
@@ -80,4 +113,6 @@ def create_graph(checkpointer=None):
     builder.add_edge("content_writer", END)
     builder.set_entry_point("domain_router")
 
-    return builder.compile(checkpointer=checkpointer or _create_checkpointer())
+    if checkpointer is None:
+        checkpointer = _create_checkpointer(checkpoint_path)
+    return builder.compile(checkpointer=checkpointer)
