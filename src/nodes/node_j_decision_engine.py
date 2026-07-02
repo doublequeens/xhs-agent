@@ -1,10 +1,34 @@
 import json
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from src.domain import get_topic_metadata
 from src.models import get_model
 from src.schemas import AgentState
 from src.prompts import all_prompts
 from src.schemas import DecisionOutput
+
+
+def _get_value(payload, key):
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
+
+def _select_topic_angle_ids(source, decision_input):
+    if source in {"TITLE_RANKER", "R1_REFLECTOR"}:
+        topic_id = _get_value(decision_input, "topic_id")
+        angle_id = _get_value(decision_input, "angle_id")
+    elif source == "R2_COMPLIANCE":
+        content_snapshot = _get_value(decision_input, "content_snapshot")
+        topic_id = _get_value(content_snapshot, "topic_id")
+        angle_id = _get_value(content_snapshot, "angle_id")
+    else:
+        raise ValueError(f"Unsupported decision source: {source}")
+
+    if not topic_id or not angle_id:
+        raise ValueError(f"Missing topic_id or angle_id for source {source}")
+
+    return topic_id, angle_id
 
 def decision_engine_node(state: AgentState) -> AgentState:
     """
@@ -48,6 +72,15 @@ def decision_engine_node(state: AgentState) -> AgentState:
         decision_output_json = model.execute(messages8)
 
         try:
+            normalized_input = decision_output_json.get("normalized_input", {})
+            hashtag_input = normalized_input.get("hashtag_input") if isinstance(normalized_input, dict) else None
+            if hashtag_input is not None:
+                topic_id, angle_id = _select_topic_angle_ids(source, decision_input)
+                hashtag_input.update({
+                    "topic_id": topic_id,
+                    "angle_id": angle_id,
+                    **get_topic_metadata(state.get("trends", []), topic_id),
+                })
             decision_output = DecisionOutput(**decision_output_json)
             # 解析成功，跳出循环并返回
             return {"decision_output": decision_output}

@@ -1,8 +1,15 @@
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
+from src.domain import get_topic_metadata
 from src.models import get_model
 from src.schemas import AgentState
 from src.prompts import all_prompts
+
+
+def _get_value(payload, key):
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
 
 def assembler_node(state: AgentState) -> AgentState:
     """
@@ -31,6 +38,15 @@ def assembler_node(state: AgentState) -> AgentState:
 
     llm = get_model()
     publish_package_json = llm.execute(messages)
+    final_topic_id = _get_value(final_content, "topic_id")
+    if final_topic_id:
+        publish_package_json.update(
+            {
+                "topic_id": final_topic_id,
+                "angle_id": _get_value(final_content, "angle_id"),
+                **get_topic_metadata(state.get("trends", []), final_topic_id),
+            }
+        )
     return {
         "publish_package": publish_package_json
     }

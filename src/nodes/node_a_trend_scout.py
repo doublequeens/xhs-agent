@@ -17,11 +17,25 @@ def trend_scout_node(state: AgentState) -> AgentState:
     trends_num = state.get("trends_num", None)
     focus_keyword = state.get("focus_keyword", "")
     memory_context = state.get("memory_context", {})
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
 
     system_prompt = all_prompts["NODE_A_TREND_SCOUT"]
-    template = PromptTemplate(input_variables=["trends_num", "memory_context", "focus_keyword"], 
-                              template="这是 memory_context {memory_context}, 这是 trends_num {trends_num}, 这是 focus_keyword {focus_keyword}。按照 system 规则进行处理。")
-    human_prompt = template.format(trends_num=trends_num, memory_context=memory_context, focus_keyword=focus_keyword)
+    template = PromptTemplate(
+        input_variables=["trends_num", "memory_context", "focus_keyword", "domain_context", "content_policy"],
+        template=(
+            "这是 memory_context {memory_context}, 这是 trends_num {trends_num}, "
+            "这是 focus_keyword {focus_keyword}, 这是 domain_context {domain_context}, "
+            "这是 content_policy {content_policy}。按照 system 规则进行处理。"
+        ),
+    )
+    human_prompt = template.format(
+        trends_num=trends_num,
+        memory_context=memory_context,
+        focus_keyword=focus_keyword,
+        domain_context=domain_context,
+        content_policy=content_policy,
+    )
     print(f"Prompt for Trend Scout Node: \n{human_prompt}\n")
     
     messages = [
