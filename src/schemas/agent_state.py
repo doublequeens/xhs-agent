@@ -1,6 +1,7 @@
 from typing import TypedDict, List, Optional
 
 from memory.memory_manager import XHSMemoryManager
+from src.domain import ContentPolicy, DomainContext, DomainName
 from .topic import TopicItem
 from .angle import AngleStrategy
 from .novelty_guard import NoveltyCheckResults
@@ -19,7 +20,10 @@ from .image_qa import FinalImages
 
 class AgentState(TypedDict):
     trends_num: int
+    domain: Optional[DomainName]
     focus_keyword: Optional[str]
+    domain_context: Optional[DomainContext]
+    content_policy: Optional[ContentPolicy]
     memory_context: Optional[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]

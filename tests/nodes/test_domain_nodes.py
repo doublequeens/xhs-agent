@@ -1,0 +1,153 @@
+import importlib
+from types import SimpleNamespace
+
+import pytest
+
+from src.domain import build_content_policy, get_domain_profile
+from src.domain.router import resolve_domain
+from src.nodes.node_a_00_domain_confirmation import domain_confirmation_node
+from src.nodes.node_a_00_domain_router import domain_router_node
+
+
+def test_domain_router_node_returns_context_and_policy():
+    result = domain_router_node({"domain": None, "focus_keyword": "久坐办公怎么活动"})
+
+    assert result["domain_context"].domain == "healthy_lifestyle"
+    assert result["domain_context"].subdomain == "sedentary_habits"
+    assert result["content_policy"].require_evidence_brief is True
+    assert result["content_policy"].risk_level == result["domain_context"].risk_level
+
+
+def test_domain_confirmation_node_skips_interrupt_for_high_confidence(monkeypatch):
+    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
+
+    def fail_interrupt(_payload):
+        raise AssertionError("interrupt should not be called")
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fail_interrupt)
+
+    assert domain_confirmation_node({"domain_context": context}) == {}
+
+
+def test_domain_confirmation_node_interrupts_and_accepts_resume(monkeypatch):
+    context = resolve_domain(domain=None, focus_keyword="完全无关的关键词")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"domain": "wellness", "subdomain": "sleep"}
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fake_interrupt)
+
+    result = domain_confirmation_node({"domain_context": context})
+
+    assert captured["payload"]["kind"] == "domain_confirmation"
+    assert "message" in captured["payload"]
+    assert result["domain_context"].domain == "wellness"
+    assert result["domain_context"].subdomain == "sleep"
+    assert result["domain_context"].classification_source == "explicit"
+    assert result["domain_context"].classification_confidence == 1
+    assert result["domain_context"].profile_version == "wellness-v1"
+    assert result["content_policy"] == build_content_policy(get_domain_profile("wellness"))
+
+
+def test_domain_confirmation_node_rejects_invalid_subdomain(monkeypatch):
+    context = resolve_domain(domain=None, focus_keyword="完全无关的关键词")
+
+    monkeypatch.setattr(
+        "src.nodes.node_a_00_domain_confirmation.interrupt",
+        lambda _payload: {"domain": "wellness", "subdomain": "skincare"},
+    )
+
+    with pytest.raises(ValueError, match="Unsupported subdomain: skincare for domain wellness"):
+        domain_confirmation_node({"domain_context": context})
+
+
+def test_domain_confirmation_node_rejects_non_dict_resume(monkeypatch):
+    context = resolve_domain(domain=None, focus_keyword="完全无关的关键词")
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", lambda _payload: "bad")
+
+    with pytest.raises(ValueError, match="Domain confirmation resume payload must be a dict"):
+        domain_confirmation_node({"domain_context": context})
+
+
+def test_human_review_interrupt_payload_has_kind():
+    module = importlib.import_module("src.nodes.node_q_human_review")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"approved": True, "edited_publish_package": None, "feedback": "ok"}
+
+    original = module.interrupt
+    module.interrupt = fake_interrupt
+    try:
+        result = module.human_review_node({"publish_package": {"title": "x"}, "review_round": 0})
+    finally:
+        module.interrupt = original
+
+    assert captured["payload"]["kind"] == "publish_review"
+    assert result["review_status"] == "approved"
+
+
+def test_graph_builder_wires_domain_nodes(monkeypatch):
+    graph_module = importlib.import_module("src.graph")
+    added_nodes = []
+    added_edges = []
+    entry_points = []
+    fake_node = object()
+
+    class FakeBuilder:
+        def __init__(self, state_type):
+            self.state_type = state_type
+
+        def add_node(self, name, node):
+            added_nodes.append(name)
+
+        def add_edge(self, source, target):
+            added_edges.append((source, target))
+
+        def add_conditional_edges(self, source, fn, mapping):
+            added_edges.append((source, tuple(sorted(mapping.items()))))
+
+        def set_entry_point(self, name):
+            entry_points.append(name)
+
+        def compile(self, checkpointer=None):
+            return SimpleNamespace(checkpointer=checkpointer)
+
+    monkeypatch.setattr(graph_module, "StateGraph", FakeBuilder)
+    monkeypatch.setattr(
+        graph_module,
+        "nodes",
+        SimpleNamespace(
+            domain_router_node=fake_node,
+            domain_confirmation_node=fake_node,
+            retrieve_memory_node=fake_node,
+            trend_scout_node=fake_node,
+            angle_strategist_node=fake_node,
+            novelty_guard_node=fake_node,
+            virality_scorer_node=fake_node,
+            outline_architect_node=fake_node,
+            draft_writer_node=fake_node,
+            title_lab_node=fake_node,
+            title_ranker_node=fake_node,
+            decision_engine_node=fake_node,
+            r1_reflector_node=fake_node,
+            r2_compliance_node=fake_node,
+            hashtag_node=fake_node,
+            assembler_node=fake_node,
+            human_review_node=fake_node,
+            content_writer_node=fake_node,
+            storyboards_generator_node=fake_node,
+        ),
+    )
+
+    graph_module.create_graph(checkpointer=object())
+
+    assert "domain_router" in added_nodes
+    assert "domain_confirmation" in added_nodes
+    assert ("domain_router", "domain_confirmation") in added_edges
+    assert ("domain_confirmation", "memory_retriever") in added_edges
+    assert entry_points == ["domain_router"]

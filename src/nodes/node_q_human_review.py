@@ -17,6 +17,7 @@ def human_review_node(state: AgentState) -> AgentState:
     while True:
         review_result = interrupt(
             {
+                "kind": "publish_review",
                 "message": "请审核 assembler 的结果。只有输入 yes 才会继续到 content_writer。",
                 "publish_package": publish_package,
                 "review_round": review_round + 1,

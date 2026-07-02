@@ -4,9 +4,9 @@ import sys
 import json
 from datetime import datetime, timezone, timedelta
 
-from langgraph import graph
 from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
+from src.domain import get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.prompts import all_prompts
@@ -90,6 +90,52 @@ def collect_human_review(interrupt_value: dict) -> dict:
         print("无效输入，请输入 yes / edit / no。")
 
 
+def collect_domain_confirmation(interrupt_value: dict) -> dict:
+    context = interrupt_value["context"]
+    print("\n===== Domain Confirmation Required =====")
+    print(interrupt_value["message"])
+    print(json.dumps(context, ensure_ascii=False, indent=2))
+
+    valid_domains = ("beauty", "wellness", "healthy_lifestyle")
+
+    while True:
+        selected_domain = (
+            input(
+                f"请输入 domain {valid_domains}，直接回车使用当前值 {context['domain']}: "
+            ).strip()
+            or context["domain"]
+        )
+        if selected_domain not in valid_domains:
+            print("无效 domain，请重新输入。")
+            continue
+
+        profile = get_domain_profile(selected_domain)
+        print(f"可选 subdomain: {', '.join(profile.allowed_subdomains)}")
+        default_subdomain = (
+            context["subdomain"]
+            if selected_domain == context["domain"]
+            else profile.default_subdomain
+        )
+        selected_subdomain = (
+            input(f"请输入 subdomain，直接回车使用 {default_subdomain}: ").strip()
+            or default_subdomain
+        )
+        if selected_subdomain not in profile.allowed_subdomains:
+            print("无效 subdomain，请重新输入。")
+            continue
+
+        return {"domain": selected_domain, "subdomain": selected_subdomain}
+
+
+def collect_interrupt_response(interrupt_value: dict) -> dict:
+    kind = interrupt_value.get("kind")
+    if kind == "domain_confirmation":
+        return collect_domain_confirmation(interrupt_value)
+    if kind in {None, "publish_review"}:
+        return collect_human_review(interrupt_value)
+    raise ValueError(f"Unsupported interrupt kind: {kind}")
+
+
 def stream_graph_until_stop(graph, run_input, config):
     next_input = run_input
 
@@ -100,8 +146,10 @@ def stream_graph_until_stop(graph, run_input, config):
                 if key == "__interrupt__":
                     interrupted = True
                     interrupt_event = value[0]
-                    review_payload = collect_human_review(interrupt_event.value)
-                    next_input = Command(resume=review_payload)
+                    payload = interrupt_event.value
+                    if not isinstance(payload, dict):
+                        raise ValueError("Interrupt payload must be a dict.")
+                    next_input = Command(resume=collect_interrupt_response(payload))
                     break
 
                 print(f"Finished processing node: {key}")
@@ -118,6 +166,12 @@ def stream_graph_until_stop(graph, run_input, config):
 
 def main():
     parser = argparse.ArgumentParser(description="Xiaohongshu Agent CLI")
+    parser.add_argument(
+        "--domain",
+        type=str,
+        choices=("beauty", "wellness", "healthy_lifestyle"),
+        help="Explicit domain for routing",
+    )
     parser.add_argument("--focus_keyword", type=str,help="Focus keyword for the post")
     parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
     parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
@@ -131,6 +185,8 @@ def main():
         init_message += f" with default model: {args.provider},"
     if args.focus_keyword:
         init_message += f" with topic focus keyword: {args.focus_keyword},"
+    if args.domain:
+        init_message += f" with domain: {args.domain},"
     if args.topic_num:
         init_message += f" with topic number: {args.topic_num}."
     print(init_message)
@@ -156,6 +212,9 @@ def main():
     graph = create_graph()
 
     initial_state = {
+        "domain": args.domain,
+        "domain_context": None,
+        "content_policy": None,
         "memory_context": None,
         "trends_num": args.topic_num,
         "focus_keyword": args.focus_keyword if args.focus_keyword else "",
