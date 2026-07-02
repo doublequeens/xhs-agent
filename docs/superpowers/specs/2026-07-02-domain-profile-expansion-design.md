@@ -57,8 +57,9 @@ input
   -> domain_confirmation (only for low-confidence inference)
   -> memory_retriever
   -> trend_scout
-  -> evidence_brief (only for medium-risk or basic-science topics)
-  -> remaining content generation workflow
+  -> angle, novelty, and virality selection
+  -> evidence_brief (only for selected medium-risk or basic-science topics)
+  -> outline and remaining content generation workflow
   -> R1 and R2 review loop
   -> assembler and storyboard_generator
   -> human_review
@@ -114,7 +115,7 @@ Add these fields to `AgentState`:
 domain: Optional[str]
 domain_context: DomainContext
 content_policy: ContentPolicy
-evidence_brief: Optional[EvidenceBrief]
+evidence_briefs: dict[str, EvidenceBrief]
 ```
 
 Extend `TopicItem` with:
@@ -129,6 +130,7 @@ content_intent: Literal[
     "checklist",
     "basic_science",
 ]
+risk_level: Literal["low", "medium"]
 risk_flags: list[str]
 ```
 
@@ -229,9 +231,10 @@ Node-specific behavior:
 Low-risk experience, routine, and checklist content can continue directly to
 the outline stage.
 
-Content classified as `medium` risk or `basic_science` must pass through a
-conditional `evidence_brief` node. The node produces a compact, structured
-brief for later prompts:
+Selected content classified as `medium` risk or `basic_science` must pass
+through an `evidence_brief` node before outline generation. Because the current
+pipeline processes multiple candidates in one run, the node returns briefs
+keyed by `topic_id`. It produces compact, structured briefs for later prompts:
 
 ```python
 class EvidenceItem(BaseModel):
@@ -245,9 +248,12 @@ class EvidenceItem(BaseModel):
 class EvidenceBrief(BaseModel):
     items: list[EvidenceItem]
     unsupported_claims: list[str]
+
+
+EvidenceBriefMap = dict[str, EvidenceBrief]
 ```
 
-The evidence brief is internal context, not final prose. Unsupported claims
+Evidence briefs are internal context, not final prose. Unsupported claims
 must be removed or rewritten as non-causal, non-prescriptive statements.
 Sources should be authoritative public-health, academic, or professional
 organizations. The implementation plan must define the retrieval provider and
