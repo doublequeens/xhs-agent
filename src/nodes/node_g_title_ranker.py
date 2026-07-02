@@ -32,6 +32,11 @@ def title_ranker_node(state: AgentState) -> AgentState:
     title_rank_json = llm.execute(messages)
 
     try:
+        for draft in title_rank_json["ranking"]:
+            print(f"{draft['draft_id']}'s score is {draft['total_score']} with title: {draft['best_title_for_this_draft']}, failed reason is {draft['reason']}")
+
+        print(f"The best title among all drafts is: {title_rank_json['winner']['best_title']}, the core_pain is {title_rank_json['winner']['core_pain']}, the target_group is {title_rank_json['winner']['target_group']}, the angle is {title_rank_json['winner']['angle']}")
+        print(f" Why win: {title_rank_json['winner']['why_win']}")
         winner = TitleWinner(**title_rank_json["winner"])
     except Exception as e:
         print(f"Failed to transform to TitleWinner schema, please check the detail: {e}")

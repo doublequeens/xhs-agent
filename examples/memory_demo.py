@@ -149,7 +149,7 @@ def update_record_metrics(content_id: str, post_id: str, url: str, views: int, l
         shares=shares,
         followers_gained=followers_gained,
     )
-    print(f"Content with ID {content_id} has been updated.")
+    print(f"Content with ID {content_id} has been updated in structured memory.")
     print("Metrics:")
     print(metrics)
 
@@ -181,23 +181,26 @@ def update_record_metrics(content_id: str, post_id: str, url: str, views: int, l
                 "engagement_rate": metrics.engagement_rate,
             },
         )
+        print(f"Content with ID {content_id} has been updated in vector memory.")
+        print(f"Embedding text: {embedding_text}")
 
 if __name__ == "__main__":
     # add_column_to_db()
     # main()
-    delete_record("local_20260509_002948_7b6266") 
-    # mark_published(content_id="local_20260508_113633_561c05", 
-    #                post_id="69fd5fc5000000001b02151a", 
-    #                url="https://www.xiaohongshu.com/explore/69fd5fc5000000001b02151a?xsec_token=GBGWy7oEyOmLpNLTygwab4RNn6ZUjdSZbIeS0Q4Ywxb6Y=&xsec_source=pc_creatormng"
+    # delete_record("local_20260509_002948_7b6266") 
+    # mark_published(content_id="local_20260516_093150_8b3456", 
+    #                post_id="6a07ce7c000000000803db9b", 
+    #                url="https://www.xiaohongshu.com/explore/6a07ce7c000000000803db9b?xsec_token=YB8i8-Sk_sPABAo-KQgWbmyvHiRDF9gpA1Cxh5sW2wajI%3D&xsec_source=pc_creatormng",
+    #                published_at="2026-05-16T10:00:00+08:00"
     #                )
-    # update_record_metrics(
-    #     content_id="local_20260507_144752_f1a6f7", 
-    #     post_id="69fc3c220000000023006396", 
-    #     url="https://www.xiaohongshu.com/explore/69fc3c220000000023006396?xsec_token=YBochRtxIIVsUtnMci7Yu698wSvcHJRrOdfLT4gp3pBoo%3D&xsec_source=pc_creatormng",
-    #     views=3,
-    #     likes=1,
-    #     saves=0,
-    #     comments=0,
-    #     shares=0,
-    #     followers_gained=0,
-    # )
+    update_record_metrics(
+        content_id="local_20260516_093150_8b3456", 
+        post_id="6a07ce7c000000000803db9b", 
+        url="https://www.xiaohongshu.com/explore/6a07ce7c000000000803db9b?xsec_token=YB8i8-Sk_sPABAo-KQgWbmyvHiRDF9gpA1Cxh5sW2wajI%3D&xsec_source=pc_creatormng",
+        views=21,
+        likes=0,
+        saves=0,
+        comments=0,
+        shares=0,
+        followers_gained=0,
+    )

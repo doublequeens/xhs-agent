@@ -400,7 +400,7 @@ class XHSMemoryManager:
                 FROM contents c
                 JOIN metrics m ON c.content_id = m.content_id
                 WHERE m.performance_level = 'high'
-                ORDER BY m.engagement_rate DESC
+                ORDER BY m.views DESC
                 LIMIT ?
                 """,
                 (limit,),
@@ -431,7 +431,7 @@ class XHSMemoryManager:
                 FROM contents c
                 JOIN metrics m ON c.content_id = m.content_id
                 WHERE m.performance_level = 'low'
-                ORDER BY m.engagement_rate ASC
+                ORDER BY m.views ASC
                 LIMIT ?
                 """,
                 (limit,),
@@ -522,16 +522,24 @@ class XHSMemoryManager:
         MVP 阶段用固定阈值即可。
         后面可以改成相对分位数：top 25% = high。
         """
-        if views < 200:
-            return "unknown"
-
-        if save_rate >= 0.06 or engagement_rate >= 0.12:
-            return "high"
-
-        if save_rate <= 0.015 and engagement_rate <= 0.04:
+        if views < 10:
             return "low"
+        if views >= 10 or save_rate >= 0.02 or engagement_rate >= 0.04:
+            return "high"
+        
+        # The flowing code is not suitable for current level of my redbook account, so I just set a simple threshold based on views. 
+        # I will implement the more complex logic later when I have more data.
 
-        return "medium"
+        # if views < 200:
+        #     return "unknown"
+
+        # if save_rate >= 0.06 or engagement_rate >= 0.12:
+        #     return "high"
+
+        # if save_rate <= 0.015 and engagement_rate <= 0.04:
+        #     return "low"
+
+        # return "medium"
 
     def _content_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         data = dict(row)

@@ -119,7 +119,7 @@ def stream_graph_until_stop(graph, run_input, config):
 def main():
     parser = argparse.ArgumentParser(description="Xiaohongshu Agent CLI")
     parser.add_argument("--focus_keyword", type=str,help="Focus keyword for the post")
-    parser.add_argument("--topic_num", type=int, required=True, help="Topic of the post")
+    parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
     parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
     # parser.add_argument("--requirements", type=str, default="", help="Additional requirements")
     # parser.add_argument("--mode", type=str, default="manual", choices=["auto", "manual"], help="Publishing mode")
@@ -161,6 +161,7 @@ def main():
         "focus_keyword": args.focus_keyword if args.focus_keyword else "",
         "trends": [],
         "angles": [],
+        "novelty_check_results": None,
         "scores": [],
         "outlines": [],
         "drafts": [],
@@ -183,11 +184,11 @@ def main():
     }
 
     # 如果想完全从头重新跑一次，请修改此处的 thread_id（如 "xhs_conversation_2"）
-    index = "database_20260509_01"
+    index = "database_20260517_01"
     config = {"configurable": {"thread_id": "xhs_conversation_"+ str(index)}}
 
     currentState = graph.get_state(config)
-    # print(currentState.values)
+    # print(currentState.value
     
     # 判断是否已有历史状态，如果有则传入 None 恢复执行，否则传入 initial_state 全新启动
     if currentState.values:

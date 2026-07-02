@@ -7,7 +7,7 @@ class ScoreBreakdown(BaseModel):
     comment_potential: int
     execution_barrier: int
     compliance_safety: int
-    memory_fit_score: int
+    memory_fit_score: float
     
 class ScoreResult(BaseModel):
     total_score: float

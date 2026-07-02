@@ -1,5 +1,6 @@
+import json
 from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from src.models import get_model
 from src.schemas import AgentState
 from src.prompts import all_prompts
@@ -40,15 +41,22 @@ def decision_engine_node(state: AgentState) -> AgentState:
     ]
 
     model = get_model()
-    decision_output_json = model.execute(messages8)
 
-    try:
-        decision_output = DecisionOutput(**decision_output_json)
-    except Exception as e:
-        print(f"Failed to transform to DecisionOutput schema, please check the detail: {e}")
-        decision_output = None
-        raise RuntimeError(f"Process terminated due to error: {e}")
+    # 引入自修复重试机制 (Self-Correction Loop)
+    max_retries = 3
+    for attempt in range(max_retries):
+        decision_output_json = model.execute(messages8)
 
-    return {
-        "decision_output": decision_output
-    }
+        try:
+            decision_output = DecisionOutput(**decision_output_json)
+            # 解析成功，跳出循环并返回
+            return {"decision_output": decision_output}
+        except Exception as e:
+            print(f"[Attempt {attempt + 1}/{max_retries}] 格式校验失败，触发大模型自修复机制: {e}")
+            if attempt == max_retries - 1:
+                # 如果最后一次重试仍然失败，才抛出异常
+                raise RuntimeError(f"Process terminated due to error after {max_retries} attempts: {e}")
+            
+            # 将错误的输出和报错信息喂给大模型，让它自己修正
+            messages8.append(AIMessage(content=json.dumps(decision_output_json, ensure_ascii=False)))
+            messages8.append(HumanMessage(content=f"你的上一次输出触发了以下数据校验错误:\n{e}\n请务必严格按照要求的 JSON 结构重新输出，不要漏掉必填字段，也不要改变字段层级。"))
