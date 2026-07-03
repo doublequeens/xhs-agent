@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
+from memory.migrations import migrate_contents_domain_fields
 from memory.models import ContentRecord, MetricsRecord, MemoryContext
 
 def utc_now_iso() -> str:
@@ -26,26 +27,75 @@ def json_loads(value: Optional[str], default: Any) -> Any:
         return default
 
 
+_CONTENT_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
+    ("idx_contents_created_at", ("created_at",), "CREATE INDEX IF NOT EXISTS idx_contents_created_at ON contents(created_at)"),
+    ("idx_contents_published_at", ("published_at",), "CREATE INDEX IF NOT EXISTS idx_contents_published_at ON contents(published_at)"),
+    ("idx_contents_topic", ("topic",), "CREATE INDEX IF NOT EXISTS idx_contents_topic ON contents(topic)"),
+    ("idx_contents_angle", ("angle",), "CREATE INDEX IF NOT EXISTS idx_contents_angle ON contents(angle)"),
+    ("idx_contents_domain_subdomain", ("domain", "subdomain"), "CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain ON contents(domain, subdomain)"),
+]
+
+_METRICS_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
+    ("idx_metrics_performance_level", ("performance_level",), "CREATE INDEX IF NOT EXISTS idx_metrics_performance_level ON metrics(performance_level)"),
+    ("idx_metrics_engagement_rate", ("engagement_rate",), "CREATE INDEX IF NOT EXISTS idx_metrics_engagement_rate ON metrics(engagement_rate)"),
+]
+
+
 class XHSMemoryManager:
-    _shared_conn = None  # 类属性：在所有的实例化对象之间共享同一个数据库连接
+    connections: dict[Path, sqlite3.Connection] = {}
 
     def __init__(self, db_path: str | Path = "data/xhs_memory.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        # 检查类级别的连接是否已经建立
-        if XHSMemoryManager._shared_conn is None:
-            XHSMemoryManager._shared_conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            XHSMemoryManager._shared_conn.row_factory = sqlite3.Row
-            XHSMemoryManager._shared_conn.execute("PRAGMA foreign_keys = ON;")
-        return XHSMemoryManager._shared_conn
+        key = self.db_path.resolve()
+        connection = self.connections.get(key)
+        if connection is None:
+            connection = sqlite3.connect(key, check_same_thread=False)
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON;")
+            self.connections[key] = connection
+        return connection
+
+    def close(self) -> None:
+        key = self.db_path.resolve()
+        connection = self.connections.pop(key, None)
+        if connection is not None:
+            connection.close()
+
+    @classmethod
+    def close_all(cls) -> None:
+        for key, connection in list(cls.connections.items()):
+            connection.close()
+            cls.connections.pop(key, None)
 
     def init_db(self, schema_path: str | Path = "memory/schema.sql") -> None:
         schema_path = Path(schema_path)
         with self.connect() as conn:
-            conn.executescript(schema_path.read_text(encoding="utf-8"))
-            conn.commit()
+            for statement in schema_path.read_text(encoding="utf-8").split(";"):
+                statement = statement.strip()
+                if not statement:
+                    continue
+                upper_statement = statement.upper()
+                if upper_statement.startswith("PRAGMA ") or upper_statement.startswith("CREATE TABLE"):
+                    conn.execute(statement)
+            migrate_contents_domain_fields(conn)
+            self._create_required_indexes(conn)
+
+    def _create_required_indexes(self, connection: sqlite3.Connection) -> None:
+        existing_columns = self._table_columns(connection)
+        for _, required_columns, sql in _CONTENT_INDEXES:
+            if all(column in existing_columns for column in required_columns):
+                connection.execute(sql)
+
+        metrics_columns = self._table_columns(connection, table_name="metrics")
+        for _, required_columns, sql in _METRICS_INDEXES:
+            if all(column in metrics_columns for column in required_columns):
+                connection.execute(sql)
+
+    def _table_columns(self, connection: sqlite3.Connection, table_name: str = "contents") -> set[str]:
+        return {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
 
     def log_event(
         self,
@@ -94,6 +144,11 @@ class XHSMemoryManager:
                     topic,
                     angle_id,
                     angle,
+                    domain,
+                    subdomain,
+                    content_intent,
+                    profile_version,
+                    risk_level,
                     target_group,
                     core_pain,
                     title,
@@ -110,7 +165,7 @@ class XHSMemoryManager:
                     embedding_text,
                     metadata_json
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.content_id,
@@ -125,6 +180,11 @@ class XHSMemoryManager:
                     record.topic,
                     record.angle_id,
                     record.angle,
+                    record.domain,
+                    record.subdomain,
+                    record.content_intent,
+                    record.profile_version,
+                    record.risk_level,
                     record.target_group,
                     record.core_pain,
                     record.title,
@@ -182,6 +242,11 @@ class XHSMemoryManager:
                 "created_at": record.created_at,
                 "published_at": record.published_at or "",
                 "performance_level": "unknown",
+                "domain": record.domain or "",
+                "subdomain": record.subdomain or "",
+                "content_intent": record.content_intent or "",
+                "profile_version": record.profile_version or "",
+                "risk_level": record.risk_level or "",
             }
         )
 
@@ -482,6 +547,7 @@ class XHSMemoryManager:
 
         data = dict(row)
         data["hashtags"] = json_loads(data.pop("hashtags_json", None), [])
+        data["storyboards"] = json_loads(data.pop("storyboards", None), [])
         data["image_paths"] = json_loads(data.pop("image_paths_json", None), [])
         data["strategy_tags"] = json_loads(data.pop("strategy_tags_json", None), [])
         data["metadata"] = json_loads(data.pop("metadata_json", None), {})

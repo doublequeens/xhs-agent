@@ -22,6 +22,11 @@ class ContentRecord:
     topic_id: Optional[str] = None
     angle_id: Optional[str] = None
     angle: Optional[str] = None
+    domain: Optional[str] = None
+    subdomain: Optional[str] = None
+    content_intent: Optional[str] = None
+    profile_version: Optional[str] = None
+    risk_level: Optional[str] = None
 
     target_group: Optional[str] = None
     core_pain: Optional[str] = None

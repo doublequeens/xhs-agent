@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS contents (
     angle_id TEXT,
     angle TEXT,
 
+    domain TEXT,
+    subdomain TEXT,
+    content_intent TEXT,
+    profile_version TEXT,
+    risk_level TEXT,
+
     target_group TEXT,
     core_pain TEXT,
 
@@ -89,6 +95,9 @@ ON contents(topic);
 
 CREATE INDEX IF NOT EXISTS idx_contents_angle
 ON contents(angle);
+
+CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain
+ON contents(domain, subdomain);
 
 CREATE INDEX IF NOT EXISTS idx_metrics_performance_level
 ON metrics(performance_level);
