@@ -11,6 +11,8 @@ from typing import Any, Optional
 from memory.migrations import migrate_contents_domain_fields
 from memory.models import ContentRecord, MetricsRecord, MemoryContext
 
+VECTOR_DOMAIN_BACKFILL_EVENT = "vector_domain_backfill_v1"
+
 def utc_now_iso() -> str:
     return datetime.now(timezone(timedelta(hours=8))).isoformat()
 
@@ -59,6 +61,11 @@ _CONTENT_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
     ("idx_contents_topic", ("topic",), "CREATE INDEX IF NOT EXISTS idx_contents_topic ON contents(topic)"),
     ("idx_contents_angle", ("angle",), "CREATE INDEX IF NOT EXISTS idx_contents_angle ON contents(angle)"),
     ("idx_contents_domain_subdomain", ("domain", "subdomain"), "CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain ON contents(domain, subdomain)"),
+    (
+        "idx_contents_domain_subdomain_created_at",
+        ("domain", "subdomain", "created_at"),
+        "CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain_created_at ON contents(domain, subdomain, created_at DESC)",
+    ),
 ]
 
 _METRICS_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
@@ -251,45 +258,161 @@ class XHSMemoryManager:
                 },
             )
     
-    def save_embedding_content(self, record: ContentRecord) -> None:
-        from memory.embedding import build_embedding_text
-        from memory.vector_memory import XHSVectorMemory
+    def save_embedding_content(
+        self,
+        record: ContentRecord,
+        *,
+        vector_memory=None,
+        build_embedding_text_fn=None,
+    ) -> None:
+        vector_memory = vector_memory or self._create_vector_memory()
+        build_embedding_text_fn = build_embedding_text_fn or self._build_embedding_text
 
-        vector_memory = XHSVectorMemory("data/chroma")
-        embedding_text = build_embedding_text(
+        embedding_text = record.embedding_text or build_embedding_text_fn(
             topic=record.topic,
             angle=record.angle,
             title=record.title,
             target_group=record.target_group,
             core_pain=record.core_pain,
-            hashtags=record.hashtags        
-            )
+            hashtags=record.hashtags,
+        )
 
-        vector_memory.upsert_content(
-            content_id=record.content_id,
-            embedding_text=embedding_text,
-            metadata={
+        metadata = self._build_vector_metadata(
+            {
                 "content_id": record.content_id,
                 "status": record.status,
                 "topic": record.topic,
-                "angle": record.angle or "",
-                "title": record.title or "",
-                "target_group": record.target_group or "",
+                "angle": record.angle,
+                "title": record.title,
+                "target_group": record.target_group,
                 "created_at": record.created_at,
-                "published_at": record.published_at or "",
-                "performance_level": "unknown",
-                "domain": record.domain or "",
-                "subdomain": record.subdomain or "",
-                "content_intent": record.content_intent or "",
-                "profile_version": record.profile_version or "",
-                "risk_level": record.risk_level or "",
+                "published_at": record.published_at,
+                "domain": record.domain,
+                "subdomain": record.subdomain,
+                "content_intent": record.content_intent,
+                "profile_version": record.profile_version,
+                "risk_level": record.risk_level,
             }
         )
+        vector_memory.upsert_content(
+            content_id=record.content_id,
+            embedding_text=embedding_text,
+            metadata=metadata,
+        )
+
+    def sync_content_to_vector_memory(
+        self,
+        content_id: str,
+        *,
+        vector_memory=None,
+        build_embedding_text_fn=None,
+    ) -> None:
+        vector_memory = vector_memory or self._create_vector_memory()
+        build_embedding_text_fn = build_embedding_text_fn or self._build_embedding_text
+
+        row = self._get_vector_sync_row(content_id)
+        if row is None:
+            raise ValueError(f"No content found with content_id: {content_id}")
+
+        self._upsert_vector_row(
+            row,
+            vector_memory=vector_memory,
+            build_embedding_text_fn=build_embedding_text_fn,
+        )
+
+    def ensure_vector_scope_backfill(
+        self,
+        *,
+        vector_memory=None,
+        build_embedding_text_fn=None,
+    ) -> bool:
+        build_embedding_text_fn = build_embedding_text_fn or self._build_embedding_text
+        with self.connect() as conn:
+            marker = conn.execute(
+                """
+                SELECT 1
+                FROM memory_events
+                WHERE event_type = ?
+                LIMIT 1
+                """,
+                (VECTOR_DOMAIN_BACKFILL_EVENT,),
+            ).fetchone()
+            if marker is not None:
+                return False
+
+            rows = [
+                dict(row)
+                for row in conn.execute(
+                    """
+                    SELECT
+                        c.content_id,
+                        c.status,
+                        c.topic,
+                        c.angle,
+                        c.title,
+                        c.target_group,
+                        c.core_pain,
+                        c.created_at,
+                        c.published_at,
+                        c.hashtags_json,
+                        c.embedding_text,
+                        c.domain,
+                        c.subdomain,
+                        c.content_intent,
+                        c.profile_version,
+                        c.risk_level,
+                        m.views,
+                        m.likes,
+                        m.saves,
+                        m.comments,
+                        m.shares,
+                        m.followers_gained,
+                        m.save_rate,
+                        m.engagement_rate,
+                        m.performance_level
+                    FROM contents c
+                    LEFT JOIN metrics m ON c.content_id = m.content_id
+                    ORDER BY c.created_at ASC, c.content_id ASC
+                    """
+                ).fetchall()
+            ]
+
+        if vector_memory is None and rows:
+            vector_memory = self._create_vector_memory()
+
+        if rows:
+            for row in rows:
+                self._upsert_vector_row(
+                    row,
+                    vector_memory=vector_memory,
+                    build_embedding_text_fn=build_embedding_text_fn,
+                )
+
+        with self.connect() as conn:
+            marker = conn.execute(
+                """
+                SELECT 1
+                FROM memory_events
+                WHERE event_type = ?
+                LIMIT 1
+                """,
+                (VECTOR_DOMAIN_BACKFILL_EVENT,),
+            ).fetchone()
+            if marker is not None:
+                return False
+
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                None,
+                VECTOR_DOMAIN_BACKFILL_EVENT,
+                utc_now_iso(),
+                {"rows_backfilled": len(rows)},
+            )
+        return True
 
     def get_embedding_content_by_id(self, content_id: str) -> bool:
-        from memory.vector_memory import XHSVectorMemory
-
-        vector_memory = XHSVectorMemory("data/chroma")
+        vector_memory = self._create_vector_memory()
         result = vector_memory.collection.get(ids=[content_id])
         
         return len(result["ids"]) > 0
@@ -813,6 +936,109 @@ class XHSMemoryManager:
                 }
             )
         return patterns
+
+    def _build_embedding_text(self, **kwargs) -> str:
+        from memory.embedding import build_embedding_text
+
+        return build_embedding_text(**kwargs)
+
+    def _create_vector_memory(self):
+        from memory.vector_memory import XHSVectorMemory
+
+        return XHSVectorMemory("data/chroma")
+
+    def _get_vector_sync_row(self, content_id: str) -> Optional[dict[str, Any]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    c.content_id,
+                    c.status,
+                    c.topic,
+                    c.angle,
+                    c.title,
+                    c.target_group,
+                    c.core_pain,
+                    c.created_at,
+                    c.published_at,
+                    c.hashtags_json,
+                    c.embedding_text,
+                    c.domain,
+                    c.subdomain,
+                    c.content_intent,
+                    c.profile_version,
+                    c.risk_level,
+                    m.views,
+                    m.likes,
+                    m.saves,
+                    m.comments,
+                    m.shares,
+                    m.followers_gained,
+                    m.save_rate,
+                    m.engagement_rate,
+                    m.performance_level
+                FROM contents c
+                LEFT JOIN metrics m ON c.content_id = m.content_id
+                WHERE c.content_id = ?
+                """,
+                (content_id,),
+            ).fetchone()
+
+        return dict(row) if row is not None else None
+
+    def _upsert_vector_row(
+        self,
+        row: dict[str, Any],
+        *,
+        vector_memory,
+        build_embedding_text_fn,
+    ) -> None:
+        hashtags = json_loads(row.get("hashtags_json"), [])
+        embedding_text = row.get("embedding_text") or build_embedding_text_fn(
+            topic=row.get("topic"),
+            angle=row.get("angle"),
+            title=row.get("title"),
+            target_group=row.get("target_group"),
+            core_pain=row.get("core_pain"),
+            hashtags=hashtags,
+        )
+        vector_memory.upsert_content(
+            content_id=row["content_id"],
+            embedding_text=embedding_text,
+            metadata=self._build_vector_metadata(row),
+        )
+
+    def _build_vector_metadata(self, row: dict[str, Any]) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "content_id": row.get("content_id", ""),
+            "status": row.get("status", ""),
+            "topic": row.get("topic", ""),
+            "angle": row.get("angle") or "",
+            "title": row.get("title") or "",
+            "target_group": row.get("target_group") or "",
+            "created_at": row.get("created_at", ""),
+            "published_at": row.get("published_at") or "",
+            "performance_level": row.get("performance_level") or "unknown",
+            "domain": row.get("domain") or "",
+            "subdomain": row.get("subdomain") or "",
+            "content_intent": row.get("content_intent") or "",
+            "profile_version": row.get("profile_version") or "",
+            "risk_level": row.get("risk_level") or "",
+        }
+        for field_name in (
+            "views",
+            "likes",
+            "saves",
+            "comments",
+            "shares",
+            "followers_gained",
+            "save_rate",
+            "engagement_rate",
+        ):
+            value = row.get(field_name)
+            if value is not None:
+                metadata[field_name] = value
+        return metadata
 
     def _unique_non_empty(self, values: list[Optional[str]]) -> list[str]:
         seen = set()

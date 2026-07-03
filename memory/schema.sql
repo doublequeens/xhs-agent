@@ -99,6 +99,9 @@ ON contents(angle);
 CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain
 ON contents(domain, subdomain);
 
+CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain_created_at
+ON contents(domain, subdomain, created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_metrics_performance_level
 ON metrics(performance_level);
 

@@ -10,7 +10,6 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from memory.embedding import build_embedding_text
 from memory.vector_memory import XHSVectorMemory
 from memory.memory_manager import XHSMemoryManager, utc_now_iso
 from memory.models import ContentRecord
@@ -78,13 +77,24 @@ def main() -> None:
         strategy_tags=[],
         compliance_status="fully_compliant",
         embedding_text="防晒避坑 防晒怎么涂 日常上班族 防晒搓泥闷痘 别催！涂完防晒等这步，不然真白涂",
+        domain="beauty",
+        subdomain="skincare",
+        content_intent="how_to",
+        profile_version="beauty-v1",
+        risk_level="low",
         metadata={
             "agent_version": "0.1.0",
             "workflow": "memory_demo",
+            "domain": "beauty",
+            "subdomain": "skincare",
+            "content_intent": "how_to",
+            "profile_version": "beauty-v1",
+            "risk_level": "low",
         },
     )
 
     memory.save_generated_content(record)
+    memory.save_embedding_content(record)
 
     memory.mark_published(
         content_id=content_id,
@@ -105,7 +115,9 @@ def main() -> None:
     print("Metrics:")
     print(metrics)
 
-    context = memory.build_memory_context()
+    memory.sync_content_to_vector_memory(content_id)
+
+    context = memory.build_memory_context(domain="beauty", subdomain="skincare")
     prompt_payload = memory_context_to_prompt_payload(context)
 
     print("\nMemory Context for Prompt:")
@@ -138,7 +150,6 @@ def update_record_metrics(content_id: str, post_id: str, url: str, views: int, l
     memory = XHSMemoryManager("data/xhs_memory.db")
     memory.init_db("memory/schema.sql")
     # memory.update_content_field(content_id, "title", "新的标题：别催！涂完防晒等这步，不然真白涂")
-    vector_memory = XHSVectorMemory("data/chroma")
     
     metrics = memory.update_metrics(
         content_id=content_id,
@@ -153,36 +164,8 @@ def update_record_metrics(content_id: str, post_id: str, url: str, views: int, l
     print("Metrics:")
     print(metrics)
 
-    content = memory.get_content_by_id(content_id)
-
-    if content:
-        embedding_text = content["embedding_text"] or build_embedding_text(
-            topic=content["topic"],
-            angle=content.get("angle"),
-            title=content.get("title"),
-            target_group=content.get("target_group"),
-            core_pain=content.get("core_pain"),
-            hashtags=content.get("hashtags", []),
-        )
-
-        vector_memory.upsert_content(
-            content_id=content_id,
-            embedding_text=embedding_text,
-            metadata={
-                "content_id": content_id,
-                "status": content.get("status", ""),
-                "topic": content.get("topic", ""),
-                "angle": content.get("angle", ""),
-                "title": content.get("title", ""),
-                "created_at": content.get("created_at", ""),
-                "published_at": content.get("published_at", ""),
-                "performance_level": metrics.performance_level,
-                "save_rate": metrics.save_rate,
-                "engagement_rate": metrics.engagement_rate,
-            },
-        )
-        print(f"Content with ID {content_id} has been updated in vector memory.")
-        print(f"Embedding text: {embedding_text}")
+    memory.sync_content_to_vector_memory(content_id)
+    print(f"Content with ID {content_id} has been updated in vector memory.")
 
 if __name__ == "__main__":
     # add_column_to_db()

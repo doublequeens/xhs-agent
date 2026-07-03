@@ -233,7 +233,7 @@ def test_retrieve_memory_node_requires_domain_context():
 
 
 def test_retrieve_memory_node_passes_domain_scope_to_memory_manager(monkeypatch):
-    captured = {}
+    captured = {"call_order": []}
 
     class FakeManager:
         def __init__(self, db_path):
@@ -241,8 +241,13 @@ def test_retrieve_memory_node_passes_domain_scope_to_memory_manager(monkeypatch)
 
         def init_db(self, schema_path):
             captured["schema_path"] = schema_path
+            captured["call_order"].append("init_db")
+
+        def ensure_vector_scope_backfill(self):
+            captured["call_order"].append("ensure_vector_scope_backfill")
 
         def build_memory_context(self, *, domain, subdomain, recent_days):
+            captured["call_order"].append("build_memory_context")
             captured["build_args"] = {
                 "domain": domain,
                 "subdomain": subdomain,
@@ -269,6 +274,7 @@ def test_retrieve_memory_node_passes_domain_scope_to_memory_manager(monkeypatch)
             "subdomain": "sleep",
             "recent_days": 14,
         },
+        "call_order": ["init_db", "ensure_vector_scope_backfill", "build_memory_context"],
     }
     assert result["memory_context"]["same_subdomain_recent"] == [{"content_id": "wellness-sleep-1"}]
 

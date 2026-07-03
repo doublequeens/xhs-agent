@@ -28,6 +28,11 @@ def main() -> None:
             "title": "省钱了！这种防晒可能不用额外卸妆",
             "created_at": "2026-01-01",
             "performance_level": "high",
+            "domain": "beauty",
+            "subdomain": "skincare",
+            "content_intent": "how_to",
+            "profile_version": "beauty-v1",
+            "risk_level": "low",
         },
     )
 
@@ -38,6 +43,8 @@ def main() -> None:
 
     result = guard.check_topic_angle(
         topic="只涂防晒要不要卸妆",
+        domain="beauty",
+        subdomain="skincare",
         angle="用水测试防晒是否防水",
         target_group="通勤护肤新手",
         core_pain="怕闷痘又怕过度清洁",

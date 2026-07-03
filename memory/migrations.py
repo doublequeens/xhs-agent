@@ -49,6 +49,13 @@ def migrate_contents_domain_fields(connection: sqlite3.Connection) -> None:
             ON contents(domain, subdomain)
             """
         )
+        if "created_at" in _existing_columns(connection):
+            connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain_created_at
+                ON contents(domain, subdomain, created_at DESC)
+                """
+            )
     except Exception:
         connection.execute("ROLLBACK TO migrate_contents_domain_fields")
         connection.execute("RELEASE migrate_contents_domain_fields")

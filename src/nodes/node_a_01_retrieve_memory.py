@@ -46,6 +46,7 @@ def retrieve_memory_node(state: AgentState) -> dict:
     domain, subdomain = _get_required_domain_scope(state.get("domain_context"))
     database = XHSMemoryManager("data/xhs_memory.db")
     database.init_db("memory/schema.sql")
+    database.ensure_vector_scope_backfill()
 
     memory_context = database.build_memory_context(
         domain=domain,

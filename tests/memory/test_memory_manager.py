@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import runpy
 import threading
 
 import pytest
@@ -14,6 +16,114 @@ from memory.models import ContentRecord
 
 ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = ROOT / "memory" / "schema.sql"
+
+
+class FakeScopedVectorMemory:
+    def __init__(self, fail_on_call: int | None = None):
+        self.fail_on_call = fail_on_call
+        self.upsert_calls: list[dict] = []
+        self.records: dict[str, dict] = {}
+
+    def upsert_content(self, *, content_id: str, embedding_text: str, metadata: dict) -> None:
+        self.upsert_calls.append(
+            {
+                "content_id": content_id,
+                "embedding_text": embedding_text,
+                "metadata": metadata,
+            }
+        )
+        if self.fail_on_call is not None and len(self.upsert_calls) == self.fail_on_call:
+            raise RuntimeError("vector boom")
+        self.records[content_id] = {
+            "content_id": content_id,
+            "document": embedding_text,
+            "metadata": metadata,
+            "similarity": 0.99,
+        }
+
+    def query_similar(
+        self,
+        *,
+        query_text: str,
+        domain: str,
+        subdomain: str,
+        allow_global: bool = False,
+        **_kwargs,
+    ) -> list[dict]:
+        assert allow_global is False
+        return [
+            record
+            for record in self.records.values()
+            if record["metadata"].get("domain") == domain
+            and record["metadata"].get("subdomain") == subdomain
+        ]
+
+
+def _seed_legacy_structured_row(
+    db_path: Path,
+    *,
+    content_id: str,
+    topic: str,
+    created_at: str,
+    angle: str = "旧角度",
+    title: str = "旧标题",
+    embedding_text: str | None = None,
+) -> None:
+    connection = sqlite3.connect(db_path)
+    connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    connection.execute(
+        """
+        INSERT INTO contents(
+            content_id, status, created_at, topic, angle, title,
+            target_group, core_pain, hashtags_json, embedding_text,
+            domain, subdomain, content_intent, profile_version, risk_level
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            content_id,
+            "published",
+            created_at,
+            topic,
+            angle,
+            title,
+            "上班族",
+            "旧痛点",
+            json.dumps(["#旧标签"], ensure_ascii=False),
+            embedding_text,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
+    )
+    connection.execute(
+        """
+        INSERT INTO metrics(
+            content_id, views, likes, saves, comments, shares, followers_gained,
+            like_rate, save_rate, comment_rate, share_rate, engagement_rate,
+            performance_level, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            content_id,
+            100,
+            10,
+            5,
+            2,
+            1,
+            3,
+            0.1,
+            0.05,
+            0.02,
+            0.01,
+            0.18,
+            "high",
+            created_at,
+        ),
+    )
+    connection.commit()
+    connection.close()
 
 
 def test_connections_are_keyed_by_resolved_path_and_close_methods_are_isolated(tmp_path):
@@ -423,3 +533,141 @@ def test_save_and_delete_create_exactly_one_event_each(tmp_path):
         ("content_deleted", 1),
         ("content_saved", 2),
     ]
+
+
+def test_backfill_vector_scope_upserts_legacy_rows_marks_once_and_supports_scoped_query(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    _seed_legacy_structured_row(
+        db_path,
+        content_id="legacy-1",
+        topic="防晒",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager = XHSMemoryManager(db_path)
+    manager.init_db(SCHEMA_PATH)
+    vector_memory = FakeScopedVectorMemory()
+
+    did_backfill = manager.ensure_vector_scope_backfill(
+        vector_memory=vector_memory,
+        build_embedding_text_fn=lambda **kwargs: f"embed::{kwargs['topic']}",
+    )
+
+    assert did_backfill is True
+    assert vector_memory.upsert_calls == [
+        {
+            "content_id": "legacy-1",
+            "embedding_text": "embed::防晒",
+            "metadata": {
+                "content_id": "legacy-1",
+                "status": "published",
+                "topic": "防晒",
+                "angle": "旧角度",
+                "title": "旧标题",
+                "target_group": "上班族",
+                "created_at": "2026-07-03T10:00:00+08:00",
+                "published_at": "",
+                "performance_level": "high",
+                "domain": "beauty",
+                "subdomain": "skincare",
+                "content_intent": "",
+                "profile_version": "legacy-v1",
+                "risk_level": "low",
+                "views": 100,
+                "likes": 10,
+                "saves": 5,
+                "comments": 2,
+                "shares": 1,
+                "followers_gained": 3,
+                "save_rate": 0.05,
+                "engagement_rate": 0.18,
+            },
+        }
+    ]
+    assert vector_memory.query_similar(
+        query_text="anything",
+        domain="beauty",
+        subdomain="skincare",
+    )[0]["content_id"] == "legacy-1"
+
+    event_rows = manager.connect().execute(
+        """
+        SELECT event_type, content_id
+        FROM memory_events
+        WHERE event_type = 'vector_domain_backfill_v1'
+        """
+    ).fetchall()
+    assert [(row[0], row[1]) for row in event_rows] == [("vector_domain_backfill_v1", None)]
+
+    did_backfill_again = manager.ensure_vector_scope_backfill(
+        vector_memory=vector_memory,
+        build_embedding_text_fn=lambda **kwargs: f"embed::{kwargs['topic']}",
+    )
+    assert did_backfill_again is False
+    assert len(vector_memory.upsert_calls) == 1
+
+
+def test_backfill_vector_scope_retries_when_partial_upserts_fail(tmp_path):
+    db_path = tmp_path / "retry.db"
+    _seed_legacy_structured_row(
+        db_path,
+        content_id="legacy-1",
+        topic="防晒",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    _seed_legacy_structured_row(
+        db_path,
+        content_id="legacy-2",
+        topic="修护",
+        created_at="2026-07-03T11:00:00+08:00",
+    )
+    manager = XHSMemoryManager(db_path)
+    manager.init_db(SCHEMA_PATH)
+
+    failing_vector = FakeScopedVectorMemory(fail_on_call=2)
+    with pytest.raises(RuntimeError, match="vector boom"):
+        manager.ensure_vector_scope_backfill(
+            vector_memory=failing_vector,
+            build_embedding_text_fn=lambda **kwargs: f"embed::{kwargs['topic']}",
+        )
+
+    marker = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE event_type = 'vector_domain_backfill_v1'
+        """
+    ).fetchone()
+    assert marker[0] == 0
+
+    healthy_vector = FakeScopedVectorMemory()
+    did_backfill = manager.ensure_vector_scope_backfill(
+        vector_memory=healthy_vector,
+        build_embedding_text_fn=lambda **kwargs: f"embed::{kwargs['topic']}",
+    )
+    assert did_backfill is True
+    assert [call["content_id"] for call in healthy_vector.upsert_calls] == ["legacy-1", "legacy-2"]
+
+
+def test_backfill_vector_scope_marks_complete_for_empty_database(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "empty.db")
+    manager.init_db(SCHEMA_PATH)
+
+    did_backfill = manager.ensure_vector_scope_backfill(
+        vector_memory=FakeScopedVectorMemory(),
+        build_embedding_text_fn=lambda **kwargs: "unused",
+    )
+
+    assert did_backfill is True
+    marker = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE event_type = 'vector_domain_backfill_v1'
+        """
+    ).fetchone()
+    assert marker[0] == 1
+
+
+def test_examples_import_without_running_main():
+    runpy.run_path(str(ROOT / "examples" / "memory_demo.py"), run_name="__test__")
+    runpy.run_path(str(ROOT / "examples" / "vector_memory_demo.py"), run_name="__test__")
