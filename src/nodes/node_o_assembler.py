@@ -2,7 +2,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 
 
 def _get_value(payload, key):
@@ -22,13 +22,39 @@ def assembler_node(state: AgentState) -> AgentState:
     final_content = state.get("final_content", [])
     hashtag_output = state.get("hashtags", [])
     image_final_choices = state.get("final_images", [])
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
+    evidence_briefs = state.get("evidence_briefs", [])
 
-    system_prompt = all_prompts["NODE_O_ASSEMBLER"]
+    system_prompt = compose_prompt_for_state("assembler", state)
     template = PromptTemplate(
-        input_variables=["final_content", "hashtag_output", "image_final_choices"],
-        template="这是final_content：{final_content}, 这是hashtag_output：{hashtag_output}, 这是image_final_choices：{image_final_choices}, 请按 system 规则进行处理。"
+        input_variables=[
+            "final_content",
+            "hashtag_output",
+            "image_final_choices",
+            "domain_context",
+            "content_policy",
+            "evidence_briefs",
+        ],
+        template=(
+            "输入参数如下：\n"
+            "- final_content:\n{final_content}\n"
+            "- hashtag_output:\n{hashtag_output}\n"
+            "- image_final_choices:\n{image_final_choices}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "- evidence_briefs:\n{evidence_briefs}\n"
+            "请按 system 规则进行处理。"
+        ),
     )
-    human_prompt = template.format(final_content=final_content, hashtag_output=hashtag_output, image_final_choices=image_final_choices)
+    human_prompt = template.format(
+        final_content=serialize_prompt_value(final_content),
+        hashtag_output=serialize_prompt_value(hashtag_output),
+        image_final_choices=serialize_prompt_value(image_final_choices),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+        evidence_briefs=serialize_prompt_value(evidence_briefs),
+    )
 
     messages = [
         SystemMessage(content=system_prompt),

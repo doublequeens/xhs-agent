@@ -3,7 +3,7 @@ from langchain_core.prompts import PromptTemplate
 
 from src.schemas import AgentState, ScoreResult
 from src.models import get_model
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 
 def virality_scorer_node(state: AgentState) -> AgentState:
     """
@@ -17,12 +17,26 @@ def virality_scorer_node(state: AgentState) -> AgentState:
 
     # angle_options = state.get("angles", [])
     novelty_check_results = state.get("novelty_check_results", [])
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
     # trends_options = state.get("trends", [])
 
-    system_prompt = all_prompts["NODE_C_VIRALITY_SCORER"]
-    template = PromptTemplate(input_variables=["novelty_check_results"], 
-                              template="这是novelty_check_results: {novelty_check_results}， 根据“选题 + 切入角度”的传播潜力，做评估")
-    human_prompt = template.format(novelty_check_results=novelty_check_results)
+    system_prompt = compose_prompt_for_state("virality_scorer", state)
+    template = PromptTemplate(
+        input_variables=["novelty_check_results", "domain_context", "content_policy"],
+        template=(
+            "输入参数如下：\n"
+            "- novelty_check_results:\n{novelty_check_results}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "请根据 system 规则评估传播潜力。"
+        ),
+    )
+    human_prompt = template.format(
+        novelty_check_results=serialize_prompt_value(novelty_check_results),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+    )
 
     messages = [SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)]

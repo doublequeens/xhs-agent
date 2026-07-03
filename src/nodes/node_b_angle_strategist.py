@@ -2,7 +2,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, AngleStrategy, ContentAngle
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 
 def angle_strategist_node(state: AgentState) -> AgentState:
     """
@@ -13,14 +13,25 @@ def angle_strategist_node(state: AgentState) -> AgentState:
     Returns:
         AgentState: Updated agent state with generated angle strategies.
     """
-    system_prompt = all_prompts["NODE_B_ANGLE_STRATEGIST"]
-
     trend_options = state.get("trends", [])
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
+    system_prompt = compose_prompt_for_state("angle_strategist", state)
     template = PromptTemplate(
-        input_variables=["trends"],
-        template="读取候选选题列表: {trends}， 根据system规则生成传播角度"
+        input_variables=["trends", "domain_context", "content_policy"],
+        template=(
+            "输入参数如下：\n"
+            "- trend_options:\n{trends}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "请根据 system 规则生成传播角度。"
+        ),
     )
-    human_prompt = template.format(trends=trend_options)
+    human_prompt = template.format(
+        trends=serialize_prompt_value(trend_options),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+    )
 
     messages = [
         SystemMessage(content=system_prompt),

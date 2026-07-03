@@ -5,7 +5,7 @@ from typing import List
 from memory import vector_memory
 from src.models import get_model
 from src.schemas import AgentState, AngleStrategy, NoveltyCheckResults, NoveltyMatches
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 from memory.vector_memory import XHSVectorMemory
 from memory.embedding import build_embedding_text
 
@@ -69,10 +69,11 @@ def novelty_guard_node(state: AgentState) -> AgentState:
     Returns:
         AgentState: Updated agent state with novelty check results.
     """
-    system_prompt = all_prompts["NODE_B_NOVELTY_GUARD"]
-
     angle_options = state.get("angles", [])
     memory_matches = get_memory_matches(angle_options)
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
+    system_prompt = compose_prompt_for_state("novelty_guard", state)
     MEMORY_POLICY = {
         "reject_similarity_threshold": 0.86,
         "warn_similarity_threshold": 0.78,
@@ -81,10 +82,30 @@ def novelty_guard_node(state: AgentState) -> AgentState:
         }
 
     template = PromptTemplate(
-        input_variables=["angle_options", "memory_matches", "MEMORY_POLICY"],
-        template="这是angle_options: {angle_options}， 这时 memory_matches: {memory_matches},  这是 MEMORY_POLICY: {MEMORY_POLICY},  根据system规则进行处理."
+        input_variables=[
+            "angle_options",
+            "memory_matches",
+            "memory_policy",
+            "domain_context",
+            "content_policy",
+        ],
+        template=(
+            "输入参数如下：\n"
+            "- angle_options:\n{angle_options}\n"
+            "- memory_matches:\n{memory_matches}\n"
+            "- memory_policy:\n{memory_policy}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "请根据 system 规则处理。"
+        ),
     )
-    human_prompt = template.format(angle_options=angle_options, memory_matches=memory_matches, MEMORY_POLICY=MEMORY_POLICY)
+    human_prompt = template.format(
+        angle_options=serialize_prompt_value(angle_options),
+        memory_matches=serialize_prompt_value(memory_matches),
+        memory_policy=serialize_prompt_value(MEMORY_POLICY),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+    )
 
     messages = [
         SystemMessage(content=system_prompt),

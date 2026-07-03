@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.domain import get_topic_metadata
+from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
 from src.schemas.topic import TopicItem
 
 
@@ -21,6 +21,21 @@ def _topic(topic_id="tp_001"):
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-adjacent"],
     )
+
+
+def _domain_context():
+    return {
+        "domain": "wellness",
+        "subdomain": "sleep",
+        "classification_source": "explicit",
+        "classification_confidence": 1,
+        "profile_version": "wellness-v1",
+        "risk_level": "medium",
+    }
+
+
+def _content_policy():
+    return build_content_policy(get_domain_profile("wellness"), risk_level="medium").model_dump()
 
 
 def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
@@ -55,8 +70,8 @@ def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
             "trends_num": 1,
             "focus_keyword": "改善睡眠",
             "memory_context": {"recent_content": []},
-            "domain_context": {"domain": "wellness", "subdomain": "sleep"},
-            "content_policy": {"risk_level": "medium", "require_human_review": True},
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
         }
     )
 
@@ -99,8 +114,8 @@ def test_trend_scout_normalizes_basic_science_risk_level(monkeypatch):
             "trends_num": 1,
             "focus_keyword": "睡眠",
             "memory_context": {},
-            "domain_context": {"domain": "wellness", "subdomain": "sleep"},
-            "content_policy": {"risk_level": "medium"},
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
         }
     )
 
@@ -233,6 +248,8 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
                 )
             ),
             "trends": [_topic()],
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
         }
     )
 
@@ -281,6 +298,8 @@ def test_decision_engine_raises_before_model_when_topic_missing(monkeypatch):
                     )
                 ),
                 "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
             }
         )
 
@@ -317,6 +336,8 @@ def test_decision_engine_raises_before_model_on_duplicate_topic(monkeypatch):
                     )
                 ),
                 "trends": duplicate_topics,
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
             }
         )
 
@@ -368,6 +389,8 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
             "image_candidates": [],
             "final_images": SimpleNamespace(image_final_choices=[]),
             "trends": [_topic()],
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
         }
     )
 

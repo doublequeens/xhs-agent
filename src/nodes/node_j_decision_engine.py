@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from src.domain import get_topic_metadata
 from src.models import get_model
 from src.schemas import AgentState
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 from src.schemas import DecisionOutput
 
 
@@ -81,13 +81,27 @@ def decision_engine_node(state: AgentState) -> AgentState:
 
     selected_fields = _extract_selected_content_fields(source, decision_input)
     topic_metadata = get_topic_metadata(state.get("trends", []), selected_fields["topic_id"])
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
     
-    system_prompt = all_prompts["NODE_J_DECISION_ENGINE"]
+    system_prompt = compose_prompt_for_state("decision_engine", state)
     template = PromptTemplate(
-        input_variables=["source", "decision_input"],
-        template="这是source：{source}, 这是decision_input：{decision_input}, 请按 system 规则进行处理。 "
+        input_variables=["source", "decision_input", "domain_context", "content_policy"],
+        template=(
+            "输入参数如下：\n"
+            "- source:\n{source}\n"
+            "- decision_input:\n{decision_input}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "请按 system 规则处理。"
+        ),
     )
-    human_prompt = template.format(source=source, decision_input=decision_input)
+    human_prompt = template.format(
+        source=source,
+        decision_input=serialize_prompt_value(decision_input),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+    )
 
     messages8 = [
         SystemMessage(content=system_prompt), 

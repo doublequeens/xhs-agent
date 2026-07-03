@@ -2,7 +2,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, TitleWinner
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 
 def title_ranker_node(state: AgentState) -> AgentState:
     """
@@ -15,13 +15,27 @@ def title_ranker_node(state: AgentState) -> AgentState:
     """
     title_options = state.get("titles_options", [])
     draft_results = state.get("drafts", [])
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
 
-    system_prompt = all_prompts["NODE_G_TITLE_RANKER"]
+    system_prompt = compose_prompt_for_state("title_ranker", state)
     template = PromptTemplate(
-        input_variables=["draft_results", "title_options"],
-        template="这是初稿 draft_results：{draft_results}, 这是title_options：{title_options}, 请按 system 规则进行处理。"
+        input_variables=["draft_results", "title_options", "domain_context", "content_policy"],
+        template=(
+            "输入参数如下：\n"
+            "- draft_results:\n{draft_results}\n"
+            "- title_options:\n{title_options}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "请按 system 规则处理。"
+        ),
     )
-    human_prompt = template.format(draft_results=draft_results, title_options=title_options)
+    human_prompt = template.format(
+        draft_results=serialize_prompt_value(draft_results),
+        title_options=serialize_prompt_value(title_options),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+    )
 
     messages = [
         SystemMessage(content=system_prompt),

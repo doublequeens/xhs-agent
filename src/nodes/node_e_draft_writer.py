@@ -2,7 +2,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, DraftItem
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 
 def draft_writer_node(state: AgentState) -> AgentState:
     """
@@ -15,12 +15,27 @@ def draft_writer_node(state: AgentState) -> AgentState:
     """
 
     outline_results = state.get("outlines", [])
-    system_prompt = all_prompts["NODE_E_DRAFT_WRITER"]
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
+    evidence_briefs = state.get("evidence_briefs", {})
+    system_prompt = compose_prompt_for_state("draft_writer", state)
     template = PromptTemplate(
-        input_variables=["outline_results"],
-        template="这是图文大纲 outline_results：{outline_results}。根据system 规则进行处理。"
+        input_variables=["outline_results", "domain_context", "content_policy", "evidence_briefs"],
+        template=(
+            "输入参数如下：\n"
+            "- outline_results:\n{outline_results}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "- evidence_briefs:\n{evidence_briefs}\n"
+            "请根据 system 规则生成正文。"
+        ),
         )
-    human_prompt = template.format(outline_results=outline_results)
+    human_prompt = template.format(
+        outline_results=serialize_prompt_value(outline_results),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+        evidence_briefs=serialize_prompt_value(evidence_briefs),
+    )
     messages = [
         SystemMessage(content=system_prompt),
         HumanMessage(content=human_prompt)

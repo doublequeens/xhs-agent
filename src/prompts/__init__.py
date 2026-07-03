@@ -1,9 +1,19 @@
-import os, glob
+from pathlib import Path
 
-PROMPT_DIR = os.path.dirname(__file__)
+from . import composer
+from .composer import compose_prompt, compose_prompt_for_state, serialize_prompt_value
+
+PROMPT_DIR = Path(__file__).resolve().parent
 
 all_prompts = {}
-for filepath in glob.glob(os.path.join(PROMPT_DIR, "*.txt")):
-    with open(filepath, 'r') as file:
-        prompt_name = os.path.basename(filepath).replace('.txt', '').upper()
-        all_prompts[prompt_name.upper()] = file.read().strip()
+for filepath in PROMPT_DIR.glob("*.txt"):
+    prompt_name = filepath.stem.upper()
+    all_prompts[prompt_name] = filepath.read_text(encoding="utf-8").strip()
+
+__all__ = [
+    "all_prompts",
+    "composer",
+    "compose_prompt",
+    "compose_prompt_for_state",
+    "serialize_prompt_value",
+]

@@ -3,7 +3,7 @@ from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesP
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, TopicItem
-from src.prompts import all_prompts
+from src.prompts import compose_prompt_for_state, serialize_prompt_value
 
 
 def _get_value(payload, key):
@@ -32,22 +32,36 @@ def trend_scout_node(state: AgentState) -> AgentState:
     memory_context = state.get("memory_context", {})
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
+    evidence_briefs = state.get("evidence_briefs", {})
 
-    system_prompt = all_prompts["NODE_A_TREND_SCOUT"]
+    system_prompt = compose_prompt_for_state("trend_scout", state)
     template = PromptTemplate(
-        input_variables=["trends_num", "memory_context", "focus_keyword", "domain_context", "content_policy"],
+        input_variables=[
+            "trends_num",
+            "memory_context",
+            "focus_keyword",
+            "domain_context",
+            "content_policy",
+            "evidence_briefs",
+        ],
         template=(
-            "这是 memory_context {memory_context}, 这是 trends_num {trends_num}, "
-            "这是 focus_keyword {focus_keyword}, 这是 domain_context {domain_context}, "
-            "这是 content_policy {content_policy}。按照 system 规则进行处理。"
+            "输入参数如下：\n"
+            "- trends_num:\n{trends_num}\n"
+            "- focus_keyword:\n{focus_keyword}\n"
+            "- memory_context:\n{memory_context}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "- evidence_briefs:\n{evidence_briefs}\n"
+            "请严格按照 system 规则处理。"
         ),
     )
     human_prompt = template.format(
-        trends_num=trends_num,
-        memory_context=memory_context,
+        trends_num=serialize_prompt_value(trends_num),
+        memory_context=serialize_prompt_value(memory_context),
         focus_keyword=focus_keyword,
-        domain_context=domain_context,
-        content_policy=content_policy,
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+        evidence_briefs=serialize_prompt_value(evidence_briefs),
     )
     print(f"Prompt for Trend Scout Node: \n{human_prompt}\n")
     
