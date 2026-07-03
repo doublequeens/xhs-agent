@@ -11,7 +11,7 @@ from memory.memory_manager import XHSMemoryManager
 from src.domain import DomainName, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
-from src.prompts import all_prompts
+from src.prompts.composer import compose_prompt
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 
@@ -33,6 +33,20 @@ def load_run_state(graph, config: dict, initial_state: dict):
     return current_state, run_input
 
 
+def _resolve_publish_package_profile(publish_package: dict):
+    domain = publish_package.get("domain")
+    profile_version = publish_package.get("profile_version")
+    if not domain or not profile_version:
+        raise ValueError("publish_package requires valid domain and profile_version metadata")
+
+    try:
+        return get_domain_profile(domain, version=profile_version)
+    except ValueError as exc:
+        raise ValueError(
+            f"publish_package requires valid domain and profile_version metadata: {exc}"
+        ) from exc
+
+
 def export_publish_package(publish_package: dict) -> None:
     date_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
     title = publish_package["title"]
@@ -44,15 +58,19 @@ def export_publish_package(publish_package: dict) -> None:
         json.dump(publish_package, f, ensure_ascii=False, indent=4)
 
     # 生成供图像生成节点使用的 prompt
-    storyboards_image_gen_prompt = all_prompts["NODE_O_STORYBOARDS_IMAGES_GENERATOR"]
+    profile = _resolve_publish_package_profile(publish_package)
+    storyboards_image_gen_prompt = compose_prompt("storyboards_images_generator", profile)
     storyboards_image_gen_json = {
         "title": publish_package.get("title", ""),
         "content": publish_package.get("content", ""),
         "cover_copy": publish_package.get("cover_copy", ""),
         "storyboards": publish_package.get("storyboards", [])
         }
-    image_prompt = "{image_generating_guide_prompt}\n{storyboards_prompt}\n```".format(image_generating_guide_prompt=storyboards_image_gen_prompt, 
-                                                                                       storyboards_prompt=json.dumps(storyboards_image_gen_json, ensure_ascii=False, indent=4))
+    image_prompt = (
+        f"{storyboards_image_gen_prompt}\n\n"
+        "下面是 storyboards JSON：\n```json\n"
+        f"{json.dumps(storyboards_image_gen_json, ensure_ascii=False, indent=4)}\n```"
+    )
     with open(dir_path + "/" + "Storyboard_images_generator_prompt.txt", "w") as f:
         f.write(image_prompt)
 

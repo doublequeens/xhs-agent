@@ -1,4 +1,5 @@
 import json
+import warnings
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -80,15 +81,31 @@ def compose_prompt_for_state(
     task: str,
     state: Mapping[str, Any],
     *,
-    allow_legacy_beauty_fallback: bool = False,
+    allow_legacy_beauty_fallback: bool = True,
 ) -> str:
+    """Compose a task prompt from state.
+
+    Legacy checkpoints may not have `domain_context`; in that case we can
+    explicitly fall back to the beauty profile. Once `domain_context` exists,
+    modern validation is strict: malformed or version-mismatched values raise.
+    """
     domain_context = state.get("domain_context")
+
+    if domain_context is None:
+        if allow_legacy_beauty_fallback:
+            warnings.warn(
+                f"{task} is falling back to beauty-v1 for a legacy checkpoint without domain_context.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return compose_prompt(task, get_domain_profile("beauty"))
+        raise ValueError(
+            f"{task} requires state.domain_context with both domain and profile_version."
+        )
+
     domain = _get_value(domain_context, "domain")
     profile_version = _get_value(domain_context, "profile_version")
-
-    if not domain_context or not domain or not profile_version:
-        if allow_legacy_beauty_fallback:
-            return compose_prompt(task, get_domain_profile("beauty"))
+    if not domain or not profile_version:
         raise ValueError(
             f"{task} requires state.domain_context with both domain and profile_version."
         )

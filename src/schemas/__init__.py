@@ -16,6 +16,7 @@ from .visual_director import ImageScriptList
 from .decision import DecisionTrace, NormalizedInput, HashTagInput, DecisionOutput, DecisionOutput, RevisionMeta
 from .hashtag import HashTagOutput
 from .image_qa import FinalImages, FinalImageItem 
+from .storyboard import StoryboardFrame, StoryboardPayload
 
 
 __all__ = [
@@ -37,5 +38,6 @@ __all__ = [
     "DecisionTrace", "NormalizedInput", "HashTagInput", "DecisionOutput",
     "RevisionMeta",
     "HashTagOutput",
-    "FinalImages", "FinalImageItem"
+    "FinalImages", "FinalImageItem",
+    "StoryboardFrame", "StoryboardPayload",
 ]

@@ -75,6 +75,7 @@ def assembler_node(state: AgentState) -> AgentState:
             "core_pain": _get_value(final_content, "core_pain"),
             "cover_copy": _get_value(final_content, "best_cover_copy"),
             "domain": _get_value(final_content, "domain"),
+            "profile_version": _get_value(domain_context, "profile_version"),
             "subdomain": _get_value(final_content, "subdomain"),
             "content_intent": _get_value(final_content, "content_intent"),
             "risk_level": _get_value(final_content, "risk_level"),

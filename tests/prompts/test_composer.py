@@ -116,6 +116,58 @@ def test_prompts_package_keeps_only_legacy_loader_exports():
     assert not hasattr(prompts, "__all__")
 
 
+def test_compose_prompt_for_state_warns_and_falls_back_for_legacy_missing_domain_context():
+    from src.prompts.composer import compose_prompt_for_state
+
+    with pytest.warns(UserWarning, match="legacy checkpoint"):
+        prompt = compose_prompt_for_state("trend_scout", {})
+
+    assert '"domain": "beauty"' in prompt
+    assert '"version": "beauty-v1"' in prompt
+
+
+def test_compose_prompt_for_state_rejects_malformed_present_domain_context():
+    from src.prompts.composer import compose_prompt_for_state
+
+    with pytest.raises(ValueError, match="requires state.domain_context with both domain and profile_version"):
+        compose_prompt_for_state("trend_scout", {"domain_context": {"domain": "wellness"}})
+
+
+def test_compose_prompt_for_state_rejects_wrong_profile_version_in_modern_state():
+    from src.prompts.composer import compose_prompt_for_state
+
+    with pytest.raises(ValueError, match="Unsupported profile version"):
+        compose_prompt_for_state(
+            "trend_scout",
+            {"domain_context": {"domain": "wellness", "profile_version": "beauty-v1"}},
+        )
+
+
+def test_lazy_prompt_mapping_defers_file_reads_and_preserves_legacy_keys(monkeypatch, tmp_path):
+    import src.prompts as prompts
+
+    (tmp_path / "node_a_example.txt").write_text("example prompt", encoding="utf-8")
+    read_calls = []
+    original_read_text = prompts.Path.read_text
+
+    def tracking_read_text(path_self, *args, **kwargs):
+        read_calls.append(path_self.name)
+        return original_read_text(path_self, *args, **kwargs)
+
+    monkeypatch.setattr(prompts.Path, "read_text", tracking_read_text, raising=True)
+
+    mapping = prompts._LazyPromptMapping(tmp_path)
+    assert len(mapping) == 1
+    assert list(mapping) == ["NODE_A_EXAMPLE"]
+    assert read_calls == []
+
+    assert mapping["NODE_A_EXAMPLE"] == "example prompt"
+    assert read_calls == ["node_a_example.txt"]
+
+    assert mapping["NODE_A_EXAMPLE"] == "example prompt"
+    assert read_calls == ["node_a_example.txt"]
+
+
 @pytest.mark.parametrize(
     ("node_path", "import_line"),
     [

@@ -38,6 +38,28 @@ def _content_policy():
     return build_content_policy(get_domain_profile("wellness"), risk_level="medium").model_dump()
 
 
+def _storyboard_frame(frame_number: int):
+    return {
+        "frame_id": f"frame_{frame_number:03d}",
+        "narrative_role": "封面钩子" if frame_number == 1 else "步骤展开",
+        "frame_title": f"画面 {frame_number}",
+        "image_orientation": "vertical",
+        "aspect_ratio": "3:4",
+        "recommended_size": "1080x1440",
+        "visual_description": f"粉红小蝾螈画面 {frame_number}",
+        "character_action": "抱着水杯发呆",
+        "scene_background": "办公桌边",
+        "composition": "竖版 3:4 构图，上方留白",
+        "text_area": "顶部 20% 留白放标题",
+        "on_image_copy": f"提示 {frame_number}",
+        "narration": f"第 {frame_number} 张图的说明内容。",
+        "image_prompt_cn": "中文提示词",
+        "image_prompt_en": "English prompt",
+        "negative_prompt": "realistic, horror",
+        "continuity_note": "保持同一只粉红小蝾螈",
+    }
+
+
 def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
     from src.nodes import node_a_trend_scout as module
 
@@ -409,6 +431,7 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["cover_copy"] == "cover"
     assert publish_package["title"] == "睡眠改善指南"
     assert publish_package["content"] == "body"
+    assert publish_package["profile_version"] == "wellness-v1"
 
 
 def test_storyboards_generator_preserves_full_publish_package_and_frame_contract(monkeypatch):
@@ -439,27 +462,7 @@ def test_storyboards_generator_preserves_full_publish_package_and_frame_contract
             return {
                 "title": "wrong title",
                 "content": "wrong content",
-                "storyboards": [
-                    {
-                        "frame_id": "frame_001",
-                        "narrative_role": "封面钩子",
-                        "frame_title": "封面钩子",
-                        "image_orientation": "vertical",
-                        "aspect_ratio": "3:4",
-                        "recommended_size": "1080x1440",
-                        "visual_description": "粉红小蝾螈困在办公桌前",
-                        "character_action": "抱着水杯发呆",
-                        "scene_background": "办公桌边",
-                        "composition": "竖版 3:4 构图，上方留白",
-                        "text_area": "顶部 20% 留白放标题",
-                        "on_image_copy": "别再硬扛了",
-                        "narration": "久坐后先动一动再继续忙。",
-                        "image_prompt_cn": "中文提示词",
-                        "image_prompt_en": "English prompt",
-                        "negative_prompt": "realistic, horror",
-                        "continuity_note": "保持同一只粉红小蝾螈",
-                    }
-                ],
+                "storyboards": [_storyboard_frame(index) for index in range(1, 9)],
             }
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
@@ -479,6 +482,7 @@ def test_storyboards_generator_preserves_full_publish_package_and_frame_contract
         "notes": ["note"],
         "storyboard_strategy": "scenario_companion",
         "domain": "wellness",
+        "profile_version": "wellness-v1",
         "subdomain": "sleep",
         "content_intent": "how_to",
         "risk_level": "medium",
@@ -508,8 +512,57 @@ def test_storyboards_generator_preserves_full_publish_package_and_frame_contract
     assert merged_package["notes"] == publish_package["notes"]
     assert merged_package["storyboard_strategy"] == publish_package["storyboard_strategy"]
     assert merged_package["domain"] == publish_package["domain"]
+    assert merged_package["profile_version"] == publish_package["profile_version"]
     assert merged_package["subdomain"] == publish_package["subdomain"]
     assert merged_package["content_intent"] == publish_package["content_intent"]
     assert merged_package["risk_level"] == publish_package["risk_level"]
     assert merged_package["risk_flags"] == publish_package["risk_flags"]
     assert set(merged_package["storyboards"][0]) == required_frame_keys
+
+
+@pytest.mark.parametrize(
+    ("storyboards", "error_match"),
+    [
+        ([ _storyboard_frame(index) for index in range(1, 8) ], "storyboards"),
+        ([ _storyboard_frame(index) for index in range(1, 12) ], "storyboards"),
+        ([ {key: value for key, value in _storyboard_frame(1).items() if key != "negative_prompt"} ] + [_storyboard_frame(index) for index in range(2, 9)], "negative_prompt"),
+        ("not-a-list", "storyboards"),
+    ],
+)
+def test_storyboards_generator_rejects_invalid_storyboard_payload(monkeypatch, storyboards, error_match):
+    from src.nodes import node_o_storyboards_generator as module
+
+    class FakeModel:
+        def execute(self, messages):
+            return {"storyboards": storyboards}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(RuntimeError, match=error_match):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {
+                    "title": "久坐间隙活动指南",
+                    "content": "body",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "睡眠策略",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "cover_copy": "cover",
+                    "images": [],
+                    "hashtags": ["#x"],
+                    "notes": ["note"],
+                    "storyboard_strategy": "scenario_companion",
+                    "domain": "wellness",
+                    "profile_version": "wellness-v1",
+                    "subdomain": "sleep",
+                    "content_intent": "how_to",
+                    "risk_level": "medium",
+                    "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+                },
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+            }
+        )
