@@ -380,13 +380,15 @@ class XHSMemoryManager:
         if vector_memory is None and rows:
             vector_memory = self._create_vector_memory()
 
-        if rows:
-            for row in rows:
-                self._upsert_vector_row(
-                    row,
-                    vector_memory=vector_memory,
-                    build_embedding_text_fn=build_embedding_text_fn,
-                )
+        if not rows:
+            return False
+
+        for row in rows:
+            self._upsert_vector_row(
+                row,
+                vector_memory=vector_memory,
+                build_embedding_text_fn=build_embedding_text_fn,
+            )
 
         with self.connect() as conn:
             marker = conn.execute(

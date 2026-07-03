@@ -648,16 +648,42 @@ def test_backfill_vector_scope_retries_when_partial_upserts_fail(tmp_path):
     assert [call["content_id"] for call in healthy_vector.upsert_calls] == ["legacy-1", "legacy-2"]
 
 
-def test_backfill_vector_scope_marks_complete_for_empty_database(tmp_path):
-    manager = XHSMemoryManager(tmp_path / "empty.db")
+def test_backfill_vector_scope_defers_marker_until_structured_rows_exist(tmp_path):
+    db_path = tmp_path / "empty.db"
+    manager = XHSMemoryManager(db_path)
     manager.init_db(SCHEMA_PATH)
+    vector_memory = FakeScopedVectorMemory()
 
-    did_backfill = manager.ensure_vector_scope_backfill(
-        vector_memory=FakeScopedVectorMemory(),
+    first_call = manager.ensure_vector_scope_backfill(
+        vector_memory=vector_memory,
         build_embedding_text_fn=lambda **kwargs: "unused",
     )
 
-    assert did_backfill is True
+    assert first_call is False
+    assert vector_memory.upsert_calls == []
+    marker = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE event_type = 'vector_domain_backfill_v1'
+        """
+    ).fetchone()
+    assert marker[0] == 0
+
+    _seed_legacy_structured_row(
+        db_path,
+        content_id="legacy-late",
+        topic="晚到旧内容",
+        created_at="2026-07-04T10:00:00+08:00",
+    )
+
+    second_call = manager.ensure_vector_scope_backfill(
+        vector_memory=vector_memory,
+        build_embedding_text_fn=lambda **kwargs: f"embed::{kwargs['topic']}",
+    )
+
+    assert second_call is True
+    assert [call["content_id"] for call in vector_memory.upsert_calls] == ["legacy-late"]
     marker = manager.connect().execute(
         """
         SELECT COUNT(*)
@@ -666,6 +692,13 @@ def test_backfill_vector_scope_marks_complete_for_empty_database(tmp_path):
         """
     ).fetchone()
     assert marker[0] == 1
+
+    third_call = manager.ensure_vector_scope_backfill(
+        vector_memory=vector_memory,
+        build_embedding_text_fn=lambda **kwargs: f"embed::{kwargs['topic']}",
+    )
+    assert third_call is False
+    assert len(vector_memory.upsert_calls) == 1
 
 
 def test_examples_import_without_running_main():
