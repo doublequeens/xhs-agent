@@ -66,6 +66,7 @@ def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
     assert isinstance(result["trends"][0], TopicItem)
     assert result["trends"][0].domain == "wellness"
     assert result["trends"][0].subdomain == "sleep"
+    assert result["trends"][0].risk_level == "medium"
     assert result["trends"][0].risk_flags == ["medical-adjacent", "sleep-adjacent"]
 
 

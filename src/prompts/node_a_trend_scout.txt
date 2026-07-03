@@ -134,6 +134,7 @@ focus_keyword 可能是：
 - subdomain: 必须与 domain_context.subdomain 一致
 - content_intent: 必须从 experience / myth_busting / how_to / checklist / basic_science 中选择，且与 domain_context / content_policy 一致
 - risk_level: 必须与 domain_context.risk_level 一致
+- 风险级别处理规则：所有非 basic_science 选题的 risk_level 必须与 domain_context.risk_level 一致；如果上下文未显式提供，则使用 content_policy.risk_level。basic_science 选题的 risk_level 必须统一写为 medium
 - risk_flags: 风险标记数组，必须从内容中真实推导，不要编造
 
 示例结构（仅示意，不要照抄内容）：

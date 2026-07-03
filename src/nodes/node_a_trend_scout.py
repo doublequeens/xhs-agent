@@ -11,6 +11,13 @@ def _get_value(payload, key):
         return payload.get(key)
     return getattr(payload, key, None)
 
+
+def _normalize_trend_risk_level(trend, domain_context, content_policy):
+    content_intent = trend.get("content_intent")
+    if content_intent == "basic_science":
+        return "medium"
+    return _get_value(domain_context, "risk_level") or _get_value(content_policy, "risk_level")
+
 def trend_scout_node(state: AgentState) -> AgentState:
     """
     A node that scouts for trends using Google Gemini models.
@@ -58,8 +65,11 @@ def trend_scout_node(state: AgentState) -> AgentState:
             if domain_context:
                 normalized_trend["domain"] = _get_value(domain_context, "domain")
                 normalized_trend["subdomain"] = _get_value(domain_context, "subdomain")
-            if normalized_trend.get("content_intent") == "basic_science":
-                normalized_trend["risk_level"] = "medium"
+            normalized_trend["risk_level"] = _normalize_trend_risk_level(
+                normalized_trend,
+                domain_context,
+                content_policy,
+            )
             trend_options.append(TopicItem(**normalized_trend))
     except Exception as e:
         print(f"Failed to tranform to TopicItem schema, please check the detail: {e}")
