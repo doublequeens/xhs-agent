@@ -13,3 +13,4 @@ pydantic
 streamlit
 watchdog
 pytest
+tavily-python

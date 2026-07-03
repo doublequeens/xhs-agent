@@ -2,6 +2,7 @@ from typing import TypedDict, List, Optional
 
 from memory.memory_manager import XHSMemoryManager
 from src.domain import ContentPolicy, DomainContext, DomainName
+from src.evidence.models import EvidenceBrief
 from .topic import TopicItem
 from .angle import AngleStrategy
 from .novelty_guard import NoveltyCheckResults
@@ -25,7 +26,7 @@ class AgentState(TypedDict):
     domain_context: Optional[DomainContext]
     content_policy: Optional[ContentPolicy]
     memory_context: Optional[dict]
-    evidence_briefs: dict[str, dict]
+    evidence_briefs: dict[str, EvidenceBrief]
     final_policy_issues: list[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]

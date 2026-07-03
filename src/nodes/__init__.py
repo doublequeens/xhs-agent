@@ -8,6 +8,7 @@ _EXPORTS = {
     "angle_strategist_node": "src.nodes.node_b_angle_strategist",
     "novelty_guard_node": "src.nodes.node_b_novelty_guard",
     "virality_scorer_node": "src.nodes.node_c_virality_scorer",
+    "evidence_brief_node": "src.nodes.node_c_01_evidence_brief",
     "outline_architect_node": "src.nodes.node_d_outline_architect",
     "draft_writer_node": "src.nodes.node_e_draft_writer",
     "title_lab_node": "src.nodes.node_f_title_lab",

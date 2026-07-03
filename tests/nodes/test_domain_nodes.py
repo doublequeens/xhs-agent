@@ -135,6 +135,7 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
             angle_strategist_node=fake_node,
             novelty_guard_node=fake_node,
             virality_scorer_node=fake_node,
+            evidence_brief_node=fake_node,
             outline_architect_node=fake_node,
             draft_writer_node=fake_node,
             title_lab_node=fake_node,
@@ -154,8 +155,12 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
 
     assert "domain_router" in added_nodes
     assert "domain_confirmation" in added_nodes
+    assert "evidence_brief" in added_nodes
     assert ("domain_router", "domain_confirmation") in added_edges
     assert ("domain_confirmation", "memory_retriever") in added_edges
+    assert ("virality_score", "evidence_brief") in added_edges
+    assert ("evidence_brief", "outline_architect") in added_edges
+    assert ("virality_score", "outline_architect") not in added_edges
     assert entry_points == ["domain_router"]
 
 
@@ -197,6 +202,7 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
             angle_strategist_node=fake_node,
             novelty_guard_node=fake_node,
             virality_scorer_node=fake_node,
+            evidence_brief_node=fake_node,
             outline_architect_node=fake_node,
             draft_writer_node=fake_node,
             title_lab_node=fake_node,
