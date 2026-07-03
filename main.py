@@ -2,18 +2,20 @@ import argparse
 import os
 import sys
 import json
+import warnings
 from datetime import datetime, timezone, timedelta
 from typing import get_args
 from uuid import uuid4
 
 from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
-from src.domain import DomainName, get_domain_profile
+from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.prompts.composer import compose_prompt
 
 SUPPORTED_DOMAINS = get_args(DomainName)
+_LEGACY_DOMAIN_HYDRATION_WARNED = False
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -27,8 +29,44 @@ def build_run_config(thread_id: str | None) -> dict:
     return {"configurable": {"thread_id": build_thread_id(thread_id)}}
 
 
+def hydrate_legacy_domain_state(values: dict) -> dict:
+    global _LEGACY_DOMAIN_HYDRATION_WARNED
+
+    domain_context = values.get("domain_context")
+    if domain_context is not None:
+        return {}
+
+    profile = get_domain_profile("beauty", version="beauty-v1")
+    updates = {
+        "domain_context": DomainContext(
+            domain="beauty",
+            subdomain="skincare",
+            classification_source="default",
+            classification_confidence=1,
+            profile_version=profile.version,
+            risk_level="low",
+        ),
+        "content_policy": build_content_policy(profile, risk_level="low"),
+    }
+
+    if not _LEGACY_DOMAIN_HYDRATION_WARNED:
+        warnings.warn(
+            "Hydrating legacy domain checkpoint without domain_context using beauty/skincare defaults.",
+            UserWarning,
+            stacklevel=2,
+        )
+        _LEGACY_DOMAIN_HYDRATION_WARNED = True
+
+    return updates
+
+
 def load_run_state(graph, config: dict, initial_state: dict):
     current_state = graph.get_state(config)
+    if current_state.values:
+        hydration_updates = hydrate_legacy_domain_state(current_state.values)
+        if hydration_updates:
+            graph.update_state(config, hydration_updates)
+            current_state = graph.get_state(config)
     run_input = None if current_state.values else initial_state
     return current_state, run_input
 

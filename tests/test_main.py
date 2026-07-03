@@ -87,7 +87,20 @@ def test_fresh_thread_keeps_new_routing_initial_state(monkeypatch):
 
 def test_explicit_thread_id_resumes_existing_checkpoint(monkeypatch):
     main = _load_main(monkeypatch)
-    existing_state = SimpleNamespace(values={"domain": "beauty"}, next=("trend_scout",))
+    existing_state = SimpleNamespace(
+        values={
+            "domain": "beauty",
+            "domain_context": {
+                "domain": "beauty",
+                "subdomain": "skincare",
+                "classification_source": "explicit",
+                "classification_confidence": 1,
+                "profile_version": "beauty-v1",
+                "risk_level": "low",
+            },
+        },
+        next=("trend_scout",),
+    )
 
     class FakeGraph:
         def get_state(self, config):
@@ -101,6 +114,120 @@ def test_explicit_thread_id_resumes_existing_checkpoint(monkeypatch):
     )
 
     assert current_state is existing_state
+    assert run_input is None
+
+
+def test_hydrate_legacy_domain_state_returns_default_beauty_context_once(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    with pytest.warns(UserWarning, match="legacy domain checkpoint"):
+        updates = main.hydrate_legacy_domain_state({"domain": "beauty"})
+
+    assert updates["domain_context"].domain == "beauty"
+    assert updates["domain_context"].subdomain == "skincare"
+    assert updates["domain_context"].classification_source == "default"
+    assert updates["domain_context"].profile_version == "beauty-v1"
+    assert updates["domain_context"].risk_level == "low"
+    assert updates["content_policy"].risk_level == "low"
+    assert updates["content_policy"].require_evidence_brief is False
+
+
+def test_hydrate_legacy_domain_state_returns_no_update_for_modern_or_malformed_state(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    modern_updates = main.hydrate_legacy_domain_state(
+        {
+            "domain_context": {
+                "domain": "wellness",
+                "subdomain": "sleep",
+                "classification_source": "explicit",
+                "classification_confidence": 1,
+                "profile_version": "wellness-v1",
+                "risk_level": "medium",
+            }
+        }
+    )
+    malformed_updates = main.hydrate_legacy_domain_state(
+        {"domain_context": {"domain": "wellness"}}
+    )
+
+    assert modern_updates == {}
+    assert malformed_updates == {}
+
+
+def test_load_run_state_hydrates_legacy_checkpoint_via_graph_update(monkeypatch):
+    main = _load_main(monkeypatch)
+    config = main.build_run_config("existing-conversation")
+
+    legacy_state = SimpleNamespace(values={"domain": "beauty"}, next=("trend_scout",))
+    hydrated_values = {
+        "domain": "beauty",
+        "domain_context": {
+            "domain": "beauty",
+            "subdomain": "skincare",
+            "classification_source": "default",
+            "classification_confidence": 1,
+            "profile_version": "beauty-v1",
+            "risk_level": "low",
+        },
+        "content_policy": {
+            "risk_level": "low",
+            "require_evidence_brief": False,
+            "require_human_review": True,
+        },
+    }
+    hydrated_state = SimpleNamespace(values=hydrated_values, next=("trend_scout",))
+    calls = {"get_state": 0, "update_state": []}
+
+    class FakeGraph:
+        def get_state(self, passed_config):
+            calls["get_state"] += 1
+            if calls["get_state"] == 1:
+                return legacy_state
+            return hydrated_state
+
+        def update_state(self, passed_config, updates):
+            calls["update_state"].append((passed_config, updates))
+
+    with pytest.warns(UserWarning, match="legacy domain checkpoint"):
+        current_state, run_input = main.load_run_state(
+            FakeGraph(),
+            config,
+            {"domain": "wellness"},
+        )
+
+    assert run_input is None
+    assert current_state is hydrated_state
+    assert calls["get_state"] == 2
+    assert len(calls["update_state"]) == 1
+    passed_config, updates = calls["update_state"][0]
+    assert passed_config == config
+    assert updates["domain_context"].profile_version == "beauty-v1"
+    assert updates["content_policy"].risk_level == "low"
+
+
+def test_load_run_state_does_not_replace_present_malformed_domain_context(monkeypatch):
+    main = _load_main(monkeypatch)
+    malformed_state = SimpleNamespace(
+        values={"domain_context": {"domain": "wellness"}},
+        next=("trend_scout",),
+    )
+    config = main.build_run_config("existing-conversation")
+
+    class FakeGraph:
+        def get_state(self, passed_config):
+            return malformed_state
+
+        def update_state(self, passed_config, updates):
+            raise AssertionError("update_state should not be called")
+
+    current_state, run_input = main.load_run_state(
+        FakeGraph(),
+        config,
+        {"domain": "wellness"},
+    )
+
+    assert current_state is malformed_state
     assert run_input is None
 
 
