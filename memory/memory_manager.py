@@ -28,6 +28,31 @@ def json_loads(value: Optional[str], default: Any) -> Any:
         return default
 
 
+def _insert_event(
+    connection: sqlite3.Connection,
+    event_id: str,
+    content_id: Optional[str],
+    event_type: str,
+    event_time: str,
+    payload: Optional[dict[str, Any]],
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO memory_events (
+            event_id, content_id, event_type, event_time, payload_json
+        )
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            event_id,
+            content_id,
+            event_type,
+            event_time,
+            json_dumps(payload or {}),
+        ),
+    )
+
+
 _CONTENT_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
     ("idx_contents_created_at", ("created_at",), "CREATE INDEX IF NOT EXISTS idx_contents_created_at ON contents(created_at)"),
     ("idx_contents_published_at", ("published_at",), "CREATE INDEX IF NOT EXISTS idx_contents_published_at ON contents(published_at)"),
@@ -130,22 +155,7 @@ class XHSMemoryManager:
     ) -> str:
         event_id = f"evt_{uuid.uuid4().hex[:12]}"
         with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO memory_events (
-                    event_id, content_id, event_type, event_time, payload_json
-                )
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (
-                    event_id,
-                    content_id,
-                    event_type,
-                    utc_now_iso(),
-                    json_dumps(payload or {}),
-                ),
-            )
-            conn.commit()
+            _insert_event(conn, event_id, content_id, event_type, utc_now_iso(), payload)
         return event_id
 
     def save_generated_content(self, record: ContentRecord) -> None:
@@ -224,21 +234,22 @@ class XHSMemoryManager:
                     json_dumps(record.strategy_tags),
                     record.compliance_status,
                     record.embedding_text,
-                json_dumps(record.metadata),
+                    json_dumps(record.metadata),
                 ),
             )
-            conn.commit()
-
-        self.log_event(
-            event_type="content_saved",
-            content_id=record.content_id,
-            payload={
-                "topic": record.topic,
-                "angle": record.angle,
-                "title": record.title,
-                "status": record.status,
-            },
-        )
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                record.content_id,
+                "content_saved",
+                utc_now_iso(),
+                {
+                    "topic": record.topic,
+                    "angle": record.angle,
+                    "title": record.title,
+                    "status": record.status,
+                },
+            )
     
     def save_embedding_content(self, record: ContentRecord) -> None:
         from memory.embedding import build_embedding_text
@@ -285,6 +296,14 @@ class XHSMemoryManager:
     
     def delete_content_by_id(self, content_id: str) -> None:
         with self.connect() as conn:
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                content_id,
+                "content_deleted",
+                utc_now_iso(),
+                {"deleted_content_id": content_id},
+            )
             conn.execute(
                 """
                 DELETE FROM contents
@@ -292,13 +311,6 @@ class XHSMemoryManager:
                 """,
                 (content_id,),
             )
-            conn.commit()
-
-        self.log_event(
-            event_type="content_deleted",
-            content_id=None,
-            payload={"deleted_content_id": content_id},
-        )
 
     def mark_reviewed(self, content_id: str) -> None:
         with self.connect() as conn:

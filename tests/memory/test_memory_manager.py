@@ -4,6 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
 
+import pytest
+
+import memory.memory_manager as memory_manager_module
 from memory.memory_manager import XHSMemoryManager
 from memory.models import ContentRecord
 
@@ -100,6 +103,36 @@ def test_save_generated_content_roundtrips_domain_metadata(tmp_path):
     }
 
 
+def test_save_generated_content_rolls_back_when_event_insert_fails(tmp_path, monkeypatch):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-rollback",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+
+    def fail_insert_event(*args, **kwargs):
+        raise RuntimeError("event boom")
+
+    monkeypatch.setattr(memory_manager_module, "_insert_event", fail_insert_event)
+
+    with pytest.raises(RuntimeError, match="event boom"):
+        manager.save_generated_content(record)
+
+    assert manager.get_content_by_id("content-rollback") is None
+    row = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ?
+        """,
+        ("content-rollback",),
+    ).fetchone()
+    assert row[0] == 0
+
+
 def test_log_event_is_thread_safe_across_workers(tmp_path):
     manager = XHSMemoryManager(tmp_path / "memory.db")
     manager.init_db(SCHEMA_PATH)
@@ -144,3 +177,68 @@ def test_delete_content_by_id_removes_saved_record(tmp_path):
     manager.delete_content_by_id("content-delete")
 
     assert manager.get_content_by_id("content-delete") is None
+
+
+def test_delete_content_by_id_rolls_back_when_event_insert_fails(tmp_path, monkeypatch):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-delete-rollback",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    def fail_insert_event(*args, **kwargs):
+        raise RuntimeError("event boom")
+
+    monkeypatch.setattr(memory_manager_module, "_insert_event", fail_insert_event)
+
+    with pytest.raises(RuntimeError, match="event boom"):
+        manager.delete_content_by_id("content-delete-rollback")
+
+    assert manager.get_content_by_id("content-delete-rollback") is not None
+    row = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ?
+        """,
+        ("content-delete-rollback",),
+    ).fetchone()
+    assert row[0] == 1
+
+
+def test_save_and_delete_create_exactly_one_event_each(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    save_record = ContentRecord(
+        content_id="content-event-save",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    delete_record = ContentRecord(
+        content_id="content-event-delete",
+        topic="防晒",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+
+    manager.save_generated_content(save_record)
+    manager.save_generated_content(delete_record)
+    manager.delete_content_by_id("content-event-delete")
+
+    row = manager.connect().execute(
+        """
+        SELECT event_type, COUNT(*)
+        FROM memory_events
+        GROUP BY event_type
+        ORDER BY event_type
+        """,
+    ).fetchall()
+
+    assert [(item[0], item[1]) for item in row] == [
+        ("content_deleted", 1),
+        ("content_saved", 2),
+    ]
