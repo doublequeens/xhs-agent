@@ -5,10 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from memory.models import MemoryContext
+from src.domain.models import DomainContext
+from src.schemas.angle import AngleStrategy, ContentAngle
 from src.domain import build_content_policy, get_domain_profile
 from src.domain.router import resolve_domain
 from src.nodes.node_a_00_domain_confirmation import domain_confirmation_node
 from src.nodes.node_a_01_retrieve_memory import retrieve_memory_node
+from src.nodes.node_b_novelty_guard import get_memory_matches, novelty_guard_node
 from src.nodes.node_a_00_domain_router import domain_router_node
 
 
@@ -268,3 +271,97 @@ def test_retrieve_memory_node_passes_domain_scope_to_memory_manager(monkeypatch)
         },
     }
     assert result["memory_context"]["same_subdomain_recent"] == [{"content_id": "wellness-sleep-1"}]
+
+
+def test_get_memory_matches_passes_exact_domain_scope(monkeypatch):
+    captured = {}
+
+    class FakeVectorMemory:
+        def __init__(self, persist_dir):
+            captured["persist_dir"] = persist_dir
+
+        def query_similar(self, **kwargs):
+            captured["query_args"] = kwargs
+            return [
+                {
+                    "content_id": "content-1",
+                    "similarity": 0.8,
+                    "metadata": {
+                        "topic": "睡前仪式",
+                        "angle": "上班族快速放松",
+                        "title": "10分钟睡前放松流程",
+                        "created_at": "2026-07-03T10:00:00+08:00",
+                        "published_at": "2026-07-03T11:00:00+08:00",
+                        "performance_level": "high",
+                    },
+                }
+            ]
+
+    monkeypatch.setattr("src.nodes.node_b_novelty_guard.XHSVectorMemory", FakeVectorMemory)
+    monkeypatch.setattr("src.nodes.node_b_novelty_guard.build_embedding_text", lambda **kwargs: "semantic query")
+
+    angle_options = [
+        AngleStrategy(
+            topic_id="tp_001",
+            topic="睡前仪式",
+            target_group="上班族",
+            core_pain="入睡慢",
+            angles=[
+                ContentAngle(
+                    angle_id="ag_001",
+                    angle="上班族快速放松",
+                    opening_hook="hook",
+                    value_promise="promise",
+                    suggested_structure="structure",
+                ),
+                ContentAngle(
+                    angle_id="ag_002",
+                    angle="睡前整理大脑",
+                    opening_hook="hook",
+                    value_promise="promise",
+                    suggested_structure="structure",
+                ),
+                ContentAngle(
+                    angle_id="ag_003",
+                    angle="减少夜间清醒",
+                    opening_hook="hook",
+                    value_promise="promise",
+                    suggested_structure="structure",
+                ),
+            ],
+        )
+    ]
+    domain_context = DomainContext(
+        domain="wellness",
+        subdomain="sleep",
+        classification_source="explicit",
+        classification_confidence=1.0,
+        profile_version="wellness-v1",
+        risk_level="low",
+    )
+
+    get_memory_matches(angle_options, domain_context)
+
+    assert captured["persist_dir"] == "data/chroma"
+    assert captured["query_args"] == {
+        "query_text": "semantic query",
+        "n_results": 3,
+        "domain": "wellness",
+        "subdomain": "sleep",
+    }
+
+
+def test_novelty_guard_node_requires_domain_context_before_vector_query(monkeypatch):
+    called = {"query": False}
+
+    class FailIfConstructed:
+        def __init__(self, *_args, **_kwargs):
+            called["query"] = True
+            raise AssertionError("vector memory should not be created")
+
+    monkeypatch.setattr("src.nodes.node_b_novelty_guard.XHSVectorMemory", FailIfConstructed)
+
+    with pytest.raises(ValueError, match="novelty_guard_node requires state.domain_context with domain and subdomain"):
+        novelty_guard_node({"angles": []})
+
+    assert called["query"] is False

@@ -54,12 +54,14 @@ class XHSVectorMemory:
         where: Optional[dict[str, Any]] = None,
         domain: Optional[str] = None,
         subdomain: Optional[str] = None,
+        allow_global: bool = False,
     ) -> list[dict[str, Any]]:
         embedding = embed_texts([query_text])[0]
         where_filter = self._build_where_filter(
             where=where,
             domain=domain,
             subdomain=subdomain,
+            allow_global=allow_global,
         )
 
         results = self.collection.query(
@@ -120,13 +122,23 @@ class XHSVectorMemory:
         where: Optional[dict[str, Any]],
         domain: Optional[str],
         subdomain: Optional[str],
+        allow_global: bool,
     ) -> Optional[dict[str, Any]]:
+        has_domain = domain is not None
+        has_subdomain = subdomain is not None
+        if not allow_global and (not has_domain or not has_subdomain):
+            raise ValueError(
+                "query_similar requires both domain and subdomain unless allow_global=True"
+            )
+        if has_domain != has_subdomain:
+            raise ValueError("query_similar requires domain and subdomain together")
+
         clauses: list[dict[str, Any]] = []
         if where:
             clauses.append(where)
-        if domain is not None:
+        if has_domain:
             clauses.append({"domain": {"$eq": domain}})
-        if subdomain is not None:
+        if has_subdomain:
             clauses.append({"subdomain": {"$eq": subdomain}})
 
         if not clauses:

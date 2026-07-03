@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from memory.vector_memory import XHSVectorMemory
 
 
@@ -63,6 +65,18 @@ def test_query_similar_adds_exact_domain_subdomain_where_filter(monkeypatch, tmp
         }
     ]
     assert results[0]["metadata"] == {"domain": "wellness", "subdomain": "sleep"}
+
+
+def test_query_similar_rejects_unscoped_lookup_without_allow_global(monkeypatch, tmp_path):
+    collection = FakeCollection()
+
+    monkeypatch.setattr("memory.vector_memory.chromadb.PersistentClient", lambda path: FakeClient(collection))
+    monkeypatch.setattr("memory.vector_memory.embed_texts", lambda texts: [[0.1, 0.2, 0.3] for _ in texts])
+
+    memory = XHSVectorMemory(persist_dir=tmp_path / "chroma")
+
+    with pytest.raises(ValueError, match="query_similar requires both domain and subdomain unless allow_global=True"):
+        memory.query_similar(query_text="sleep routine")
 
 
 def test_upsert_content_sanitizes_and_preserves_domain_partition_metadata(monkeypatch, tmp_path):

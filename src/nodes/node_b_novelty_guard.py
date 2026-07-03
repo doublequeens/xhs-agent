@@ -1,6 +1,6 @@
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
-from typing import List
+from typing import List, Mapping
 
 from memory import vector_memory
 from src.models import get_model
@@ -10,8 +10,21 @@ from memory.vector_memory import XHSVectorMemory
 from memory.embedding import build_embedding_text
 
 
+def _require_domain_scope(domain_context) -> tuple[str, str]:
+    if isinstance(domain_context, Mapping):
+        domain = domain_context.get("domain")
+        subdomain = domain_context.get("subdomain")
+    else:
+        domain = getattr(domain_context, "domain", None)
+        subdomain = getattr(domain_context, "subdomain", None)
 
-def get_memory_matches(angle_options: List[AngleStrategy]) -> List[NoveltyMatches]:
+    if not domain or not subdomain:
+        raise ValueError("novelty_guard_node requires state.domain_context with domain and subdomain")
+
+    return domain, subdomain
+
+
+def get_memory_matches(angle_options: List[AngleStrategy], domain_context) -> List[NoveltyMatches]:
     """
     A helper function to retrieve relevant past content from memory based on topic-angle pairs.
     Args:
@@ -19,8 +32,9 @@ def get_memory_matches(angle_options: List[AngleStrategy]) -> List[NoveltyMatche
     Returns:
         topic_angles_memory_matches: List of memory records that are relevant to the given topic-angle pairs, including their embedding similarity scores.
     """
+    domain, subdomain = _require_domain_scope(domain_context)
     memory_matches = []
-    vector_memory = XHSVectorMemory("data/chroma")  
+    vector_memory = XHSVectorMemory("data/chroma")
 
     for topic in angle_options:
         for angle in topic.angles:
@@ -34,7 +48,9 @@ def get_memory_matches(angle_options: List[AngleStrategy]) -> List[NoveltyMatche
 
             similar_items = vector_memory.query_similar(
                 query_text=query_text,
-                n_results=3
+                n_results=3,
+                domain=domain,
+                subdomain=subdomain,
             )
 
             memory_matches.append({
@@ -70,8 +86,9 @@ def novelty_guard_node(state: AgentState) -> AgentState:
         AgentState: Updated agent state with novelty check results.
     """
     angle_options = state.get("angles", [])
-    memory_matches = get_memory_matches(angle_options)
-    domain_context = state.get("domain_context", {})
+    domain_context = state.get("domain_context")
+    _require_domain_scope(domain_context)
+    memory_matches = get_memory_matches(angle_options, domain_context)
     content_policy = state.get("content_policy", {})
     system_prompt = compose_prompt_for_state("novelty_guard", state)
     MEMORY_POLICY = {

@@ -31,6 +31,8 @@ class TopicNoveltyGuard:
         self,
         *,
         topic: str,
+        domain: str,
+        subdomain: str,
         angle: str | None = None,
         title: str | None = None,
         target_group: str | None = None,
@@ -50,6 +52,8 @@ class TopicNoveltyGuard:
         matches = self.vector_memory.query_similar(
             query_text=query_text,
             n_results=n_results,
+            domain=domain,
+            subdomain=subdomain,
         )
 
         max_similarity = max([m["similarity"] for m in matches], default=0.0)
