@@ -187,6 +187,94 @@ def test_content_writer_uses_state_topic_metadata_over_editable_package_fields(m
     assert result == {"data_writed": True}
 
 
+def test_content_writer_compensates_when_vector_write_fails(monkeypatch):
+    class CompensationManager(_FakeManager):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.deleted_content_ids = []
+
+        def save_embedding_content(self, record):
+            raise RuntimeError("vector boom")
+
+        def delete_content_by_id(self, content_id):
+            self.deleted_content_ids.append(content_id)
+
+    fake_manager = CompensationManager()
+    topic = _topic()
+
+    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
+    monkeypatch.setattr(
+        module,
+        "get_topic_metadata",
+        lambda _trends, _topic_id: {
+            "domain": topic.domain,
+            "subdomain": topic.subdomain,
+            "content_intent": topic.content_intent,
+            "risk_level": topic.risk_level,
+            "risk_flags": list(topic.risk_flags),
+        },
+    )
+    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
+    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
+
+    with pytest.raises(Exception, match="vector database chromadb"):
+        module.content_writer_node(
+            {
+                "review_status": "approved",
+                "trends": [topic],
+                "publish_package": _publish_package(),
+                "domain_context": {"profile_version": "wellness-v1"},
+                "r2_output": SimpleNamespace(
+                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
+                ),
+            }
+        )
+
+    assert fake_manager.deleted_content_ids == ["content-123"]
+    assert fake_manager.saved_records
+    assert fake_manager.embedding_records == []
+
+
+def test_content_writer_surfaces_compensation_failure(monkeypatch):
+    class FailingCompensationManager(_FakeManager):
+        def save_embedding_content(self, record):
+            raise RuntimeError("vector boom")
+
+        def delete_content_by_id(self, content_id):
+            raise RuntimeError("delete boom")
+
+    fake_manager = FailingCompensationManager()
+    topic = _topic()
+
+    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
+    monkeypatch.setattr(
+        module,
+        "get_topic_metadata",
+        lambda _trends, _topic_id: {
+            "domain": topic.domain,
+            "subdomain": topic.subdomain,
+            "content_intent": topic.content_intent,
+            "risk_level": topic.risk_level,
+            "risk_flags": list(topic.risk_flags),
+        },
+    )
+    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
+    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
+
+    with pytest.raises(RuntimeError, match="vector boom.*delete boom"):
+        module.content_writer_node(
+            {
+                "review_status": "approved",
+                "trends": [topic],
+                "publish_package": _publish_package(),
+                "domain_context": {"profile_version": "wellness-v1"},
+                "r2_output": SimpleNamespace(
+                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
+                ),
+            }
+        )
+
+
 @pytest.mark.parametrize(
     "state",
     [

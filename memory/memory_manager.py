@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import uuid
+import threading
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
@@ -42,33 +43,54 @@ _METRICS_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
 
 
 class XHSMemoryManager:
-    connections: dict[Path, sqlite3.Connection] = {}
+    connections: dict[tuple[Path, int], sqlite3.Connection] = {}
+    _connections_lock = threading.RLock()
 
     def __init__(self, db_path: str | Path = "data/xhs_memory.db"):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
     def connect(self) -> sqlite3.Connection:
-        key = self.db_path.resolve()
-        connection = self.connections.get(key)
-        if connection is None:
-            connection = sqlite3.connect(key, check_same_thread=False)
-            connection.row_factory = sqlite3.Row
-            connection.execute("PRAGMA foreign_keys = ON;")
-            self.connections[key] = connection
+        key = self._connection_key()
+        with self._connections_lock:
+            connection = self.connections.get(key)
+            if connection is None:
+                connection = sqlite3.connect(
+                    key[0],
+                    check_same_thread=False,
+                    timeout=30.0,
+                )
+                connection.row_factory = sqlite3.Row
+                connection.execute("PRAGMA foreign_keys = ON;")
+                connection.execute("PRAGMA busy_timeout = 30000;")
+                try:
+                    connection.execute("PRAGMA journal_mode = WAL;")
+                except sqlite3.OperationalError:
+                    pass
+                self.connections[key] = connection
         return connection
 
     def close(self) -> None:
-        key = self.db_path.resolve()
-        connection = self.connections.pop(key, None)
-        if connection is not None:
+        self.close_path(self.db_path)
+
+    @classmethod
+    def close_path(cls, db_path: str | Path) -> None:
+        resolved_path = Path(db_path).resolve()
+        with cls._connections_lock:
+            matching_keys = [key for key in cls.connections if key[0] == resolved_path]
+            connections = [cls.connections.pop(key) for key in matching_keys]
+
+        for connection in connections:
             connection.close()
 
     @classmethod
     def close_all(cls) -> None:
-        for key, connection in list(cls.connections.items()):
+        with cls._connections_lock:
+            connections = list(cls.connections.values())
+            cls.connections.clear()
+
+        for connection in connections:
             connection.close()
-            cls.connections.pop(key, None)
 
     def init_db(self, schema_path: str | Path = "memory/schema.sql") -> None:
         schema_path = Path(schema_path)
@@ -96,6 +118,9 @@ class XHSMemoryManager:
 
     def _table_columns(self, connection: sqlite3.Connection, table_name: str = "contents") -> set[str]:
         return {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
+
+    def _connection_key(self) -> tuple[Path, int]:
+        return (self.db_path.resolve(), threading.get_ident())
 
     def log_event(
         self,
@@ -199,7 +224,7 @@ class XHSMemoryManager:
                     json_dumps(record.strategy_tags),
                     record.compliance_status,
                     record.embedding_text,
-                    json_dumps(record.metadata),
+                json_dumps(record.metadata),
                 ),
             )
             conn.commit()

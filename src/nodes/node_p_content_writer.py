@@ -114,8 +114,18 @@ def content_writer_node(state: AgentState) -> AgentState:
 
     try:
         database.save_embedding_content(record)
-    except Exception as e:
-        raise Exception(f"Error occurred while saving generated content to vector database chromadb: {e}")
+    except Exception as vector_error:
+        try:
+            database.delete_content_by_id(record.content_id)
+        except Exception as cleanup_error:
+            raise RuntimeError(
+                "Error occurred while saving generated content to vector database chromadb: "
+                f"{vector_error}; compensation delete failed: {cleanup_error}"
+            ) from vector_error
+
+        raise RuntimeError(
+            f"Error occurred while saving generated content to vector database chromadb: {vector_error}"
+        ) from vector_error
 
     if database.get_content_by_id(record.content_id) and database.get_embedding_content_by_id(record.content_id):
         print(f"Content with ID {record.content_id}, with title {record.title} successfully saved to the structured and embedding database.")

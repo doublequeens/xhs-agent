@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+import threading
 
 from memory.memory_manager import XHSMemoryManager
 from memory.models import ContentRecord
@@ -21,13 +23,13 @@ def test_connections_are_keyed_by_resolved_path_and_close_methods_are_isolated(t
     conn2 = manager2.connect()
 
     assert conn1 is not conn2
-    assert db1.resolve() in manager1.connections
-    assert db2.resolve() in manager2.connections
+    assert (db1.resolve(), threading.get_ident()) in manager1.connections
+    assert (db2.resolve(), threading.get_ident()) in manager2.connections
 
     manager1.close()
 
-    assert db1.resolve() not in manager1.connections
-    assert db2.resolve() in manager2.connections
+    assert all(key[0] != db1.resolve() for key in manager1.connections)
+    assert any(key[0] == db2.resolve() for key in manager2.connections)
 
     XHSMemoryManager.close_all()
 
@@ -96,3 +98,49 @@ def test_save_generated_content_roundtrips_domain_metadata(tmp_path):
         "profile_version": "wellness-v1",
         "risk_level": "medium",
     }
+
+
+def test_log_event_is_thread_safe_across_workers(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    event_count = 64
+    worker_count = 16
+
+    def write_event(index: int) -> str:
+        return manager.log_event("threaded_log_event", payload={"index": index})
+
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        results = list(executor.map(write_event, range(event_count)))
+
+    assert len(results) == event_count
+    assert len(set(results)) == event_count
+
+    row = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE event_type = ?
+        """,
+        ("threaded_log_event",),
+    ).fetchone()
+
+    assert row[0] == event_count
+
+
+def test_delete_content_by_id_removes_saved_record(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-delete",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+
+    manager.save_generated_content(record)
+    assert manager.get_content_by_id("content-delete") is not None
+
+    manager.delete_content_by_id("content-delete")
+
+    assert manager.get_content_by_id("content-delete") is None
