@@ -409,3 +409,107 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["cover_copy"] == "cover"
     assert publish_package["title"] == "睡眠改善指南"
     assert publish_package["content"] == "body"
+
+
+def test_storyboards_generator_preserves_full_publish_package_and_frame_contract(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    required_frame_keys = {
+        "frame_id",
+        "narrative_role",
+        "frame_title",
+        "image_orientation",
+        "aspect_ratio",
+        "recommended_size",
+        "visual_description",
+        "character_action",
+        "scene_background",
+        "composition",
+        "text_area",
+        "on_image_copy",
+        "narration",
+        "image_prompt_cn",
+        "image_prompt_en",
+        "negative_prompt",
+        "continuity_note",
+    }
+
+    class FakeModel:
+        def execute(self, messages):
+            return {
+                "title": "wrong title",
+                "content": "wrong content",
+                "storyboards": [
+                    {
+                        "frame_id": "frame_001",
+                        "narrative_role": "封面钩子",
+                        "frame_title": "封面钩子",
+                        "image_orientation": "vertical",
+                        "aspect_ratio": "3:4",
+                        "recommended_size": "1080x1440",
+                        "visual_description": "粉红小蝾螈困在办公桌前",
+                        "character_action": "抱着水杯发呆",
+                        "scene_background": "办公桌边",
+                        "composition": "竖版 3:4 构图，上方留白",
+                        "text_area": "顶部 20% 留白放标题",
+                        "on_image_copy": "别再硬扛了",
+                        "narration": "久坐后先动一动再继续忙。",
+                        "image_prompt_cn": "中文提示词",
+                        "image_prompt_en": "English prompt",
+                        "negative_prompt": "realistic, horror",
+                        "continuity_note": "保持同一只粉红小蝾螈",
+                    }
+                ],
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    publish_package = {
+        "title": "久坐间隙活动指南",
+        "content": "body",
+        "topic_id": "tp_001",
+        "topic": "睡眠改善",
+        "angle_id": "ag_001",
+        "angle": "睡眠策略",
+        "target_group": "上班族",
+        "core_pain": "熬夜后疲惫",
+        "cover_copy": "cover",
+        "images": [],
+        "hashtags": ["#x"],
+        "notes": ["note"],
+        "storyboard_strategy": "scenario_companion",
+        "domain": "wellness",
+        "subdomain": "sleep",
+        "content_intent": "how_to",
+        "risk_level": "medium",
+        "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+    }
+
+    result = module.storyboards_generator_node(
+        {
+            "publish_package": publish_package,
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+        }
+    )
+
+    merged_package = result["publish_package"]
+    assert merged_package["title"] == publish_package["title"]
+    assert merged_package["content"] == publish_package["content"]
+    assert merged_package["topic_id"] == publish_package["topic_id"]
+    assert merged_package["topic"] == publish_package["topic"]
+    assert merged_package["angle_id"] == publish_package["angle_id"]
+    assert merged_package["angle"] == publish_package["angle"]
+    assert merged_package["target_group"] == publish_package["target_group"]
+    assert merged_package["core_pain"] == publish_package["core_pain"]
+    assert merged_package["cover_copy"] == publish_package["cover_copy"]
+    assert merged_package["images"] == publish_package["images"]
+    assert merged_package["hashtags"] == publish_package["hashtags"]
+    assert merged_package["notes"] == publish_package["notes"]
+    assert merged_package["storyboard_strategy"] == publish_package["storyboard_strategy"]
+    assert merged_package["domain"] == publish_package["domain"]
+    assert merged_package["subdomain"] == publish_package["subdomain"]
+    assert merged_package["content_intent"] == publish_package["content_intent"]
+    assert merged_package["risk_level"] == publish_package["risk_level"]
+    assert merged_package["risk_flags"] == publish_package["risk_flags"]
+    assert set(merged_package["storyboards"][0]) == required_frame_keys

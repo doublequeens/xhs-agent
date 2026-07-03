@@ -3,37 +3,38 @@ from pathlib import Path
 import pytest
 
 from src.domain import get_domain_profile
-
-
-ACTIVE_TASKS = (
-    "trend_scout",
-    "angle_strategist",
-    "novelty_guard",
-    "virality_scorer",
-    "outline_architect",
-    "draft_writer",
-    "title_lab",
-    "title_ranker",
-    "r1_reflector",
-    "r2_compliance",
-    "decision_engine",
-    "hashtag_seo",
-    "assembler",
-    "storyboards_generator",
-)
+from src.prompts.composer import TASK_FILES
 
 
 @pytest.mark.parametrize("domain", ["beauty", "wellness", "healthy_lifestyle"])
-def test_all_active_tasks_compose_for_each_domain_profile(domain):
+def test_all_task_files_compose_for_each_domain_profile(domain):
     from src.prompts.composer import compose_prompt
 
     profile = get_domain_profile(domain)
+    composed_count = 0
 
-    for task in ACTIVE_TASKS:
+    for task in TASK_FILES:
         prompt = compose_prompt(task, profile)
         assert prompt
         assert profile.version in prompt
         assert f'"domain": "{profile.domain}"' in prompt
+        composed_count += 1
+
+    assert composed_count == 15
+
+
+def test_task_profile_matrix_has_45_successful_compositions():
+    from src.prompts.composer import compose_prompt
+
+    success_count = 0
+
+    for domain in ("beauty", "wellness", "healthy_lifestyle"):
+        profile = get_domain_profile(domain)
+        for task in TASK_FILES:
+            assert compose_prompt(task, profile)
+            success_count += 1
+
+    assert success_count == 45
 
 
 def test_compose_prompt_includes_task_safety_and_profile_payload_for_wellness():
@@ -67,7 +68,7 @@ def test_compose_prompt_rejects_unknown_task():
 
 
 def test_compose_prompt_surfaces_missing_fragment_path(monkeypatch, tmp_path):
-    from src.prompts import composer
+    import src.prompts.composer as composer
 
     base_dir = tmp_path / "base"
     fragment_dir = tmp_path / "fragments"
@@ -86,7 +87,7 @@ def test_compose_prompt_surfaces_missing_fragment_path(monkeypatch, tmp_path):
 
 
 def test_compose_prompt_surfaces_missing_base_path(monkeypatch, tmp_path):
-    from src.prompts import composer
+    import src.prompts.composer as composer
 
     base_dir = tmp_path / "base"
     fragment_dir = tmp_path / "fragments"
@@ -105,26 +106,39 @@ def test_compose_prompt_surfaces_missing_base_path(monkeypatch, tmp_path):
     assert str(base_dir / "draft_writer.txt") in str(excinfo.value)
 
 
+def test_prompts_package_keeps_only_legacy_loader_exports():
+    import src.prompts as prompts
+
+    assert hasattr(prompts, "all_prompts")
+    assert not hasattr(prompts, "compose_prompt")
+    assert not hasattr(prompts, "compose_prompt_for_state")
+    assert not hasattr(prompts, "serialize_prompt_value")
+    assert not hasattr(prompts, "__all__")
+
+
 @pytest.mark.parametrize(
-    "node_path",
+    ("node_path", "import_line"),
     [
-        "src/nodes/node_a_trend_scout.py",
-        "src/nodes/node_b_angle_strategist.py",
-        "src/nodes/node_b_novelty_guard.py",
-        "src/nodes/node_c_virality_scorer.py",
-        "src/nodes/node_d_outline_architect.py",
-        "src/nodes/node_e_draft_writer.py",
-        "src/nodes/node_f_title_lab.py",
-        "src/nodes/node_g_title_ranker.py",
-        "src/nodes/node_h_r1_reflector.py",
-        "src/nodes/node_i_r2_compliance.py",
-        "src/nodes/node_j_decision_engine.py",
-        "src/nodes/node_k_hashtag_seo.py",
-        "src/nodes/node_o_assembler.py",
-        "src/nodes/node_o_storyboards_generator.py",
+        ("src/nodes/node_a_trend_scout.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_b_angle_strategist.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_b_novelty_guard.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_c_virality_scorer.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_d_outline_architect.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_e_draft_writer.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_f_title_lab.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_g_title_ranker.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_h_r1_reflector.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_i_r2_compliance.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_j_decision_engine.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_k_hashtag_seo.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_o_assembler.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
+        ("src/nodes/node_o_storyboards_generator.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
     ],
 )
-def test_migrated_active_nodes_do_not_index_all_prompts(node_path):
+def test_migrated_active_nodes_use_direct_composer_imports(node_path, import_line):
     source = Path(node_path).read_text(encoding="utf-8")
 
     assert "all_prompts[" not in source
+    assert "from src.prompts import compose_prompt_for_state" not in source
+    assert "from src.prompts import serialize_prompt_value" not in source
+    assert import_line in source

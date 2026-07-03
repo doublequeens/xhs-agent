@@ -4,7 +4,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, HashTagOutput
-from src.prompts import compose_prompt_for_state, serialize_prompt_value
+from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 def hashtag_node(state: AgentState) -> AgentState:
     """

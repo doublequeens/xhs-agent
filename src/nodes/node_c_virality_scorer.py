@@ -3,7 +3,7 @@ from langchain_core.prompts import PromptTemplate
 
 from src.schemas import AgentState, ScoreResult
 from src.models import get_model
-from src.prompts import compose_prompt_for_state, serialize_prompt_value
+from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 def virality_scorer_node(state: AgentState) -> AgentState:
     """

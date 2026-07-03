@@ -5,7 +5,7 @@ from typing import List
 from memory import vector_memory
 from src.models import get_model
 from src.schemas import AgentState, AngleStrategy, NoveltyCheckResults, NoveltyMatches
-from src.prompts import compose_prompt_for_state, serialize_prompt_value
+from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from memory.vector_memory import XHSVectorMemory
 from memory.embedding import build_embedding_text
 

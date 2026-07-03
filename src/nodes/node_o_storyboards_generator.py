@@ -4,7 +4,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 from src.models import get_model
 from src.schemas import AgentState
-from src.prompts import compose_prompt_for_state, serialize_prompt_value
+from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 def storyboards_generator_node(state: AgentState) -> AgentState:
     """
@@ -46,4 +46,6 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     ]
 
     storyboard_json = get_model().execute(messages)
-    return {"publish_package": storyboard_json}
+    merged_publish_package = dict(publish_package)
+    merged_publish_package["storyboards"] = storyboard_json.get("storyboards", [])
+    return {"publish_package": merged_publish_package}
