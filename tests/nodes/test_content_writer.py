@@ -53,6 +53,17 @@ def _publish_package(**overrides):
     return package
 
 
+def _topic(topic_id="tp_001"):
+    return SimpleNamespace(
+        topic_id=topic_id,
+        domain="wellness",
+        subdomain="sleep",
+        content_intent="how_to",
+        risk_level="medium",
+        risk_flags=["medical-adjacent", "sleep-adjacent"],
+    )
+
+
 def test_content_writer_requires_approved_review_before_writing(monkeypatch):
     def fail_manager(*args, **kwargs):
         raise AssertionError("manager should not be constructed before approval")
@@ -69,14 +80,70 @@ def test_content_writer_requires_approved_review_before_writing(monkeypatch):
         )
 
 
-def test_content_writer_uses_deterministic_metadata_and_r2_compliance_status(monkeypatch):
+@pytest.mark.parametrize(
+    "state,expected_message",
+    [
+        (
+            {
+                "review_status": "approved",
+                "publish_package": _publish_package(),
+                "domain_context": {"profile_version": "wellness-v1"},
+                "r2_output": SimpleNamespace(
+                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
+                ),
+            },
+            "state.trends",
+        ),
+        (
+            {
+                "review_status": "approved",
+                "trends": [_topic()],
+                "publish_package": _publish_package(
+                    topic_id="",
+                ),
+                "domain_context": {"profile_version": "wellness-v1"},
+                "r2_output": SimpleNamespace(
+                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
+                ),
+            },
+            "topic_id",
+        ),
+    ],
+)
+def test_content_writer_requires_trends_and_topic_id_before_manager_creation(
+    monkeypatch, state, expected_message
+):
+    def fail_manager(*args, **kwargs):
+        raise AssertionError("manager should not be constructed before metadata validation")
+
+    monkeypatch.setattr(module, "XHSMemoryManager", fail_manager)
+
+    with pytest.raises(ValueError, match=expected_message):
+        module.content_writer_node(state)
+
+
+def test_content_writer_uses_state_topic_metadata_over_editable_package_fields(monkeypatch):
     fake_manager = _FakeManager()
     captured = {}
+    topic = _topic()
+    trends = [topic]
 
     def build_manager(*args, **kwargs):
         return fake_manager
 
+    def fake_get_topic_metadata(received_trends, topic_id):
+        assert received_trends == trends
+        assert topic_id == "tp_001"
+        return {
+            "domain": topic.domain,
+            "subdomain": topic.subdomain,
+            "content_intent": topic.content_intent,
+            "risk_level": topic.risk_level,
+            "risk_flags": list(topic.risk_flags),
+        }
+
     monkeypatch.setattr(module, "XHSMemoryManager", build_manager)
+    monkeypatch.setattr(module, "get_topic_metadata", fake_get_topic_metadata)
     monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
     monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
 
@@ -89,7 +156,13 @@ def test_content_writer_uses_deterministic_metadata_and_r2_compliance_status(mon
     result = module.content_writer_node(
         {
             "review_status": "approved",
-            "publish_package": _publish_package(),
+            "trends": trends,
+            "publish_package": _publish_package(
+                domain="beauty",
+                subdomain="skincare",
+                content_intent="experience",
+                risk_level="low",
+            ),
             "domain_context": {"profile_version": "wellness-v1"},
             "r2_output": SimpleNamespace(
                 compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
@@ -114,26 +187,41 @@ def test_content_writer_uses_deterministic_metadata_and_r2_compliance_status(mon
     assert result == {"data_writed": True}
 
 
-def test_content_writer_uses_legacy_compliance_fallback_when_r2_is_missing(monkeypatch):
-    fake_manager = _FakeManager()
-    captured = {}
-
-    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
-    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
-    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
-
-    def capture_save(record):
-        captured["record"] = record
-        fake_manager.saved_records.append(record)
-
-    fake_manager.save_generated_content = capture_save
-
-    module.content_writer_node(
+@pytest.mark.parametrize(
+    "state",
+    [
         {
             "review_status": "approved",
-            "publish_package": _publish_package(compliance_status="compliant_with_minor_edits"),
+            "trends": [_topic()],
+            "publish_package": _publish_package(
+                compliance_status="fully_compliant",
+                domain="beauty",
+                subdomain="skincare",
+                content_intent="experience",
+                risk_level="low",
+            ),
             "domain_context": {"profile_version": "wellness-v1"},
-        }
-    )
+        },
+        {
+            "review_status": "approved",
+            "trends": [_topic()],
+            "publish_package": _publish_package(
+                compliance_status="compliant_with_minor_edits",
+                domain="beauty",
+                subdomain="skincare",
+                content_intent="experience",
+                risk_level="low",
+            ),
+            "domain_context": {"profile_version": "wellness-v1"},
+            "r2_output": SimpleNamespace(compliance_audit="bad"),
+        },
+    ],
+)
+def test_content_writer_requires_real_r2_compliance_before_manager_creation(monkeypatch, state):
+    def fail_manager(*args, **kwargs):
+        raise AssertionError("manager should not be constructed before R2 validation")
 
-    assert captured["record"].compliance_status == "compliant_with_minor_edits"
+    monkeypatch.setattr(module, "XHSMemoryManager", fail_manager)
+
+    with pytest.raises(ValueError, match="r2_output.compliance_audit.compliance_status"):
+        module.content_writer_node(state)
