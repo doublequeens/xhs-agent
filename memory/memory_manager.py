@@ -459,7 +459,14 @@ class XHSMemoryManager:
 
         return record
 
-    def get_recent_contents(self, days: int = 14, limit: int = 30) -> list[dict[str, Any]]:
+    def get_recent_contents(
+        self,
+        *,
+        domain: str,
+        subdomain: str,
+        days: int = 14,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
         since = (datetime.now(timezone(timedelta(hours=8))) - timedelta(days=days)).isoformat()
         with self.connect() as conn:
             rows = conn.execute(
@@ -472,21 +479,36 @@ class XHSMemoryManager:
                     topic,
                     angle,
                     title,
+                    domain,
+                    subdomain,
+                    content_intent,
+                    profile_version,
+                    risk_level,
                     target_group,
                     core_pain,
                     hashtags_json,
-                    strategy_tags_json
+                    strategy_tags_json,
+                    content_format,
+                    visual_style,
+                    card_count
                 FROM contents
                 WHERE created_at >= ?
+                  AND domain = ?
+                  AND subdomain = ?
                 ORDER BY created_at DESC
                 LIMIT ?
                 """,
-                (since, limit),
+                (since, domain, subdomain, limit),
             ).fetchall()
 
         return [self._content_row_to_dict(row) for row in rows]
 
-    def get_high_performing_contents(self, limit: int = 20) -> list[dict[str, Any]]:
+    def get_high_performing_contents(
+        self,
+        *,
+        domain: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -495,29 +517,44 @@ class XHSMemoryManager:
                     c.topic,
                     c.angle,
                     c.title,
+                    c.domain,
+                    c.subdomain,
+                    c.content_intent,
+                    c.profile_version,
+                    c.risk_level,
                     c.target_group,
                     c.strategy_tags_json,
                     c.hashtags_json,
+                    c.content_format,
+                    c.visual_style,
+                    c.card_count,
                     m.views,
                     m.likes,
                     m.saves,
                     m.comments,
                     m.shares,
+                    m.followers_gained,
                     m.save_rate,
                     m.engagement_rate,
                     m.performance_level
                 FROM contents c
                 JOIN metrics m ON c.content_id = m.content_id
                 WHERE m.performance_level = 'high'
+                  AND c.domain = ?
                 ORDER BY m.views DESC
                 LIMIT ?
                 """,
-                (limit,),
+                (domain, limit),
             ).fetchall()
 
         return [self._performance_row_to_dict(row) for row in rows]
 
-    def get_low_performing_contents(self, limit: int = 20) -> list[dict[str, Any]]:
+    def get_low_performing_contents(
+        self,
+        *,
+        domain: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
         with self.connect() as conn:
             rows = conn.execute(
                 """
@@ -526,37 +563,88 @@ class XHSMemoryManager:
                     c.topic,
                     c.angle,
                     c.title,
+                    c.domain,
+                    c.subdomain,
+                    c.content_intent,
+                    c.profile_version,
+                    c.risk_level,
                     c.target_group,
                     c.strategy_tags_json,
                     c.hashtags_json,
+                    c.content_format,
+                    c.visual_style,
+                    c.card_count,
                     m.views,
                     m.likes,
                     m.saves,
                     m.comments,
                     m.shares,
+                    m.followers_gained,
                     m.save_rate,
                     m.engagement_rate,
                     m.performance_level
                 FROM contents c
                 JOIN metrics m ON c.content_id = m.content_id
                 WHERE m.performance_level = 'low'
+                  AND c.domain = ?
                 ORDER BY m.views ASC
+                LIMIT ?
+                """,
+                (domain, limit),
+            ).fetchall()
+
+        return [self._performance_row_to_dict(row) for row in rows]
+
+    def get_global_format_patterns(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    c.title,
+                    c.content_format,
+                    c.visual_style,
+                    c.card_count,
+                    m.views,
+                    m.likes,
+                    m.saves,
+                    m.comments,
+                    m.shares,
+                    m.followers_gained,
+                    m.like_rate,
+                    m.save_rate,
+                    m.comment_rate,
+                    m.share_rate,
+                    m.engagement_rate,
+                    m.performance_level
+                FROM contents c
+                JOIN metrics m ON c.content_id = m.content_id
+                ORDER BY c.created_at DESC
                 LIMIT ?
                 """,
                 (limit,),
             ).fetchall()
 
-        return [self._performance_row_to_dict(row) for row in rows]
+        return [dict(row) for row in rows]
 
     def build_memory_context(
         self,
+        *,
+        domain: str,
+        subdomain: str,
         recent_days: int = 14,
         recent_limit: int = 30,
         performance_limit: int = 20,
+        global_format_limit: int = 20,
     ) -> MemoryContext:
-        recent_contents = self.get_recent_contents(days=recent_days, limit=recent_limit)
-        high_contents = self.get_high_performing_contents(limit=performance_limit)
-        low_contents = self.get_low_performing_contents(limit=performance_limit)
+        recent_contents = self.get_recent_contents(
+            domain=domain,
+            subdomain=subdomain,
+            days=recent_days,
+            limit=recent_limit,
+        )
+        high_contents = self.get_high_performing_contents(domain=domain, limit=performance_limit)
+        low_contents = self.get_low_performing_contents(domain=domain, limit=performance_limit)
+        global_format_patterns = self.get_global_format_patterns(limit=global_format_limit)
 
         recent_topics = self._unique_non_empty([x.get("topic") for x in recent_contents])
         recent_angles = self._unique_non_empty([x.get("angle") for x in recent_contents])
@@ -567,11 +655,14 @@ class XHSMemoryManager:
         recent_hashtags = self._unique_non_empty(recent_hashtags)
 
         return MemoryContext(
-            recent_contents=recent_contents,
-            recent_topics_to_avoid=recent_topics,
-            recent_angles_to_avoid=recent_angles,
-            high_performing_patterns=self._extract_patterns(high_contents),
-            low_performing_patterns=self._extract_patterns(low_contents),
+            same_subdomain_recent=recent_contents,
+            same_domain_patterns=[
+                *self._extract_domain_patterns(high_contents, performance_signal="high"),
+                *self._extract_domain_patterns(low_contents, performance_signal="low"),
+            ],
+            global_format_patterns=self._extract_global_format_patterns(global_format_patterns),
+            topics_to_avoid=recent_topics,
+            angles_to_avoid=recent_angles,
             recent_hashtags=recent_hashtags,
         )
 
@@ -663,20 +754,60 @@ class XHSMemoryManager:
         data["strategy_tags"] = json_loads(data.pop("strategy_tags_json", None), [])
         return data
 
-    def _extract_patterns(self, contents: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """
-        MVP：先把高/低表现内容直接转为 pattern。
-        后面可以让 LLM 对这些内容做聚类总结。
-        """
+    def _extract_domain_patterns(
+        self,
+        contents: list[dict[str, Any]],
+        *,
+        performance_signal: str,
+    ) -> list[dict[str, Any]]:
         patterns: list[dict[str, Any]] = []
         for item in contents:
             patterns.append(
                 {
+                    "content_id": item.get("content_id"),
+                    "domain": item.get("domain"),
+                    "subdomain": item.get("subdomain"),
                     "topic": item.get("topic"),
                     "angle": item.get("angle"),
                     "title": item.get("title"),
+                    "content_intent": item.get("content_intent"),
+                    "content_format": item.get("content_format"),
+                    "visual_style": item.get("visual_style"),
+                    "card_count": item.get("card_count"),
                     "strategy_tags": item.get("strategy_tags", []),
+                    "views": item.get("views"),
+                    "likes": item.get("likes"),
+                    "saves": item.get("saves"),
+                    "comments": item.get("comments"),
+                    "shares": item.get("shares"),
+                    "followers_gained": item.get("followers_gained"),
                     "save_rate": item.get("save_rate"),
+                    "engagement_rate": item.get("engagement_rate"),
+                    "performance_level": item.get("performance_level"),
+                    "performance_signal": performance_signal,
+                }
+            )
+        return patterns
+
+    def _extract_global_format_patterns(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        patterns: list[dict[str, Any]] = []
+        for item in rows:
+            patterns.append(
+                {
+                    "title": item.get("title"),
+                    "content_format": item.get("content_format"),
+                    "visual_style": item.get("visual_style"),
+                    "card_count": item.get("card_count"),
+                    "views": item.get("views"),
+                    "likes": item.get("likes"),
+                    "saves": item.get("saves"),
+                    "comments": item.get("comments"),
+                    "shares": item.get("shares"),
+                    "followers_gained": item.get("followers_gained"),
+                    "like_rate": item.get("like_rate"),
+                    "save_rate": item.get("save_rate"),
+                    "comment_rate": item.get("comment_rate"),
+                    "share_rate": item.get("share_rate"),
                     "engagement_rate": item.get("engagement_rate"),
                     "performance_level": item.get("performance_level"),
                 }

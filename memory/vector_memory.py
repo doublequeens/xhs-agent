@@ -52,13 +52,20 @@ class XHSVectorMemory:
         query_text: str,
         n_results: int = 5,
         where: Optional[dict[str, Any]] = None,
+        domain: Optional[str] = None,
+        subdomain: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         embedding = embed_texts([query_text])[0]
+        where_filter = self._build_where_filter(
+            where=where,
+            domain=domain,
+            subdomain=subdomain,
+        )
 
         results = self.collection.query(
             query_embeddings=[embedding],
             n_results=n_results,
-            where=where,
+            where=where_filter,
             include=["documents", "metadatas", "distances"],
         )
 
@@ -106,3 +113,24 @@ class XHSVectorMemory:
             else:
                 safe[k] = str(v)
         return safe
+
+    def _build_where_filter(
+        self,
+        *,
+        where: Optional[dict[str, Any]],
+        domain: Optional[str],
+        subdomain: Optional[str],
+    ) -> Optional[dict[str, Any]]:
+        clauses: list[dict[str, Any]] = []
+        if where:
+            clauses.append(where)
+        if domain is not None:
+            clauses.append({"domain": {"$eq": domain}})
+        if subdomain is not None:
+            clauses.append({"subdomain": {"$eq": subdomain}})
+
+        if not clauses:
+            return None
+        if len(clauses) == 1:
+            return clauses[0]
+        return {"$and": clauses}

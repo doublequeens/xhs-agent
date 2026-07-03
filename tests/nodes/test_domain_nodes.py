@@ -4,9 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from memory.models import MemoryContext
 from src.domain import build_content_policy, get_domain_profile
 from src.domain.router import resolve_domain
 from src.nodes.node_a_00_domain_confirmation import domain_confirmation_node
+from src.nodes.node_a_01_retrieve_memory import retrieve_memory_node
 from src.nodes.node_a_00_domain_router import domain_router_node
 
 
@@ -220,3 +222,49 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
 
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         first.checkpointer.conn.execute("SELECT 1")
+
+
+def test_retrieve_memory_node_requires_domain_context():
+    with pytest.raises(ValueError, match="retrieve_memory_node requires state.domain_context with domain and subdomain"):
+        retrieve_memory_node({})
+
+
+def test_retrieve_memory_node_passes_domain_scope_to_memory_manager(monkeypatch):
+    captured = {}
+
+    class FakeManager:
+        def __init__(self, db_path):
+            captured["db_path"] = db_path
+
+        def init_db(self, schema_path):
+            captured["schema_path"] = schema_path
+
+        def build_memory_context(self, *, domain, subdomain, recent_days):
+            captured["build_args"] = {
+                "domain": domain,
+                "subdomain": subdomain,
+                "recent_days": recent_days,
+            }
+            return MemoryContext(
+                same_subdomain_recent=[{"content_id": "wellness-sleep-1"}],
+                same_domain_patterns=[{"performance_signal": "high"}],
+                global_format_patterns=[{"title": "format"}],
+                topics_to_avoid=["睡前仪式"],
+                angles_to_avoid=["上班族快速放松"],
+                recent_hashtags=["#睡眠改善"],
+            )
+
+    monkeypatch.setattr("src.nodes.node_a_01_retrieve_memory.XHSMemoryManager", FakeManager)
+
+    result = retrieve_memory_node({"domain_context": {"domain": "wellness", "subdomain": "sleep"}})
+
+    assert captured == {
+        "db_path": "data/xhs_memory.db",
+        "schema_path": "memory/schema.sql",
+        "build_args": {
+            "domain": "wellness",
+            "subdomain": "sleep",
+            "recent_days": 14,
+        },
+    }
+    assert result["memory_context"]["same_subdomain_recent"] == [{"content_id": "wellness-sleep-1"}]

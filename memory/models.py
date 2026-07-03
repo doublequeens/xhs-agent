@@ -75,9 +75,9 @@ class MetricsRecord:
 
 @dataclass
 class MemoryContext:
-    recent_contents: list[dict[str, Any]]
-    recent_topics_to_avoid: list[str]
-    recent_angles_to_avoid: list[str]
-    high_performing_patterns: list[dict[str, Any]]
-    low_performing_patterns: list[dict[str, Any]]
+    same_subdomain_recent: list[dict[str, Any]]
+    same_domain_patterns: list[dict[str, Any]]
+    global_format_patterns: list[dict[str, Any]]
+    topics_to_avoid: list[str]
+    angles_to_avoid: list[str]
     recent_hashtags: list[str]
