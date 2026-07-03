@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import threading
@@ -179,6 +180,28 @@ def test_delete_content_by_id_removes_saved_record(tmp_path):
     assert manager.get_content_by_id("content-delete") is None
 
 
+def test_delete_content_by_id_missing_twice_records_attempts_without_fk(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    manager.delete_content_by_id("missing-content")
+    manager.delete_content_by_id("missing-content")
+
+    rows = manager.connect().execute(
+        """
+        SELECT content_id, payload_json
+        FROM memory_events
+        WHERE event_type = ?
+        ORDER BY event_time
+        """,
+        ("content_deleted",),
+    ).fetchall()
+
+    assert len(rows) == 2
+    assert all(row[0] is None for row in rows)
+    assert all(json.loads(row[1]) == {"deleted_content_id": "missing-content"} for row in rows)
+
+
 def test_delete_content_by_id_rolls_back_when_event_insert_fails(tmp_path, monkeypatch):
     manager = XHSMemoryManager(tmp_path / "memory.db")
     manager.init_db(SCHEMA_PATH)
@@ -208,6 +231,164 @@ def test_delete_content_by_id_rolls_back_when_event_insert_fails(tmp_path, monke
         ("content-delete-rollback",),
     ).fetchone()
     assert row[0] == 1
+
+
+def test_mark_reviewed_rolls_back_when_event_insert_fails(tmp_path, monkeypatch):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-reviewed",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    monkeypatch.setattr(memory_manager_module, "_insert_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("event boom")))
+
+    with pytest.raises(RuntimeError, match="event boom"):
+        manager.mark_reviewed("content-reviewed")
+
+    content = manager.get_content_by_id("content-reviewed")
+    assert content is not None
+    assert content["status"] == "generated"
+
+
+def test_mark_reviewed_records_event_on_success(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-reviewed-success",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    manager.mark_reviewed("content-reviewed-success")
+
+    content = manager.get_content_by_id("content-reviewed-success")
+    assert content is not None
+    assert content["status"] == "reviewed"
+    row = manager.connect().execute(
+        """
+        SELECT content_id, payload_json
+        FROM memory_events
+        WHERE event_type = ?
+        ORDER BY event_time DESC
+        LIMIT 1
+        """,
+        ("content_reviewed",),
+    ).fetchone()
+    assert row[0] == "content-reviewed-success"
+
+
+def test_mark_published_rolls_back_when_event_insert_fails(tmp_path, monkeypatch):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-published",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    monkeypatch.setattr(memory_manager_module, "_insert_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("event boom")))
+
+    with pytest.raises(RuntimeError, match="event boom"):
+        manager.mark_published("content-published", post_id="post-1", url="https://example.com")
+
+    content = manager.get_content_by_id("content-published")
+    assert content is not None
+    assert content["status"] == "generated"
+    assert content["post_id"] is None
+    assert content["url"] is None
+
+
+def test_mark_published_records_event_on_success(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-published-success",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    manager.mark_published("content-published-success", post_id="post-1", url="https://example.com")
+
+    content = manager.get_content_by_id("content-published-success")
+    assert content is not None
+    assert content["status"] == "published"
+    assert content["post_id"] == "post-1"
+    assert content["url"] == "https://example.com"
+    row = manager.connect().execute(
+        """
+        SELECT content_id
+        FROM memory_events
+        WHERE event_type = ?
+        ORDER BY event_time DESC
+        LIMIT 1
+        """,
+        ("content_published",),
+    ).fetchone()
+    assert row[0] == "content-published-success"
+
+
+def test_update_metrics_rolls_back_when_event_insert_fails(tmp_path, monkeypatch):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-metrics",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    monkeypatch.setattr(memory_manager_module, "_insert_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("event boom")))
+
+    with pytest.raises(RuntimeError, match="event boom"):
+        manager.update_metrics("content-metrics", views=100, likes=10, saves=5, comments=1)
+
+    row = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM metrics
+        WHERE content_id = ?
+        """,
+        ("content-metrics",),
+    ).fetchone()
+    assert row[0] == 0
+
+
+def test_update_metrics_records_event_on_success(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-metrics-success",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    metrics = manager.update_metrics("content-metrics-success", views=100, likes=10, saves=5, comments=1)
+
+    assert metrics.performance_level in {"high", "medium", "low"}
+    row = manager.connect().execute(
+        """
+        SELECT content_id
+        FROM memory_events
+        WHERE event_type = ?
+        ORDER BY event_time DESC
+        LIMIT 1
+        """,
+        ("metrics_updated",),
+    ).fetchone()
+    assert row[0] == "content-metrics-success"
 
 
 def test_save_and_delete_create_exactly_one_event_each(tmp_path):

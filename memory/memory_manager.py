@@ -296,20 +296,20 @@ class XHSMemoryManager:
     
     def delete_content_by_id(self, content_id: str) -> None:
         with self.connect() as conn:
-            _insert_event(
-                conn,
-                f"evt_{uuid.uuid4().hex[:12]}",
-                content_id,
-                "content_deleted",
-                utc_now_iso(),
-                {"deleted_content_id": content_id},
-            )
-            conn.execute(
+            _delete_result = conn.execute(
                 """
                 DELETE FROM contents
                 WHERE content_id = ?
                 """,
                 (content_id,),
+            )
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                None,
+                "content_deleted",
+                utc_now_iso(),
+                {"deleted_content_id": content_id},
             )
 
     def mark_reviewed(self, content_id: str) -> None:
@@ -322,9 +322,14 @@ class XHSMemoryManager:
                 """,
                 ("reviewed", utc_now_iso(), content_id),
             )
-            conn.commit()
-
-        self.log_event("content_reviewed", content_id)
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                content_id,
+                "content_reviewed",
+                utc_now_iso(),
+                {"content_id": content_id},
+            )
 
     def mark_published(
         self,
@@ -348,13 +353,14 @@ class XHSMemoryManager:
                     content_id,
                 ),
             )
-            conn.commit()
-
-        self.log_event(
-            event_type="content_published",
-            content_id=content_id,
-            payload={"post_id": post_id, "url": url},
-        )
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                content_id,
+                "content_published",
+                utc_now_iso(),
+                {"post_id": post_id, "url": url},
+            )
 
     def update_metrics(
         self,
@@ -434,21 +440,22 @@ class XHSMemoryManager:
                     record.updated_at,
                 ),
             )
-            conn.commit()
-
-        self.log_event(
-            event_type="metrics_updated",
-            content_id=content_id,
-            payload={
-                "views": views,
-                "likes": likes,
-                "saves": saves,
-                "comments": comments,
-                "shares": shares,
-                "performance_level": performance_level,
-                **rates,
-            },
-        )
+            _insert_event(
+                conn,
+                f"evt_{uuid.uuid4().hex[:12]}",
+                content_id,
+                "metrics_updated",
+                utc_now_iso(),
+                {
+                    "views": views,
+                    "likes": likes,
+                    "saves": saves,
+                    "comments": comments,
+                    "shares": shares,
+                    "performance_level": performance_level,
+                    **rates,
+                },
+            )
 
         return record
 
