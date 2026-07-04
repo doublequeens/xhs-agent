@@ -63,3 +63,15 @@ def test_find_policy_violations_does_not_join_indicator_context_across_sentences
     issues = find_policy_violations("这项指标用于记录活动完成度。说明身体感受时请保持客观。")
 
     assert issues == []
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "保证有效沟通比硬撑更重要。",
+        "指标说明放在下一页，结果随后再看。",
+        "化验单代表的是上次检查结果。",
+    ],
+)
+def test_find_policy_violations_avoids_benign_policy_phrases(text):
+    assert find_policy_violations(text) == []

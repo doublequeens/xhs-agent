@@ -16,13 +16,44 @@ def _build_risk_context(state: AgentState, publish_package: dict) -> dict:
     }
 
 
-def _merge_publish_package(base: dict, patch: dict) -> dict:
+def _merge_publish_package(base: dict, patch: dict, *, replace_storyboards: bool = False) -> dict:
     merged = dict(base)
     for key, value in patch.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+        if key == "storyboards" and replace_storyboards:
+            merged[key] = value
+        elif key == "storyboards" and isinstance(value, list) and isinstance(merged.get(key), list):
+            merged[key] = _merge_storyboards(merged[key], value)
+        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
             merged[key] = _merge_publish_package(merged[key], value)
         else:
             merged[key] = value
+    return merged
+
+
+def _merge_storyboards(base: list, patch: list) -> list:
+    merged = list(base)
+    index_by_frame_id = {
+        frame.get("frame_id"): index
+        for index, frame in enumerate(merged)
+        if isinstance(frame, dict) and frame.get("frame_id")
+    }
+
+    for patch_index, patch_frame in enumerate(patch):
+        frame_id = patch_frame.get("frame_id") if isinstance(patch_frame, dict) else None
+        if frame_id:
+            target_index = index_by_frame_id.get(frame_id)
+        else:
+            target_index = patch_index if patch_index < len(merged) else None
+
+        if target_index is None:
+            if frame_id:
+                index_by_frame_id[frame_id] = len(merged)
+            merged.append(patch_frame)
+        elif isinstance(merged[target_index], dict) and isinstance(patch_frame, dict):
+            merged[target_index] = _merge_publish_package(merged[target_index], patch_frame)
+        else:
+            merged[target_index] = patch_frame
+
     return merged
 
 
@@ -149,7 +180,11 @@ def human_review_node(state: AgentState) -> AgentState:
         prior_publish_package = publish_package
         edited_publish_package = review_result.get("edited_publish_package")
         if edited_publish_package is not None:
-            publish_package = _merge_publish_package(publish_package, edited_publish_package)
+            publish_package = _merge_publish_package(
+                publish_package,
+                edited_publish_package,
+                replace_storyboards=review_result.get("replace_storyboards") is True,
+            )
             visible_text_edited = visible_text_edited or _has_visible_text_edits(
                 prior_publish_package,
                 publish_package,

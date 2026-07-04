@@ -29,8 +29,8 @@ _RULE_SPECS: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     (
         "test_interpretation",
         re.compile(
-            r"(指标.{0,24}?说明(?=.{0,8}?(身体|健康|疾病|异常|结果|状况|问题))"
-            r"|化验.{0,24}?代表(?=.{0,8}?(身体|健康|疾病|异常|结果|状况|问题)))"
+            r"(指标.{0,24}?说明(?=.{0,8}?(身体|健康|疾病|异常|状况|问题))"
+            r"|化验.{0,24}?代表(?=.{0,8}?(身体|健康|疾病|异常|状况|问题)))"
         ),
         "Avoid interpreting medical indicators or lab test results.",
     ),
@@ -41,7 +41,10 @@ _RULE_SPECS: Final[tuple[tuple[str, re.Pattern[str], str], ...]] = (
     ),
     (
         "guaranteed_outcome",
-        re.compile(r"(保证(?=百分百|立即见效|有效|改善|治愈|根治|恢复|解决|缓解|好转)|一定会|百分百|永久|立即见效)"),
+        re.compile(
+            r"(保证(?=百分百|立即见效|有效(?:果|改善|治疗|缓解|治愈|根治|恢复|解决|\n|$)"
+            r"|改善|治愈|根治|恢复|解决|缓解|好转)|一定会|百分百|永久|立即见效)"
+        ),
         "Avoid guaranteed or immediate outcome claims.",
     ),
 )

@@ -37,6 +37,19 @@ def _publish_package(**overrides):
     return package
 
 
+def _storyboard_frame(frame_id, **overrides):
+    frame = {
+        "frame_id": frame_id,
+        "narrative_role": "opening",
+        "frame_title": f"标题 {frame_id}",
+        "on_image_copy": f"画面文字 {frame_id}",
+        "narration": f"旁白 {frame_id}",
+        "image_prompt_cn": f"原始提示词 {frame_id}",
+    }
+    frame.update(overrides)
+    return frame
+
+
 def _r2_input(title="经验分享", body="分享我的作息调整记录。"):
     return SimpleNamespace(
         content_snapshot=SimpleNamespace(
@@ -394,6 +407,25 @@ def test_merge_blocked_r2_tasks_removes_stale_deterministic_tasks_and_is_idempot
     assert second == first
 
 
+def test_deterministic_policy_task_keeps_title_location():
+    r2_output = SimpleNamespace(
+        content_snapshot=SimpleNamespace(
+            revised_title="保证立即见效",
+            revised_md="分享个人作息记录。",
+        ),
+        compliance_audit=SimpleNamespace(
+            required_fixes=[],
+            suggested_fixes=[],
+            matched_policy_rules=["guaranteed_outcome"],
+            unresolved_claims=[],
+        ),
+    )
+
+    tasks = decision_module._build_blocked_r2_tasks(r2_output)
+
+    assert tasks["mandatory"][0]["location_hint"] == "title"
+
+
 def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monkeypatch):
     def fake_interrupt(_payload):
         return {
@@ -449,6 +481,93 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
     }
     assert result["decision_output"].normalized_input.r2_input.revision_meta.round == 2
     assert result["decision_output"].normalized_input.r2_input.decision_trace.source_node == "HUMAN_REVIEW"
+
+
+def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypatch):
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {
+                "storyboards": [{"image_prompt_cn": "更新后的提示词"}],
+            },
+        },
+    )
+    original_frames = [_storyboard_frame("frame_001"), _storyboard_frame("frame_002")]
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(storyboards=original_frames),
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    merged_frames = result["publish_package"]["storyboards"]
+    assert merged_frames[0] == {
+        **original_frames[0],
+        "image_prompt_cn": "更新后的提示词",
+    }
+    assert merged_frames[1] == original_frames[1]
+
+
+def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(monkeypatch):
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {
+                "storyboards": [
+                    {"frame_id": "frame_002", "image_prompt_cn": "第二帧新提示"},
+                    _storyboard_frame("frame_003"),
+                ],
+            },
+        },
+    )
+    original_frames = [_storyboard_frame("frame_001"), _storyboard_frame("frame_002")]
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(storyboards=original_frames),
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    merged_frames = result["publish_package"]["storyboards"]
+    assert [frame["frame_id"] for frame in merged_frames] == [
+        "frame_001",
+        "frame_002",
+        "frame_003",
+    ]
+    assert merged_frames[1] == {
+        **original_frames[1],
+        "image_prompt_cn": "第二帧新提示",
+    }
+
+
+def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
+    replacement = [_storyboard_frame("replacement")]
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "replace_storyboards": True,
+            "edited_publish_package": {"storyboards": replacement},
+        },
+    )
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(
+                storyboards=[_storyboard_frame("frame_001"), _storyboard_frame("frame_002")]
+            ),
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    assert result["publish_package"]["storyboards"] == replacement
 
 
 def test_human_review_unchanged_approval_routes_to_final_guard(monkeypatch):

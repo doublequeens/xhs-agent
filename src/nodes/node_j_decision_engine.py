@@ -1,7 +1,7 @@
 import json
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
-from src.domain import get_topic_metadata
+from src.domain import find_policy_violations, get_topic_metadata
 from src.models import get_model
 from src.schemas import AgentState
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
@@ -70,12 +70,26 @@ def _dedupe_tasks(tasks):
     return deduped
 
 
+def _deterministic_policy_locations(r2_output):
+    content_snapshot = _get_value(r2_output, "content_snapshot")
+    title = _get_value(content_snapshot, "revised_title", "") or ""
+    body = _get_value(content_snapshot, "revised_md", "") or ""
+    locations = {
+        issue.rule_id: "title"
+        for issue in find_policy_violations(title)
+    }
+    for issue in find_policy_violations(body):
+        locations.setdefault(issue.rule_id, "draft_md")
+    return locations
+
+
 def _build_blocked_r2_tasks(r2_output):
     compliance_audit = _get_value(r2_output, "compliance_audit")
     required_fixes = list(_get_value(compliance_audit, "required_fixes", []) or [])
     suggested_fixes = list(_get_value(compliance_audit, "suggested_fixes", []) or [])
     matched_policy_rules = list(_get_value(compliance_audit, "matched_policy_rules", []) or [])
     unresolved_claims = list(_get_value(compliance_audit, "unresolved_claims", []) or [])
+    policy_locations = _deterministic_policy_locations(r2_output)
 
     mandatory = [
         {
@@ -111,7 +125,7 @@ def _build_blocked_r2_tasks(r2_output):
                 "source": "system",
                 "instruction": f"Remove or rewrite content that triggers policy rule `{rule_id}`.",
                 "severity": "high",
-                "location_hint": "draft_md",
+                "location_hint": policy_locations.get(rule_id, "draft_md"),
                 "rationale": "Deterministic policy guard blocked publish.",
                 "before": None,
                 "after_hint": "Use neutral, non-medical language without guarantees or dosage advice.",
