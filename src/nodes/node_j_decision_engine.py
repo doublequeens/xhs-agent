@@ -191,6 +191,61 @@ def _is_valid_r1_input(r1_input):
     ) and _is_valid_editorial_tasks(r1_input["editorial_tasks"])
 
 
+def _storyboard_visible_text_as_dicts(value):
+    return [
+        item.model_dump() if hasattr(item, "model_dump") else dict(item)
+        for item in list(value or [])
+    ]
+
+
+def _set_r1_storyboard_visible_text(r1_input, content_snapshot):
+    merged_r1_input = dict(r1_input)
+    content_candidate = dict(merged_r1_input["content_candidate"])
+    content_candidate["storyboard_visible_text"] = _storyboard_visible_text_as_dicts(
+        _get_value(content_snapshot, "storyboard_visible_text", [])
+    )
+    merged_r1_input["content_candidate"] = content_candidate
+    return merged_r1_input
+
+
+def _propagate_storyboard_visible_text(decision_output_json, decision_input):
+    storyboard_visible_text = _storyboard_visible_text_as_dicts(
+        _get_value(decision_input, "storyboard_visible_text", [])
+    )
+    if not storyboard_visible_text:
+        return decision_output_json
+
+    normalized_input = _get_value(decision_output_json, "normalized_input")
+    if not isinstance(normalized_input, dict):
+        return decision_output_json
+
+    destination_key = (
+        "r2_input"
+        if _get_value(decision_output_json, "next_node") == "R2_COMPLIANCE"
+        else "r1_input"
+    )
+    destination = normalized_input.get(destination_key)
+    if not isinstance(destination, dict):
+        return decision_output_json
+
+    container_key = (
+        "content_snapshot" if destination_key == "r2_input" else "content_candidate"
+    )
+    container = destination.get(container_key)
+    if not isinstance(container, dict):
+        return decision_output_json
+
+    updated_output = dict(decision_output_json)
+    updated_normalized = dict(normalized_input)
+    updated_destination = dict(destination)
+    updated_container = dict(container)
+    updated_container["storyboard_visible_text"] = storyboard_visible_text
+    updated_destination[container_key] = updated_container
+    updated_normalized[destination_key] = updated_destination
+    updated_output["normalized_input"] = updated_normalized
+    return updated_output
+
+
 def _merge_blocked_r2_tasks(r1_input, blocked_tasks):
     editorial_tasks = dict(r1_input["editorial_tasks"])
     existing_mandatory = [
@@ -252,6 +307,7 @@ def _enforce_blocked_r2_decision(decision_output_json, decision_input):
     r1_input = _get_value(normalized_input, "r1_input")
     if _get_value(decision_output_json, "next_node") == "R1_REFLECTOR" and _is_valid_r1_input(r1_input):
         decision_output_json["normalized_input"] = dict(normalized_input)
+        r1_input = _set_r1_storyboard_visible_text(r1_input, _get_value(decision_input, "content_snapshot"))
         decision_output_json["normalized_input"]["r1_input"] = _merge_blocked_r2_tasks(
             r1_input,
             blocked_tasks,
@@ -286,6 +342,9 @@ def _enforce_blocked_r2_decision(decision_output_json, decision_input):
                 "target_group": _get_value(content_snapshot, "target_group"),
                 "core_pain": _get_value(content_snapshot, "core_pain"),
                 "best_cover_copy": _get_value(content_snapshot, "best_cover_copy"),
+                "storyboard_visible_text": _storyboard_visible_text_as_dicts(
+                    _get_value(content_snapshot, "storyboard_visible_text", [])
+                ),
             },
             "editorial_tasks": blocked_tasks,
             "revision_meta": {
@@ -361,6 +420,11 @@ def decision_engine_node(state: AgentState) -> AgentState:
         decision_output_json = model.execute(messages8)
         if source == "R2_COMPLIANCE":
             decision_output_json = _enforce_blocked_r2_decision(decision_output_json, decision_input)
+        elif source == "R1_REFLECTOR":
+            decision_output_json = _propagate_storyboard_visible_text(
+                decision_output_json,
+                decision_input,
+            )
 
         try:
             normalized_input = decision_output_json.get("normalized_input", {})

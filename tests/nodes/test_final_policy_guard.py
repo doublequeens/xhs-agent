@@ -12,6 +12,7 @@ from src.nodes import node_i_r2_compliance as r2_module
 from src.nodes import node_j_decision_engine as decision_module
 from src.nodes import node_o_storyboards_generator as storyboard_module
 from src.nodes.node_q_human_review import route_after_human_review
+from src.schemas import R1Output
 
 
 def _publish_package(**overrides):
@@ -699,6 +700,158 @@ def test_unsafe_storyboard_edit_is_in_r2_input_and_cannot_route_to_writer(monkey
             "r2_output": r2_result["r2_output"],
         }
     ) == "R1_REFLECTOR"
+
+
+def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
+    storyboard_visible_text = [
+        {
+            "frame_id": "frame_001",
+            "frame_title": "保证立即见效",
+            "on_image_copy": "停药就好",
+            "narration": "每天250毫克",
+        }
+    ]
+    r2_output = SimpleNamespace(
+        content_snapshot=SimpleNamespace(
+            draft_id="draft_001",
+            revised_title="作息记录",
+            revised_md="正文",
+            topic_id="tp_001",
+            topic="睡眠改善",
+            angle_id="ag_001",
+            angle="作息调整",
+            target_group="上班族",
+            core_pain="熬夜后疲惫",
+            best_cover_copy="cover",
+            storyboard_visible_text=storyboard_visible_text,
+        ),
+        revision_meta=SimpleNamespace(
+            revision_id="rev_001",
+            round=2,
+            diff_summary=["blocked"],
+            next_actions=["repair"],
+        ),
+        compliance_audit=SimpleNamespace(
+            block_publish=True,
+            required_fixes=[],
+            suggested_fixes=[],
+            matched_policy_rules=["guaranteed_outcome"],
+            unresolved_claims=[],
+        ),
+    )
+
+    enforced = decision_module._enforce_blocked_r2_decision(
+        {"next_node": "HASHTAG_SEO", "normalized_input": {}},
+        r2_output,
+    )
+
+    assert (
+        enforced["normalized_input"]["r1_input"]["content_candidate"][
+            "storyboard_visible_text"
+        ]
+        == storyboard_visible_text
+    )
+
+
+def test_r1_output_schema_retains_revised_storyboard_visible_text():
+    storyboard_visible_text = [
+        {
+            "frame_id": "frame_001",
+            "frame_title": "作息调整记录",
+            "on_image_copy": "逐步调整",
+            "narration": "分享个人体验",
+        }
+    ]
+
+    output = R1Output(
+        draft_id="draft_001",
+        revised_title="作息记录",
+        revised_md="正文",
+        topic_id="tp_001",
+        topic="睡眠改善",
+        angle_id="ag_001",
+        angle="作息调整",
+        target_group="上班族",
+        core_pain="熬夜后疲惫",
+        best_cover_copy="cover",
+        storyboard_visible_text=storyboard_visible_text,
+        scores={
+            "clarity_score": 1,
+            "save_value_score": 1,
+            "readability_score": 1,
+            "authenticity_score": 1,
+            "promise_alignment_score": 1,
+        },
+        revision_meta={
+            "revision_id": "rev_002",
+            "round": 3,
+            "diff_summary": ["revised storyboard"],
+            "next_actions": ["R2"],
+        },
+        task_report={
+            "completed_task_ids": ["de_policy_guaranteed_outcome"],
+            "skipped_task_ids": [],
+            "notes": [],
+        },
+        remaining_risks=[],
+        editor_notes=[],
+        should_run_R1_again=False,
+    )
+
+    assert output.storyboard_visible_text[0].frame_title == "作息调整记录"
+
+
+def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
+    storyboard_visible_text = [
+        {
+            "frame_id": "frame_001",
+            "frame_title": "作息调整记录",
+            "on_image_copy": "逐步调整",
+            "narration": "分享个人体验",
+        }
+    ]
+    decision_json = {
+        "next_node": "R2_COMPLIANCE",
+        "normalized_input": {
+            "r2_input": {
+                "content_snapshot": {
+                    "draft_id": "draft_001",
+                    "revised_title": "作息记录",
+                    "revised_md": "正文",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "作息调整",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                },
+                "revision_meta": {
+                    "revision_id": "rev_002",
+                    "round": 3,
+                    "diff_summary": ["revised storyboard"],
+                    "next_actions": ["R2"],
+                },
+                "decision_trace": {
+                    "source_node": "R1_REFLECTOR",
+                    "why_this_route": ["recheck"],
+                },
+            }
+        },
+    }
+    r1_output = SimpleNamespace(storyboard_visible_text=storyboard_visible_text)
+
+    propagated = decision_module._propagate_storyboard_visible_text(
+        decision_json,
+        r1_output,
+    )
+
+    assert (
+        propagated["normalized_input"]["r2_input"]["content_snapshot"][
+            "storyboard_visible_text"
+        ]
+        == storyboard_visible_text
+    )
 
 
 def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review(monkeypatch):

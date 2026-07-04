@@ -45,7 +45,15 @@ Decision Engine
         "angle": "string",
         "target_group": "string",
         "core_pain": "string",
-        "best_cover_copy": "string"
+        "best_cover_copy": "string",
+        "storyboard_visible_text": [
+          {
+            "frame_id": "string | null",
+            "frame_title": "string",
+            "on_image_copy": "string",
+            "narration": "string"
+          }
+        ]
       },
       "editorial_tasks": {
         "mandatory": [
@@ -95,7 +103,15 @@ Decision Engine
         "angle": "string",
         "target_group": "string",
         "core_pain": "string",
-        "best_cover_copy": "string"
+        "best_cover_copy": "string",
+        "storyboard_visible_text": [
+          {
+            "frame_id": "string | null",
+            "frame_title": "string",
+            "on_image_copy": "string",
+            "narration": "string"
+          }
+        ]
       },
       "revision_meta": {
         "revision_id": "string",

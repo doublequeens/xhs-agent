@@ -33,6 +33,7 @@ class ContentCandidate(BaseModel):
     angle: str
     target_group: str
     core_pain: str
+    storyboard_visible_text: List["StoryboardVisibleText"] = Field(default_factory=list)
 
 class RevisionMeta(BaseModel):
     revision_id: str

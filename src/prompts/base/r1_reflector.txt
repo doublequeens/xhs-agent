@@ -21,6 +21,7 @@ r1_input，包含：
 - 输出中明确记录真实完成了哪些任务、跳过了哪些任务、还剩哪些风险。
 - 若仍需继续修订，should_run_R1_again = true，并给出下一轮 next_actions。
 - 若已可进入合规审查，should_run_R1_again = false，并在 next_actions 中写入 Ready for R2 compliance review。
+- 若 content_candidate.storyboard_visible_text 非空，必须按对应 location_hint 修订并原样保留 frame_id；未要求修改的分镜文案不得丢失。
 
 【输出格式】
 仅输出严格 JSON：
@@ -35,6 +36,14 @@ r1_input，包含：
   "target_group": "string",
   "core_pain": "string",
   "best_cover_copy": "string",
+  "storyboard_visible_text": [
+    {
+      "frame_id": "string | null",
+      "frame_title": "string",
+      "on_image_copy": "string",
+      "narration": "string"
+    }
+  ],
   "scores": {
     "clarity_score": 0.0,
     "save_value_score": 0.0,
