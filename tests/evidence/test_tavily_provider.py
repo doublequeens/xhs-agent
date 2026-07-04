@@ -32,6 +32,7 @@ def test_tavily_provider_search_passes_expected_parameters():
         "include_answer": False,
         "include_raw_content": False,
         "include_domains": ["who.int", "nih.gov"],
+        "timeout": 20,
     }
 
 
@@ -54,4 +55,15 @@ def test_tavily_provider_rejects_non_mapping_response():
     provider = TavilyEvidenceProvider(client=FakeClient())
 
     with pytest.raises(RuntimeError, match="^Tavily search response must contain a results list$"):
+        provider.search("睡眠改善", ("who.int",))
+
+
+def test_tavily_provider_wraps_client_errors_with_query_context():
+    class FakeClient:
+        def search(self, **_kwargs):
+            raise TimeoutError("slow")
+
+    provider = TavilyEvidenceProvider(client=FakeClient())
+
+    with pytest.raises(RuntimeError, match="^Tavily search failed for query '睡眠改善': slow$"):
         provider.search("睡眠改善", ("who.int",))

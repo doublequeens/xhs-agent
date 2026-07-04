@@ -36,7 +36,7 @@ def _read_prompt_file(path: Path) -> str:
 
 
 def _serialize_profile(profile: DomainProfile) -> str:
-    return json.dumps(profile.model_dump(), ensure_ascii=False, indent=2, sort_keys=True)
+    return json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True)
 
 
 def _get_value(payload: Any, key: str) -> Any:
@@ -47,7 +47,7 @@ def _get_value(payload: Any, key: str) -> Any:
 
 def _normalize_payload(payload: Any) -> Any:
     if hasattr(payload, "model_dump"):
-        payload = payload.model_dump()
+        payload = payload.model_dump(mode="json")
     elif hasattr(payload, "__dict__"):
         payload = vars(payload)
 

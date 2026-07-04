@@ -1,4 +1,5 @@
 from collections.abc import Callable, Mapping
+import re
 from typing import Any
 
 from src.domain import get_domain_profile
@@ -50,10 +51,29 @@ def _topic_qualifies(topic: Any) -> bool:
     return risk_level == "medium" or content_intent == "basic_science"
 
 
+def _truncate_text(text: str, *, max_length: int) -> str:
+    cleaned = text.strip()
+    if len(cleaned) <= max_length:
+        return cleaned
+    return cleaned[: max_length - 3].rstrip() + "..."
+
+
+def _extract_claim(content: str) -> str:
+    lines = [line.strip() for line in content.splitlines() if line.strip()]
+    for line in lines:
+        sentence_match = re.match(r"^(.{1,160}?[。！？.!?])(?:\s|$)", line)
+        if sentence_match:
+            return _truncate_text(sentence_match.group(1), max_length=160)
+        return _truncate_text(line, max_length=160)
+    return _truncate_text(content, max_length=160)
+
+
 def _build_evidence_items(topic_name: str, results: list[Any], allowed_domains: tuple[str, ...]) -> list[EvidenceItem]:
     items: list[EvidenceItem] = []
 
     for result in results:
+        if not isinstance(result, Mapping):
+            continue
         title = _get_value(result, "title")
         url = _get_value(result, "url")
         content = _get_value(result, "content")
@@ -68,8 +88,8 @@ def _build_evidence_items(topic_name: str, results: list[Any], allowed_domains: 
 
         items.append(
             EvidenceItem(
-                claim=topic_name,
-                summary=content.strip(),
+                claim=_extract_claim(content),
+                summary=_truncate_text(content, max_length=500),
                 source_title=title.strip(),
                 source_url=url.strip(),
                 source_type=classify_source_type(url),
@@ -103,6 +123,14 @@ def evidence_brief_node(
     if not qualifying_topics:
         return {}
 
+    content_policy = state.get("content_policy")
+    if content_policy is None:
+        raise ValueError("evidence_brief_node requires state.content_policy for qualifying topics")
+
+    require_evidence_brief = _get_value(content_policy, "require_evidence_brief")
+    if require_evidence_brief is False:
+        return {"evidence_briefs": {}}
+
     domain_context = state.get("domain_context") or {}
     domain = _get_value(domain_context, "domain")
     profile_version = _get_value(domain_context, "profile_version")
@@ -116,7 +144,14 @@ def evidence_brief_node(
     for topic in qualifying_topics:
         topic_id = _get_value(topic, "topic_id")
         topic_name = _get_value(topic, "topic")
-        results = provider.search(f"{topic_name} 基础健康科普", profile.evidence_domains)
+        query = f"{topic_name} 基础健康科普"
+        try:
+            results = provider.search(query, profile.evidence_domains)
+        except RuntimeError as exc:
+            message = str(exc)
+            if "Tavily search failed for query" not in message:
+                message = f"Tavily search failed for query '{query}': {message}"
+            raise RuntimeError(f"Evidence search failed for topic_id {topic_id}: {message}") from exc
         items = _build_evidence_items(topic_name, results, profile.evidence_domains)
         if not items:
             raise RuntimeError(f"No allowlisted evidence results found for topic_id {topic_id}")
@@ -124,7 +159,7 @@ def evidence_brief_node(
         briefs[topic_id] = EvidenceBrief(
             topic_id=topic_id,
             items=items,
-            unsupported_claims=[],
+            unsupported_claims=[f"主题“{topic_name}”的完整结论仍需逐条核验"],
         )
 
     return {"evidence_briefs": briefs}

@@ -3,6 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, HttpUrl
 
 SourceType = Literal["public_health", "academic", "professional"]
+ProvenanceType = Literal["search_snippet"]
 
 
 class EvidenceItem(BaseModel):
@@ -11,6 +12,8 @@ class EvidenceItem(BaseModel):
     source_title: str
     source_url: HttpUrl
     source_type: SourceType
+    provenance_type: ProvenanceType = "search_snippet"
+    verified: bool = False
 
 
 class EvidenceBrief(BaseModel):

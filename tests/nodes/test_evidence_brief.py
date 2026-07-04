@@ -1,5 +1,6 @@
 import pytest
 
+from src.domain import build_content_policy, get_domain_profile
 from src.nodes import evidence_brief_node
 from src.schemas.topic import TopicItem
 from src.schemas.virality_score import ScoreBreakdown, ScoreResult
@@ -62,6 +63,7 @@ def test_evidence_brief_node_is_exported_from_nodes_package():
 def test_evidence_brief_node_skips_non_qualifying_topics_without_provider_creation():
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
         "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="low")],
     }
@@ -93,6 +95,7 @@ def test_evidence_brief_node_retrieves_medium_and_basic_science_topics():
 
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [
             _score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001"),
             _score(topic_id="tp_002", topic="褪黑素基础知识", angle_id="ag_002"),
@@ -112,12 +115,15 @@ def test_evidence_brief_node_retrieves_medium_and_basic_science_topics():
     ]
     first_item = result["evidence_briefs"]["tp_001"].items[0]
     second_item = result["evidence_briefs"]["tp_002"].items[0]
-    assert first_item.claim == "睡眠改善"
+    assert first_item.claim == "保持规律作息有助于建立更稳定的睡眠习惯。"
     assert first_item.summary == "保持规律作息有助于建立更稳定的睡眠习惯。"
     assert first_item.source_title == "WHO sleep guidance"
     assert first_item.source_type == "public_health"
-    assert second_item.claim == "褪黑素基础知识"
-    assert result["evidence_briefs"]["tp_002"].unsupported_claims == []
+    assert first_item.provenance_type == "search_snippet"
+    assert first_item.verified is False
+    assert second_item.claim == "保持规律作息有助于建立更稳定的睡眠习惯。"
+    assert result["evidence_briefs"]["tp_001"].unsupported_claims == ["主题“睡眠改善”的完整结论仍需逐条核验"]
+    assert result["evidence_briefs"]["tp_002"].unsupported_claims == ["主题“褪黑素基础知识”的完整结论仍需逐条核验"]
 
 
 def test_evidence_brief_node_deduplicates_topic_ids_before_search():
@@ -136,6 +142,7 @@ def test_evidence_brief_node_deduplicates_topic_ids_before_search():
 
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [
             _score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001"),
             _score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_002"),
@@ -154,6 +161,7 @@ def test_evidence_brief_node_deduplicates_topic_ids_before_search():
 def test_evidence_brief_node_rejects_duplicate_trend_topic_ids_before_provider_creation():
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
         "trends": [
             _topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium"),
@@ -176,6 +184,7 @@ def test_evidence_brief_node_rejects_duplicate_trend_topic_ids_before_provider_c
 def test_evidence_brief_node_rejects_scores_referencing_missing_trend_before_provider_creation():
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [_score(topic_id="tp_missing", topic="睡眠改善", angle_id="ag_001")],
         "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
     }
@@ -193,22 +202,38 @@ def test_evidence_brief_node_rejects_scores_referencing_missing_trend_before_pro
 
 
 @pytest.mark.parametrize(
-    ("domain_context", "expected_error"),
+    ("domain_context", "content_policy", "expected_error"),
     [
-        (None, r"^evidence_brief_node requires state\.domain_context with domain and profile_version$"),
-        ({"domain": "wellness"}, r"^evidence_brief_node requires state\.domain_context with domain and profile_version$"),
+        (
+            None,
+            build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
+            r"^evidence_brief_node requires state\.domain_context with domain and profile_version$",
+        ),
+        (
+            {"domain": "wellness"},
+            build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
+            r"^evidence_brief_node requires state\.domain_context with domain and profile_version$",
+        ),
         (
             {"domain": "wellness", "profile_version": "beauty-v1"},
+            build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
             r"^Unsupported profile version: beauty-v1 for domain wellness; expected wellness-v1$",
+        ),
+        (
+            {"domain": "wellness", "profile_version": "wellness-v1"},
+            None,
+            r"^evidence_brief_node requires state\.content_policy for qualifying topics$",
         ),
     ],
 )
 def test_evidence_brief_node_rejects_invalid_domain_context_before_provider_creation(
     domain_context,
+    content_policy,
     expected_error,
 ):
     state = {
         "domain_context": domain_context,
+        "content_policy": content_policy,
         "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
         "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
     }
@@ -225,6 +250,25 @@ def test_evidence_brief_node_rejects_invalid_domain_context_before_provider_crea
     assert provider_factory_calls == 0
 
 
+@pytest.mark.parametrize("content_intent", ["how_to", "basic_science"])
+def test_evidence_brief_node_skips_when_policy_disables_evidence_even_for_qualifying_topics(content_intent):
+    state = {
+        "domain_context": {"domain": "beauty", "profile_version": "beauty-v1"},
+        "content_policy": build_content_policy(get_domain_profile("beauty"), risk_level="low"),
+        "scores": [_score(topic_id="tp_001", topic="防晒基础", angle_id="ag_001")],
+        "trends": [_topic(topic_id="tp_001", topic="防晒基础", content_intent=content_intent, risk_level="medium")],
+    }
+    provider_factory_calls = 0
+
+    def provider_factory():
+        nonlocal provider_factory_calls
+        provider_factory_calls += 1
+        raise AssertionError("provider should not be created")
+
+    assert evidence_brief_node(state, provider_factory=provider_factory) == {"evidence_briefs": {}}
+    assert provider_factory_calls == 0
+
+
 def test_evidence_brief_node_fails_when_no_allowlisted_results_remain():
     class FakeProvider:
         def search(self, _query, _domains):
@@ -238,6 +282,7 @@ def test_evidence_brief_node_fails_when_no_allowlisted_results_remain():
 
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
         "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
     }
@@ -253,9 +298,43 @@ def test_evidence_brief_node_propagates_provider_failures():
 
     state = {
         "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
         "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
         "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
     }
 
-    with pytest.raises(RuntimeError, match="provider boom"):
+    with pytest.raises(
+        RuntimeError,
+        match=r"^Evidence search failed for topic_id tp_001: Tavily search failed for query '睡眠改善 基础健康科普': provider boom$",
+    ):
         evidence_brief_node(state, provider_factory=lambda: FakeProvider())
+
+
+def test_evidence_brief_node_skips_malformed_results_and_keeps_valid_items():
+    class FakeProvider:
+        def search(self, _query, _domains):
+            return [
+                [],
+                {"title": "", "url": "https://www.who.int/sleep", "content": "bad title"},
+                {"title": "Missing url", "content": "bad url"},
+                {"title": "Missing content", "url": "https://www.who.int/sleep", "content": None},
+                {
+                    "title": "WHO sleep guidance",
+                    "url": "https://www.who.int/sleep",
+                    "content": "第一句支持规律作息。\n第二句说明这是摘要片段。",
+                },
+            ]
+
+    state = {
+        "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "content_policy": build_content_policy(get_domain_profile("wellness"), risk_level="medium"),
+        "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
+        "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
+    }
+
+    result = evidence_brief_node(state, provider_factory=lambda: FakeProvider())
+
+    brief = result["evidence_briefs"]["tp_001"]
+    assert len(brief.items) == 1
+    assert brief.items[0].claim == "第一句支持规律作息。"
+    assert brief.items[0].summary == "第一句支持规律作息。\n第二句说明这是摘要片段。"

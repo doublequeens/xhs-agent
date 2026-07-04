@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from src.domain import get_domain_profile
+from src.evidence import EvidenceBrief, EvidenceItem
 from src.prompts.composer import TASK_FILES
 
 
@@ -141,6 +142,36 @@ def test_compose_prompt_for_state_rejects_wrong_profile_version_in_modern_state(
             "trend_scout",
             {"domain_context": {"domain": "wellness", "profile_version": "beauty-v1"}},
         )
+
+
+def test_serialize_prompt_value_json_serializes_nested_evidence_briefs_with_url_strings():
+    from src.prompts.composer import serialize_prompt_value
+
+    serialized = serialize_prompt_value(
+        {
+            "evidence_briefs": {
+                "tp_001": EvidenceBrief(
+                    topic_id="tp_001",
+                    items=[
+                        EvidenceItem(
+                            claim="保持规律睡眠时间有助于睡眠卫生。",
+                            summary="保持规律睡眠时间有助于睡眠卫生。这只是搜索摘要片段。",
+                            source_title="Sleep hygiene basics",
+                            source_url="https://www.who.int/news-room/fact-sheets/detail/sleep",
+                            source_type="public_health",
+                            provenance_type="search_snippet",
+                            verified=False,
+                        )
+                    ],
+                    unsupported_claims=["主题“睡眠改善”的完整结论仍需逐条核验"],
+                )
+            }
+        }
+    )
+
+    assert '"source_url": "https://www.who.int/news-room/fact-sheets/detail/sleep"' in serialized
+    assert '"provenance_type": "search_snippet"' in serialized
+    assert '"verified": false' in serialized
 
 
 def test_lazy_prompt_mapping_defers_file_reads_and_preserves_legacy_keys(monkeypatch, tmp_path):

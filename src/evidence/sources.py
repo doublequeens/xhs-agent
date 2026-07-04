@@ -25,6 +25,8 @@ def _host_matches_domain(host: str, domain: str) -> bool:
 
 
 def is_allowlisted_source_url(url: str, allowed_domains: tuple[str, ...] | list[str]) -> bool:
+    # Validate only the canonical URL returned by Tavily. We do not follow redirects
+    # or trust allowlisted domains embedded elsewhere in the URL string.
     parts = urlsplit(url)
     if parts.scheme not in {"http", "https"}:
         return False
