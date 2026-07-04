@@ -12,6 +12,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in tests via injecti
 
 from src.schemas import AgentState
 import src.nodes as nodes
+from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
@@ -20,6 +21,17 @@ _CHECKPOINTER_LOCK = Lock()
 
 def next_node(state:AgentState)-> Literal["R1_REFLECTOR", "R2_COMPLIANCE", "HASHTAG_SEO"]:
     next_node_value = state["decision_output"].next_node
+    if next_node_value == "HASHTAG_SEO" and state.get("current_node") == "R2_COMPLIANCE":
+        r2_output = state.get("r2_output")
+        compliance_audit = getattr(r2_output, "compliance_audit", None)
+        if compliance_audit is None and isinstance(r2_output, dict):
+            compliance_audit = r2_output.get("compliance_audit")
+        if compliance_audit is not None:
+            block_publish = getattr(compliance_audit, "block_publish", None)
+            if block_publish is None and isinstance(compliance_audit, dict):
+                block_publish = compliance_audit.get("block_publish", False)
+            if block_publish:
+                return "R1_REFLECTOR"
     return next_node_value
 
 
@@ -85,6 +97,7 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_node("image_qa", image_qa_node)
     builder.add_node("assembler", nodes.assembler_node)
     builder.add_node("human_review", nodes.human_review_node)
+    builder.add_node("final_policy_guard", nodes.final_policy_guard_node)
     builder.add_node("content_writer", nodes.content_writer_node)
     builder.add_edge("domain_router", "domain_confirmation")
     builder.add_edge("domain_confirmation", "memory_retriever")
@@ -111,7 +124,15 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_edge("image_qa", "assembler")
     builder.add_edge("assembler", "storyboard_generator")
     builder.add_edge("storyboard_generator", "human_review")
-    builder.add_edge("human_review", "content_writer")
+    builder.add_edge("human_review", "final_policy_guard")
+    builder.add_conditional_edges(
+        "final_policy_guard",
+        route_after_final_guard,
+        {
+            "human_review": "human_review",
+            "content_writer": "content_writer",
+        },
+    )
     builder.add_edge("content_writer", END)
     builder.set_entry_point("domain_router")
 

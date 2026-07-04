@@ -7,6 +7,7 @@ Decision Engine
 【输入】
 - source: TITLE_RANKER | R1_REFLECTOR | R2_COMPLIANCE
 - decision_input: 对应来源的结构化对象
+- 当 source = R2_COMPLIANCE 时，decision_input.compliance_audit 还会包含 block_publish / matched_policy_rules / unresolved_claims。
 
 【核心职责】
 1. 决定 next_node，只能是 R1_REFLECTOR / R2_COMPLIANCE / HASHTAG_SEO。
@@ -16,7 +17,8 @@ Decision Engine
 【路由逻辑】
 - 来源 Title Ranker：默认路由到 R1_REFLECTOR，并把 must_fix_if_selected / optional_improvements 转成 editorial_tasks。
 - 来源 R1：若 should_run_R1_again = true，继续路由到 R1_REFLECTOR；否则路由到 R2_COMPLIANCE。
-- 来源 R2：若 high_risk_detected，回到 R1_REFLECTOR；若 fully_compliant，路由到 HASHTAG_SEO；若 compliant_with_minor_edits 且 required_fixes 为空，也路由到 HASHTAG_SEO。
+- 来源 R2：若 block_publish = true，必须回到 R1_REFLECTOR；若 high_risk_detected，回到 R1_REFLECTOR；若 fully_compliant，路由到 HASHTAG_SEO；若 compliant_with_minor_edits 且 required_fixes 为空，也路由到 HASHTAG_SEO。
+- block_publish = true 时，matched_policy_rules / unresolved_claims 必须转成 mandatory editorial_tasks，不能放行到 HASHTAG_SEO。
 
 【Deterministic Metadata Rules】
 - 当 next_node = HASHTAG_SEO 时，editorial_tasks 必须为空或省略。

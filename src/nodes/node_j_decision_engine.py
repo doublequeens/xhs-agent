@@ -8,10 +8,10 @@ from src.prompts.composer import compose_prompt_for_state, serialize_prompt_valu
 from src.schemas import DecisionOutput
 
 
-def _get_value(payload, key):
+def _get_value(payload, key, default=None):
     if isinstance(payload, dict):
-        return payload.get(key)
-    return getattr(payload, key, None)
+        return payload.get(key, default)
+    return getattr(payload, key, default)
 
 
 def _select_topic_angle_ids(source, decision_input):
@@ -56,6 +56,142 @@ def _extract_selected_content_fields(source, decision_input):
         raise ValueError(f"Missing selected content fields for source {source}: {', '.join(missing)}")
 
     return fields
+
+
+def _dedupe_tasks(tasks):
+    deduped = []
+    seen = set()
+    for task in tasks:
+        key = (task["instruction"], task["location_hint"])
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(task)
+    return deduped
+
+
+def _build_blocked_r2_tasks(r2_output):
+    compliance_audit = _get_value(r2_output, "compliance_audit")
+    required_fixes = list(_get_value(compliance_audit, "required_fixes", []) or [])
+    suggested_fixes = list(_get_value(compliance_audit, "suggested_fixes", []) or [])
+    matched_policy_rules = list(_get_value(compliance_audit, "matched_policy_rules", []) or [])
+    unresolved_claims = list(_get_value(compliance_audit, "unresolved_claims", []) or [])
+
+    mandatory = [
+        {
+            "task_id": _get_value(fix, "fix_id", f"de_required_{index:03d}"),
+            "source": "r2_compliance",
+            "instruction": _get_value(fix, "instruction", "Resolve required compliance issue."),
+            "severity": "high",
+            "location_hint": "title" if _get_value(fix, "location_hint") == "revised_title" else "draft_md",
+            "rationale": "Required by compliance audit.",
+            "before": _get_value(fix, "before"),
+            "after_hint": _get_value(fix, "after_suggestion"),
+        }
+        for index, fix in enumerate(required_fixes, start=1)
+    ]
+    optional = [
+        {
+            "task_id": _get_value(fix, "fix_id", f"de_optional_{index:03d}"),
+            "source": "r2_compliance",
+            "instruction": _get_value(fix, "instruction", "Consider the suggested compliance improvement."),
+            "severity": "medium",
+            "location_hint": "title" if _get_value(fix, "location_hint") == "revised_title" else "draft_md",
+            "rationale": "Suggested by compliance audit.",
+            "before": _get_value(fix, "before"),
+            "after_hint": _get_value(fix, "after_suggestion"),
+        }
+        for index, fix in enumerate(suggested_fixes, start=1)
+    ]
+
+    for index, rule_id in enumerate(matched_policy_rules, start=1):
+        mandatory.append(
+            {
+                "task_id": f"de_policy_{index:03d}",
+                "source": "system",
+                "instruction": f"Remove or rewrite content that triggers policy rule `{rule_id}`.",
+                "severity": "high",
+                "location_hint": "draft_md",
+                "rationale": "Deterministic policy guard blocked publish.",
+                "before": None,
+                "after_hint": "Use neutral, non-medical language without guarantees or dosage advice.",
+            }
+        )
+
+    for index, claim in enumerate(unresolved_claims, start=1):
+        mandatory.append(
+            {
+                "task_id": f"de_claim_{index:03d}",
+                "source": "system",
+                "instruction": f"Remove or substantiate the unsupported claim: {claim}",
+                "severity": "high",
+                "location_hint": "draft_md",
+                "rationale": "Evidence brief still marks this claim unsupported.",
+                "before": claim,
+                "after_hint": "Replace with a sourced, non-absolute description or remove it.",
+            }
+        )
+
+    return {
+        "mandatory": _dedupe_tasks(mandatory),
+        "optional": _dedupe_tasks(optional),
+    }
+
+
+def _enforce_blocked_r2_decision(decision_output_json, decision_input):
+    compliance_audit = _get_value(decision_input, "compliance_audit")
+    if not _get_value(compliance_audit, "block_publish", False):
+        return decision_output_json
+
+    normalized_input = _get_value(decision_output_json, "normalized_input", {}) or {}
+    if _get_value(decision_output_json, "next_node") == "R1_REFLECTOR" and _get_value(
+        normalized_input, "r1_input"
+    ):
+        return decision_output_json
+
+    content_snapshot = _get_value(decision_input, "content_snapshot")
+    revision_meta = _get_value(decision_input, "revision_meta")
+    matched_policy_rules = list(_get_value(compliance_audit, "matched_policy_rules", []) or [])
+    unresolved_claims = list(_get_value(compliance_audit, "unresolved_claims", []) or [])
+    why_this_route = ["Deterministic policy guard blocked publish; return to R1."]
+    if matched_policy_rules:
+        why_this_route.append(f"matched_policy_rules={matched_policy_rules}")
+    if unresolved_claims:
+        why_this_route.append(f"unresolved_claims={unresolved_claims}")
+
+    decision_output_json["next_node"] = "R1_REFLECTOR"
+    decision_output_json["normalized_input"] = {
+        "r1_input": {
+            "content_candidate": {
+                "draft_id": _get_value(content_snapshot, "draft_id"),
+                "draft_md": _get_value(content_snapshot, "revised_md"),
+                "best_title": _get_value(content_snapshot, "revised_title"),
+                "best_title_id": None,
+                "safer_title": None,
+                "safer_title_id": None,
+                "why_win": None,
+                "topic_id": _get_value(content_snapshot, "topic_id"),
+                "topic": _get_value(content_snapshot, "topic"),
+                "angle_id": _get_value(content_snapshot, "angle_id"),
+                "angle": _get_value(content_snapshot, "angle"),
+                "target_group": _get_value(content_snapshot, "target_group"),
+                "core_pain": _get_value(content_snapshot, "core_pain"),
+                "best_cover_copy": _get_value(content_snapshot, "best_cover_copy"),
+            },
+            "editorial_tasks": _build_blocked_r2_tasks(decision_input),
+            "revision_meta": {
+                "revision_id": _get_value(revision_meta, "revision_id"),
+                "round": _get_value(revision_meta, "round"),
+                "diff_summary": list(_get_value(revision_meta, "diff_summary", []) or []),
+                "next_actions": list(_get_value(revision_meta, "next_actions", []) or []),
+            },
+            "decision_trace": {
+                "source_node": "R2_COMPLIANCE",
+                "why_this_route": why_this_route,
+            },
+        }
+    }
+    return decision_output_json
 
 def decision_engine_node(state: AgentState) -> AgentState:
     """
@@ -114,6 +250,8 @@ def decision_engine_node(state: AgentState) -> AgentState:
     max_retries = 3
     for attempt in range(max_retries):
         decision_output_json = model.execute(messages8)
+        if source == "R2_COMPLIANCE":
+            decision_output_json = _enforce_blocked_r2_decision(decision_output_json, decision_input)
 
         try:
             normalized_input = decision_output_json.get("normalized_input", {})

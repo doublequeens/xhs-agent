@@ -89,11 +89,29 @@ def test_human_review_interrupt_payload_has_kind():
     original = module.interrupt
     module.interrupt = fake_interrupt
     try:
-        result = module.human_review_node({"publish_package": {"title": "x"}, "review_round": 0})
+        result = module.human_review_node(
+            {
+                "publish_package": {
+                    "title": "x",
+                    "domain": "wellness",
+                    "subdomain": "sleep",
+                    "content_intent": "how_to",
+                    "risk_level": "medium",
+                    "risk_flags": ["medical-adjacent"],
+                    "profile_version": "wellness-v1",
+                },
+                "review_round": 0,
+                "final_policy_issues": [{"rule_id": "guaranteed_outcome"}],
+                "domain_context": {"profile_version": "wellness-v1"},
+            }
+        )
     finally:
         module.interrupt = original
 
     assert captured["payload"]["kind"] == "publish_review"
+    assert captured["payload"]["final_policy_issues"] == [{"rule_id": "guaranteed_outcome"}]
+    assert captured["payload"]["risk_context"]["risk_level"] == "medium"
+    assert captured["payload"]["risk_context"]["profile_version"] == "wellness-v1"
     assert result["review_status"] == "approved"
 
 
@@ -146,6 +164,7 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
             hashtag_node=fake_node,
             assembler_node=fake_node,
             human_review_node=fake_node,
+            final_policy_guard_node=fake_node,
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
         ),
@@ -161,6 +180,12 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("virality_score", "evidence_brief") in added_edges
     assert ("evidence_brief", "outline_architect") in added_edges
     assert ("virality_score", "outline_architect") not in added_edges
+    assert ("storyboard_generator", "human_review") in added_edges
+    assert ("human_review", "content_writer") not in added_edges
+    assert (
+        "final_policy_guard",
+        (("content_writer", "content_writer"), ("human_review", "human_review")),
+    ) in added_edges
     assert entry_points == ["domain_router"]
 
 
@@ -213,6 +238,7 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
             hashtag_node=fake_node,
             assembler_node=fake_node,
             human_review_node=fake_node,
+            final_policy_guard_node=fake_node,
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
         ),

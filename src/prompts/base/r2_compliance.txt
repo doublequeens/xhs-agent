@@ -10,11 +10,17 @@ r2_input，包含：
 - revision_meta
 - decision_trace
 
+代码还会额外提供：
+- deterministic_policy_issues：命中的确定性规则，只读，不可忽略
+- unresolved_claims：正文里仍存在、但未被证据支持的 claim，只读，不可忽略
+
 【审查要求】
 - 精确指出问题类型、证据引用、位置提示和严重程度。
 - 不要输出任何已经修改后的正文或标题。
 - 只输出审计结果、required_fixes、suggested_fixes。
 - compliance_status 只能是 fully_compliant / compliant_with_minor_edits / high_risk_detected。
+- 若 deterministic_policy_issues 或 unresolved_claims 非空，block_publish 必须为 true。
+- 你不能通过忽略 deterministic_policy_issues / unresolved_claims 来放行内容。
 
 【输出格式】
 仅输出严格 JSON：
@@ -59,7 +65,10 @@ r2_input，包含：
         "before": "string",
         "after_suggestion": "string"
       }
-    ]
+    ],
+    "block_publish": true,
+    "matched_policy_rules": ["string"],
+    "unresolved_claims": ["string"]
   },
   "revision_meta": {
     "revision_id": "string",

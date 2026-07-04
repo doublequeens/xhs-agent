@@ -24,6 +24,7 @@ _EXPORTS = {
     "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
     "content_writer_node": "src.nodes.node_p_content_writer",
     "human_review_node": "src.nodes.node_q_human_review",
+    "final_policy_guard_node": "src.nodes.node_q_01_final_policy_guard",
 }
 
 __all__ = list(_EXPORTS)
