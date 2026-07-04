@@ -44,3 +44,14 @@ def test_tavily_provider_rejects_malformed_results_payload():
 
     with pytest.raises(RuntimeError, match="^Tavily search response must contain a results list$"):
         provider.search("睡眠改善", ("who.int",))
+
+
+def test_tavily_provider_rejects_non_mapping_response():
+    class FakeClient:
+        def search(self, **_kwargs):
+            return []
+
+    provider = TavilyEvidenceProvider(client=FakeClient())
+
+    with pytest.raises(RuntimeError, match="^Tavily search response must contain a results list$"):
+        provider.search("睡眠改善", ("who.int",))

@@ -151,6 +151,80 @@ def test_evidence_brief_node_deduplicates_topic_ids_before_search():
     ]
 
 
+def test_evidence_brief_node_rejects_duplicate_trend_topic_ids_before_provider_creation():
+    state = {
+        "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
+        "trends": [
+            _topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium"),
+            _topic(topic_id="tp_001", topic="另一条重复趋势", content_intent="basic_science", risk_level="low"),
+        ],
+    }
+    provider_factory_calls = 0
+
+    def provider_factory():
+        nonlocal provider_factory_calls
+        provider_factory_calls += 1
+        raise AssertionError("provider should not be created")
+
+    with pytest.raises(ValueError, match="^Duplicate topic_id: tp_001$"):
+        evidence_brief_node(state, provider_factory=provider_factory)
+
+    assert provider_factory_calls == 0
+
+
+def test_evidence_brief_node_rejects_scores_referencing_missing_trend_before_provider_creation():
+    state = {
+        "domain_context": {"domain": "wellness", "profile_version": "wellness-v1"},
+        "scores": [_score(topic_id="tp_missing", topic="睡眠改善", angle_id="ag_001")],
+        "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
+    }
+    provider_factory_calls = 0
+
+    def provider_factory():
+        nonlocal provider_factory_calls
+        provider_factory_calls += 1
+        raise AssertionError("provider should not be created")
+
+    with pytest.raises(ValueError, match="^Unknown topic_id: tp_missing$"):
+        evidence_brief_node(state, provider_factory=provider_factory)
+
+    assert provider_factory_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("domain_context", "expected_error"),
+    [
+        (None, r"^evidence_brief_node requires state\.domain_context with domain and profile_version$"),
+        ({"domain": "wellness"}, r"^evidence_brief_node requires state\.domain_context with domain and profile_version$"),
+        (
+            {"domain": "wellness", "profile_version": "beauty-v1"},
+            r"^Unsupported profile version: beauty-v1 for domain wellness; expected wellness-v1$",
+        ),
+    ],
+)
+def test_evidence_brief_node_rejects_invalid_domain_context_before_provider_creation(
+    domain_context,
+    expected_error,
+):
+    state = {
+        "domain_context": domain_context,
+        "scores": [_score(topic_id="tp_001", topic="睡眠改善", angle_id="ag_001")],
+        "trends": [_topic(topic_id="tp_001", topic="睡眠改善", content_intent="how_to", risk_level="medium")],
+    }
+    provider_factory_calls = 0
+
+    def provider_factory():
+        nonlocal provider_factory_calls
+        provider_factory_calls += 1
+        raise AssertionError("provider should not be created")
+
+    with pytest.raises(ValueError, match=expected_error):
+        evidence_brief_node(state, provider_factory=provider_factory)
+
+    assert provider_factory_calls == 0
+
+
 def test_evidence_brief_node_fails_when_no_allowlisted_results_remain():
     class FakeProvider:
         def search(self, _query, _domains):
