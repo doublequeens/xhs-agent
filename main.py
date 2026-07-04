@@ -88,7 +88,11 @@ def _resolve_publish_package_profile(publish_package: dict):
 def export_publish_package(publish_package: dict) -> None:
     date_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
     title = publish_package["title"]
-    dir_path = "outputs/publish/{post_dir}".format(post_dir=date_str + "-" + title)
+    profile = _resolve_publish_package_profile(publish_package)
+    domain = publish_package["domain"]
+    subdomain = publish_package.get("subdomain") or profile.default_subdomain
+    post_dir = f"{date_str}-{domain}-{subdomain}-{title}"
+    dir_path = "outputs/publish/{post_dir}".format(post_dir=post_dir)
     if not os.path.exists(dir_path):
         os.makedirs(dir_path)
 
@@ -96,7 +100,6 @@ def export_publish_package(publish_package: dict) -> None:
         json.dump(publish_package, f, ensure_ascii=False, indent=4)
 
     # 生成供图像生成节点使用的 prompt
-    profile = _resolve_publish_package_profile(publish_package)
     storyboards_image_gen_prompt = compose_prompt("storyboards_images_generator", profile)
     storyboards_image_gen_json = {
         "title": publish_package.get("title", ""),

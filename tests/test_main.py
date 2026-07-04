@@ -254,6 +254,30 @@ def test_export_publish_package_uses_wellness_composed_prompt(monkeypatch, tmp_p
     assert "夏季底妆搓泥脱妆" not in prompt_text
 
 
+def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
+    monkeypatch,
+    tmp_path,
+):
+    main = _load_main(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    main.export_publish_package(
+        {
+            "title": "共同标题",
+            "content": "body",
+            "cover_copy": "cover",
+            "storyboards": [],
+            "domain": "wellness",
+            "subdomain": "sleep",
+            "profile_version": "wellness-v1",
+        }
+    )
+
+    output_dirs = [path.name for path in (tmp_path / "outputs" / "publish").iterdir()]
+    assert len(output_dirs) == 1
+    assert output_dirs[0].endswith("-wellness-sleep-共同标题")
+
+
 def test_export_publish_package_uses_healthy_lifestyle_composed_prompt(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     monkeypatch.chdir(tmp_path)

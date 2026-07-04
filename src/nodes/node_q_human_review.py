@@ -5,6 +5,12 @@ from src.schemas import AgentState
 from src.nodes.publish_patch import extract_storyboard_visible_text, merge_publish_package
 
 
+def _get_value(payload, key, default=None):
+    if isinstance(payload, dict):
+        return payload.get(key, default)
+    return getattr(payload, key, default)
+
+
 def _build_risk_context(state: AgentState, publish_package: dict) -> dict:
     domain_context = state.get("domain_context", {}) or {}
     return {
@@ -15,6 +21,25 @@ def _build_risk_context(state: AgentState, publish_package: dict) -> dict:
         "risk_flags": list(publish_package.get("risk_flags") or []),
         "profile_version": publish_package.get("profile_version") or domain_context.get("profile_version"),
     }
+
+
+def _matched_policy_rules(state: AgentState) -> list[str]:
+    r2_output = state.get("r2_output")
+    audit = _get_value(r2_output, "compliance_audit", {})
+    return list(_get_value(audit, "matched_policy_rules", []) or [])
+
+
+def _serialized_evidence_items(state: AgentState) -> list[dict]:
+    serialized = []
+    for topic_id, brief in (state.get("evidence_briefs") or {}).items():
+        for item in list(_get_value(brief, "items", []) or []):
+            payload = (
+                item.model_dump(mode="json")
+                if hasattr(item, "model_dump")
+                else dict(item)
+            )
+            serialized.append({"topic_id": topic_id, **payload})
+    return serialized
 
 
 def _storyboard_signature(storyboards) -> list[tuple[str, str, str]]:
@@ -135,6 +160,8 @@ def human_review_node(state: AgentState) -> AgentState:
                 "publish_package": publish_package,
                 "final_policy_issues": final_policy_issues,
                 "risk_context": risk_context,
+                "matched_policy_rules": _matched_policy_rules(state),
+                "evidence_items": _serialized_evidence_items(state),
                 "review_round": review_round + 1,
             }
         )

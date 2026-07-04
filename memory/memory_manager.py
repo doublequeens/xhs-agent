@@ -751,6 +751,27 @@ class XHSMemoryManager:
 
         return [dict(row) for row in rows]
 
+    def get_performance_by_domain(self) -> list[dict[str, Any]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    c.domain,
+                    c.subdomain,
+                    c.content_intent,
+                    COUNT(*) AS content_count,
+                    AVG(m.views) AS avg_views,
+                    AVG(m.save_rate) AS avg_save_rate,
+                    AVG(m.engagement_rate) AS avg_engagement_rate
+                FROM contents c
+                JOIN metrics m ON m.content_id = c.content_id
+                GROUP BY c.domain, c.subdomain, c.content_intent
+                ORDER BY c.domain, c.subdomain, c.content_intent
+                """
+            ).fetchall()
+
+        return [dict(row) for row in rows]
+
     def build_memory_context(
         self,
         *,
