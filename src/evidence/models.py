@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, Field, HttpUrl, field_serializer
 
 SourceType = Literal["public_health", "academic", "professional"]
 ProvenanceType = Literal["search_snippet"]
@@ -14,6 +14,10 @@ class EvidenceItem(BaseModel):
     source_type: SourceType
     provenance_type: ProvenanceType = "search_snippet"
     verified: bool = False
+
+    @field_serializer("source_url")
+    def serialize_source_url(self, value: HttpUrl) -> str:
+        return str(value)
 
 
 class EvidenceBrief(BaseModel):
