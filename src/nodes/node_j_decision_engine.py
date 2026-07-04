@@ -142,6 +142,13 @@ def _task_identity(task):
     return (_get_value(task, "task_id"), _get_value(task, "source"))
 
 
+def _is_deterministic_system_task(task):
+    if _get_value(task, "source") != "system":
+        return False
+    task_id = _get_value(task, "task_id", "") or ""
+    return task_id.startswith("de_policy_") or task_id.startswith("de_claim_")
+
+
 def _is_valid_editorial_tasks(editorial_tasks):
     if not isinstance(editorial_tasks, dict):
         return False
@@ -161,20 +168,25 @@ def _is_valid_r1_input(r1_input):
 
 def _merge_blocked_r2_tasks(r1_input, blocked_tasks):
     editorial_tasks = dict(r1_input["editorial_tasks"])
-    existing_mandatory = list(editorial_tasks.get("mandatory") or [])
-    existing_optional = list(editorial_tasks.get("optional") or [])
+    existing_mandatory = [
+        task for task in list(editorial_tasks.get("mandatory") or [])
+        if not _is_deterministic_system_task(task)
+    ]
+    existing_optional = [
+        task for task in list(editorial_tasks.get("optional") or [])
+        if not _is_deterministic_system_task(task)
+    ]
     deterministic_mandatory = list(blocked_tasks.get("mandatory") or [])
+    blocked_optional = list(blocked_tasks.get("optional") or [])
 
     merged_mandatory = list(existing_mandatory)
     mandatory_index_by_key = {
         _task_identity(task): index
         for index, task in enumerate(merged_mandatory)
     }
-    deterministic_keys = set()
 
     for task in deterministic_mandatory:
         key = _task_identity(task)
-        deterministic_keys.add(key)
         existing_index = mandatory_index_by_key.get(key)
         if existing_index is None:
             mandatory_index_by_key[key] = len(merged_mandatory)
@@ -182,9 +194,19 @@ def _merge_blocked_r2_tasks(r1_input, blocked_tasks):
             continue
         merged_mandatory[existing_index] = task
 
-    merged_optional = [
-        task for task in existing_optional if _task_identity(task) not in deterministic_keys
-    ]
+    merged_optional = list(existing_optional)
+    optional_index_by_key = {
+        _task_identity(task): index
+        for index, task in enumerate(merged_optional)
+    }
+    for task in blocked_optional:
+        key = _task_identity(task)
+        existing_index = optional_index_by_key.get(key)
+        if existing_index is None:
+            optional_index_by_key[key] = len(merged_optional)
+            merged_optional.append(task)
+            continue
+        merged_optional[existing_index] = task
 
     merged_editorial_tasks = dict(editorial_tasks)
     merged_editorial_tasks["mandatory"] = merged_mandatory

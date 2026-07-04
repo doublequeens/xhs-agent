@@ -181,7 +181,11 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("evidence_brief", "outline_architect") in added_edges
     assert ("virality_score", "outline_architect") not in added_edges
     assert ("storyboard_generator", "human_review") in added_edges
-    assert ("human_review", "content_writer") not in added_edges
+    assert ("human_review", "final_policy_guard") not in added_edges
+    assert (
+        "human_review",
+        (("final_policy_guard", "final_policy_guard"), ("r2_compliance", "r2_compliance")),
+    ) in added_edges
     assert (
         "final_policy_guard",
         (("content_writer", "content_writer"), ("human_review", "human_review")),

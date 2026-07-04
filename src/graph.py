@@ -13,6 +13,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised in tests via injecti
 from src.schemas import AgentState
 import src.nodes as nodes
 from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
+from src.nodes.node_q_human_review import route_after_human_review
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
@@ -124,7 +125,14 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_edge("image_qa", "assembler")
     builder.add_edge("assembler", "storyboard_generator")
     builder.add_edge("storyboard_generator", "human_review")
-    builder.add_edge("human_review", "final_policy_guard")
+    builder.add_conditional_edges(
+        "human_review",
+        route_after_human_review,
+        {
+            "r2_compliance": "r2_compliance",
+            "final_policy_guard": "final_policy_guard",
+        },
+    )
     builder.add_conditional_edges(
         "final_policy_guard",
         route_after_final_guard,

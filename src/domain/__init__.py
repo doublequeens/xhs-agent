@@ -6,7 +6,7 @@ from .models import (
     DomainProfile,
     RiskLevel,
 )
-from .policy_guard import PolicyIssue, find_policy_violations
+from .policy_guard import PolicyIssue, find_policy_violations, normalize_policy_text
 from .topic_metadata import get_topic_metadata
 from .registry import build_content_policy, get_domain_profile
 
@@ -19,6 +19,7 @@ __all__ = [
     "RiskLevel",
     "PolicyIssue",
     "find_policy_violations",
+    "normalize_policy_text",
     "get_topic_metadata",
     "build_content_policy",
     "get_domain_profile",

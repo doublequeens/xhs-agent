@@ -1,6 +1,6 @@
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
-from src.domain import find_policy_violations
+from src.domain import find_policy_violations, normalize_policy_text
 from src.models import get_model
 from src.schemas import AgentState, R2Output
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
@@ -28,10 +28,11 @@ def _find_deterministic_policy_issues(content_snapshot):
     body = _get_value(content_snapshot, "revised_md", "") or ""
     combined_text = "\n".join([title, body])
     ordered_issues = find_policy_violations(combined_text)
+    normalized_title = normalize_policy_text(title)
 
     issues = []
     for issue in ordered_issues:
-        location = "revised_title" if issue.matched_text in title else "revised_md"
+        location = "revised_title" if issue.matched_text in normalized_title else "revised_md"
         issues.append(issue.model_copy(update={"location": location}))
     return issues
 
