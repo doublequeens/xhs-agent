@@ -138,15 +138,77 @@ def _build_blocked_r2_tasks(r2_output):
     }
 
 
+def _task_identity(task):
+    return (_get_value(task, "task_id"), _get_value(task, "source"))
+
+
+def _is_valid_editorial_tasks(editorial_tasks):
+    if not isinstance(editorial_tasks, dict):
+        return False
+    mandatory = editorial_tasks.get("mandatory")
+    optional = editorial_tasks.get("optional")
+    return isinstance(mandatory, list) and isinstance(optional, list)
+
+
+def _is_valid_r1_input(r1_input):
+    if not isinstance(r1_input, dict):
+        return False
+    return all(
+        key in r1_input
+        for key in ("content_candidate", "editorial_tasks", "revision_meta", "decision_trace")
+    ) and _is_valid_editorial_tasks(r1_input["editorial_tasks"])
+
+
+def _merge_blocked_r2_tasks(r1_input, blocked_tasks):
+    editorial_tasks = dict(r1_input["editorial_tasks"])
+    existing_mandatory = list(editorial_tasks.get("mandatory") or [])
+    existing_optional = list(editorial_tasks.get("optional") or [])
+    deterministic_mandatory = list(blocked_tasks.get("mandatory") or [])
+
+    merged_mandatory = list(existing_mandatory)
+    mandatory_index_by_key = {
+        _task_identity(task): index
+        for index, task in enumerate(merged_mandatory)
+    }
+    deterministic_keys = set()
+
+    for task in deterministic_mandatory:
+        key = _task_identity(task)
+        deterministic_keys.add(key)
+        existing_index = mandatory_index_by_key.get(key)
+        if existing_index is None:
+            mandatory_index_by_key[key] = len(merged_mandatory)
+            merged_mandatory.append(task)
+            continue
+        merged_mandatory[existing_index] = task
+
+    merged_optional = [
+        task for task in existing_optional if _task_identity(task) not in deterministic_keys
+    ]
+
+    merged_editorial_tasks = dict(editorial_tasks)
+    merged_editorial_tasks["mandatory"] = merged_mandatory
+    merged_editorial_tasks["optional"] = merged_optional
+
+    merged_r1_input = dict(r1_input)
+    merged_r1_input["editorial_tasks"] = merged_editorial_tasks
+    return merged_r1_input
+
+
 def _enforce_blocked_r2_decision(decision_output_json, decision_input):
     compliance_audit = _get_value(decision_input, "compliance_audit")
     if not _get_value(compliance_audit, "block_publish", False):
         return decision_output_json
 
+    blocked_tasks = _build_blocked_r2_tasks(decision_input)
     normalized_input = _get_value(decision_output_json, "normalized_input", {}) or {}
-    if _get_value(decision_output_json, "next_node") == "R1_REFLECTOR" and _get_value(
-        normalized_input, "r1_input"
-    ):
+    r1_input = _get_value(normalized_input, "r1_input")
+    if _get_value(decision_output_json, "next_node") == "R1_REFLECTOR" and _is_valid_r1_input(r1_input):
+        decision_output_json["normalized_input"] = dict(normalized_input)
+        decision_output_json["normalized_input"]["r1_input"] = _merge_blocked_r2_tasks(
+            r1_input,
+            blocked_tasks,
+        )
         return decision_output_json
 
     content_snapshot = _get_value(decision_input, "content_snapshot")
@@ -178,7 +240,7 @@ def _enforce_blocked_r2_decision(decision_output_json, decision_input):
                 "core_pain": _get_value(content_snapshot, "core_pain"),
                 "best_cover_copy": _get_value(content_snapshot, "best_cover_copy"),
             },
-            "editorial_tasks": _build_blocked_r2_tasks(decision_input),
+            "editorial_tasks": blocked_tasks,
             "revision_meta": {
                 "revision_id": _get_value(revision_meta, "revision_id"),
                 "round": _get_value(revision_meta, "round"),

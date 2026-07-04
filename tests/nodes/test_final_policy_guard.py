@@ -9,6 +9,7 @@ from src.nodes.node_q_01_final_policy_guard import (
     route_after_final_guard,
 )
 from src.nodes import node_i_r2_compliance as r2_module
+from src.nodes import node_j_decision_engine as decision_module
 
 
 def _publish_package(**overrides):
@@ -185,6 +186,112 @@ def test_next_node_forces_r1_when_r2_audit_is_blocked():
     }
 
     assert next_node(state) == "R1_REFLECTOR"
+
+
+def test_enforce_blocked_r2_decision_preserves_model_tasks_and_adds_deterministic_tasks():
+    decision_input = SimpleNamespace(
+        content_snapshot=SimpleNamespace(
+            draft_id="draft_001",
+            revised_title="经验分享",
+            revised_md="我写到褪黑素可以稳定提升深睡比例。",
+            topic_id="tp_001",
+            topic="睡眠改善",
+            angle_id="ag_001",
+            angle="作息调整",
+            target_group="上班族",
+            core_pain="熬夜后疲惫",
+            best_cover_copy="cover",
+        ),
+        compliance_audit=SimpleNamespace(
+            block_publish=True,
+            required_fixes=[],
+            suggested_fixes=[],
+            matched_policy_rules=["medical_treatment"],
+            unresolved_claims=["稳定提升深睡比例"],
+        ),
+        revision_meta=SimpleNamespace(
+            revision_id="rev_001",
+            round=2,
+            diff_summary=["kept unsafe claim"],
+            next_actions=["repair copy"],
+        ),
+    )
+    decision_output_json = {
+        "next_node": "R1_REFLECTOR",
+        "normalized_input": {
+            "r1_input": {
+                "content_candidate": {
+                    "draft_id": "draft_001",
+                    "draft_md": "我写到褪黑素可以稳定提升深睡比例。",
+                    "best_title": "经验分享",
+                    "best_title_id": None,
+                    "safer_title": None,
+                    "safer_title_id": None,
+                    "why_win": None,
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "作息调整",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                },
+                "editorial_tasks": {
+                    "mandatory": [
+                        {
+                            "task_id": "model_task_001",
+                            "source": "r2_compliance",
+                            "instruction": "Clarify the anecdote.",
+                            "severity": "medium",
+                            "location_hint": "draft_md",
+                            "rationale": "Model-identified clarity issue.",
+                            "before": "褪黑素可以稳定提升深睡比例",
+                            "after_hint": "Use narrower language.",
+                        }
+                    ],
+                    "optional": [
+                        {
+                            "task_id": "de_policy_001",
+                            "source": "system",
+                            "instruction": "Remove or rewrite content that triggers policy rule `medical_treatment`.",
+                            "severity": "low",
+                            "location_hint": "draft_md",
+                            "rationale": "This optional copy must not survive as optional.",
+                            "before": None,
+                            "after_hint": "Wrong bucket.",
+                        }
+                    ],
+                },
+                "revision_meta": {
+                    "revision_id": "rev_001",
+                    "round": 2,
+                    "diff_summary": ["kept unsafe claim"],
+                    "next_actions": ["repair copy"],
+                },
+                "decision_trace": {
+                    "source_node": "R2_COMPLIANCE",
+                    "why_this_route": ["model already routed back to R1"],
+                },
+            }
+        },
+    }
+
+    first = decision_module._enforce_blocked_r2_decision(decision_output_json, decision_input)
+    second = decision_module._enforce_blocked_r2_decision(first, decision_input)
+
+    mandatory = first["normalized_input"]["r1_input"]["editorial_tasks"]["mandatory"]
+    optional = first["normalized_input"]["r1_input"]["editorial_tasks"]["optional"]
+
+    assert [task["task_id"] for task in mandatory] == [
+        "model_task_001",
+        "de_policy_001",
+        "de_claim_001",
+    ]
+    assert mandatory[1]["source"] == "system"
+    assert mandatory[2]["source"] == "system"
+    assert all(task["task_id"] != "de_policy_001" for task in optional)
+    assert second["normalized_input"]["r1_input"]["editorial_tasks"]["mandatory"] == mandatory
+    assert second["normalized_input"]["r1_input"]["editorial_tasks"]["optional"] == optional
 
 
 def test_final_policy_guard_requires_publish_package():
