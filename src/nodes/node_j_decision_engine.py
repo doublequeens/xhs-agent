@@ -80,6 +80,17 @@ def _deterministic_policy_locations(r2_output):
     }
     for issue in find_policy_violations(body):
         locations.setdefault(issue.rule_id, "draft_md")
+    for index, frame in enumerate(
+        _get_value(content_snapshot, "storyboard_visible_text", []) or []
+    ):
+        for field_name in ("frame_title", "on_image_copy", "narration"):
+            for issue in find_policy_violations(
+                _get_value(frame, field_name, "") or ""
+            ):
+                locations.setdefault(
+                    issue.rule_id,
+                    f"storyboard_visible_text[{index}].{field_name}",
+                )
     return locations
 
 

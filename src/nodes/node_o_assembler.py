@@ -2,6 +2,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState
+from src.nodes.publish_patch import merge_publish_package, publish_patch_for_assembler
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 
@@ -82,6 +83,12 @@ def assembler_node(state: AgentState) -> AgentState:
             "risk_flags": list(_get_value(final_content, "risk_flags") or []),
         }
     )
+    pending_patch = state.get("pending_human_publish_patch")
+    if pending_patch:
+        publish_package_json = merge_publish_package(
+            publish_package_json,
+            publish_patch_for_assembler(pending_patch),
+        )
     return {
         "publish_package": publish_package_json
     }

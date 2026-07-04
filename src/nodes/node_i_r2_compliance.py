@@ -1,8 +1,9 @@
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
-from src.domain import find_policy_violations, normalize_policy_text
+from src.domain import find_policy_violations
 from src.models import get_model
 from src.schemas import AgentState, R2Output
+from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 
@@ -26,24 +27,41 @@ def _dedupe_strings(values):
 def _find_deterministic_policy_issues(content_snapshot):
     title = _get_value(content_snapshot, "revised_title", "") or ""
     body = _get_value(content_snapshot, "revised_md", "") or ""
-    combined_text = "\n".join([title, body])
-    ordered_issues = find_policy_violations(combined_text)
-    normalized_title = normalize_policy_text(title)
+    text_sources = [("revised_title", title), ("revised_md", body)]
+    for index, frame in enumerate(
+        _get_value(content_snapshot, "storyboard_visible_text", []) or []
+    ):
+        for field_name in ("frame_title", "on_image_copy", "narration"):
+            text_sources.append(
+                (
+                    f"storyboard_visible_text[{index}].{field_name}",
+                    _get_value(frame, field_name, "") or "",
+                )
+            )
 
-    issues = []
-    for issue in ordered_issues:
-        location = "revised_title" if issue.matched_text in normalized_title else "revised_md"
-        issues.append(issue.model_copy(update={"location": location}))
-    return issues
+    locations_by_rule = {}
+    for location, text in text_sources:
+        for issue in find_policy_violations(text):
+            locations_by_rule.setdefault(issue.rule_id, location)
+
+    combined_text = "\n".join(text for _location, text in text_sources)
+    return [
+        issue.model_copy(update={"location": locations_by_rule[issue.rule_id]})
+        for issue in find_policy_violations(combined_text)
+    ]
 
 
 def _find_unresolved_claims(evidence_briefs, content_snapshot):
-    combined_text = "\n".join(
-        [
-            _get_value(content_snapshot, "revised_title", "") or "",
-            _get_value(content_snapshot, "revised_md", "") or "",
-        ]
-    )
+    text_fragments = [
+        _get_value(content_snapshot, "revised_title", "") or "",
+        _get_value(content_snapshot, "revised_md", "") or "",
+    ]
+    for frame in _get_value(content_snapshot, "storyboard_visible_text", []) or []:
+        text_fragments.extend(
+            _get_value(frame, field_name, "") or ""
+            for field_name in ("frame_title", "on_image_copy", "narration")
+        )
+    combined_text = "\n".join(text_fragments)
     if not combined_text.strip():
         return []
 
@@ -69,10 +87,21 @@ def r2_compliance_node(state: AgentState) -> AgentState:
 
     decision_output = state["decision_output"]
     r2_input = decision_output.normalized_input.r2_input
+    pending_patch = state.get("pending_human_publish_patch")
+    content_snapshot = _get_value(r2_input, "content_snapshot")
+    if pending_patch and not _get_value(content_snapshot, "storyboard_visible_text", []):
+        storyboard_visible_text = extract_storyboard_visible_text(
+            (state.get("publish_package") or {}).get("storyboards")
+        )
+        content_snapshot = content_snapshot.model_copy(
+            update={"storyboard_visible_text": storyboard_visible_text}
+        )
+        r2_input = r2_input.model_copy(
+            update={"content_snapshot": content_snapshot}
+        )
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", {})
-    content_snapshot = _get_value(r2_input, "content_snapshot")
     deterministic_policy_issues = _find_deterministic_policy_issues(content_snapshot)
     unresolved_claims = _find_unresolved_claims(evidence_briefs, content_snapshot)
 
@@ -124,6 +153,19 @@ def r2_compliance_node(state: AgentState) -> AgentState:
         raise RuntimeError(f"Process terminated due to error: {e}")
 
     audit = r2_output.compliance_audit
+    if (
+        not r2_output.content_snapshot.storyboard_visible_text
+        and _get_value(content_snapshot, "storyboard_visible_text", [])
+    ):
+        r2_output.content_snapshot = r2_output.content_snapshot.model_copy(
+            update={
+                "storyboard_visible_text": _get_value(
+                    content_snapshot,
+                    "storyboard_visible_text",
+                    [],
+                )
+            }
+        )
     matched_policy_rules = _dedupe_strings(
         list(audit.matched_policy_rules) + [issue.rule_id for issue in deterministic_policy_issues]
     )

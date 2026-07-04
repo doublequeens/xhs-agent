@@ -2,6 +2,7 @@ from langgraph.types import interrupt
 
 from src.schemas import DecisionOutput, DecisionTrace, NormalizedInput, R2ContentSnapShoot, R2Input, RevisionMeta
 from src.schemas import AgentState
+from src.nodes.publish_patch import extract_storyboard_visible_text, merge_publish_package
 
 
 def _build_risk_context(state: AgentState, publish_package: dict) -> dict:
@@ -14,47 +15,6 @@ def _build_risk_context(state: AgentState, publish_package: dict) -> dict:
         "risk_flags": list(publish_package.get("risk_flags") or []),
         "profile_version": publish_package.get("profile_version") or domain_context.get("profile_version"),
     }
-
-
-def _merge_publish_package(base: dict, patch: dict, *, replace_storyboards: bool = False) -> dict:
-    merged = dict(base)
-    for key, value in patch.items():
-        if key == "storyboards" and replace_storyboards:
-            merged[key] = value
-        elif key == "storyboards" and isinstance(value, list) and isinstance(merged.get(key), list):
-            merged[key] = _merge_storyboards(merged[key], value)
-        elif isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = _merge_publish_package(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _merge_storyboards(base: list, patch: list) -> list:
-    merged = list(base)
-    index_by_frame_id = {
-        frame.get("frame_id"): index
-        for index, frame in enumerate(merged)
-        if isinstance(frame, dict) and frame.get("frame_id")
-    }
-
-    for patch_index, patch_frame in enumerate(patch):
-        frame_id = patch_frame.get("frame_id") if isinstance(patch_frame, dict) else None
-        if frame_id:
-            target_index = index_by_frame_id.get(frame_id)
-        else:
-            target_index = patch_index if patch_index < len(merged) else None
-
-        if target_index is None:
-            if frame_id:
-                index_by_frame_id[frame_id] = len(merged)
-            merged.append(patch_frame)
-        elif isinstance(merged[target_index], dict) and isinstance(patch_frame, dict):
-            merged[target_index] = _merge_publish_package(merged[target_index], patch_frame)
-        else:
-            merged[target_index] = patch_frame
-
-    return merged
 
 
 def _storyboard_signature(storyboards) -> list[tuple[str, str, str]]:
@@ -123,6 +83,9 @@ def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_
                     target_group=str(publish_package.get("target_group") or ""),
                     core_pain=str(publish_package.get("core_pain") or ""),
                     best_cover_copy=str(publish_package.get("cover_copy") or ""),
+                    storyboard_visible_text=extract_storyboard_visible_text(
+                        publish_package.get("storyboards")
+                    ),
                 ),
                 revision_meta=RevisionMeta(
                     revision_id=previous_revision_id,
@@ -161,6 +124,8 @@ def human_review_node(state: AgentState) -> AgentState:
     final_policy_issues = list(state.get("final_policy_issues") or [])
     risk_context = _build_risk_context(state, publish_package)
     visible_text_edited = False
+    pending_patch = dict(state.get("pending_human_publish_patch") or {})
+    pending_replace_storyboards = bool(state.get("pending_human_replace_storyboards"))
 
     while True:
         review_result = interrupt(
@@ -180,11 +145,18 @@ def human_review_node(state: AgentState) -> AgentState:
         prior_publish_package = publish_package
         edited_publish_package = review_result.get("edited_publish_package")
         if edited_publish_package is not None:
-            publish_package = _merge_publish_package(
+            replace_storyboards = review_result.get("replace_storyboards") is True
+            publish_package = merge_publish_package(
                 publish_package,
                 edited_publish_package,
-                replace_storyboards=review_result.get("replace_storyboards") is True,
+                replace_storyboards=replace_storyboards,
             )
+            pending_patch = merge_publish_package(
+                pending_patch,
+                edited_publish_package,
+                replace_storyboards=replace_storyboards,
+            )
+            pending_replace_storyboards = pending_replace_storyboards or replace_storyboards
             visible_text_edited = visible_text_edited or _has_visible_text_edits(
                 prior_publish_package,
                 publish_package,
@@ -203,6 +175,8 @@ def human_review_node(state: AgentState) -> AgentState:
                     "review_feedback": feedback,
                     "review_round": review_round,
                     "final_policy_issues": [],
+                    "pending_human_publish_patch": pending_patch,
+                    "pending_human_replace_storyboards": pending_replace_storyboards,
                     "decision_output": _build_r2_recheck_decision(state, publish_package, review_round),
                     "current_node": "HUMAN_REVIEW",
                 }

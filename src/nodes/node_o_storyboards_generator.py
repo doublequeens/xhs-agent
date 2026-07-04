@@ -2,6 +2,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 from src.models import get_model
 from src.schemas import AgentState, StoryboardPayload
+from src.nodes.publish_patch import (
+    merge_publish_package,
+    storyboard_patch_without_visible_text,
+)
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 def storyboards_generator_node(state: AgentState) -> AgentState:
@@ -53,4 +57,34 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     merged_publish_package["storyboards"] = [
         frame.model_dump() for frame in storyboard_payload.storyboards
     ]
-    return {"publish_package": merged_publish_package}
+
+    pending_patch = state.get("pending_human_publish_patch")
+    if pending_patch:
+        merged_publish_package = merge_publish_package(
+            merged_publish_package,
+            storyboard_patch_without_visible_text(pending_patch),
+            replace_storyboards=bool(state.get("pending_human_replace_storyboards")),
+        )
+
+        r2_output = state.get("r2_output")
+        content_snapshot = getattr(r2_output, "content_snapshot", None)
+        if content_snapshot is None and isinstance(r2_output, dict):
+            content_snapshot = r2_output.get("content_snapshot")
+        visible_text = getattr(content_snapshot, "storyboard_visible_text", None)
+        if visible_text is None and isinstance(content_snapshot, dict):
+            visible_text = content_snapshot.get("storyboard_visible_text")
+        visible_patch = [
+            frame.model_dump() if hasattr(frame, "model_dump") else dict(frame)
+            for frame in list(visible_text or [])
+        ]
+        if visible_patch:
+            merged_publish_package = merge_publish_package(
+                merged_publish_package,
+                {"storyboards": visible_patch},
+            )
+
+    return {
+        "publish_package": merged_publish_package,
+        "pending_human_publish_patch": None,
+        "pending_human_replace_storyboards": None,
+    }

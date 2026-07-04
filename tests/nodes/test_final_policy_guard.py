@@ -10,6 +10,7 @@ from src.nodes.node_q_01_final_policy_guard import (
 )
 from src.nodes import node_i_r2_compliance as r2_module
 from src.nodes import node_j_decision_engine as decision_module
+from src.nodes import node_o_storyboards_generator as storyboard_module
 from src.nodes.node_q_human_review import route_after_human_review
 
 
@@ -42,9 +43,20 @@ def _storyboard_frame(frame_id, **overrides):
         "frame_id": frame_id,
         "narrative_role": "opening",
         "frame_title": f"标题 {frame_id}",
+        "image_orientation": "vertical",
+        "aspect_ratio": "3:4",
+        "recommended_size": "1080x1440",
+        "visual_description": f"场景 {frame_id}",
+        "character_action": "记录作息",
+        "scene_background": "卧室",
+        "composition": "居中构图",
+        "text_area": "顶部留白",
         "on_image_copy": f"画面文字 {frame_id}",
         "narration": f"旁白 {frame_id}",
         "image_prompt_cn": f"原始提示词 {frame_id}",
+        "image_prompt_en": f"prompt {frame_id}",
+        "negative_prompt": "horror",
+        "continuity_note": "保持角色一致",
     }
     frame.update(overrides)
     return frame
@@ -478,6 +490,14 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
         "target_group": "上班族",
         "core_pain": "熬夜后疲惫",
         "best_cover_copy": "作息调整记录",
+        "storyboard_visible_text": [
+            {
+                "frame_id": None,
+                "frame_title": "新标题",
+                "on_image_copy": "提示",
+                "narration": "说明",
+            }
+        ],
     }
     assert result["decision_output"].normalized_input.r2_input.revision_meta.round == 2
     assert result["decision_output"].normalized_input.r2_input.decision_trace.source_node == "HUMAN_REVIEW"
@@ -568,6 +588,218 @@ def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
     )
 
     assert result["publish_package"]["storyboards"] == replacement
+
+
+def test_unsafe_storyboard_edit_is_in_r2_input_and_cannot_route_to_writer(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {
+                "storyboards": [
+                    {
+                        "frame_id": "frame_001",
+                        "frame_title": "保证立即见效",
+                        "on_image_copy": "停 药就好",
+                        "narration": "每 天 250 毫克",
+                    }
+                ]
+            },
+        },
+    )
+    reviewed = human_review_node(
+        {
+            "publish_package": _publish_package(
+                storyboards=[_storyboard_frame("frame_001")]
+            ),
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    storyboard_text = (
+        reviewed["decision_output"]
+        .normalized_input.r2_input.content_snapshot.storyboard_visible_text[0]
+    )
+    assert storyboard_text.frame_title == "保证立即见效"
+    assert storyboard_text.on_image_copy == "停 药就好"
+    assert storyboard_text.narration == "每 天 250 毫克"
+    assert reviewed["pending_human_publish_patch"]["storyboards"][0]["frame_id"] == "frame_001"
+
+    class FakeModel:
+        def execute(self, messages):
+            captured["prompt"] = messages[1].content
+            snapshot = (
+                reviewed["decision_output"]
+                .normalized_input.r2_input.content_snapshot.model_dump()
+            )
+            return {
+                "content_snapshot": snapshot,
+                "compliance_audit": {
+                    "compliance_status": "fully_compliant",
+                    "issues": [],
+                    "required_fixes": [],
+                    "suggested_fixes": [],
+                    "block_publish": False,
+                    "matched_policy_rules": [],
+                    "unresolved_claims": [],
+                },
+                "revision_meta": {
+                    "revision_id": "human_review_edit",
+                    "round": 1,
+                    "diff_summary": ["reviewed storyboard"],
+                    "next_actions": ["publish"],
+                },
+            }
+
+    monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
+    r2_result = r2_module.r2_compliance_node(
+        {
+            **reviewed,
+            "domain_context": {
+                "domain": "wellness",
+                "profile_version": "wellness-v1",
+            },
+            "content_policy": {},
+            "evidence_briefs": {},
+        }
+    )
+
+    assert "保证立即见效" in captured["prompt"]
+    assert "停 药就好" in captured["prompt"]
+    assert "每 天 250 毫克" in captured["prompt"]
+    assert r2_result["r2_output"].compliance_audit.block_publish is True
+    assert set(r2_result["r2_output"].compliance_audit.matched_policy_rules) == {
+        "guaranteed_outcome",
+        "medication_advice",
+        "supplement_dosage",
+    }
+    deterministic_tasks = decision_module._build_blocked_r2_tasks(
+        r2_result["r2_output"]
+    )["mandatory"]
+    assert {
+        task["instruction"]: task["location_hint"]
+        for task in deterministic_tasks
+    } == {
+        "Remove or rewrite content that triggers policy rule `medication_advice`.": (
+            "storyboard_visible_text[0].on_image_copy"
+        ),
+        "Remove or rewrite content that triggers policy rule `supplement_dosage`.": (
+            "storyboard_visible_text[0].narration"
+        ),
+        "Remove or rewrite content that triggers policy rule `guaranteed_outcome`.": (
+            "storyboard_visible_text[0].frame_title"
+        ),
+    }
+    assert next_node(
+        {
+            "current_node": "R2_COMPLIANCE",
+            "decision_output": SimpleNamespace(next_node="HASHTAG_SEO"),
+            "r2_output": r2_result["r2_output"],
+        }
+    ) == "R1_REFLECTOR"
+
+
+def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review(monkeypatch):
+    review_payloads = []
+    responses = iter(
+        [
+            {
+                "approved": True,
+                "edited_publish_package": {
+                    "storyboards": [
+                        {
+                            "frame_id": "frame_001",
+                            "frame_title": "保证立即见效",
+                            "on_image_copy": "停 药就好",
+                            "narration": "每 天 250 毫克",
+                            "image_prompt_cn": "人工审核后的提示词",
+                        }
+                    ]
+                },
+            },
+            {"approved": True},
+        ]
+    )
+
+    def fake_interrupt(payload):
+        review_payloads.append(payload)
+        return next(responses)
+
+    monkeypatch.setattr("src.nodes.node_q_human_review.interrupt", fake_interrupt)
+    first_review = human_review_node(
+        {
+            "publish_package": _publish_package(
+                storyboards=[_storyboard_frame("frame_001")]
+            ),
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    regenerated_frames = [
+        _storyboard_frame(f"frame_{index:03d}", frame_title=f"重新生成 {index}")
+        for index in range(1, 9)
+    ]
+
+    class FakeStoryboardModel:
+        def execute(self, _messages):
+            return {"storyboards": regenerated_frames}
+
+    monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
+    reviewed_snapshot = first_review[
+        "decision_output"
+    ].normalized_input.r2_input.content_snapshot
+    r2_revised_snapshot = reviewed_snapshot.model_copy(
+        update={
+            "storyboard_visible_text": [
+                {
+                    "frame_id": "frame_001",
+                    "frame_title": "作息调整记录",
+                    "on_image_copy": "逐步调整",
+                    "narration": "分享个人体验",
+                }
+            ]
+        }
+    )
+    regenerated = storyboard_module.storyboards_generator_node(
+        {
+            "publish_package": _publish_package(title="重新组装后的标题"),
+            "pending_human_publish_patch": first_review["pending_human_publish_patch"],
+            "pending_human_replace_storyboards": False,
+            "r2_output": SimpleNamespace(
+                content_snapshot=r2_revised_snapshot
+            ),
+            "domain_context": {
+                "domain": "wellness",
+                "profile_version": "wellness-v1",
+            },
+            "content_policy": {},
+            "evidence_briefs": {},
+        }
+    )
+
+    first_frame = regenerated["publish_package"]["storyboards"][0]
+    assert first_frame["frame_title"] == "作息调整记录"
+    assert first_frame["on_image_copy"] == "逐步调整"
+    assert first_frame["narration"] == "分享个人体验"
+    assert first_frame["image_prompt_cn"] == "人工审核后的提示词"
+    assert first_frame["narrative_role"] == "opening"
+    assert regenerated["pending_human_publish_patch"] is None
+    assert regenerated["pending_human_replace_storyboards"] is None
+
+    second_review = human_review_node(
+        {
+            **regenerated,
+            "review_round": first_review["review_round"],
+            "final_policy_issues": [],
+        }
+    )
+
+    assert review_payloads[1]["publish_package"]["storyboards"][0] == first_frame
+    assert second_review["review_status"] == "approved"
+    assert route_after_human_review(second_review) == "final_policy_guard"
 
 
 def test_human_review_unchanged_approval_routes_to_final_guard(monkeypatch):

@@ -1,6 +1,6 @@
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from src.domain.models import ContentIntent, DomainName, RiskLevel
 
@@ -43,7 +43,15 @@ class RevisionMeta(BaseModel):
 class DecisionTrace(BaseModel):
     source_node: str
     why_this_route: List[str]
-    
+
+
+class StoryboardVisibleText(BaseModel):
+    frame_id: Optional[str] = None
+    frame_title: str = ""
+    on_image_copy: str = ""
+    narration: str = ""
+
+
 class R1Input(BaseModel):
     content_candidate: ContentCandidate
     editorial_tasks: EditorialTasks
@@ -61,6 +69,7 @@ class R2ContentSnapShoot(BaseModel):
     target_group: str
     core_pain: str
     best_cover_copy: str
+    storyboard_visible_text: List[StoryboardVisibleText] = Field(default_factory=list)
 
 class R2Input(BaseModel):
     content_snapshot: R2ContentSnapShoot

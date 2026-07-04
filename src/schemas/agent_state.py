@@ -50,4 +50,6 @@ class AgentState(TypedDict):
     review_feedback: Optional[str]
     review_round: Optional[int]
     review_route: Optional[str]
+    pending_human_publish_patch: Optional[dict]
+    pending_human_replace_storyboards: Optional[bool]
     data_writed: Optional[bool]

@@ -434,6 +434,61 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["profile_version"] == "wellness-v1"
 
 
+def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(monkeypatch):
+    from src.nodes import node_o_assembler as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "notes": ["generated note"],
+                "storyboard_strategy": "generated",
+                "hashtags": ["#generated"],
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    result = module.assembler_node(
+        {
+            "final_content": SimpleNamespace(
+                final_title="R2 修订后的标题",
+                final_md="R2 修订后的正文",
+                topic_id="tp_001",
+                topic="睡眠改善",
+                angle_id="ag_001",
+                angle="睡眠策略",
+                target_group="上班族",
+                core_pain="熬夜后疲惫",
+                best_cover_copy="R2 修订后的封面",
+                domain="wellness",
+                subdomain="sleep",
+                content_intent="how_to",
+                risk_level="medium",
+                risk_flags=["medical-adjacent"],
+            ),
+            "hashtags": SimpleNamespace(hashtags=["#generated"]),
+            "final_images": SimpleNamespace(image_final_choices=[]),
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+            "pending_human_publish_patch": {
+                "title": "旧人工标题",
+                "content": "旧人工正文",
+                "cover_copy": "旧人工封面",
+                "hashtags": ["#旧人工标签"],
+                "notes": ["人工审核备注"],
+                "storyboards": [{"frame_id": "frame_001", "image_prompt_cn": "人工提示"}],
+            },
+        }
+    )
+
+    publish_package = result["publish_package"]
+    assert publish_package["title"] == "R2 修订后的标题"
+    assert publish_package["content"] == "R2 修订后的正文"
+    assert publish_package["cover_copy"] == "R2 修订后的封面"
+    assert publish_package["hashtags"] == ["#generated"]
+    assert publish_package["notes"] == ["人工审核备注"]
+    assert "storyboards" not in publish_package
+
+
 def test_storyboards_generator_preserves_full_publish_package_and_frame_contract(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
 
