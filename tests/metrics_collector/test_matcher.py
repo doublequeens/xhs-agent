@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from itertools import permutations
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -60,6 +61,43 @@ def test_content_matcher_has_configurable_threshold_defaults():
     assert custom.winner_margin == 0.1
 
 
+@pytest.mark.parametrize(
+    "field",
+    [
+        "title_similarity_threshold",
+        "combined_score_threshold",
+        "winner_margin",
+    ],
+)
+@pytest.mark.parametrize(
+    "invalid_value",
+    [
+        float("nan"),
+        float("inf"),
+        float("-inf"),
+        -0.01,
+        1.01,
+        "0.5",
+        True,
+    ],
+)
+def test_content_matcher_rejects_invalid_configuration(field, invalid_value):
+    with pytest.raises(ValueError, match=f"^{field} "):
+        ContentMatcher(**{field: invalid_value})
+
+
+def test_content_matcher_accepts_configuration_boundaries():
+    matcher = ContentMatcher(
+        title_similarity_threshold=0,
+        combined_score_threshold=1,
+        winner_margin=0,
+    )
+
+    assert matcher.title_similarity_threshold == 0
+    assert matcher.combined_score_threshold == 1
+    assert matcher.winner_margin == 0
+
+
 def test_unique_exact_normalized_title_matches_with_full_score():
     candidates = [
         candidate("other", "完全不同的标题"),
@@ -92,6 +130,51 @@ def test_small_title_edit_uses_time_as_secondary_signal():
     assert result.candidate_ids == ("nearer",)
 
 
+@pytest.mark.parametrize(
+    ("exported_title", "candidate_title"),
+    [
+        (
+            "油皮晨间护肤别过度清洁学会做减法",
+            "油皮晨间护肤：别过度清洁，要做减法",
+        ),
+        (
+            "油皮晨间护肤别过度清洁要做减法",
+            "油皮晨间护肤别过度清洁做好减法",
+        ),
+    ],
+)
+def test_realistic_chinese_title_edits_match(
+    exported_title,
+    candidate_title,
+):
+    similarity = title_similarity(exported_title, candidate_title)
+
+    result = ContentMatcher().match(
+        exported_title,
+        PUBLISHED_AT,
+        [candidate("content-1", candidate_title)],
+    )
+
+    assert similarity >= 0.82
+    assert result.status == "matched"
+    assert result.content_id == "content-1"
+
+
+def test_substantial_chinese_title_rewrite_is_unmatched():
+    exported_title = "油皮晨间护肤别过度清洁要做减法"
+    candidate_title = "油皮早晨正确护肤步骤分享"
+
+    result = ContentMatcher().match(
+        exported_title,
+        PUBLISHED_AT,
+        [candidate("content-1", candidate_title)],
+    )
+
+    assert title_similarity(exported_title, candidate_title) < 0.82
+    assert result.status == "unmatched"
+    assert result.candidate_ids == ()
+
+
 def test_close_candidates_are_ambiguous_in_deterministic_order():
     candidates = [
         candidate("b", "abcdefghiy", hours_from_publication=48),
@@ -107,6 +190,24 @@ def test_close_candidates_are_ambiguous_in_deterministic_order():
     assert result.candidate_ids == ("z", "a", "b")
 
 
+def test_candidate_order_permutations_produce_identical_result():
+    candidates = [
+        candidate("b", "abcdefghiy", hours_from_publication=48),
+        candidate("z", "abcdefghix", hours_from_publication=1),
+        candidate("a", "abcdefghiw", hours_from_publication=48),
+    ]
+
+    results = {
+        ContentMatcher().match("abcdefghij", PUBLISHED_AT, list(order))
+        for order in permutations(candidates)
+    }
+
+    assert len(results) == 1
+    result = results.pop()
+    assert result.status == "ambiguous"
+    assert result.candidate_ids == ("z", "a", "b")
+
+
 def test_below_title_threshold_is_unmatched():
     result = ContentMatcher().match(
         "abcdefghi",
@@ -118,6 +219,33 @@ def test_below_title_threshold_is_unmatched():
     assert result.content_id is None
     assert result.score is None
     assert result.candidate_ids == ()
+
+
+def test_exact_title_similarity_threshold_is_accepted():
+    exported_title = "a" * 41 + "b" * 9
+    candidate_title = "a" * 41 + "c" * 9
+
+    result = ContentMatcher().match(
+        exported_title,
+        PUBLISHED_AT,
+        [candidate("content-1", candidate_title)],
+    )
+
+    assert title_similarity(exported_title, candidate_title) == 0.82
+    assert result.status == "matched"
+    assert result.content_id == "content-1"
+
+
+def test_exact_combined_score_threshold_is_accepted():
+    result = ContentMatcher().match(
+        "abcdefghijkl",
+        PUBLISHED_AT,
+        [candidate("content-1", "abcdefghijxy", hours_from_publication=100)],
+    )
+
+    assert result.status == "matched"
+    assert result.content_id == "content-1"
+    assert result.score == 0.80
 
 
 def test_below_combined_threshold_is_unmatched():
@@ -202,6 +330,29 @@ def test_empty_normalized_title_is_unmatched():
 )
 def test_time_score_boundaries(hours, expected):
     assert time_score(PUBLISHED_AT, PUBLISHED_AT + timedelta(hours=hours)) == expected
+
+
+def test_time_score_uses_real_elapsed_time_across_spring_forward():
+    new_york = ZoneInfo("America/New_York")
+    before = datetime(2026, 3, 7, 3, 0, tzinfo=new_york)
+    after = datetime(2026, 3, 8, 3, 30, tzinfo=new_york)
+
+    assert time_score(before, after) == 1.0
+
+
+def test_time_score_uses_real_elapsed_time_across_fall_back():
+    new_york = ZoneInfo("America/New_York")
+    before = datetime(2026, 10, 31, 2, 0, tzinfo=new_york)
+    after = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=1)
+
+    assert time_score(before, after) == 0.8
+
+
+def test_time_score_supports_two_naive_datetimes():
+    before = datetime(2026, 7, 5, 12, 0)
+    after = datetime(2026, 7, 6, 13, 0)
+
+    assert time_score(before, after) == 0.8
 
 
 def test_time_score_rejects_mixed_aware_and_naive_datetimes():

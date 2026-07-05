@@ -1,8 +1,9 @@
 import math
 import unicodedata
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
+from numbers import Real
 
 from metrics_collector.models import ContentCandidate, MatchResult
 
@@ -18,16 +19,24 @@ def normalize_title(value: str) -> str:
 
 
 def title_similarity(left: str, right: str) -> float:
-    return SequenceMatcher(
-        None,
+    return _normalized_title_similarity(
         normalize_title(left),
         normalize_title(right),
-    ).ratio()
+    )
+
+
+def _normalized_title_similarity(left: str, right: str) -> float:
+    return SequenceMatcher(None, left, right).ratio()
 
 
 def time_score(left: datetime, right: datetime) -> float:
-    if _is_aware(left) != _is_aware(right):
+    left_is_aware = _is_aware(left)
+    if left_is_aware != _is_aware(right):
         raise ValueError(_DATETIME_AWARENESS_ERROR)
+
+    if left_is_aware:
+        left = left.astimezone(timezone.utc)
+        right = right.astimezone(timezone.utc)
 
     hours = abs((left - right).total_seconds()) / 3600
     if hours <= 24:
@@ -52,10 +61,33 @@ class _ScoredCandidate:
 
 
 @dataclass(frozen=True)
+class _NormalizedCandidate:
+    candidate: ContentCandidate
+    title: str
+
+
+@dataclass(frozen=True)
 class ContentMatcher:
     title_similarity_threshold: float = 0.82
     combined_score_threshold: float = 0.80
     winner_margin: float = 0.05
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "title_similarity_threshold",
+            "combined_score_threshold",
+            "winner_margin",
+        ):
+            value = getattr(self, field_name)
+            if (
+                isinstance(value, bool)
+                or not isinstance(value, Real)
+                or not math.isfinite(value)
+                or not 0 <= value <= 1
+            ):
+                raise ValueError(
+                    f"{field_name} must be a finite number in [0, 1]"
+                )
 
     def match(
         self,
@@ -71,10 +103,14 @@ class ContentMatcher:
             if _is_aware(published_at) != _is_aware(candidate.reference_time):
                 raise ValueError(_DATETIME_AWARENESS_ERROR)
 
-        exact_candidates = [
-            candidate
+        normalized_candidates = [
+            _NormalizedCandidate(candidate, normalize_title(candidate.title))
             for candidate in candidates
-            if normalize_title(candidate.title) == normalized_title
+        ]
+        exact_candidates = [
+            item.candidate
+            for item in normalized_candidates
+            if item.title == normalized_title
         ]
         if len(exact_candidates) == 1:
             content_id = exact_candidates[0].content_id
@@ -93,18 +129,21 @@ class ContentMatcher:
             return self._select(scored)
 
         scored = []
-        for candidate in candidates:
-            similarity = title_similarity(title, candidate.title)
+        for item in normalized_candidates:
+            similarity = _normalized_title_similarity(
+                normalized_title,
+                item.title,
+            )
             if similarity < self.title_similarity_threshold:
                 continue
             combined_score = (
                 0.90 * similarity
                 + 0.10 * time_score(
                     published_at,
-                    candidate.reference_time,
+                    item.candidate.reference_time,
                 )
             )
-            scored.append(_ScoredCandidate(candidate, combined_score))
+            scored.append(_ScoredCandidate(item.candidate, combined_score))
 
         return self._select(scored)
 
