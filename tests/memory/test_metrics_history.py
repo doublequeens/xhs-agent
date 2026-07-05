@@ -447,6 +447,72 @@ def test_bind_post_identity_is_idempotent_without_duplicate_event(manager):
     assert event_count == 1
 
 
+def test_mark_published_rejects_overwriting_existing_identity(manager):
+    save_content(manager, "content-1")
+    manager.mark_published(
+        "content-1",
+        "post-1",
+        "https://example.com/post-1",
+        "2026-07-04T09:30:00+08:00",
+    )
+
+    with pytest.raises(ValueError, match="already bound"):
+        manager.mark_published(
+            "content-1",
+            "post-2",
+            "https://example.com/post-2",
+            "2026-07-05T09:30:00+08:00",
+        )
+
+    content = manager.get_content_by_id("content-1")
+    assert content is not None
+    assert content["post_id"] == "post-1"
+    assert content["url"] == "https://example.com/post-1"
+    assert content["published_at"] == "2026-07-04T09:30:00+08:00"
+    event_count = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ? AND event_type = 'content_published'
+        """,
+        ("content-1",),
+    ).fetchone()[0]
+    assert event_count == 1
+
+
+def test_mark_published_same_identity_is_idempotent_without_duplicate_event(manager):
+    save_content(manager, "content-1")
+    original_url = "https://example.com/post-1"
+    original_published_at = "2026-07-04T09:30:00+08:00"
+    manager.mark_published(
+        "content-1",
+        "post-1",
+        original_url,
+        original_published_at,
+    )
+
+    manager.mark_published(
+        "content-1",
+        "post-1",
+        "https://example.com/replayed",
+        "2026-07-05T09:30:00+08:00",
+    )
+
+    content = manager.get_content_by_id("content-1")
+    assert content is not None
+    assert content["url"] == original_url
+    assert content["published_at"] == original_published_at
+    event_count = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ? AND event_type = 'content_published'
+        """,
+        ("content-1",),
+    ).fetchone()[0]
+    assert event_count == 1
+
+
 def test_init_db_enforces_unique_non_null_post_ids(manager):
     save_content(manager, "content-1")
     save_content(manager, "content-2")
@@ -464,7 +530,6 @@ def test_init_db_enforces_unique_non_null_post_ids(manager):
 
 
 def test_conflicting_content_save_preserves_owner_and_dependents(manager):
-    save_content(manager, "challenger", title="Challenger")
     save_content(
         manager,
         "owner",
@@ -479,7 +544,6 @@ def test_conflicting_content_save_preserves_owner_and_dependents(manager):
     )
     manager.log_event("owner_audit", "owner", {"preserve": True})
 
-    challenger_before = manager.get_content_by_id("challenger")
     owner_before = manager.get_content_by_id("owner")
     metrics_before = manager.get_metrics("owner")
     history_before = manager.get_metrics_history("owner")
@@ -505,7 +569,7 @@ def test_conflicting_content_save_preserves_owner_and_dependents(manager):
             )
         )
 
-    assert manager.get_content_by_id("challenger") == challenger_before
+    assert manager.get_content_by_id("challenger") is None
     assert manager.get_content_by_id("owner") == owner_before
     assert manager.get_metrics("owner") == metrics_before
     assert manager.get_metrics_history("owner") == history_before
@@ -522,20 +586,42 @@ def test_conflicting_content_save_preserves_owner_and_dependents(manager):
     assert events_after == events_before
 
 
+@pytest.mark.parametrize(
+    ("incoming_post_id", "incoming_url", "incoming_published_at"),
+    [
+        (None, None, None),
+        (
+            "post-different",
+            "https://example.com/post-different",
+            "2026-07-07T12:00:00+08:00",
+        ),
+    ],
+)
 def test_save_generated_content_updates_all_mutable_fields_for_same_content_id(
     manager,
+    incoming_post_id,
+    incoming_url,
+    incoming_published_at,
 ):
     save_content(manager, "content-1", title="Original")
+    original_url = "https://example.com/post-original"
+    original_published_at = "2026-07-05T12:00:00+08:00"
+    manager.bind_post_identity(
+        "content-1",
+        "post-original",
+        original_url,
+        original_published_at,
+    )
     replacement = ContentRecord(
         content_id="content-1",
         topic="updated topic",
         created_at="2026-07-06T10:00:00+08:00",
-        status="published",
+        status="generated",
         platform="xiaohongshu-updated",
         reviewed_at="2026-07-06T11:00:00+08:00",
-        published_at="2026-07-06T12:00:00+08:00",
-        post_id="post-updated",
-        url="https://example.com/post-updated",
+        published_at=incoming_published_at,
+        post_id=incoming_post_id,
+        url=incoming_url,
         topic_id="topic-updated",
         angle_id="angle-updated",
         angle="updated angle",
@@ -566,13 +652,9 @@ def test_save_generated_content_updates_all_mutable_fields_for_same_content_id(
     saved = manager.get_content_by_id("content-1")
     assert saved is not None
     for field_name in (
-        "status",
         "platform",
         "created_at",
         "reviewed_at",
-        "published_at",
-        "post_id",
-        "url",
         "topic_id",
         "topic",
         "angle_id",
@@ -599,6 +681,10 @@ def test_save_generated_content_updates_all_mutable_fields_for_same_content_id(
         "metadata",
     ):
         assert saved[field_name] == getattr(replacement, field_name)
+    assert saved["status"] == "published"
+    assert saved["post_id"] == "post-original"
+    assert saved["url"] == original_url
+    assert saved["published_at"] == original_published_at
 
 
 def test_get_unbound_published_candidates_filters_and_uses_reference_time(manager):

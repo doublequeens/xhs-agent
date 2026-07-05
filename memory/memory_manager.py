@@ -267,13 +267,16 @@ class XHSMemoryManager:
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(content_id) DO UPDATE SET
-                    status = excluded.status,
+                    status = CASE
+                        WHEN contents.post_id IS NOT NULL THEN contents.status
+                        ELSE excluded.status
+                    END,
                     platform = excluded.platform,
                     created_at = excluded.created_at,
                     reviewed_at = excluded.reviewed_at,
-                    published_at = excluded.published_at,
-                    post_id = excluded.post_id,
-                    url = excluded.url,
+                    published_at = contents.published_at,
+                    post_id = contents.post_id,
+                    url = contents.url,
                     topic_id = excluded.topic_id,
                     topic = excluded.topic,
                     angle_id = excluded.angle_id,
@@ -553,29 +556,12 @@ class XHSMemoryManager:
         url: Optional[str] = None,
         published_at: Optional[str] = None,
     ) -> None:
-        with self.connect() as conn:
-            conn.execute(
-                """
-                UPDATE contents
-                SET status = ?, post_id = ?, url = ?, published_at = ?
-                WHERE content_id = ?
-                """,
-                (
-                    "published",
-                    post_id,
-                    url,
-                    published_at or utc_now_iso(),
-                    content_id,
-                ),
-            )
-            _insert_event(
-                conn,
-                f"evt_{uuid.uuid4().hex[:12]}",
-                content_id,
-                "content_published",
-                utc_now_iso(),
-                {"post_id": post_id, "url": url},
-            )
+        self.bind_post_identity(
+            content_id,
+            post_id,
+            url,
+            published_at or utc_now_iso(),
+        )
 
     def update_metrics(
         self,
@@ -885,7 +871,7 @@ class XHSMemoryManager:
         self,
         content_id: str,
         post_id: str,
-        url: str,
+        url: Optional[str],
         published_at: str,
     ) -> None:
         with self._immediate_transaction() as conn:
