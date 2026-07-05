@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
+import memory.memory_manager as memory_manager_module
 from memory.memory_manager import XHSMemoryManager
 from memory.models import ContentRecord, MetricsRecord
 
@@ -165,6 +169,66 @@ def test_none_preserves_latest_and_zero_overwrites(manager):
     assert overwritten.engagement_rate == 0
 
 
+def test_concurrent_disjoint_metric_updates_are_serialized(manager, monkeypatch):
+    save_content(manager, "content-1")
+    manager.update_metrics("content-1", 100, 10, 5, 2, 1, 3)
+    merge_barrier = threading.Barrier(2)
+    original_upsert = manager._upsert_metrics
+
+    def overlap_old_read_merge_write(connection, record):
+        try:
+            merge_barrier.wait(timeout=0.25)
+        except threading.BrokenBarrierError:
+            pass
+        original_upsert(connection, record)
+
+    monkeypatch.setattr(manager, "_upsert_metrics", overlap_old_read_merge_write)
+
+    def update_views():
+        manager.update_metrics(
+            "content-1",
+            200,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    def update_likes():
+        manager.update_metrics(
+            "content-1",
+            None,
+            20,
+            None,
+            None,
+            None,
+            None,
+        )
+
+    errors = []
+    try:
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            futures = [executor.submit(update_views), executor.submit(update_likes)]
+            for future in futures:
+                try:
+                    future.result()
+                except Exception as error:
+                    errors.append(error)
+        latest = manager.get_metrics("content-1")
+    finally:
+        XHSMemoryManager.close_path(manager.db_path)
+
+    assert errors == []
+    assert latest is not None
+    assert latest["views"] == 200
+    assert latest["likes"] == 20
+    assert not any(
+        key[0] == manager.db_path.resolve()
+        for key in XHSMemoryManager.connections
+    )
+
+
 def test_new_unavailable_values_persist_null_but_calculate_as_zero(manager):
     save_content(manager, "content-1")
 
@@ -286,6 +350,119 @@ def test_bind_post_identity_updates_content_and_event_and_rejects_missing(manage
         )
 
 
+def test_bind_post_identity_rejects_overwriting_existing_identity(manager):
+    save_content(manager, "content-1")
+    manager.bind_post_identity(
+        "content-1",
+        "post-1",
+        "https://example.com/post-1",
+        "2026-07-04T09:30:00+08:00",
+    )
+
+    with pytest.raises(ValueError, match="already bound"):
+        manager.bind_post_identity(
+            "content-1",
+            "post-2",
+            "https://example.com/post-2",
+            "2026-07-05T09:30:00+08:00",
+        )
+
+    content = manager.get_content_by_id("content-1")
+    assert content is not None
+    assert content["post_id"] == "post-1"
+    assert content["url"] == "https://example.com/post-1"
+    event_count = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ? AND event_type = 'content_published'
+        """,
+        ("content-1",),
+    ).fetchone()[0]
+    assert event_count == 1
+
+
+def test_bind_post_identity_rejects_post_owned_by_another_content(manager):
+    save_content(manager, "content-1")
+    save_content(manager, "content-2")
+    manager.bind_post_identity(
+        "content-1",
+        "post-1",
+        "https://example.com/post-1",
+        "2026-07-04T09:30:00+08:00",
+    )
+
+    with pytest.raises(ValueError, match="another content"):
+        manager.bind_post_identity(
+            "content-2",
+            "post-1",
+            "https://example.com/post-1",
+            "2026-07-04T09:30:00+08:00",
+        )
+
+    content = manager.get_content_by_id("content-2")
+    assert content is not None
+    assert content["post_id"] is None
+    event_count = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ? AND event_type = 'content_published'
+        """,
+        ("content-2",),
+    ).fetchone()[0]
+    assert event_count == 0
+
+
+def test_bind_post_identity_is_idempotent_without_duplicate_event(manager):
+    save_content(manager, "content-1")
+    first_url = "https://example.com/post-1"
+    first_published_at = "2026-07-04T09:30:00+08:00"
+    manager.bind_post_identity(
+        "content-1",
+        "post-1",
+        first_url,
+        first_published_at,
+    )
+
+    manager.bind_post_identity(
+        "content-1",
+        "post-1",
+        "https://example.com/replayed",
+        "2026-07-05T09:30:00+08:00",
+    )
+
+    content = manager.get_content_by_id("content-1")
+    assert content is not None
+    assert content["url"] == first_url
+    assert content["published_at"] == first_published_at
+    event_count = manager.connect().execute(
+        """
+        SELECT COUNT(*)
+        FROM memory_events
+        WHERE content_id = ? AND event_type = 'content_published'
+        """,
+        ("content-1",),
+    ).fetchone()[0]
+    assert event_count == 1
+
+
+def test_init_db_enforces_unique_non_null_post_ids(manager):
+    save_content(manager, "content-1")
+    save_content(manager, "content-2")
+    connection = manager.connect()
+    connection.execute(
+        "UPDATE contents SET post_id = ? WHERE content_id = ?",
+        ("post-1", "content-1"),
+    )
+
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            "UPDATE contents SET post_id = ? WHERE content_id = ?",
+            ("post-1", "content-2"),
+        )
+
+
 def test_get_unbound_published_candidates_filters_and_uses_reference_time(manager):
     save_content(
         manager,
@@ -339,11 +516,12 @@ def test_run_ledger_start_finish_and_completed_semantics(manager, completed_stat
     assert manager.has_completed_execution_date("2026-07-05") is False
 
 
-def test_start_collection_run_upserts_and_resets_previous_result(manager):
+def test_start_collection_run_rejects_duplicate_claim_without_reset(manager):
     manager.start_collection_run("2026-07-05", "2026-07-05")
     manager.finish_collection_run(
         {
             "scheduled_date": "2026-07-05",
+            "execution_date": "2026-07-05",
             "status": "failed",
             "exported_rows": 3,
             "updated_rows": 2,
@@ -354,7 +532,11 @@ def test_start_collection_run_upserts_and_resets_previous_result(manager):
         }
     )
 
-    manager.start_collection_run("2026-07-05", "2026-07-07")
+    with pytest.raises(
+        memory_manager_module.CollectionRunAlreadyClaimed,
+        match="2026-07-05",
+    ):
+        manager.start_collection_run("2026-07-05", "2026-07-07")
 
     row = dict(
         manager.connect().execute(
@@ -362,11 +544,82 @@ def test_start_collection_run_upserts_and_resets_previous_result(manager):
             ("2026-07-05",),
         ).fetchone()
     )
-    assert row["execution_date"] == "2026-07-07"
-    assert row["status"] == "running"
-    assert row["completed_at"] is None
-    assert row["exported_rows"] == 0
-    assert row["updated_rows"] == 0
-    assert row["matched_post_ids"] == 0
-    assert row["error_summary"] is None
+    assert row["execution_date"] == "2026-07-05"
+    assert row["status"] == "failed"
+    assert row["completed_at"] is not None
+    assert row["exported_rows"] == 3
+    assert row["updated_rows"] == 2
+    assert row["matched_post_ids"] == 1
+    assert row["error_summary"] == "safe summary"
     assert manager.has_completed_execution_date("2026-07-07") is False
+
+
+def test_finish_collection_run_rejects_wrong_or_stale_completion(manager):
+    manager.start_collection_run("2026-07-05", "2026-07-06")
+    summary = {
+        "scheduled_date": "2026-07-05",
+        "execution_date": "2026-07-07",
+        "status": "success",
+        "exported_rows": 1,
+        "updated_rows": 1,
+        "skipped_rows": 0,
+        "ambiguous_rows": 0,
+        "matched_post_ids": 0,
+        "error_summary": None,
+    }
+
+    with pytest.raises(ValueError, match="running collection run"):
+        manager.finish_collection_run(summary)
+
+    row = dict(
+        manager.connect().execute(
+            "SELECT * FROM metrics_collection_runs WHERE scheduled_date = ?",
+            ("2026-07-05",),
+        ).fetchone()
+    )
+    assert row["status"] == "running"
+    summary["execution_date"] = "2026-07-06"
+    manager.finish_collection_run(summary)
+
+    with pytest.raises(ValueError, match="running collection run"):
+        manager.finish_collection_run(summary)
+
+
+@pytest.mark.parametrize(
+    ("summary_update", "error_type", "error_match"),
+    [
+        ({"status": "running"}, ValueError, "terminal status"),
+        ({"updated_rows": -1}, ValueError, "nonnegative integer"),
+        ({"exported_rows": 1.5}, TypeError, "nonnegative integer"),
+        ({"scheduled_date": 20260705}, TypeError, "scheduled_date"),
+        ({"execution_date": None}, TypeError, "execution_date"),
+    ],
+)
+def test_finish_collection_run_validates_summary(
+    manager,
+    summary_update,
+    error_type,
+    error_match,
+):
+    manager.start_collection_run("2026-07-05", "2026-07-06")
+    summary = {
+        "scheduled_date": "2026-07-05",
+        "execution_date": "2026-07-06",
+        "status": "failed",
+        "exported_rows": 1,
+        "updated_rows": 0,
+        "skipped_rows": 0,
+        "ambiguous_rows": 0,
+        "matched_post_ids": 0,
+        "error_summary": None,
+    }
+    summary.update(summary_update)
+
+    with pytest.raises(error_type, match=error_match):
+        manager.finish_collection_run(summary)
+
+    row = manager.connect().execute(
+        "SELECT status FROM metrics_collection_runs WHERE scheduled_date = ?",
+        ("2026-07-05",),
+    ).fetchone()
+    assert row["status"] == "running"

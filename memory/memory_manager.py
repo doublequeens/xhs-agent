@@ -4,9 +4,10 @@ import json
 import sqlite3
 import uuid
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from memory.migrations import (
     migrate_contents_domain_fields,
@@ -16,6 +17,25 @@ from memory.models import ContentRecord, MetricsRecord, MemoryContext
 
 VECTOR_DOMAIN_BACKFILL_EVENT = "vector_domain_backfill_v1"
 _INIT_DB_SAVEPOINT = "initialize_database"
+_TERMINAL_COLLECTION_STATUSES = {
+    "success",
+    "partial_success",
+    "auth_required",
+    "verification_required",
+    "blocked",
+    "failed",
+}
+_COLLECTION_COUNTER_FIELDS = (
+    "exported_rows",
+    "updated_rows",
+    "skipped_rows",
+    "ambiguous_rows",
+    "matched_post_ids",
+)
+
+
+class CollectionRunAlreadyClaimed(RuntimeError):
+    pass
 
 def utc_now_iso() -> str:
     return datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -69,6 +89,11 @@ _CONTENT_INDEXES: list[tuple[str, tuple[str, ...], str]] = [
         "idx_contents_domain_subdomain_created_at",
         ("domain", "subdomain", "created_at"),
         "CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain_created_at ON contents(domain, subdomain, created_at DESC)",
+    ),
+    (
+        "idx_contents_unique_post_id",
+        ("post_id",),
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_contents_unique_post_id ON contents(post_id) WHERE post_id IS NOT NULL",
     ),
 ]
 
@@ -171,6 +196,21 @@ class XHSMemoryManager:
 
     def _connection_key(self) -> tuple[Path, int]:
         return (self.db_path.resolve(), threading.get_ident())
+
+    @contextmanager
+    def _immediate_transaction(self) -> Iterator[sqlite3.Connection]:
+        connection = self.connect()
+        if connection.in_transaction:
+            raise RuntimeError("Cannot start an immediate transaction while one is active")
+
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield connection
+        except BaseException:
+            connection.rollback()
+            raise
+        else:
+            connection.commit()
 
     def log_event(
         self,
@@ -534,7 +574,7 @@ class XHSMemoryManager:
             danmaku_count=danmaku_count,
         )
 
-        with self.connect() as conn:
+        with self._immediate_transaction() as conn:
             record = self._merge_metrics_record(conn, source_record, utc_now_iso())
             self._upsert_metrics(conn, record)
             self._insert_metrics_updated_event(conn, record)
@@ -549,7 +589,7 @@ class XHSMemoryManager:
     ) -> list[MetricsRecord]:
         collected_at = utc_now_iso()
         merged_records: list[MetricsRecord] = []
-        with self.connect() as conn:
+        with self._immediate_transaction() as conn:
             for source_record in records:
                 merged_record = self._merge_metrics_record(
                     conn,
@@ -816,17 +856,48 @@ class XHSMemoryManager:
         url: str,
         published_at: str,
     ) -> None:
-        with self.connect() as conn:
+        with self._immediate_transaction() as conn:
+            target = conn.execute(
+                "SELECT post_id FROM contents WHERE content_id = ?",
+                (content_id,),
+            ).fetchone()
+            if target is None:
+                raise ValueError(f"No content found with content_id: {content_id}")
+
+            existing_post_id = target["post_id"]
+            if existing_post_id == post_id:
+                return
+            if existing_post_id is not None:
+                raise ValueError(
+                    f"Content {content_id} is already bound to post_id: "
+                    f"{existing_post_id}"
+                )
+
+            owner = conn.execute(
+                """
+                SELECT content_id
+                FROM contents
+                WHERE post_id = ?
+                LIMIT 1
+                """,
+                (post_id,),
+            ).fetchone()
+            if owner is not None:
+                raise ValueError(
+                    f"post_id {post_id} is already bound to another content: "
+                    f"{owner['content_id']}"
+                )
+
             result = conn.execute(
                 """
                 UPDATE contents
                 SET status = ?, post_id = ?, url = ?, published_at = ?
-                WHERE content_id = ?
+                WHERE content_id = ? AND post_id IS NULL
                 """,
                 ("published", post_id, url, published_at, content_id),
             )
             if result.rowcount != 1:
-                raise ValueError(f"No content found with content_id: {content_id}")
+                raise ValueError(f"Content {content_id} could not be bound")
             _insert_event(
                 conn,
                 f"evt_{uuid.uuid4().hex[:12]}",
@@ -860,7 +931,7 @@ class XHSMemoryManager:
         execution_date: str,
     ) -> None:
         with self.connect() as conn:
-            conn.execute(
+            result = conn.execute(
                 """
                 INSERT INTO metrics_collection_runs (
                     scheduled_date,
@@ -869,23 +940,20 @@ class XHSMemoryManager:
                     started_at
                 )
                 VALUES (?, ?, 'running', ?)
-                ON CONFLICT(scheduled_date) DO UPDATE SET
-                    execution_date = excluded.execution_date,
-                    status = 'running',
-                    started_at = excluded.started_at,
-                    completed_at = NULL,
-                    exported_rows = 0,
-                    updated_rows = 0,
-                    skipped_rows = 0,
-                    ambiguous_rows = 0,
-                    matched_post_ids = 0,
-                    error_summary = NULL
+                ON CONFLICT(scheduled_date) DO NOTHING
                 """,
                 (scheduled_date, execution_date, utc_now_iso()),
             )
+            if result.rowcount != 1:
+                raise CollectionRunAlreadyClaimed(
+                    f"Collection run already claimed for scheduled_date: "
+                    f"{scheduled_date}"
+                )
 
     def finish_collection_run(self, summary: dict[str, object]) -> None:
+        self._validate_collection_summary(summary)
         scheduled_date = summary["scheduled_date"]
+        execution_date = summary["execution_date"]
         with self.connect() as conn:
             result = conn.execute(
                 """
@@ -899,6 +967,8 @@ class XHSMemoryManager:
                     matched_post_ids = ?,
                     error_summary = ?
                 WHERE scheduled_date = ?
+                  AND execution_date = ?
+                  AND status = 'running'
                 """,
                 (
                     summary["status"],
@@ -910,12 +980,31 @@ class XHSMemoryManager:
                     summary.get("matched_post_ids", 0),
                     summary.get("error_summary"),
                     scheduled_date,
+                    execution_date,
                 ),
             )
             if result.rowcount != 1:
                 raise ValueError(
-                    f"No collection run found for scheduled_date: {scheduled_date}"
+                    "No matching running collection run found for "
+                    f"scheduled_date={scheduled_date}, "
+                    f"execution_date={execution_date}"
                 )
+
+    def _validate_collection_summary(self, summary: dict[str, object]) -> None:
+        for field_name in ("scheduled_date", "execution_date"):
+            if not isinstance(summary.get(field_name), str):
+                raise TypeError(f"{field_name} must be a string")
+
+        status = summary.get("status")
+        if status not in _TERMINAL_COLLECTION_STATUSES:
+            raise ValueError(f"Invalid terminal status: {status}")
+
+        for field_name in _COLLECTION_COUNTER_FIELDS:
+            value = summary.get(field_name, 0)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise TypeError(f"{field_name} must be a nonnegative integer")
+            if value < 0:
+                raise ValueError(f"{field_name} must be a nonnegative integer")
 
     def has_completed_execution_date(self, execution_date: str) -> bool:
         with self.connect() as conn:
