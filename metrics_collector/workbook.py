@@ -59,6 +59,7 @@ _WORKBOOK_READ_ERRORS = (
     KeyError,
     OSError,
     ParseError,
+    ValueError,
 )
 _T = TypeVar("_T")
 

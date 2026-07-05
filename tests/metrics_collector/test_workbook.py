@@ -620,6 +620,34 @@ def corrupt_workbook_xml(destination, source):
             output_zip.writestr(entry, content)
 
 
+def corrupt_numeric_cell_xml(destination, source):
+    with ZipFile(source) as source_zip, ZipFile(destination, "w") as output_zip:
+        for entry in source_zip.infolist():
+            content = source_zip.read(entry.filename)
+            if entry.filename == "xl/worksheets/sheet1.xml":
+                valid_value = b"<v>1191</v>"
+                assert valid_value in content
+                content = content.replace(
+                    valid_value,
+                    b"<v>not-a-number</v>",
+                    1,
+                )
+            output_zip.writestr(entry, content)
+
+
+def test_malformed_numeric_cell_raises_contextual_format_error(tmp_path):
+    source = build_workbook(tmp_path, [VALID_ROW], filename="source.xlsx")
+    path = tmp_path / "malformed-cell.xlsx"
+    corrupt_numeric_cell_xml(path, source)
+
+    with pytest.raises(WorkbookFormatError) as exc_info:
+        parse_metrics_workbook(path, TZ)
+
+    message = str(exc_info.value)
+    assert str(path) in message
+    assert "could not read workbook" in message
+
+
 @pytest.mark.parametrize(
     ("filename", "make_invalid"),
     [
