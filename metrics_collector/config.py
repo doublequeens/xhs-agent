@@ -47,6 +47,5 @@ class CollectorConfig:
             note_manager_url="https://creator.xiaohongshu.com/new/note-manager",
         )
 
-
-def note_url(post_id: str) -> str:
-    return f"https://www.xiaohongshu.com/explore/{post_id}"
+    def note_url(self, post_id: str) -> str:
+        return f"https://www.xiaohongshu.com/explore/{post_id}"

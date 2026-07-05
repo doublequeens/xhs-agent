@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from metrics_collector.config import CollectorConfig, note_url
+from metrics_collector.config import CollectorConfig
 from metrics_collector.models import (
     CollectionSummary,
     ContentCandidate,
@@ -56,8 +56,10 @@ def test_collector_config_is_frozen(tmp_path):
         config.headless = True
 
 
-def test_note_url_is_stable_and_contains_no_token():
-    assert note_url("abc123") == "https://www.xiaohongshu.com/explore/abc123"
+def test_note_url_is_stable_and_contains_no_token(tmp_path):
+    config = CollectorConfig.default(home=tmp_path)
+
+    assert config.note_url("abc123") == "https://www.xiaohongshu.com/explore/abc123"
 
 
 def test_collector_models_are_constructible_and_frozen():
