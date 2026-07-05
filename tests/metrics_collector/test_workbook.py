@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from math import inf, isfinite, nan
+from pathlib import Path
+from zipfile import ZipFile
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
@@ -375,6 +377,37 @@ def test_multiple_header_rows_are_ambiguous(tmp_path):
         parse_metrics_workbook(path, TZ)
 
 
+def test_empty_workbook_missing_header_is_a_workbook_level_error(tmp_path):
+    path = tmp_path / "empty.xlsx"
+    workbook = Workbook()
+    workbook.save(path)
+    workbook.close()
+
+    with pytest.raises(WorkbookFormatError) as exc_info:
+        parse_metrics_workbook(path, TZ)
+
+    message = str(exc_info.value)
+    assert str(path) in message
+    assert "missing required headers" in message
+    assert "row 0" not in message
+
+
+def test_missing_header_is_a_workbook_level_error(tmp_path):
+    path = build_workbook(
+        tmp_path,
+        [],
+        headers=["错误标题", *HEADERS[1:]],
+    )
+
+    with pytest.raises(WorkbookFormatError) as exc_info:
+        parse_metrics_workbook(path, TZ)
+
+    message = str(exc_info.value)
+    assert str(path) in message
+    assert "missing required headers" in message
+    assert not message.startswith("row ")
+
+
 def test_skips_wholly_empty_rows_and_parses_every_nonempty_row(tmp_path):
     second = replace(VALID_ROW, "笔记标题", "第二篇")
     second = replace(second, "首次发布时间", "2026-05-17 10:00")
@@ -421,7 +454,7 @@ def test_duplicate_normalized_title_and_exact_publication_time_rejects(
 
     with pytest.raises(
         WorkbookFormatError,
-        match=r"row 3.*笔记标题.*duplicate",
+        match=r"row 3.*笔记标题.*duplicate.*row 2.*row 3",
     ):
         parse_metrics_workbook(path, TZ)
 
@@ -434,17 +467,64 @@ def test_same_title_at_different_publication_time_is_allowed(tmp_path):
 
 
 class FakeWorkbook:
-    def __init__(self, rows):
+    def __init__(self, rows, *, iterator_type=iter):
         self.active = self
         self.rows = rows
         self.closed = False
+        self.iterator_type = iterator_type
 
     def iter_rows(self, values_only):
-        assert values_only is True
-        return iter(self.rows)
+        rows = self.rows
+        if not values_only:
+            rows = [
+                tuple(FakeCell(value) for value in row)
+                for row in self.rows
+            ]
+        return self.iterator_type(rows)
 
     def close(self):
         self.closed = True
+
+
+class FakeCell:
+    def __init__(self, value):
+        self.value = value
+        self.data_type = (
+            "f"
+            if isinstance(value, str) and value.startswith("=")
+            else "n"
+        )
+
+
+class NoMaterializationIterator:
+    def __init__(self, rows):
+        self._rows = iter(rows)
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        return next(self._rows)
+
+    def __length_hint__(self):
+        raise AssertionError("row iterator was materialized")
+
+
+def test_rows_are_consumed_incrementally_without_raw_sheet_materialization(
+    monkeypatch,
+):
+    workbook = FakeWorkbook(
+        [HEADERS, VALID_ROW],
+        iterator_type=NoMaterializationIterator,
+    )
+    monkeypatch.setattr(
+        "metrics_collector.workbook.load_workbook",
+        lambda *args, **kwargs: workbook,
+    )
+
+    rows = parse_metrics_workbook(Path("ignored.xlsx"), TZ)
+
+    assert len(rows) == 1
 
 
 def test_aware_datetime_is_converted_and_workbook_closes_on_success(
@@ -479,6 +559,30 @@ def test_aware_datetime_is_converted_and_workbook_closes_on_success(
     assert workbook.closed is True
 
 
+def test_validation_and_value_workbooks_are_loaded_in_order_and_closed(
+    monkeypatch,
+):
+    workbooks = [
+        FakeWorkbook([HEADERS, VALID_ROW]),
+        FakeWorkbook([HEADERS, VALID_ROW]),
+    ]
+    calls = []
+
+    def load(path, *, read_only, data_only):
+        calls.append((path, read_only, data_only))
+        return workbooks[len(calls) - 1]
+
+    monkeypatch.setattr("metrics_collector.workbook.load_workbook", load)
+
+    parse_metrics_workbook(Path("metrics.xlsx"), TZ)
+
+    assert calls == [
+        (Path("metrics.xlsx"), True, False),
+        (Path("metrics.xlsx"), True, True),
+    ]
+    assert all(workbook.closed for workbook in workbooks)
+
+
 def test_workbook_closes_when_row_parsing_raises(monkeypatch):
     workbook = FakeWorkbook(
         [HEADERS, replace(VALID_ROW, "曝光", "not-a-count")]
@@ -492,3 +596,62 @@ def test_workbook_closes_when_row_parsing_raises(monkeypatch):
         parse_metrics_workbook("ignored.xlsx", TZ)
 
     assert workbook.closed is True
+
+
+def test_formula_in_required_data_column_is_rejected(tmp_path):
+    path = build_workbook(
+        tmp_path,
+        [replace(VALID_ROW, "曝光", "=1000+191")],
+    )
+
+    with pytest.raises(
+        WorkbookFormatError,
+        match=r"row 2.*曝光.*formula",
+    ):
+        parse_metrics_workbook(path, TZ)
+
+
+def corrupt_workbook_xml(destination, source):
+    with ZipFile(source) as source_zip, ZipFile(destination, "w") as output_zip:
+        for entry in source_zip.infolist():
+            content = source_zip.read(entry.filename)
+            if entry.filename == "xl/workbook.xml":
+                content = b"<workbook><broken>"
+            output_zip.writestr(entry, content)
+
+
+@pytest.mark.parametrize(
+    ("filename", "make_invalid"),
+    [
+        ("missing.xlsx", lambda path, valid: None),
+        ("random.xlsx", lambda path, valid: path.write_bytes(b"random bytes")),
+        (
+            "truncated.xlsx",
+            lambda path, valid: path.write_bytes(valid.read_bytes()[:100]),
+        ),
+        (
+            "unsupported.xls",
+            lambda path, valid: path.write_bytes(valid.read_bytes()),
+        ),
+        (
+            "unsupported-content.xlsx",
+            lambda path, valid: ZipFile(path, "w").close(),
+        ),
+        ("invalid-xml.xlsx", corrupt_workbook_xml),
+    ],
+)
+def test_invalid_workbook_files_raise_contextual_format_error(
+    tmp_path,
+    filename,
+    make_invalid,
+):
+    valid = build_workbook(tmp_path, [VALID_ROW], filename="source.xlsx")
+    path = tmp_path / filename
+    make_invalid(path, valid)
+
+    with pytest.raises(WorkbookFormatError) as exc_info:
+        parse_metrics_workbook(path, TZ)
+
+    message = str(exc_info.value)
+    assert str(path) in message
+    assert "workbook" in message

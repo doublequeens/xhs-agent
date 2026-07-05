@@ -3,10 +3,13 @@ from datetime import datetime
 import math
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable, TypeVar
+from xml.etree.ElementTree import ParseError
+from zipfile import BadZipFile
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 from metrics_collector.matcher import normalize_title
 from metrics_collector.models import ExportedMetrics
@@ -49,6 +52,15 @@ _PUBLICATION_FORMATS = (
     "%Y年%m月%d日%H时%M分",
     "%Y-%m-%d %H:%M",
 )
+_WORKBOOK_READ_ERRORS = (
+    BadZipFile,
+    EOFError,
+    InvalidFileException,
+    KeyError,
+    OSError,
+    ParseError,
+)
+_T = TypeVar("_T")
 
 
 def _is_unavailable(value: Any) -> bool:
@@ -70,36 +82,40 @@ def _error(row_number: int, field: str, detail: str) -> WorkbookFormatError:
     )
 
 
-def _find_header(
-    rows: list[tuple[Any, ...]],
-) -> tuple[int, dict[str, int]]:
+def _workbook_error(path: Path, detail: str) -> WorkbookFormatError:
+    return WorkbookFormatError(f"workbook {path}: {detail}")
+
+
+def _header_candidate(
+    row: tuple[Any, ...],
+    row_number: int,
+) -> tuple[dict[str, int] | None, Counter]:
     required = set(HEADERS)
-    candidates = []
-    for row_number, row in enumerate(rows, start=1):
-        counts = Counter(value for value in row if value in required)
-        candidates.append((len(counts), row_number, row, counts))
-
-    complete = [
-        candidate
-        for candidate in candidates
-        if candidate[0] == len(HEADERS)
-    ]
-    if len(complete) > 1:
-        row_numbers = ", ".join(str(candidate[1]) for candidate in complete)
+    counts = Counter(value for value in row if value in required)
+    if len(counts) != len(HEADERS):
+        return None, counts
+    duplicates = [header for header in HEADERS if counts[header] > 1]
+    if duplicates:
         raise _error(
-            complete[0][1],
-            "headers",
-            f"multiple header rows found at rows {row_numbers}",
+            row_number,
+            duplicates[0],
+            f"duplicate required header: {duplicates[0]}",
         )
+    return {
+        header: next(
+            index for index, value in enumerate(row) if value == header
+        )
+        for header in HEADERS
+    }, counts
 
-    if complete:
-        _, row_number, row, counts = complete[0]
-    else:
-        _, row_number, row, counts = max(
-            candidates,
-            default=(0, 0, (), Counter()),
-            key=lambda candidate: candidate[0],
-        )
+
+def _raise_missing_header(
+    path: Path,
+    best_partial: tuple[int, int, Counter] | None,
+) -> None:
+    counts = best_partial[2] if best_partial is not None else Counter()
+    if best_partial is not None:
+        row_number = best_partial[1]
         duplicates = [
             header for header in HEADERS if counts.get(header, 0) > 1
         ]
@@ -109,27 +125,100 @@ def _find_header(
                 duplicates[0],
                 f"duplicate required header: {duplicates[0]}",
             )
-        missing = [header for header in HEADERS if header not in counts]
-        raise _error(
-            row_number,
-            "headers",
-            f"missing required headers: {', '.join(missing)}",
-        )
+    missing = [header for header in HEADERS if header not in counts]
+    raise _workbook_error(
+        path,
+        f"missing required headers: {', '.join(missing)}",
+    )
 
-    duplicates = [header for header in HEADERS if counts[header] > 1]
-    if duplicates:
-        raise _error(
-            row_number,
-            duplicates[0],
-            f"duplicate required header: {duplicates[0]}",
-        )
 
-    return row_number, {
-        header: next(
-            index for index, value in enumerate(row) if value == header
+def _updated_best_partial(
+    current: tuple[int, int, Counter] | None,
+    row_number: int,
+    counts: Counter,
+) -> tuple[int, int, Counter]:
+    candidate = (len(counts), row_number, counts)
+    if current is None or candidate[0] > current[0]:
+        return candidate
+    return current
+
+
+def _run_workbook_pass(
+    path: Path,
+    *,
+    data_only: bool,
+    operation: Callable[[Any], _T],
+) -> _T:
+    workbook = None
+    try:
+        workbook = load_workbook(
+            path,
+            read_only=True,
+            data_only=data_only,
         )
-        for header in HEADERS
-    }
+        if workbook.active is None:
+            raise _workbook_error(path, "missing active worksheet")
+        return operation(workbook.active)
+    except WorkbookFormatError:
+        raise
+    except _WORKBOOK_READ_ERRORS as exc:
+        raise _workbook_error(
+            path,
+            f"could not read workbook: {exc}",
+        ) from exc
+    finally:
+        if workbook is not None:
+            workbook.close()
+
+
+def _validate_formula_free_workbook(
+    path: Path,
+) -> tuple[int, dict[str, int]]:
+    def validate(sheet: Any) -> tuple[int, dict[str, int]]:
+        header: tuple[int, dict[str, int]] | None = None
+        best_partial: tuple[int, int, Counter] | None = None
+        for row_number, cells in enumerate(
+            sheet.iter_rows(values_only=False),
+            start=1,
+        ):
+            values = tuple(cell.value for cell in cells)
+            columns, counts = _header_candidate(values, row_number)
+            if columns is not None:
+                if header is not None:
+                    raise _error(
+                        row_number,
+                        "headers",
+                        "multiple header rows found at "
+                        f"rows {header[0]} and {row_number}",
+                    )
+                header = (row_number, columns)
+                continue
+            if header is None:
+                best_partial = _updated_best_partial(
+                    best_partial,
+                    row_number,
+                    counts,
+                )
+                continue
+            for field, column_index in header[1].items():
+                if (
+                    column_index < len(cells)
+                    and cells[column_index].data_type == "f"
+                ):
+                    raise _error(
+                        row_number,
+                        field,
+                        "formula cells are not allowed",
+                    )
+        if header is None:
+            _raise_missing_header(path, best_partial)
+        return header
+
+    return _run_workbook_pass(
+        path,
+        data_only=False,
+        operation=validate,
+    )
 
 
 def _parse_count(value: Any, row_number: int, field: str) -> int | None:
@@ -298,28 +387,61 @@ def parse_metrics_workbook(
     path: Path,
     timezone: ZoneInfo,
 ) -> list[ExportedMetrics]:
-    workbook = load_workbook(path, read_only=True, data_only=True)
-    try:
-        rows = list(workbook.active.iter_rows(values_only=True))
-        header_row_number, columns = _find_header(rows)
+    expected_header = _validate_formula_free_workbook(path)
+
+    def parse(sheet: Any) -> list[ExportedMetrics]:
+        header: tuple[int, dict[str, int]] | None = None
+        best_partial: tuple[int, int, Counter] | None = None
         parsed_rows = []
-        identities: set[tuple[str, datetime]] = set()
+        identities: dict[tuple[str, datetime], int] = {}
         for row_number, row in enumerate(
-            rows[header_row_number:],
-            start=header_row_number + 1,
+            sheet.iter_rows(values_only=True),
+            start=1,
         ):
+            columns, counts = _header_candidate(row, row_number)
+            if columns is not None:
+                if header is not None:
+                    raise _error(
+                        row_number,
+                        "headers",
+                        "multiple header rows found at "
+                        f"rows {header[0]} and {row_number}",
+                    )
+                header = (row_number, columns)
+                if header != expected_header:
+                    raise _workbook_error(
+                        path,
+                        "header region changed between validation and value "
+                        "passes",
+                    )
+                continue
+            if header is None:
+                best_partial = _updated_best_partial(
+                    best_partial,
+                    row_number,
+                    counts,
+                )
+                continue
             if _is_empty_row(row):
                 continue
-            parsed = _parse_row(row, row_number, columns, timezone)
+            parsed = _parse_row(row, row_number, header[1], timezone)
             identity = (normalize_title(parsed.title), parsed.published_at)
             if identity in identities:
+                original_row = identities[identity]
                 raise _error(
                     row_number,
                     "笔记标题",
-                    "duplicate title and publication time",
+                    "duplicate title and publication time; "
+                    f"original row {original_row}, duplicate row {row_number}",
                 )
-            identities.add(identity)
+            identities[identity] = row_number
             parsed_rows.append(parsed)
+        if header is None:
+            _raise_missing_header(path, best_partial)
         return parsed_rows
-    finally:
-        workbook.close()
+
+    return _run_workbook_pass(
+        path,
+        data_only=True,
+        operation=parse,
+    )
