@@ -508,27 +508,19 @@ class XHSMemoryManager:
     def update_metrics(
         self,
         content_id: str,
-        views: int,
-        likes: int,
-        saves: int,
-        comments: int,
-        shares: int = 0,
-        followers_gained: int = 0,
+        views: Optional[int],
+        likes: Optional[int],
+        saves: Optional[int],
+        comments: Optional[int],
+        shares: Optional[int] = 0,
+        followers_gained: Optional[int] = 0,
+        *,
+        impressions: Optional[int] = None,
+        cover_click_rate: Optional[float] = None,
+        avg_watch_time_seconds: Optional[int] = None,
+        danmaku_count: Optional[int] = None,
     ) -> MetricsRecord:
-        rates = self._calculate_rates(
-            views=views,
-            likes=likes,
-            saves=saves,
-            comments=comments,
-            shares=shares,
-        )
-        performance_level = self._classify_performance(
-            views=views,
-            save_rate=rates["save_rate"],
-            engagement_rate=rates["engagement_rate"],
-        )
-
-        record = MetricsRecord(
+        source_record = MetricsRecord(
             content_id=content_id,
             views=views,
             likes=likes,
@@ -536,71 +528,429 @@ class XHSMemoryManager:
             comments=comments,
             shares=shares,
             followers_gained=followers_gained,
+            impressions=impressions,
+            cover_click_rate=cover_click_rate,
+            avg_watch_time_seconds=avg_watch_time_seconds,
+            danmaku_count=danmaku_count,
+        )
+
+        with self.connect() as conn:
+            record = self._merge_metrics_record(conn, source_record, utc_now_iso())
+            self._upsert_metrics(conn, record)
+            self._insert_metrics_updated_event(conn, record)
+
+        return record
+
+    def update_metrics_batch(
+        self,
+        records: list[MetricsRecord],
+        collected_date: str,
+        source: str,
+    ) -> list[MetricsRecord]:
+        collected_at = utc_now_iso()
+        merged_records: list[MetricsRecord] = []
+        with self.connect() as conn:
+            for source_record in records:
+                merged_record = self._merge_metrics_record(
+                    conn,
+                    source_record,
+                    collected_at,
+                )
+                self._upsert_metrics(conn, merged_record)
+                self._insert_metrics_history(
+                    conn,
+                    source_record,
+                    merged_record,
+                    collected_date,
+                    source,
+                    collected_at,
+                )
+                self._insert_metrics_updated_event(conn, merged_record)
+                merged_records.append(merged_record)
+        return merged_records
+
+    def _merge_metrics_record(
+        self,
+        connection: sqlite3.Connection,
+        source_record: MetricsRecord,
+        updated_at: str,
+    ) -> MetricsRecord:
+        existing_row = connection.execute(
+            "SELECT * FROM metrics WHERE content_id = ?",
+            (source_record.content_id,),
+        ).fetchone()
+        existing = dict(existing_row) if existing_row is not None else {}
+
+        def merged_value(field_name: str):
+            source_value = getattr(source_record, field_name)
+            return source_value if source_value is not None else existing.get(field_name)
+
+        views = merged_value("views")
+        likes = merged_value("likes")
+        saves = merged_value("saves")
+        comments = merged_value("comments")
+        shares = merged_value("shares")
+        calculation_values = {
+            "views": views or 0,
+            "likes": likes or 0,
+            "saves": saves or 0,
+            "comments": comments or 0,
+            "shares": shares or 0,
+        }
+        rates = self._calculate_rates(**calculation_values)
+        performance_level = self._classify_performance(
+            views=calculation_values["views"],
+            save_rate=rates["save_rate"],
+            engagement_rate=rates["engagement_rate"],
+        )
+        return MetricsRecord(
+            content_id=source_record.content_id,
+            views=views,
+            likes=likes,
+            saves=saves,
+            comments=comments,
+            shares=shares,
+            followers_gained=merged_value("followers_gained"),
             like_rate=rates["like_rate"],
             save_rate=rates["save_rate"],
             comment_rate=rates["comment_rate"],
             share_rate=rates["share_rate"],
             engagement_rate=rates["engagement_rate"],
             performance_level=performance_level,
-            updated_at=utc_now_iso(),
+            updated_at=updated_at,
+            impressions=merged_value("impressions"),
+            cover_click_rate=merged_value("cover_click_rate"),
+            avg_watch_time_seconds=merged_value("avg_watch_time_seconds"),
+            danmaku_count=merged_value("danmaku_count"),
         )
 
-        with self.connect() as conn:
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO metrics (
-                    content_id,
-                    views,
-                    likes,
-                    saves,
-                    comments,
-                    shares,
-                    followers_gained,
-                    like_rate,
-                    save_rate,
-                    comment_rate,
-                    share_rate,
-                    engagement_rate,
-                    performance_level,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    record.content_id,
-                    record.views,
-                    record.likes,
-                    record.saves,
-                    record.comments,
-                    record.shares,
-                    record.followers_gained,
-                    record.like_rate,
-                    record.save_rate,
-                    record.comment_rate,
-                    record.share_rate,
-                    record.engagement_rate,
-                    record.performance_level,
-                    record.updated_at,
-                ),
+    def _upsert_metrics(
+        self,
+        connection: sqlite3.Connection,
+        record: MetricsRecord,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO metrics (
+                content_id,
+                impressions,
+                views,
+                cover_click_rate,
+                likes,
+                saves,
+                comments,
+                shares,
+                followers_gained,
+                avg_watch_time_seconds,
+                danmaku_count,
+                like_rate,
+                save_rate,
+                comment_rate,
+                share_rate,
+                engagement_rate,
+                performance_level,
+                updated_at
             )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(content_id) DO UPDATE SET
+                impressions = COALESCE(excluded.impressions, metrics.impressions),
+                views = COALESCE(excluded.views, metrics.views),
+                cover_click_rate = COALESCE(
+                    excluded.cover_click_rate,
+                    metrics.cover_click_rate
+                ),
+                likes = COALESCE(excluded.likes, metrics.likes),
+                saves = COALESCE(excluded.saves, metrics.saves),
+                comments = COALESCE(excluded.comments, metrics.comments),
+                shares = COALESCE(excluded.shares, metrics.shares),
+                followers_gained = COALESCE(
+                    excluded.followers_gained,
+                    metrics.followers_gained
+                ),
+                avg_watch_time_seconds = COALESCE(
+                    excluded.avg_watch_time_seconds,
+                    metrics.avg_watch_time_seconds
+                ),
+                danmaku_count = COALESCE(
+                    excluded.danmaku_count,
+                    metrics.danmaku_count
+                ),
+                like_rate = excluded.like_rate,
+                save_rate = excluded.save_rate,
+                comment_rate = excluded.comment_rate,
+                share_rate = excluded.share_rate,
+                engagement_rate = excluded.engagement_rate,
+                performance_level = excluded.performance_level,
+                updated_at = excluded.updated_at
+            """,
+            (
+                record.content_id,
+                record.impressions,
+                record.views,
+                record.cover_click_rate,
+                record.likes,
+                record.saves,
+                record.comments,
+                record.shares,
+                record.followers_gained,
+                record.avg_watch_time_seconds,
+                record.danmaku_count,
+                record.like_rate,
+                record.save_rate,
+                record.comment_rate,
+                record.share_rate,
+                record.engagement_rate,
+                record.performance_level,
+                record.updated_at,
+            ),
+        )
+
+    def _insert_metrics_history(
+        self,
+        connection: sqlite3.Connection,
+        source_record: MetricsRecord,
+        merged_record: MetricsRecord,
+        collected_date: str,
+        source: str,
+        collected_at: str,
+    ) -> None:
+        connection.execute(
+            """
+            INSERT INTO metrics_history (
+                content_id,
+                collected_date,
+                source,
+                impressions,
+                views,
+                cover_click_rate,
+                likes,
+                saves,
+                comments,
+                shares,
+                followers_gained,
+                avg_watch_time_seconds,
+                danmaku_count,
+                like_rate,
+                save_rate,
+                comment_rate,
+                share_rate,
+                engagement_rate,
+                performance_level,
+                collected_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(content_id, collected_date) DO UPDATE SET
+                source = excluded.source,
+                impressions = excluded.impressions,
+                views = excluded.views,
+                cover_click_rate = excluded.cover_click_rate,
+                likes = excluded.likes,
+                saves = excluded.saves,
+                comments = excluded.comments,
+                shares = excluded.shares,
+                followers_gained = excluded.followers_gained,
+                avg_watch_time_seconds = excluded.avg_watch_time_seconds,
+                danmaku_count = excluded.danmaku_count,
+                like_rate = excluded.like_rate,
+                save_rate = excluded.save_rate,
+                comment_rate = excluded.comment_rate,
+                share_rate = excluded.share_rate,
+                engagement_rate = excluded.engagement_rate,
+                performance_level = excluded.performance_level,
+                collected_at = excluded.collected_at
+            """,
+            (
+                source_record.content_id,
+                collected_date,
+                source,
+                source_record.impressions,
+                source_record.views,
+                source_record.cover_click_rate,
+                source_record.likes,
+                source_record.saves,
+                source_record.comments,
+                source_record.shares,
+                source_record.followers_gained,
+                source_record.avg_watch_time_seconds,
+                source_record.danmaku_count,
+                merged_record.like_rate,
+                merged_record.save_rate,
+                merged_record.comment_rate,
+                merged_record.share_rate,
+                merged_record.engagement_rate,
+                merged_record.performance_level,
+                collected_at,
+            ),
+        )
+
+    def _insert_metrics_updated_event(
+        self,
+        connection: sqlite3.Connection,
+        record: MetricsRecord,
+    ) -> None:
+        _insert_event(
+            connection,
+            f"evt_{uuid.uuid4().hex[:12]}",
+            record.content_id,
+            "metrics_updated",
+            utc_now_iso(),
+            {
+                "views": record.views,
+                "likes": record.likes,
+                "saves": record.saves,
+                "comments": record.comments,
+                "shares": record.shares,
+                "performance_level": record.performance_level,
+                "like_rate": record.like_rate,
+                "save_rate": record.save_rate,
+                "comment_rate": record.comment_rate,
+                "share_rate": record.share_rate,
+                "engagement_rate": record.engagement_rate,
+            },
+        )
+
+    def bind_post_identity(
+        self,
+        content_id: str,
+        post_id: str,
+        url: str,
+        published_at: str,
+    ) -> None:
+        with self.connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE contents
+                SET status = ?, post_id = ?, url = ?, published_at = ?
+                WHERE content_id = ?
+                """,
+                ("published", post_id, url, published_at, content_id),
+            )
+            if result.rowcount != 1:
+                raise ValueError(f"No content found with content_id: {content_id}")
             _insert_event(
                 conn,
                 f"evt_{uuid.uuid4().hex[:12]}",
                 content_id,
-                "metrics_updated",
+                "content_published",
                 utc_now_iso(),
-                {
-                    "views": views,
-                    "likes": likes,
-                    "saves": saves,
-                    "comments": comments,
-                    "shares": shares,
-                    "performance_level": performance_level,
-                    **rates,
-                },
+                {"post_id": post_id, "url": url},
             )
 
-        return record
+    def get_unbound_published_candidates(self) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    content_id,
+                    title,
+                    COALESCE(NULLIF(published_at, ''), created_at) AS reference_time,
+                    post_id
+                FROM contents
+                WHERE post_id IS NULL
+                  AND title IS NOT NULL
+                  AND title <> ''
+                ORDER BY reference_time
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def start_collection_run(
+        self,
+        scheduled_date: str,
+        execution_date: str,
+    ) -> None:
+        with self.connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO metrics_collection_runs (
+                    scheduled_date,
+                    execution_date,
+                    status,
+                    started_at
+                )
+                VALUES (?, ?, 'running', ?)
+                ON CONFLICT(scheduled_date) DO UPDATE SET
+                    execution_date = excluded.execution_date,
+                    status = 'running',
+                    started_at = excluded.started_at,
+                    completed_at = NULL,
+                    exported_rows = 0,
+                    updated_rows = 0,
+                    skipped_rows = 0,
+                    ambiguous_rows = 0,
+                    matched_post_ids = 0,
+                    error_summary = NULL
+                """,
+                (scheduled_date, execution_date, utc_now_iso()),
+            )
+
+    def finish_collection_run(self, summary: dict[str, object]) -> None:
+        scheduled_date = summary["scheduled_date"]
+        with self.connect() as conn:
+            result = conn.execute(
+                """
+                UPDATE metrics_collection_runs
+                SET status = ?,
+                    completed_at = ?,
+                    exported_rows = ?,
+                    updated_rows = ?,
+                    skipped_rows = ?,
+                    ambiguous_rows = ?,
+                    matched_post_ids = ?,
+                    error_summary = ?
+                WHERE scheduled_date = ?
+                """,
+                (
+                    summary["status"],
+                    utc_now_iso(),
+                    summary.get("exported_rows", 0),
+                    summary.get("updated_rows", 0),
+                    summary.get("skipped_rows", 0),
+                    summary.get("ambiguous_rows", 0),
+                    summary.get("matched_post_ids", 0),
+                    summary.get("error_summary"),
+                    scheduled_date,
+                ),
+            )
+            if result.rowcount != 1:
+                raise ValueError(
+                    f"No collection run found for scheduled_date: {scheduled_date}"
+                )
+
+    def has_completed_execution_date(self, execution_date: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM metrics_collection_runs
+                WHERE execution_date = ?
+                  AND status IN ('success', 'partial_success')
+                LIMIT 1
+                """,
+                (execution_date,),
+            ).fetchone()
+        return row is not None
+
+    def get_metrics(self, content_id: str) -> Optional[dict[str, object]]:
+        with self.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM metrics WHERE content_id = ?",
+                (content_id,),
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def get_metrics_history(self, content_id: str) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM metrics_history
+                WHERE content_id = ?
+                ORDER BY collected_date
+                """,
+                (content_id,),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def get_recent_contents(
         self,

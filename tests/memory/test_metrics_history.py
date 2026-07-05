@@ -1,0 +1,372 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from memory.memory_manager import XHSMemoryManager
+from memory.models import ContentRecord, MetricsRecord
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SCHEMA_PATH = ROOT / "memory" / "schema.sql"
+
+
+@pytest.fixture
+def manager(tmp_path):
+    memory_manager = XHSMemoryManager(tmp_path / "memory.db")
+    memory_manager.init_db(SCHEMA_PATH)
+    yield memory_manager
+    memory_manager.close()
+
+
+def save_content(
+    manager: XHSMemoryManager,
+    content_id: str,
+    *,
+    title: str | None = "A useful title",
+    created_at: str = "2026-07-01T10:00:00+08:00",
+    published_at: str | None = None,
+    post_id: str | None = None,
+) -> None:
+    manager.save_generated_content(
+        ContentRecord(
+            content_id=content_id,
+            topic="sleep",
+            title=title,
+            created_at=created_at,
+            published_at=published_at,
+            post_id=post_id,
+        )
+    )
+
+
+def test_metrics_record_preserves_old_positions_and_accepts_unavailable_raw_values():
+    positional_record = MetricsRecord(
+        "content-1",
+        100,
+        10,
+        5,
+        2,
+        1,
+        3,
+        0.1,
+        0.05,
+        0.02,
+        0.01,
+        0.18,
+        "high",
+        "2026-07-05T10:00:00+08:00",
+    )
+    unavailable_record = MetricsRecord("content-2", views=None, impressions=None)
+
+    assert positional_record.like_rate == 0.1
+    assert positional_record.performance_level == "high"
+    assert positional_record.updated_at == "2026-07-05T10:00:00+08:00"
+    assert unavailable_record.views is None
+    assert unavailable_record.impressions is None
+
+
+def test_batch_update_writes_latest_and_history_with_merged_calculations(manager):
+    save_content(manager, "content-1")
+    manager.update_metrics("content-1", 100, 10, 5, 2, 1, 1, impressions=1000)
+
+    result = manager.update_metrics_batch(
+        [
+            MetricsRecord(
+                content_id="content-1",
+                impressions=None,
+                views=200,
+                cover_click_rate=0.2,
+                likes=None,
+                saves=8,
+                comments=4,
+                shares=2,
+                followers_gained=None,
+                avg_watch_time_seconds=17,
+                danmaku_count=0,
+            )
+        ],
+        collected_date="2026-07-05",
+        source="creator_center_note_export_v1",
+    )
+
+    latest = manager.get_metrics("content-1")
+    history = manager.get_metrics_history("content-1")
+    assert latest is not None
+    assert latest["impressions"] == 1000
+    assert latest["likes"] == 10
+    assert latest["views"] == 200
+    assert latest["avg_watch_time_seconds"] == 17
+    assert result[0].engagement_rate == pytest.approx((10 + 8 + 4 + 2) / 200)
+    assert history == [
+        {
+            **history[0],
+            "impressions": None,
+            "likes": None,
+            "followers_gained": None,
+            "views": 200,
+            "engagement_rate": pytest.approx((10 + 8 + 4 + 2) / 200),
+            "source": "creator_center_note_export_v1",
+            "collected_date": "2026-07-05",
+        }
+    ]
+
+
+def test_none_preserves_latest_and_zero_overwrites(manager):
+    save_content(manager, "content-1")
+    manager.update_metrics(
+        "content-1",
+        100,
+        10,
+        5,
+        2,
+        1,
+        3,
+        impressions=1000,
+        cover_click_rate=0.1,
+        avg_watch_time_seconds=12,
+        danmaku_count=4,
+    )
+
+    preserved = manager.update_metrics(
+        "content-1",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        impressions=None,
+        cover_click_rate=None,
+        avg_watch_time_seconds=None,
+        danmaku_count=None,
+    )
+    assert preserved.views == 100
+    assert preserved.impressions == 1000
+    assert preserved.avg_watch_time_seconds == 12
+
+    overwritten = manager.update_metrics(
+        "content-1",
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        impressions=0,
+        cover_click_rate=0,
+        avg_watch_time_seconds=0,
+        danmaku_count=0,
+    )
+    assert overwritten.views == 0
+    assert overwritten.impressions == 0
+    assert overwritten.cover_click_rate == 0
+    assert overwritten.engagement_rate == 0
+
+
+def test_new_unavailable_values_persist_null_but_calculate_as_zero(manager):
+    save_content(manager, "content-1")
+
+    record = manager.update_metrics(
+        "content-1",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+
+    latest = manager.get_metrics("content-1")
+    assert latest is not None
+    assert latest["views"] is None
+    assert latest["likes"] is None
+    assert record.like_rate == 0
+    assert record.performance_level == "low"
+
+
+def test_same_day_history_is_upserted_and_getter_orders_by_date(manager):
+    save_content(manager, "content-1")
+    manager.update_metrics_batch(
+        [MetricsRecord(content_id="content-1", views=100, likes=1)],
+        "2026-07-06",
+        "first",
+    )
+    manager.update_metrics_batch(
+        [MetricsRecord(content_id="content-1", views=80, likes=2)],
+        "2026-07-05",
+        "older",
+    )
+    manager.update_metrics_batch(
+        [MetricsRecord(content_id="content-1", views=120, likes=3)],
+        "2026-07-06",
+        "replacement",
+    )
+
+    history = manager.get_metrics_history("content-1")
+    assert [item["collected_date"] for item in history] == [
+        "2026-07-05",
+        "2026-07-06",
+    ]
+    assert history[1]["views"] == 120
+    assert history[1]["source"] == "replacement"
+    assert manager.get_metrics("missing") is None
+    assert manager.get_metrics_history("missing") == []
+
+
+def test_batch_failure_rolls_back_every_content(manager, monkeypatch):
+    save_content(manager, "content-1")
+    save_content(manager, "content-2")
+    original = manager._insert_metrics_history
+    call_count = 0
+
+    def fail_on_second_call(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            raise RuntimeError("history write failed")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(manager, "_insert_metrics_history", fail_on_second_call)
+
+    with pytest.raises(RuntimeError, match="history write failed"):
+        manager.update_metrics_batch(
+            [
+                MetricsRecord(content_id="content-1", views=100),
+                MetricsRecord(content_id="content-2", views=200),
+            ],
+            "2026-07-05",
+            "creator_center_note_export_v1",
+        )
+
+    assert manager.get_metrics("content-1") is None
+    assert manager.get_metrics("content-2") is None
+    assert manager.get_metrics_history("content-1") == []
+    event_count = manager.connect().execute(
+        "SELECT COUNT(*) FROM memory_events WHERE event_type = 'metrics_updated'"
+    ).fetchone()[0]
+    assert event_count == 0
+
+
+def test_bind_post_identity_updates_content_and_event_and_rejects_missing(manager):
+    save_content(manager, "content-1")
+
+    manager.bind_post_identity(
+        "content-1",
+        "post-1",
+        "https://www.xiaohongshu.com/explore/post-1",
+        "2026-07-04T09:30:00+08:00",
+    )
+
+    content = manager.get_content_by_id("content-1")
+    assert content is not None
+    assert content["status"] == "published"
+    assert content["post_id"] == "post-1"
+    assert content["url"] == "https://www.xiaohongshu.com/explore/post-1"
+    assert content["published_at"] == "2026-07-04T09:30:00+08:00"
+    event = manager.connect().execute(
+        """
+        SELECT event_type
+        FROM memory_events
+        WHERE content_id = ?
+        ORDER BY event_time DESC
+        LIMIT 1
+        """,
+        ("content-1",),
+    ).fetchone()
+    assert event["event_type"] == "content_published"
+
+    with pytest.raises(ValueError, match="missing"):
+        manager.bind_post_identity(
+            "missing",
+            "post-2",
+            "https://www.xiaohongshu.com/explore/post-2",
+            "2026-07-04T09:30:00+08:00",
+        )
+
+
+def test_get_unbound_published_candidates_filters_and_uses_reference_time(manager):
+    save_content(
+        manager,
+        "published-time",
+        published_at="2026-07-04T09:30:00+08:00",
+    )
+    save_content(manager, "created-time", created_at="2026-07-02T10:00:00+08:00")
+    save_content(manager, "empty-title", title="")
+    save_content(manager, "already-bound", post_id="post-existing")
+
+    candidates = manager.get_unbound_published_candidates()
+
+    assert {item["content_id"] for item in candidates} == {
+        "published-time",
+        "created-time",
+    }
+    by_id = {item["content_id"]: item for item in candidates}
+    assert by_id["published-time"]["reference_time"] == "2026-07-04T09:30:00+08:00"
+    assert by_id["created-time"]["reference_time"] == "2026-07-02T10:00:00+08:00"
+    assert by_id["created-time"]["post_id"] is None
+
+
+@pytest.mark.parametrize("completed_status", ["success", "partial_success"])
+def test_run_ledger_start_finish_and_completed_semantics(manager, completed_status):
+    manager.start_collection_run("2026-07-05", "2026-07-06")
+    manager.finish_collection_run(
+        {
+            "scheduled_date": "2026-07-05",
+            "execution_date": "2026-07-06",
+            "status": completed_status,
+            "exported_rows": 10,
+            "updated_rows": 7,
+            "skipped_rows": 2,
+            "ambiguous_rows": 1,
+            "matched_post_ids": 3,
+            "error_summary": None,
+        }
+    )
+
+    row = dict(
+        manager.connect().execute(
+            "SELECT * FROM metrics_collection_runs WHERE scheduled_date = ?",
+            ("2026-07-05",),
+        ).fetchone()
+    )
+    assert row["status"] == completed_status
+    assert row["completed_at"] is not None
+    assert row["updated_rows"] == 7
+    assert row["error_summary"] is None
+    assert manager.has_completed_execution_date("2026-07-06") is True
+    assert manager.has_completed_execution_date("2026-07-05") is False
+
+
+def test_start_collection_run_upserts_and_resets_previous_result(manager):
+    manager.start_collection_run("2026-07-05", "2026-07-05")
+    manager.finish_collection_run(
+        {
+            "scheduled_date": "2026-07-05",
+            "status": "failed",
+            "exported_rows": 3,
+            "updated_rows": 2,
+            "skipped_rows": 1,
+            "ambiguous_rows": 0,
+            "matched_post_ids": 1,
+            "error_summary": "safe summary",
+        }
+    )
+
+    manager.start_collection_run("2026-07-05", "2026-07-07")
+
+    row = dict(
+        manager.connect().execute(
+            "SELECT * FROM metrics_collection_runs WHERE scheduled_date = ?",
+            ("2026-07-05",),
+        ).fetchone()
+    )
+    assert row["execution_date"] == "2026-07-07"
+    assert row["status"] == "running"
+    assert row["completed_at"] is None
+    assert row["exported_rows"] == 0
+    assert row["updated_rows"] == 0
+    assert row["matched_post_ids"] == 0
+    assert row["error_summary"] is None
+    assert manager.has_completed_execution_date("2026-07-07") is False

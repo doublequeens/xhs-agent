@@ -56,12 +56,12 @@ class ContentRecord:
 class MetricsRecord:
     content_id: str
 
-    views: int = 0
-    likes: int = 0
-    saves: int = 0
-    comments: int = 0
-    shares: int = 0
-    followers_gained: int = 0
+    views: Optional[int] = 0
+    likes: Optional[int] = 0
+    saves: Optional[int] = 0
+    comments: Optional[int] = 0
+    shares: Optional[int] = 0
+    followers_gained: Optional[int] = 0
 
     like_rate: float = 0
     save_rate: float = 0
@@ -71,6 +71,11 @@ class MetricsRecord:
 
     performance_level: str = "unknown"
     updated_at: Optional[str] = None
+
+    impressions: Optional[int] = None
+    cover_click_rate: Optional[float] = None
+    avg_watch_time_seconds: Optional[int] = None
+    danmaku_count: Optional[int] = None
 
 
 @dataclass
