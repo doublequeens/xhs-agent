@@ -95,6 +95,16 @@ def test_match_result_accepts_valid_states(result):
     assert result.status in {"matched", "ambiguous", "unmatched"}
 
 
+def test_match_result_rejects_invalid_status():
+    with pytest.raises(ValueError, match="^invalid match status$"):
+        MatchResult(
+            status="typo",  # type: ignore[arg-type]
+            content_id=None,
+            score=None,
+            candidate_ids=(),
+        )
+
+
 @pytest.mark.parametrize(
     ("status", "content_id", "score", "message"),
     [

@@ -42,6 +42,8 @@ class MatchResult:
     candidate_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
+        if self.status not in {"matched", "ambiguous", "unmatched"}:
+            raise ValueError("invalid match status")
         if self.status == "matched":
             if self.content_id is None:
                 raise ValueError("matched result requires content_id")
