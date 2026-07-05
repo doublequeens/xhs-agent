@@ -1,3 +1,5 @@
+import os
+import stat
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
@@ -8,6 +10,7 @@ from metrics_collector.config import CollectorConfig
 
 
 _BODY_TEXT_LIMIT = 10_000
+_CREATOR_HOST = "creator.xiaohongshu.com"
 _NAVIGATION_TIMEOUT_MS = 30_000
 
 
@@ -51,8 +54,15 @@ class BrowserSession:
         ):
             raise CollectorBrowserError("browser session already started")
 
-        _create_private_directory(self.config.profile_dir)
-        _create_private_directory(self.config.download_dir)
+        private_directories = (
+            self.config.profile_dir,
+            self.config.download_dir,
+        )
+        repository_root = Path.cwd().resolve()
+        for path in private_directories:
+            _validate_private_directory(path, repository_root)
+        for path in private_directories:
+            _create_private_directory(path, repository_root)
 
         self._playwright = self._playwright_factory().start()
         try:
@@ -68,11 +78,11 @@ class BrowserSession:
                 if self.context.pages
                 else self.context.new_page()
             )
-        except Exception:
+        except Exception as startup_error:
             try:
                 self.close()
-            except Exception:
-                pass
+            except Exception as cleanup_error:
+                _add_cleanup_note(startup_error, cleanup_error)
             raise
 
     def navigate(self, url: str) -> Any:
@@ -102,38 +112,86 @@ class BrowserSession:
         return response
 
     def close(self) -> None:
-        context, self.context = self.context, None
-        playwright, self._playwright = self._playwright, None
-        self.page = None
+        cleanup_errors: list[Exception] = []
 
-        close_error: Exception | None = None
-        try:
-            if context is not None:
-                context.close()
-        except Exception as error:
-            close_error = error
-        finally:
+        context = self.context
+        if context is None:
+            self.page = None
+        else:
             try:
-                if playwright is not None:
-                    playwright.stop()
+                context.close()
             except Exception as error:
-                if close_error is None:
-                    close_error = error
+                cleanup_errors.append(error)
+            else:
+                self.context = None
+                self.page = None
 
-        if close_error is not None:
-            raise close_error
+        playwright = self._playwright
+        if playwright is not None:
+            try:
+                playwright.stop()
+            except Exception as error:
+                cleanup_errors.append(error)
+            else:
+                self._playwright = None
+
+        if cleanup_errors:
+            primary_error = cleanup_errors[0]
+            for secondary_error in cleanup_errors[1:]:
+                primary_error.add_note(
+                    f"Additional browser cleanup failure: {secondary_error}"
+                )
+            raise primary_error
 
     def __enter__(self) -> "BrowserSession":
         self.start()
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
+        try:
+            self.close()
+        except Exception as cleanup_error:
+            if exc_value is None:
+                raise
+            _add_cleanup_note(exc_value, cleanup_error)
+        return False
 
 
 def assert_creator_center_ready(page: Any) -> None:
     try:
         current_url = page.url
+        parsed_url = urlparse(current_url)
+    except Exception as error:
+        raise BrowserNavigationError("creator page inspection failed") from error
+
+    if (
+        parsed_url.scheme.lower() != "https"
+        or parsed_url.netloc.lower() != _CREATOR_HOST
+    ):
+        raise BrowserNavigationError("unexpected creator page origin")
+
+    path_lower = parsed_url.path.lower()
+    query = {
+        key.lower(): values
+        for key, values in parse_qs(parsed_url.query).items()
+    }
+    redirect_reasons = [
+        value.lower()
+        for value in query.get("redirectreason", [])
+    ]
+    is_login_url = path_lower == "/login" or path_lower.startswith("/login/")
+    if is_login_url or "401" in redirect_reasons:
+        raise AuthenticationRequired("creator center authentication required")
+
+    path_segments = [segment for segment in path_lower.split("/") if segment]
+    verification_path_prefixes = ("verify", "security", "captcha")
+    if any(
+        segment.startswith(verification_path_prefixes)
+        for segment in path_segments
+    ):
+        raise VerificationRequired("creator center verification required")
+
+    try:
         body_text = page.locator("body").evaluate(
             "(body, limit) => body.innerText.slice(0, limit)",
             _BODY_TEXT_LIMIT,
@@ -143,7 +201,6 @@ def assert_creator_center_ready(page: Any) -> None:
 
     text = body_text if isinstance(body_text, str) else ""
     text_lower = text.lower()
-    url_lower = current_url.lower()
 
     access_markers = (
         "操作频繁",
@@ -151,50 +208,87 @@ def assert_creator_center_ready(page: Any) -> None:
         "请求过于频繁",
         "forbidden",
     )
-    if any(
-        marker in text_lower or marker in url_lower
-        for marker in access_markers
-    ):
+    if any(marker in text_lower for marker in access_markers):
         raise AccessBlocked("creator center access blocked")
 
-    parsed_url = urlparse(current_url)
-    path_lower = parsed_url.path.lower()
-    is_verification_url = path_lower == "/verify" or path_lower.startswith(
-        "/verify/"
+    verification_markers = (
+        "请完成安全验证",
+        "安全验证",
+        "请完成验证",
+        "人机验证",
+        "拖动滑块",
     )
-    verification_text = (
-        "安全验证" in text
-        or "请完成验证" in text
-        or _contains_verification_code_challenge(text)
-    )
-    if is_verification_url or verification_text:
+    if any(marker in text for marker in verification_markers):
         raise VerificationRequired("creator center verification required")
 
-    query = {key.lower(): values for key, values in parse_qs(parsed_url.query).items()}
-    redirect_reasons = [value.lower() for value in query.get("redirectreason", [])]
-    is_login_url = path_lower == "/login" or path_lower.startswith("/login/")
-    login_markers = ("短信登录", "扫码登录", "请登录", "登录后")
-    if (
-        is_login_url
-        or "401" in redirect_reasons
-        or any(marker in text for marker in login_markers)
-    ):
+    login_markers = ("短信登录", "扫码登录", "请登录")
+    if any(marker in text for marker in login_markers):
         raise AuthenticationRequired("creator center authentication required")
 
-
-def _contains_verification_code_challenge(text: str) -> bool:
-    if text.strip() == "验证码":
-        return True
-    challenge_markers = (
-        "请输入验证码",
-        "获取验证码",
-        "发送验证码",
-        "验证码以继续",
-        "完成验证码",
-    )
-    return any(marker in text for marker in challenge_markers)
+    if "创作服务平台" not in text:
+        raise BrowserNavigationError("creator page not ready")
 
 
-def _create_private_directory(path: Path) -> None:
+def _validate_private_directory(path: Path, repository_root: Path) -> None:
+    absolute_path = path if path.is_absolute() else Path.cwd() / path
+    current = Path(absolute_path.anchor)
+    for component in absolute_path.parts[1:]:
+        if component == "..":
+            current = current.parent
+            continue
+        if component == ".":
+            continue
+        current /= component
+        try:
+            component_stat = current.lstat()
+        except FileNotFoundError:
+            continue
+        except NotADirectoryError as error:
+            raise CollectorBrowserError(
+                f"private directory path is not a directory: {path}"
+            ) from error
+        if stat.S_ISLNK(component_stat.st_mode):
+            raise CollectorBrowserError(
+                f"private directory path contains a symlink: {path}"
+            )
+        if not stat.S_ISDIR(component_stat.st_mode):
+            raise CollectorBrowserError(
+                f"private directory path is not a directory: {path}"
+            )
+
+    resolved_path = absolute_path.resolve(strict=False)
+    try:
+        resolved_path.relative_to(repository_root)
+    except ValueError:
+        pass
+    else:
+        raise CollectorBrowserError(
+            f"private directory must be outside repository: {path}"
+        )
+
+    try:
+        path_stat = absolute_path.stat()
+    except FileNotFoundError:
+        return
+    except NotADirectoryError as error:
+        raise CollectorBrowserError(
+            f"private directory path is not a directory: {path}"
+        ) from error
+    if path_stat.st_uid != os.getuid():
+        raise CollectorBrowserError(
+            f"private directory is not owned by current user: {path}"
+        )
+
+
+def _create_private_directory(path: Path, repository_root: Path) -> None:
     path.mkdir(parents=True, mode=0o700, exist_ok=True)
+    _validate_private_directory(path, repository_root)
     path.chmod(0o700)
+
+
+def _add_cleanup_note(primary_error: BaseException, cleanup_error: Exception) -> None:
+    details = str(cleanup_error)
+    cleanup_notes = getattr(cleanup_error, "__notes__", ())
+    if cleanup_notes:
+        details = f"{details}; {'; '.join(cleanup_notes)}"
+    primary_error.add_note(f"Browser cleanup failed: {details}")
