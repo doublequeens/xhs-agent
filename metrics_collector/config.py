@@ -1,7 +1,11 @@
+import re
 from dataclasses import dataclass
 from datetime import time
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+
+_POST_ID_PATTERN = re.compile(r"[0-9a-f]{24}")
 
 
 @dataclass(frozen=True)
@@ -48,4 +52,6 @@ class CollectorConfig:
         )
 
     def note_url(self, post_id: str) -> str:
+        if _POST_ID_PATTERN.fullmatch(post_id) is None:
+            raise ValueError("invalid Xiaohongshu post_id")
         return f"https://www.xiaohongshu.com/explore/{post_id}"

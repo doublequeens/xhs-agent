@@ -41,6 +41,17 @@ class MatchResult:
     score: float | None
     candidate_ids: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if self.status == "matched":
+            if self.content_id is None:
+                raise ValueError("matched result requires content_id")
+            if self.score is None:
+                raise ValueError("matched result requires score")
+        elif self.content_id is not None:
+            raise ValueError(
+                f"{self.status} result requires content_id to be None"
+            )
+
 
 @dataclass(frozen=True)
 class CollectionSummary:

@@ -58,8 +58,67 @@ def test_collector_config_is_frozen(tmp_path):
 
 def test_note_url_is_stable_and_contains_no_token(tmp_path):
     config = CollectorConfig.default(home=tmp_path)
+    post_id = "0123456789abcdef01234567"
 
-    assert config.note_url("abc123") == "https://www.xiaohongshu.com/explore/abc123"
+    assert config.note_url(post_id) == (
+        f"https://www.xiaohongshu.com/explore/{post_id}"
+    )
+
+
+@pytest.mark.parametrize(
+    "post_id",
+    [
+        "",
+        "?xsec_token=abc",
+        "6a49/evil",
+        "ABCDEF0123456789ABCDEF01",
+        "abc123",
+        "gggggggggggggggggggggggg",
+    ],
+)
+def test_note_url_rejects_invalid_post_ids(tmp_path, post_id):
+    config = CollectorConfig.default(home=tmp_path)
+
+    with pytest.raises(ValueError, match="^invalid Xiaohongshu post_id$"):
+        config.note_url(post_id)
+
+
+@pytest.mark.parametrize(
+    "result",
+    [
+        MatchResult("matched", "content-1", 0.95, ("content-1",)),
+        MatchResult("ambiguous", None, 0.80, ("content-1", "content-2")),
+        MatchResult("unmatched", None, None, ()),
+    ],
+)
+def test_match_result_accepts_valid_states(result):
+    assert result.status in {"matched", "ambiguous", "unmatched"}
+
+
+@pytest.mark.parametrize(
+    ("status", "content_id", "score", "message"),
+    [
+        ("matched", None, 0.95, "matched result requires content_id"),
+        ("matched", "content-1", None, "matched result requires score"),
+        (
+            "ambiguous",
+            "content-1",
+            0.80,
+            "ambiguous result requires content_id to be None",
+        ),
+        (
+            "unmatched",
+            "content-1",
+            None,
+            "unmatched result requires content_id to be None",
+        ),
+    ],
+)
+def test_match_result_rejects_contradictory_states(
+    status, content_id, score, message
+):
+    with pytest.raises(ValueError, match=f"^{message}$"):
+        MatchResult(status, content_id, score, ("content-1",))
 
 
 def test_collector_models_are_constructible_and_frozen():
