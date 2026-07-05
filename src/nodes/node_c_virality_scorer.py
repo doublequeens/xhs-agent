@@ -1,4 +1,6 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+import json
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 
 from src.schemas import AgentState, ScoreResult
@@ -41,17 +43,42 @@ def virality_scorer_node(state: AgentState) -> AgentState:
     messages = [SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)]
     
-    scores_json = get_model().execute(messages)
+    model = get_model()
+    max_retries = 3
+    for attempt in range(max_retries):
+        scores_json = model.execute(messages)
+        try:
+            score_options = [ScoreResult(**score) for score in scores_json]
+        except Exception as exc:
+            print(
+                f"[Attempt {attempt + 1}/{max_retries}] "
+                f"Virality score schema validation failed: {exc}"
+            )
+            if attempt == max_retries - 1:
+                raise RuntimeError(
+                    "Process terminated due to virality score schema errors "
+                    f"after {max_retries} attempts: {exc}"
+                ) from exc
+            messages.append(
+                AIMessage(content=json.dumps(scores_json, ensure_ascii=False))
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下 JSON schema 校验错误：\n"
+                        f"{exc}\n"
+                        "请重新输出完整 JSON 数组，保留所有候选并补齐每个必填字段；"
+                        "breakdown 评分必须是 0-10 的整数。"
+                    )
+                )
+            )
+            continue
 
-    try:
-        score_options = [ScoreResult(**score) for score in scores_json] 
-        for i in range(len(score_options)):
-            # score_options[i].angle_id = novelty_check_results[i].angle_id
-            # score_options[i].topic_id = novelty_check_results[i].topic_id
-            print(f"Score for topic {score_options[i].topic} and angle {score_options[i].angle}: {score_options[i].total_score}")
-    except Exception as e:
-        print(f"Failed to transform to ScoreResult schema, please check the detail: {e}")
-        score_options = []
-        raise RuntimeError(f"Process terminated due to error: {e}")
-        
-    return {"scores": score_options}
+        for score in score_options:
+            print(
+                f"Score for topic {score.topic} and angle {score.angle}: "
+                f"{score.total_score}"
+            )
+        return {"scores": score_options}
+
+    raise AssertionError("unreachable")

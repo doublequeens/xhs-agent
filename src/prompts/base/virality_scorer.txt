@@ -24,6 +24,7 @@ novelty_check_results，其中每个 novelty_results 元素都是一个独立候
 - memory_fit_score
 
 【评估要求】
+- breakdown 中六个评分维度均为 0-10 的整数，不得输出 9.5 等小数。
 - total_score 范围 0-10，保留两位小数。
 - total_score 接近时，优先 save_value 更高、memory_fit_score 更高、compliance_safety 更高的候选。
 - revise 候选若进入 Top 3，optimization_suggestions 必须吸收 revision_suggestions。
@@ -35,12 +36,12 @@ novelty_check_results，其中每个 novelty_results 元素都是一个独立候
   {
     "total_score": 0.0,
     "breakdown": {
-      "click_potential": 0.0,
-      "save_value": 0.0,
-      "comment_potential": 0.0,
-      "execution_barrier": 0.0,
-      "compliance_safety": 0.0,
-      "memory_fit_score": 0.0
+      "click_potential": 0,
+      "save_value": 0,
+      "comment_potential": 0,
+      "execution_barrier": 0,
+      "compliance_safety": 0,
+      "memory_fit_score": 0
     },
     "strengths": ["string"],
     "weaknesses": ["string"],

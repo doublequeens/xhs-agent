@@ -61,6 +61,19 @@ def test_healthy_lifestyle_prompt_omits_skincare_identity():
     assert "只讨论日常护肤" not in prompt
 
 
+def test_virality_prompt_requires_integer_breakdown_scores():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt(
+        "virality_scorer",
+        get_domain_profile("healthy_lifestyle"),
+    )
+
+    assert "评分维度均为 0-10 的整数" in prompt
+    assert '"click_potential": 0,' in prompt
+    assert '"compliance_safety": 0,' in prompt
+
+
 def test_compose_prompt_rejects_unknown_task():
     from src.prompts.composer import compose_prompt
 
