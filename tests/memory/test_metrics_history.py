@@ -463,6 +463,144 @@ def test_init_db_enforces_unique_non_null_post_ids(manager):
         )
 
 
+def test_conflicting_content_save_preserves_owner_and_dependents(manager):
+    save_content(manager, "challenger", title="Challenger")
+    save_content(
+        manager,
+        "owner",
+        title="Owner",
+        post_id="post-1",
+        published_at="2026-07-04T09:30:00+08:00",
+    )
+    manager.update_metrics_batch(
+        [MetricsRecord(content_id="owner", views=100, likes=10)],
+        "2026-07-05",
+        "creator_center_note_export_v1",
+    )
+    manager.log_event("owner_audit", "owner", {"preserve": True})
+
+    challenger_before = manager.get_content_by_id("challenger")
+    owner_before = manager.get_content_by_id("owner")
+    metrics_before = manager.get_metrics("owner")
+    history_before = manager.get_metrics_history("owner")
+    events_before = [
+        dict(row)
+        for row in manager.connect().execute(
+            """
+            SELECT event_id, content_id, event_type, event_time, payload_json
+            FROM memory_events
+            ORDER BY event_id
+            """
+        ).fetchall()
+    ]
+
+    with pytest.raises(sqlite3.IntegrityError):
+        manager.save_generated_content(
+            ContentRecord(
+                content_id="challenger",
+                topic="changed topic",
+                title="Changed challenger",
+                created_at="2026-07-06T10:00:00+08:00",
+                post_id="post-1",
+            )
+        )
+
+    assert manager.get_content_by_id("challenger") == challenger_before
+    assert manager.get_content_by_id("owner") == owner_before
+    assert manager.get_metrics("owner") == metrics_before
+    assert manager.get_metrics_history("owner") == history_before
+    events_after = [
+        dict(row)
+        for row in manager.connect().execute(
+            """
+            SELECT event_id, content_id, event_type, event_time, payload_json
+            FROM memory_events
+            ORDER BY event_id
+            """
+        ).fetchall()
+    ]
+    assert events_after == events_before
+
+
+def test_save_generated_content_updates_all_mutable_fields_for_same_content_id(
+    manager,
+):
+    save_content(manager, "content-1", title="Original")
+    replacement = ContentRecord(
+        content_id="content-1",
+        topic="updated topic",
+        created_at="2026-07-06T10:00:00+08:00",
+        status="published",
+        platform="xiaohongshu-updated",
+        reviewed_at="2026-07-06T11:00:00+08:00",
+        published_at="2026-07-06T12:00:00+08:00",
+        post_id="post-updated",
+        url="https://example.com/post-updated",
+        topic_id="topic-updated",
+        angle_id="angle-updated",
+        angle="updated angle",
+        domain="updated domain",
+        subdomain="updated subdomain",
+        content_intent="updated intent",
+        profile_version="v2",
+        risk_level="low",
+        target_group="updated group",
+        core_pain="updated pain",
+        title="Updated title",
+        cover_copy="Updated cover",
+        content="Updated content",
+        hashtags=["#updated"],
+        content_format="updated format",
+        visual_style="updated style",
+        card_count=7,
+        storyboards=["updated storyboard"],
+        image_paths=["updated.png"],
+        strategy_tags=["updated strategy"],
+        compliance_status="approved",
+        embedding_text="updated embedding",
+        metadata={"updated": True},
+    )
+
+    manager.save_generated_content(replacement)
+
+    saved = manager.get_content_by_id("content-1")
+    assert saved is not None
+    for field_name in (
+        "status",
+        "platform",
+        "created_at",
+        "reviewed_at",
+        "published_at",
+        "post_id",
+        "url",
+        "topic_id",
+        "topic",
+        "angle_id",
+        "angle",
+        "domain",
+        "subdomain",
+        "content_intent",
+        "profile_version",
+        "risk_level",
+        "target_group",
+        "core_pain",
+        "title",
+        "cover_copy",
+        "content",
+        "hashtags",
+        "content_format",
+        "visual_style",
+        "card_count",
+        "storyboards",
+        "image_paths",
+        "strategy_tags",
+        "compliance_status",
+        "embedding_text",
+        "metadata",
+    ):
+        assert saved[field_name] == getattr(replacement, field_name)
+
+
 def test_get_unbound_published_candidates_filters_and_uses_reference_time(manager):
     save_content(
         manager,

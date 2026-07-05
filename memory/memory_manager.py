@@ -231,7 +231,7 @@ class XHSMemoryManager:
         with self.connect() as conn:
             conn.execute(
                 """
-                INSERT OR REPLACE INTO contents (
+                INSERT INTO contents (
                     content_id,
                     status,
                     platform,
@@ -266,6 +266,38 @@ class XHSMemoryManager:
                     metadata_json
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(content_id) DO UPDATE SET
+                    status = excluded.status,
+                    platform = excluded.platform,
+                    created_at = excluded.created_at,
+                    reviewed_at = excluded.reviewed_at,
+                    published_at = excluded.published_at,
+                    post_id = excluded.post_id,
+                    url = excluded.url,
+                    topic_id = excluded.topic_id,
+                    topic = excluded.topic,
+                    angle_id = excluded.angle_id,
+                    angle = excluded.angle,
+                    domain = excluded.domain,
+                    subdomain = excluded.subdomain,
+                    content_intent = excluded.content_intent,
+                    profile_version = excluded.profile_version,
+                    risk_level = excluded.risk_level,
+                    target_group = excluded.target_group,
+                    core_pain = excluded.core_pain,
+                    title = excluded.title,
+                    cover_copy = excluded.cover_copy,
+                    content = excluded.content,
+                    hashtags_json = excluded.hashtags_json,
+                    content_format = excluded.content_format,
+                    visual_style = excluded.visual_style,
+                    card_count = excluded.card_count,
+                    storyboards = excluded.storyboards,
+                    image_paths_json = excluded.image_paths_json,
+                    strategy_tags_json = excluded.strategy_tags_json,
+                    compliance_status = excluded.compliance_status,
+                    embedding_text = excluded.embedding_text,
+                    metadata_json = excluded.metadata_json
                 """,
                 (
                     record.content_id,
