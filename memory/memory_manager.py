@@ -15,6 +15,7 @@ from memory.migrations import (
 from memory.models import ContentRecord, MetricsRecord, MemoryContext
 
 VECTOR_DOMAIN_BACKFILL_EVENT = "vector_domain_backfill_v1"
+_INIT_DB_SAVEPOINT = "initialize_database"
 
 def utc_now_iso() -> str:
     return datetime.now(timezone(timedelta(hours=8))).isoformat()
@@ -129,17 +130,30 @@ class XHSMemoryManager:
 
     def init_db(self, schema_path: str | Path = "memory/schema.sql") -> None:
         schema_path = Path(schema_path)
+        statements = [
+            statement.strip()
+            for statement in schema_path.read_text(encoding="utf-8").split(";")
+            if statement.strip()
+        ]
         with self.connect() as conn:
-            for statement in schema_path.read_text(encoding="utf-8").split(";"):
-                statement = statement.strip()
-                if not statement:
-                    continue
-                upper_statement = statement.upper()
-                if upper_statement.startswith("PRAGMA ") or upper_statement.startswith("CREATE TABLE"):
+            for statement in statements:
+                if statement.upper().startswith("PRAGMA "):
                     conn.execute(statement)
-            migrate_contents_domain_fields(conn)
-            migrate_metrics_collection_schema(conn)
-            self._create_required_indexes(conn)
+
+            conn.execute(f"SAVEPOINT {_INIT_DB_SAVEPOINT}")
+            try:
+                for statement in statements:
+                    if statement.upper().startswith("CREATE TABLE"):
+                        conn.execute(statement)
+                migrate_contents_domain_fields(conn)
+                migrate_metrics_collection_schema(conn)
+                self._create_required_indexes(conn)
+            except Exception:
+                conn.execute(f"ROLLBACK TO {_INIT_DB_SAVEPOINT}")
+                conn.execute(f"RELEASE {_INIT_DB_SAVEPOINT}")
+                raise
+            else:
+                conn.execute(f"RELEASE {_INIT_DB_SAVEPOINT}")
 
     def _create_required_indexes(self, connection: sqlite3.Connection) -> None:
         existing_columns = self._table_columns(connection)

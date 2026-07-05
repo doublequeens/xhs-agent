@@ -42,6 +42,24 @@ def _primary_key_columns(
     ]
 
 
+def _column_details(
+    connection: sqlite3.Connection, table_name: str
+) -> dict[str, tuple[str, bool, str | None]]:
+    return {
+        row[1]: (row[2], bool(row[3]), row[4])
+        for row in connection.execute(f"PRAGMA table_info({table_name})")
+    }
+
+
+def _foreign_keys(
+    connection: sqlite3.Connection, table_name: str
+) -> set[tuple[str, str, str, str]]:
+    return {
+        (row[2], row[3], row[4], row[6])
+        for row in connection.execute(f"PRAGMA foreign_key_list({table_name})")
+    }
+
+
 def _index_names(
     connection: sqlite3.Connection, table_name: str = "contents"
 ) -> set[str]:
@@ -270,6 +288,17 @@ def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
         "content_id",
         "collected_date",
     ]
+    history_details = _column_details(connection, "metrics_history")
+    assert history_details["content_id"] == ("TEXT", True, None)
+    assert history_details["collected_date"] == ("TEXT", True, None)
+    assert history_details["source"] == ("TEXT", True, None)
+    assert history_details["collected_at"] == ("TEXT", True, None)
+    assert (
+        "contents",
+        "content_id",
+        "content_id",
+        "CASCADE",
+    ) in _foreign_keys(connection, "metrics_history")
     assert _table_exists(connection, "metrics_collection_runs")
     assert _table_columns(connection, "metrics_collection_runs") == [
         "scheduled_date",
@@ -287,6 +316,17 @@ def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
     assert _primary_key_columns(connection, "metrics_collection_runs") == [
         "scheduled_date"
     ]
+    run_details = _column_details(connection, "metrics_collection_runs")
+    for required_column in ("execution_date", "status", "started_at"):
+        assert run_details[required_column][1] is True
+    for counter_column in (
+        "exported_rows",
+        "updated_rows",
+        "skipped_rows",
+        "ambiguous_rows",
+        "matched_post_ids",
+    ):
+        assert run_details[counter_column] == ("INTEGER", True, "0")
 
 
 def test_migrate_metrics_collection_schema_rolls_back_on_failure(tmp_path):
@@ -351,3 +391,50 @@ def test_init_db_runs_schema_then_migration_on_legacy_database(tmp_path):
         "avg_watch_time_seconds",
         "danmaku_count",
     } <= set(_table_columns(manager.connect(), "metrics"))
+
+
+def test_init_db_rolls_back_all_schema_changes_when_metrics_migration_fails(
+    tmp_path, monkeypatch
+):
+    db_path = tmp_path / "atomic-init.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE contents (content_id TEXT PRIMARY KEY)")
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.commit()
+    connection.close()
+
+    class FailingConnection:
+        def __init__(self, inner: sqlite3.Connection):
+            self.inner = inner
+            self.metric_alter_calls = 0
+
+        def execute(self, sql, params=()):
+            normalized_sql = " ".join(sql.split()).upper()
+            if normalized_sql.startswith("ALTER TABLE METRICS ADD COLUMN"):
+                self.metric_alter_calls += 1
+                if self.metric_alter_calls == 2:
+                    raise RuntimeError("metric alter failed")
+            return self.inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    def fail_during_metrics_migration(connection):
+        migrate_metrics_collection_schema(FailingConnection(connection))
+
+    monkeypatch.setattr(
+        "memory.memory_manager.migrate_metrics_collection_schema",
+        fail_during_metrics_migration,
+    )
+
+    manager = XHSMemoryManager(db_path)
+    with pytest.raises(RuntimeError, match="metric alter failed"):
+        manager.init_db(SCHEMA_PATH)
+
+    connection = manager.connect()
+    assert _table_columns(connection, "contents") == ["content_id"]
+    assert _table_columns(connection, "metrics") == ["content_id", "updated_at"]
+    assert not _table_exists(connection, "metrics_history")
+    assert not _table_exists(connection, "metrics_collection_runs")
