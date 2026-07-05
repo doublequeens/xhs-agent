@@ -8,7 +8,10 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Any, Optional
 
-from memory.migrations import migrate_contents_domain_fields
+from memory.migrations import (
+    migrate_contents_domain_fields,
+    migrate_metrics_collection_schema,
+)
 from memory.models import ContentRecord, MetricsRecord, MemoryContext
 
 VECTOR_DOMAIN_BACKFILL_EVENT = "vector_domain_backfill_v1"
@@ -135,6 +138,7 @@ class XHSMemoryManager:
                 if upper_statement.startswith("PRAGMA ") or upper_statement.startswith("CREATE TABLE"):
                     conn.execute(statement)
             migrate_contents_domain_fields(conn)
+            migrate_metrics_collection_schema(conn)
             self._create_required_indexes(conn)
 
     def _create_required_indexes(self, connection: sqlite3.Connection) -> None:
