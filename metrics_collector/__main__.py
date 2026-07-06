@@ -80,6 +80,8 @@ _OK_STATUSES = {
     "success",
     "partial_success",
     "skipped_already_completed",
+    "skipped_already_attempted",
+    "skipped_already_claimed",
 }
 
 

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 from typing import Any, Callable
 
+from memory.memory_manager import CollectionRunAlreadyClaimed
 from memory.models import MetricsRecord
 from metrics_collector.browser import (
     AccessBlocked,
@@ -30,6 +31,10 @@ from metrics_collector.workbook import WorkbookFormatError, parse_metrics_workbo
 METRICS_SOURCE = "creator_center_note_export_v1"
 
 
+class DiagnosticPreservationError(RuntimeError):
+    pass
+
+
 def scheduled_date_for(now: datetime, schedule_time: time) -> date:
     local_time = now.timetz().replace(tzinfo=None)
     cutoff = schedule_time.replace(tzinfo=None)
@@ -46,7 +51,11 @@ def preserve_diagnostic_workbook(
 ) -> Path:
     workbook_path = Path(path)
     diagnostics_path = Path(diagnostics_dir)
+    if diagnostics_path.is_symlink():
+        raise DiagnosticPreservationError("diagnostic preservation failed")
     diagnostics_path.mkdir(parents=True, exist_ok=True)
+    if diagnostics_path.is_symlink() or not diagnostics_path.is_dir():
+        raise DiagnosticPreservationError("diagnostic preservation failed")
     diagnostics_path.chmod(0o700)
 
     destination = _unique_diagnostic_path(workbook_path, diagnostics_path, now)
@@ -106,11 +115,24 @@ class CollectionCoordinator:
                 execution_date=execution_date,
                 status="skipped_already_completed",
             )
+        if self.manager.has_attempted_execution_date(execution_date_text):
+            return CollectionSummary(
+                scheduled_date=scheduled_date,
+                execution_date=execution_date,
+                status="skipped_already_attempted",
+            )
 
-        self.manager.start_collection_run(
-            scheduled_date=scheduled_date_text,
-            execution_date=execution_date_text,
-        )
+        try:
+            self.manager.start_collection_run(
+                scheduled_date=scheduled_date_text,
+                execution_date=execution_date_text,
+            )
+        except CollectionRunAlreadyClaimed:
+            return CollectionSummary(
+                scheduled_date=scheduled_date,
+                execution_date=execution_date,
+                status="skipped_already_claimed",
+            )
 
         workbook_path: Path | None = None
         try:
@@ -127,12 +149,15 @@ class CollectionCoordinator:
                         candidates,
                     )
                     browser.navigate(self.config.data_analysis_url)
+                metric_candidates = _candidate_list(
+                    self.manager.get_metric_match_candidates()
+                )
                 workbook_path = self._export(browser.page)
 
             rows = self.parser(workbook_path, self.config.timezone)
             records, ambiguous_rows, skipped_rows = self._records_from_rows(
                 rows,
-                candidates,
+                metric_candidates,
             )
             self.manager.update_metrics_batch(
                 records,
@@ -183,12 +208,21 @@ class CollectionCoordinator:
                 error,
             )
         except WorkbookFormatError as error:
-            _preserve_if_present(workbook_path, self.config, current_time)
+            diagnostic_error = _preserve_if_present(
+                workbook_path,
+                self.config,
+                current_time,
+            )
+            error_summary = (
+                "workbook validation failed; diagnostic preservation failed"
+                if diagnostic_error is not None
+                else _safe_validation_error(error)
+            )
             return self._fail(
                 scheduled_date,
                 execution_date,
                 "failed",
-                _safe_validation_error(error),
+                error_summary,
                 error,
             )
         except BrowserNavigationError as error:
@@ -200,12 +234,19 @@ class CollectionCoordinator:
                 error,
             )
         except Exception as error:
-            _preserve_if_present(workbook_path, self.config, current_time)
+            diagnostic_error = _preserve_if_present(
+                workbook_path,
+                self.config,
+                current_time,
+            )
+            error_summary = f"{type(error).__name__}: operation failed"
+            if diagnostic_error is not None:
+                error_summary += "; diagnostic preservation failed"
             return self._fail(
                 scheduled_date,
                 execution_date,
                 "failed",
-                f"{type(error).__name__}: operation failed",
+                error_summary,
                 error,
             )
 
@@ -351,15 +392,19 @@ def _preserve_if_present(
     workbook_path: Path | None,
     config: CollectorConfig,
     now: datetime,
-) -> None:
+) -> str | None:
     if workbook_path is None or not workbook_path.exists():
-        return
-    preserve_diagnostic_workbook(
-        workbook_path,
-        config.diagnostics_dir,
-        config.diagnostic_retention_days,
-        now,
-    )
+        return None
+    try:
+        preserve_diagnostic_workbook(
+            workbook_path,
+            config.diagnostics_dir,
+            config.diagnostic_retention_days,
+            now,
+        )
+    except Exception:
+        return "diagnostic preservation failed"
+    return None
 
 
 def _safe_validation_error(error: WorkbookFormatError) -> str:
@@ -378,7 +423,7 @@ def _unique_diagnostic_path(
     for index in range(1000):
         collision_suffix = "" if index == 0 else f"-{index}"
         candidate = diagnostics_dir / f"{timestamp}-{stem}{collision_suffix}{suffix}"
-        if not candidate.exists():
+        if not candidate.exists() and not candidate.is_symlink():
             return candidate
     raise RuntimeError("could not allocate diagnostic workbook path")
 
@@ -390,7 +435,7 @@ def _prune_old_diagnostics(
 ) -> None:
     cutoff = now_timestamp - (retention_days * 24 * 60 * 60)
     for candidate in diagnostics_dir.iterdir():
-        if not candidate.is_file():
+        if candidate.is_symlink() or not candidate.is_file():
             continue
         try:
             if candidate.stat().st_mtime < cutoff:

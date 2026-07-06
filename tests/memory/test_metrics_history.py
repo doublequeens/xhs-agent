@@ -709,6 +709,36 @@ def test_get_unbound_published_candidates_filters_and_uses_reference_time(manage
     assert by_id["created-time"]["post_id"] is None
 
 
+def test_get_metric_match_candidates_includes_bound_and_unbound_content(manager):
+    save_content(
+        manager,
+        "published-time",
+        published_at="2026-07-04T09:30:00+08:00",
+    )
+    save_content(manager, "created-time", created_at="2026-07-02T10:00:00+08:00")
+    save_content(manager, "empty-title", title="")
+    save_content(
+        manager,
+        "already-bound",
+        published_at="2026-07-03T08:00:00+08:00",
+        post_id="post-existing",
+    )
+
+    candidates = manager.get_metric_match_candidates()
+
+    assert {item["content_id"] for item in candidates} == {
+        "published-time",
+        "created-time",
+        "already-bound",
+    }
+    by_id = {item["content_id"]: item for item in candidates}
+    assert by_id["published-time"]["reference_time"] == "2026-07-04T09:30:00+08:00"
+    assert by_id["created-time"]["reference_time"] == "2026-07-02T10:00:00+08:00"
+    assert by_id["created-time"]["post_id"] is None
+    assert by_id["already-bound"]["reference_time"] == "2026-07-03T08:00:00+08:00"
+    assert by_id["already-bound"]["post_id"] == "post-existing"
+
+
 @pytest.mark.parametrize("completed_status", ["success", "partial_success"])
 def test_run_ledger_start_finish_and_completed_semantics(manager, completed_status):
     manager.start_collection_run("2026-07-05", "2026-07-06")
@@ -737,7 +767,9 @@ def test_run_ledger_start_finish_and_completed_semantics(manager, completed_stat
     assert row["updated_rows"] == 7
     assert row["error_summary"] is None
     assert manager.has_completed_execution_date("2026-07-06") is True
+    assert manager.has_attempted_execution_date("2026-07-06") is True
     assert manager.has_completed_execution_date("2026-07-05") is False
+    assert manager.has_attempted_execution_date("2026-07-05") is False
 
 
 def test_start_collection_run_rejects_duplicate_claim_without_reset(manager):
@@ -776,6 +808,7 @@ def test_start_collection_run_rejects_duplicate_claim_without_reset(manager):
     assert row["matched_post_ids"] == 1
     assert row["error_summary"] == "safe summary"
     assert manager.has_completed_execution_date("2026-07-07") is False
+    assert manager.has_attempted_execution_date("2026-07-05") is True
 
 
 def test_finish_collection_run_rejects_wrong_or_stale_completion(manager):

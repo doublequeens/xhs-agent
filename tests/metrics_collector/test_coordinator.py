@@ -19,6 +19,7 @@ from metrics_collector.browser import (
 from metrics_collector.config import CollectorConfig
 from metrics_collector.coordinator import (
     CollectionCoordinator,
+    DiagnosticPreservationError,
     preserve_diagnostic_workbook,
     scheduled_date_for,
 )
@@ -29,6 +30,7 @@ from metrics_collector.models import (
     NoteIdentity,
 )
 from metrics_collector.workbook import WorkbookFormatError
+from memory.memory_manager import CollectionRunAlreadyClaimed
 
 
 TZ = ZoneInfo("Asia/Shanghai")
@@ -42,11 +44,16 @@ class FakeManager:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.completed_execution_dates: set[str] = set()
+        self.attempted_execution_dates: set[str] = set()
         self.unbound_candidates: list[dict[str, object]] = []
+        self.metric_match_candidates: list[dict[str, object]] = [
+            candidate_dict()
+        ]
         self.start_calls: list[tuple[str, str]] = []
         self.finish_summaries: list[dict[str, object]] = []
         self.bind_calls: list[dict[str, object]] = []
         self.update_calls: list[dict[str, object]] = []
+        self.raise_on_start: Exception | None = None
         self.raise_on_update: Exception | None = None
         self.latest: dict[str, MetricsRecord] = {}
         self.history: list[dict[str, object]] = []
@@ -54,11 +61,17 @@ class FakeManager:
     def has_completed_execution_date(self, execution_date: str) -> bool:
         return execution_date in self.completed_execution_dates
 
+    def has_attempted_execution_date(self, execution_date: str) -> bool:
+        return execution_date in self.attempted_execution_dates
+
     def start_collection_run(
         self,
         scheduled_date: str,
         execution_date: str,
     ) -> None:
+        if self.raise_on_start is not None:
+            raise self.raise_on_start
+        self.attempted_execution_dates.add(execution_date)
         self.start_calls.append((scheduled_date, execution_date))
 
     def finish_collection_run(self, summary: dict[str, object]) -> None:
@@ -69,6 +82,10 @@ class FakeManager:
     def get_unbound_published_candidates(self) -> list[dict[str, object]]:
         self.events.append("get_candidates")
         return list(self.unbound_candidates)
+
+    def get_metric_match_candidates(self) -> list[dict[str, object]]:
+        self.events.append("get_metric_candidates")
+        return list(self.metric_match_candidates)
 
     def bind_post_identity(
         self,
@@ -297,6 +314,32 @@ def test_completed_today_skips_browser(deps):
     assert deps.browser_factory.calls == 0
 
 
+def test_attempted_today_after_failure_skips_browser(deps):
+    deps.browser.raise_on_url[deps.config.data_analysis_url] = (
+        AuthenticationRequired("login required")
+    )
+    first = deps.coordinator.collect(now=AT_09)
+    deps.browser.raise_on_url = {}
+    deps.browser_factory.calls = 0
+
+    second = deps.coordinator.collect(now=AT_22)
+
+    assert first.status == "auth_required"
+    assert second.status == "skipped_already_attempted"
+    assert deps.browser_factory.calls == 0
+    assert deps.manager.start_calls == [("2026-07-05", "2026-07-06")]
+
+
+def test_duplicate_claim_skips_without_browser(deps):
+    deps.manager.raise_on_start = CollectionRunAlreadyClaimed("claimed token=secret")
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert result.status == "skipped_already_claimed"
+    assert deps.browser_factory.calls == 0
+    assert deps.manager.finish_summaries == []
+
+
 def test_first_ever_run_at_load_invocation_is_due(deps):
     deps.coordinator.collect(now=AT_09)
 
@@ -335,7 +378,39 @@ def test_no_unbound_content_skips_note_manager(deps):
     assert deps.events == [
         f"navigate:{deps.config.data_analysis_url}",
         "get_candidates",
+        "get_metric_candidates",
         "export",
+    ]
+
+
+def test_already_bound_metric_candidate_updates_without_note_manager(deps):
+    deps.manager.unbound_candidates = []
+    deps.manager.metric_match_candidates = [
+        candidate_dict("bound-content", "bound title")
+        | {"post_id": POST_ID}
+    ]
+    deps.parser.rows = [exported_row("bound title")]
+    deps.matcher.results_by_title["bound title"] = MatchResult(
+        "matched",
+        "bound-content",
+        1.0,
+        ("bound-content",),
+    )
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert result.status == "success"
+    assert deps.identity_collector.calls == []
+    assert deps.browser.navigate_calls == [deps.config.data_analysis_url]
+    assert deps.manager.update_calls[0]["records"][0].content_id == "bound-content"
+    metric_candidates = deps.matcher.calls[-1]["candidates"]
+    assert metric_candidates == [
+        ContentCandidate(
+            content_id="bound-content",
+            title="bound title",
+            reference_time=datetime.fromisoformat("2026-07-05T12:00:00+08:00"),
+            post_id=POST_ID,
+        )
     ]
 
 
@@ -366,6 +441,7 @@ def test_unbound_content_reads_list_and_generates_stable_url(deps):
         "get_candidates",
         f"navigate:{deps.config.note_manager_url}",
         f"navigate:{deps.config.data_analysis_url}",
+        "get_metric_candidates",
         "export",
     ]
     assert deps.manager.bind_calls == [
@@ -448,6 +524,24 @@ def test_workbook_validation_failure_preserves_file_and_writes_no_metrics(deps):
     assert "missing required headers" in str(result.error_summary)
 
 
+def test_diagnostic_preservation_failure_still_finishes_run(deps, tmp_path):
+    deps.parser.error = WorkbookFormatError("missing required headers token=secret")
+    unsafe_target = tmp_path / "unsafe-target"
+    unsafe_target.mkdir()
+    unsafe_link = tmp_path / "diagnostics-link"
+    unsafe_link.symlink_to(unsafe_target, target_is_directory=True)
+    deps.config = replace(deps.config, diagnostics_dir=unsafe_link)
+    deps.coordinator.config = deps.config
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert result.status == "failed"
+    assert deps.manager.finish_summaries[-1]["status"] == "failed"
+    assert "diagnostic preservation failed" in str(result.error_summary)
+    assert "secret" not in str(result.error_summary)
+    assert str(unsafe_link) not in str(result.error_summary)
+
+
 def test_database_batch_failure_marks_failed_and_latest_history_unchanged(deps):
     deps.parser.rows = [exported_row("confident")]
     deps.manager.latest["content-1"] = MetricsRecord("content-1", views=99)
@@ -526,3 +620,48 @@ def test_failed_workbooks_move_to_diagnostics_and_prune_only_old_diagnostics(
     assert new_diagnostic.exists()
     assert unrelated_old.exists()
     assert stat.S_IMODE(preserved.stat().st_mode) == 0o600
+
+
+def test_diagnostic_workbook_rejects_symlinked_diagnostics_dir(tmp_path):
+    workbook = tmp_path / "failed.xlsx"
+    workbook.write_bytes(b"failed")
+    target = tmp_path / "target"
+    target.mkdir()
+    symlinked_diagnostics = tmp_path / "diagnostics"
+    symlinked_diagnostics.symlink_to(target, target_is_directory=True)
+
+    with pytest.raises(
+        DiagnosticPreservationError,
+        match="diagnostic preservation failed",
+    ):
+        preserve_diagnostic_workbook(
+            workbook,
+            symlinked_diagnostics,
+            retention_days=7,
+            now=AT_22,
+        )
+
+    assert workbook.exists()
+
+
+def test_diagnostic_pruning_does_not_follow_symlinked_entries(tmp_path):
+    diagnostics_dir = tmp_path / "diagnostics"
+    diagnostics_dir.mkdir()
+    workbook = tmp_path / "failed.xlsx"
+    workbook.write_bytes(b"failed")
+    outside = tmp_path / "outside.xlsx"
+    outside.write_bytes(b"outside")
+    symlinked_entry = diagnostics_dir / "outside-link.xlsx"
+    symlinked_entry.symlink_to(outside)
+    old_mtime = (AT_22 - timedelta(days=8)).timestamp()
+    os.utime(outside, (old_mtime, old_mtime))
+
+    preserve_diagnostic_workbook(
+        workbook,
+        diagnostics_dir,
+        retention_days=7,
+        now=AT_22,
+    )
+
+    assert symlinked_entry.is_symlink()
+    assert outside.exists()

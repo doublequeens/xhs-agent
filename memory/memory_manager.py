@@ -944,6 +944,23 @@ class XHSMemoryManager:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def get_metric_match_candidates(self) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT
+                    content_id,
+                    title,
+                    COALESCE(NULLIF(published_at, ''), created_at) AS reference_time,
+                    post_id
+                FROM contents
+                WHERE title IS NOT NULL
+                  AND title <> ''
+                ORDER BY reference_time
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
     def start_collection_run(
         self,
         scheduled_date: str,
@@ -1033,6 +1050,19 @@ class XHSMemoryManager:
                 FROM metrics_collection_runs
                 WHERE execution_date = ?
                   AND status IN ('success', 'partial_success')
+                LIMIT 1
+                """,
+                (execution_date,),
+            ).fetchone()
+        return row is not None
+
+    def has_attempted_execution_date(self, execution_date: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM metrics_collection_runs
+                WHERE execution_date = ?
                 LIMIT 1
                 """,
                 (execution_date,),
