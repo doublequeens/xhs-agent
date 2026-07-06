@@ -105,7 +105,15 @@ def _write_plist(payload: Mapping[str, Any], launchagents_fd: int) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
     fd = os.open(temporary_name, flags, 0o600, dir_fd=launchagents_fd)
     try:
-        with os.fdopen(fd, "wb") as plist_file:
+        os.fchmod(fd, 0o600)
+        try:
+            plist_file = os.fdopen(fd, "wb")
+        except BaseException:
+            os.close(fd)
+            fd = -1
+            raise
+        fd = -1
+        with plist_file:
             plistlib.dump(dict(payload), plist_file)
             plist_file.flush()
             os.fsync(plist_file.fileno())
@@ -117,6 +125,8 @@ def _write_plist(payload: Mapping[str, Any], launchagents_fd: int) -> None:
         )
         os.fsync(launchagents_fd)
     except BaseException:
+        if fd >= 0:
+            os.close(fd)
         try:
             os.unlink(temporary_name, dir_fd=launchagents_fd)
         except FileNotFoundError:
@@ -148,8 +158,12 @@ def _open_or_create_directory(
         raise ValueError(
             f"refusing symlink or non-directory path component: {name}"
         ) from exc
-    if mode == 0o700:
-        os.fchmod(directory_fd, mode)
+    try:
+        if mode == 0o700:
+            os.fchmod(directory_fd, mode)
+    except BaseException:
+        os.close(directory_fd)
+        raise
     return directory_fd
 
 

@@ -258,3 +258,84 @@ def test_documentation_states_chrome_channel_prerequisite():
     assert CollectorConfig.default().browser_channel == "chrome"
     assert "playwright install chromium" in documentation
     assert "Google Chrome" in documentation
+
+
+def test_fchmod_failure_closes_directory_fd(monkeypatch, tmp_path):
+    user_home = tmp_path / "home"
+    payload = build_launchagent_payload(
+        "/usr/bin/python3",
+        tmp_path / "repo",
+        user_home / ".xhs-agent" / "logs",
+    )
+    failed_fd = None
+    real_fchmod = os.fchmod
+
+    def failing_fchmod(fd, mode):
+        nonlocal failed_fd
+        if mode == 0o700:
+            failed_fd = fd
+            raise OSError("injected fchmod failure")
+        return real_fchmod(fd, mode)
+
+    monkeypatch.setattr(os, "fchmod", failing_fchmod)
+
+    with pytest.raises(OSError, match="injected"):
+        install_launchagent(payload, user_home)
+
+    assert failed_fd is not None
+    with pytest.raises(OSError):
+        os.fstat(failed_fd)
+
+
+def test_fdopen_failure_closes_fd_and_removes_temporary_plist(
+    monkeypatch, tmp_path
+):
+    user_home = tmp_path / "home"
+    payload = build_launchagent_payload(
+        "/usr/bin/python3",
+        tmp_path / "repo",
+        user_home / ".xhs-agent" / "logs",
+    )
+    temporary_fd = None
+    real_open = os.open
+
+    def recording_open(path, flags, *args, **kwargs):
+        nonlocal temporary_fd
+        fd = real_open(path, flags, *args, **kwargs)
+        if str(path).endswith(".tmp"):
+            temporary_fd = fd
+        return fd
+
+    monkeypatch.setattr(os, "open", recording_open)
+    monkeypatch.setattr(
+        os, "fdopen", lambda *args, **kwargs: (_ for _ in ()).throw(
+            OSError("injected fdopen failure")
+        )
+    )
+
+    with pytest.raises(OSError, match="injected"):
+        install_launchagent(payload, user_home)
+
+    assert temporary_fd is not None
+    with pytest.raises(OSError):
+        os.fstat(temporary_fd)
+    launchagents = user_home / "Library" / "LaunchAgents"
+    assert list(launchagents.glob("*.tmp")) == []
+
+
+def test_plist_mode_is_0600_under_restrictive_umask(tmp_path):
+    user_home = tmp_path / "home"
+    (user_home / "Library" / "LaunchAgents").mkdir(parents=True)
+    (user_home / ".xhs-agent" / "logs").mkdir(parents=True)
+    payload = build_launchagent_payload(
+        "/usr/bin/python3",
+        tmp_path / "repo",
+        user_home / ".xhs-agent" / "logs",
+    )
+    previous_umask = os.umask(0o777)
+    try:
+        plist_path = install_launchagent(payload, user_home)
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(plist_path.stat().st_mode) == 0o600
