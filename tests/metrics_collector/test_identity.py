@@ -88,6 +88,32 @@ def _parse_fixture(name):
     return {"cards": parser.cards, "controls": parser.controls}
 
 
+def _card_fields(card):
+    return {
+        "impression": card.get("impression"),
+        "title": card.get("title"),
+        "time": card.get("time"),
+    }
+
+
+def _script_filters_visible_cards(expression):
+    return (
+        "getClientRects" in expression
+        and "getComputedStyle(card)" in expression
+    )
+
+
+def _visible_cards(page_data):
+    return [card for card in page_data["cards"] if card.get("visible", True)]
+
+
+def _card_signature(page_data):
+    return "\n".join(
+        card.get("impression") or ""
+        for card in _visible_cards(page_data)
+    )
+
+
 class FakeLocator:
     def __init__(
         self,
@@ -106,7 +132,12 @@ class FakeLocator:
         self.page.evaluate_all_calls.append((self.selector, expression))
         current = self.page.pages[self.page.page_index]
         if self.selector == ".note-card":
-            return [dict(card) for card in current["cards"]]
+            cards = (
+                _visible_cards(current)
+                if _script_filters_visible_cards(expression)
+                else current["cards"]
+            )
+            return [_card_fields(card) for card in cards]
         if self.selector == ".d-pagination":
             return [
                 {
@@ -120,6 +151,7 @@ class FakeLocator:
                         if current["cards"]
                         else None
                     ),
+                    "cardSignature": _card_signature(current),
                 }
                 for container_index, container in enumerate(
                     self.page.pagination_containers(current)
@@ -208,6 +240,11 @@ class FakePage:
             if current["cards"]
             else None
         )
+        if "cardSignature" in expression:
+            if _card_signature(current) != arg["cardSignature"]:
+                return True
+            raise TimeoutError("list did not transition")
+
         note_list_changed = first_impression != arg["firstCardImpression"]
         active_page_changed = active_page != arg["activePage"]
         if note_list_changed or (
@@ -257,6 +294,31 @@ def test_extract_note_identities_uses_one_bulk_card_boundary(fixture_pages):
     assert page.locator_calls == [".note-card"]
     assert len(page.evaluate_all_calls) == 1
     assert page.click_calls == []
+
+
+def test_extract_ignores_hidden_cards_inside_bulk_script(fixture_pages):
+    hidden_malformed = {
+        "impression": "{bad",
+        "title": "",
+        "time": "not a time",
+        "visible": False,
+    }
+    visible_card = fixture_pages[0]["cards"][0]
+    page = FakePage([
+        {"cards": [hidden_malformed, visible_card], "controls": []}
+    ])
+
+    identities = extract_note_identities(page, TZ)
+
+    assert identities == [
+        NoteIdentity(
+            post_id="6a49ebd3000000001503fdd0",
+            title="工位摸鱼放松法：5个隐蔽动作缓解久坐僵硬",
+            published_at=datetime(2026, 7, 5, 13, 29, tzinfo=TZ),
+        )
+    ]
+    assert page.locator_calls == [".note-card"]
+    assert len(page.evaluate_all_calls) == 1
 
 
 @pytest.mark.parametrize("invalid_timezone", [None, object(), _NaiveTimezone()])
@@ -530,12 +592,71 @@ def test_collect_waits_for_concrete_transition_with_bounded_timeout(
     assert len(page.wait_calls) == 1
     expression, previous_state, timeout = page.wait_calls[0]
     assert previous_state["activePage"] == "1"
-    assert previous_state["firstCardImpression"].endswith(
+    assert previous_state["cardSignature"].splitlines()[0].endswith(
         '"6a49ebd3000000001503fdd0"}}}'
     )
+    assert "firstCardImpression" not in previous_state
     assert "activePage !== previous.activePage" not in expression
     assert timeout is not None
     assert 0 < timeout <= 10_000
+
+
+def test_collect_waits_for_visible_card_list_signature_when_first_card_overlaps(
+    fixture_pages,
+    ready_calls,
+):
+    fixture_pages[1]["cards"] = [
+        dict(fixture_pages[0]["cards"][0]),
+        dict(fixture_pages[1]["cards"][1]),
+    ]
+    page = FakePage(fixture_pages)
+
+    identities = collect_note_identities(page, max_pages=2, timezone=TZ)
+
+    assert [identity.post_id for identity in identities] == [
+        "6a49ebd3000000001503fdd0",
+        "6a49ebd3000000001503fdd1",
+        "6a49ebd3000000001503fdd2",
+    ]
+    assert page.click_calls == [(0, 1)]
+
+
+def test_collect_rejects_transition_when_only_hidden_cards_change(
+    fixture_pages,
+    ready_calls,
+):
+    visible_cards = [dict(card) for card in fixture_pages[0]["cards"]]
+    fixture_pages[0]["cards"] = [
+        {
+            **dict(fixture_pages[0]["cards"][0]),
+            "impression": (
+                '{"noteTarget":{"value":{"noteId":'
+                '"6a49ebd3000000001503fd99"}}}'
+            ),
+            "visible": False,
+        },
+        *visible_cards,
+    ]
+    fixture_pages[1]["cards"] = [
+        {
+            **dict(fixture_pages[0]["cards"][0]),
+            "impression": (
+                '{"noteTarget":{"value":{"noteId":'
+                '"6a49ebd3000000001503fd98"}}}'
+            ),
+            "visible": False,
+        },
+        *[dict(card) for card in visible_cards],
+    ]
+    page = FakePage(fixture_pages)
+
+    with pytest.raises(
+        IdentityCollectionError,
+        match="page 1 pagination transition timed out",
+    ):
+        collect_note_identities(page, max_pages=2, timezone=TZ)
+
+    assert page.click_calls == [(0, 1)]
 
 
 def test_collect_rejects_transition_when_only_active_page_changes(
@@ -579,6 +700,9 @@ def test_identity_source_forbids_navigation_and_nonpagination_clicks():
     assert ".note-detail" not in source
     assert ".goto(" not in source
     assert "control.textContent" not in source
+    assert "getComputedStyle(card)" in source
+    assert "cardSignature" in source
+    assert "document.querySelector('.note-card')" not in source
 
     tree = ast.parse(source)
     click_calls = [

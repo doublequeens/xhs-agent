@@ -12,11 +12,38 @@ _PUBLISHED_AT_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
 _TRANSITION_TIMEOUT_MS = 5_000
 
 _CARD_DATA_SCRIPT = """
-(cards) => cards.map((card) => ({
-    impression: card.getAttribute('data-impression'),
-    title: card.querySelector('.note-card__title')?.textContent?.trim() ?? null,
-    time: card.querySelector('.note-card__time')?.textContent?.trim() ?? null
-}))
+(cards) => {
+    const isVisibleCard = (card) => {
+        const cardStyle = window.getComputedStyle(card);
+        return card.getClientRects().length > 0
+            && cardStyle.display !== 'none'
+            && cardStyle.visibility !== 'hidden';
+    };
+    const isVisiblePagination = (element) => {
+        const style = window.getComputedStyle(element);
+        return element.getClientRects().length > 0
+            && style.display !== 'none'
+            && style.visibility !== 'hidden';
+    };
+    const visiblePaginations = Array.from(
+        document.querySelectorAll('.d-pagination')
+    ).filter(isVisiblePagination);
+    const currentPagination = visiblePaginations.length === 1
+        ? visiblePaginations[0]
+        : null;
+    const isCurrentListCard = (card) => currentPagination === null
+        || Boolean(
+            card.compareDocumentPosition(currentPagination)
+                & Node.DOCUMENT_POSITION_FOLLOWING
+        );
+    return cards
+        .filter((card) => isVisibleCard(card) && isCurrentListCard(card))
+        .map((card) => ({
+            impression: card.getAttribute('data-impression'),
+            title: card.querySelector('.note-card__title')?.textContent?.trim() ?? null,
+            time: card.querySelector('.note-card__time')?.textContent?.trim() ?? null
+        }));
+}
 """
 
 _PAGINATION_STATE_SCRIPT = """
@@ -44,19 +71,29 @@ _PAGINATION_STATE_SCRIPT = """
                 && controlStyle.visibility !== 'hidden'
         };
     });
+    const cardSignature = Array.from(document.querySelectorAll('.note-card'))
+        .filter((card) => {
+            const cardStyle = window.getComputedStyle(card);
+            return card.getClientRects().length > 0
+                && cardStyle.display !== 'none'
+                && cardStyle.visibility !== 'hidden'
+                && Boolean(
+                    card.compareDocumentPosition(container)
+                        & Node.DOCUMENT_POSITION_FOLLOWING
+                );
+        })
+        .map((card) => card.getAttribute('data-impression') ?? '')
+        .join('\\n');
     return [{
         containerIndex,
         controls,
-        firstCardImpression: document.querySelector('.note-card')
-            ?.getAttribute('data-impression') ?? null
+        cardSignature
     }];
 })
 """
 
 _LIST_TRANSITION_SCRIPT = """
 (previous) => {
-    const firstCardImpression = document.querySelector('.note-card')
-        ?.getAttribute('data-impression') ?? null;
     const container = document.querySelectorAll('.d-pagination')[
         previous.containerIndex
     ];
@@ -71,8 +108,21 @@ _LIST_TRANSITION_SCRIPT = """
     ) {
         return false;
     }
-    return firstCardImpression !== null
-        && firstCardImpression !== previous.firstCardImpression;
+    const cardSignature = Array.from(document.querySelectorAll('.note-card'))
+        .filter((card) => {
+            const cardStyle = window.getComputedStyle(card);
+            return card.getClientRects().length > 0
+                && cardStyle.display !== 'none'
+                && cardStyle.visibility !== 'hidden'
+                && Boolean(
+                    card.compareDocumentPosition(container)
+                        & Node.DOCUMENT_POSITION_FOLLOWING
+                );
+        })
+        .map((card) => card.getAttribute('data-impression') ?? '')
+        .join('\\n');
+    return cardSignature !== ''
+        && cardSignature !== previous.cardSignature;
 }
 """
 
@@ -264,7 +314,7 @@ def _find_next_page_control(
     if candidate is None:
         return None
 
-    container_index, controls, active_page, first_impression = candidate
+    container_index, controls, active_page, card_signature = candidate
     selection = _select_next_control(controls, active_page)
     if selection is None:
         return None
@@ -280,14 +330,12 @@ def _find_next_page_control(
         {
             "containerIndex": container_index,
             "activePage": str(active_page),
-            "firstCardImpression": first_impression,
+            "cardSignature": card_signature,
         },
     )
 
 
-def _pagination_candidate(
-    container: Any,
-) -> tuple[int, list[Any], int, str | None] | None:
+def _pagination_candidate(container: Any) -> tuple[int, list[Any], int, str] | None:
     if not isinstance(container, dict):
         raise IdentityCollectionError("pagination container data is invalid")
     controls = container.get("controls")
@@ -310,10 +358,10 @@ def _pagination_candidate(
             break
     if active_page is None:
         return None
-    first_impression = container.get("firstCardImpression")
-    if first_impression is not None and not isinstance(first_impression, str):
+    card_signature = container.get("cardSignature")
+    if not isinstance(card_signature, str):
         raise IdentityCollectionError("pagination container data is invalid")
-    return container_index, controls, active_page, first_impression
+    return container_index, controls, active_page, card_signature
 
 
 def _select_next_control(
