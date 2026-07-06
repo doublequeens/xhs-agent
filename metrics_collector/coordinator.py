@@ -131,6 +131,27 @@ def preserve_diagnostic_workbook(
         _close_fd_if_open(diagnostics_fd)
 
 
+def prune_diagnostics_dir(
+    diagnostics_dir: Path | str,
+    retention_days: int,
+    now: datetime,
+) -> None:
+    diagnostics_path = Path(diagnostics_dir)
+    if not diagnostics_path.exists() and not diagnostics_path.is_symlink():
+        return
+    if diagnostics_path.is_symlink():
+        raise DiagnosticPreservationError("diagnostic preservation failed")
+    diagnostics_fd = _open_verified_diagnostics_dir(diagnostics_path)
+    try:
+        _prune_old_diagnostics(
+            diagnostics_fd,
+            retention_days,
+            now.timestamp(),
+        )
+    finally:
+        _close_fd_if_open(diagnostics_fd)
+
+
 class CollectionCoordinator:
     def __init__(
         self,
@@ -200,6 +221,7 @@ class CollectionCoordinator:
 
         workbook_path: Path | None = None
         try:
+            _prune_diagnostics_safely(self.config, current_time)
             matched_post_ids = 0
             with self.browser_factory() as browser:
                 browser.navigate(self.config.data_analysis_url)
@@ -510,6 +532,18 @@ def _preserve_if_present(
         )
     except Exception:
         return "diagnostic preservation failed"
+    return None
+
+
+def _prune_diagnostics_safely(config: CollectorConfig, now: datetime) -> str | None:
+    try:
+        prune_diagnostics_dir(
+            config.diagnostics_dir,
+            config.diagnostic_retention_days,
+            now,
+        )
+    except Exception:
+        return "diagnostic pruning failed"
     return None
 
 

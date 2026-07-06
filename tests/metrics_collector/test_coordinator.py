@@ -647,6 +647,25 @@ def test_workbook_validation_failure_preserves_file_and_writes_no_metrics(deps):
     assert result.error_summary == "workbook validation failed"
 
 
+def test_successful_collection_prunes_old_diagnostics(deps):
+    diagnostics_dir = deps.config.diagnostics_dir
+    diagnostics_dir.mkdir()
+    old_diagnostic = diagnostics_dir / "old.xlsx"
+    new_diagnostic = diagnostics_dir / "new.xlsx"
+    old_diagnostic.write_bytes(b"old")
+    new_diagnostic.write_bytes(b"new")
+    old_mtime = (AT_22 - timedelta(days=8)).timestamp()
+    new_mtime = (AT_22 - timedelta(days=6, hours=23)).timestamp()
+    os.utime(old_diagnostic, (old_mtime, old_mtime))
+    os.utime(new_diagnostic, (new_mtime, new_mtime))
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert result.status == "success"
+    assert not old_diagnostic.exists()
+    assert new_diagnostic.exists()
+
+
 def test_workbook_validation_error_summary_does_not_leak_path_or_token(
     deps,
     tmp_path,
