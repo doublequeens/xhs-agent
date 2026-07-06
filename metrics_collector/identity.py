@@ -57,29 +57,30 @@ _LIST_TRANSITION_SCRIPT = """
 (previous) => {
     const firstCardImpression = document.querySelector('.note-card')
         ?.getAttribute('data-impression') ?? null;
+    const container = document.querySelectorAll('.d-pagination')[
+        previous.containerIndex
+    ];
+    if (!container) {
+        return false;
+    }
+    const style = window.getComputedStyle(container);
+    if (
+        container.getClientRects().length === 0
+        || style.display === 'none'
+        || style.visibility === 'hidden'
+    ) {
+        return false;
+    }
     let activePage = null;
-    for (const container of document.querySelectorAll('.d-pagination')) {
-        const style = window.getComputedStyle(container);
+    for (const control of container.querySelectorAll('.d-pagination-page')) {
+        const classes = (control.className || '').split(/\\s+/);
         if (
-            container.getClientRects().length === 0
-            || style.display === 'none'
-            || style.visibility === 'hidden'
+            control.getAttribute('aria-current') === 'page'
+            || control.getAttribute('aria-current') === 'true'
+            || control.getAttribute('data-active') === 'true'
+            || classes.includes('active')
         ) {
-            continue;
-        }
-        for (const control of container.querySelectorAll('.d-pagination-page')) {
-            const classes = (control.className || '').split(/\\s+/);
-            if (
-                control.getAttribute('aria-current') === 'page'
-                || control.getAttribute('aria-current') === 'true'
-                || control.getAttribute('data-active') === 'true'
-                || classes.includes('active')
-            ) {
-                activePage = control.getAttribute('data-page');
-                break;
-            }
-        }
-        if (activePage !== null) {
+            activePage = control.getAttribute('data-page');
             break;
         }
     }
@@ -99,6 +100,7 @@ class IdentityCollectionError(RuntimeError):
 
 
 def extract_note_identities(page: Any, timezone: tzinfo) -> list[NoteIdentity]:
+    timezone = _validate_timezone(timezone)
     try:
         raw_cards = page.locator(".note-card").evaluate_all(_CARD_DATA_SCRIPT)
     except Exception as error:
@@ -129,6 +131,7 @@ def collect_note_identities(
     timezone: tzinfo,
     stop_when: Callable[[tuple[NoteIdentity, ...]], bool] | None = None,
 ) -> list[NoteIdentity]:
+    timezone = _validate_timezone(timezone)
     if (
         isinstance(max_pages, bool)
         or not isinstance(max_pages, int)
@@ -244,9 +247,21 @@ def _parse_card(
     )
 
 
+def _validate_timezone(value: Any) -> tzinfo:
+    if not isinstance(value, tzinfo):
+        raise ValueError("timezone must produce aware datetimes")
+    try:
+        offset = datetime(2000, 1, 1, tzinfo=value).utcoffset()
+    except Exception as error:
+        raise ValueError("timezone must produce aware datetimes") from error
+    if offset is None:
+        raise ValueError("timezone must produce aware datetimes")
+    return value
+
+
 def _find_next_page_control(
     page: Any,
-) -> tuple[Any, dict[str, str | None]] | None:
+) -> tuple[Any, dict[str, str | int | None]] | None:
     try:
         containers = page.locator(".d-pagination").evaluate_all(
             _PAGINATION_STATE_SCRIPT
@@ -256,24 +271,42 @@ def _find_next_page_control(
     if not isinstance(containers, list):
         raise IdentityCollectionError("pagination inspection returned invalid data")
 
-    for container in containers:
-        selection = _select_next_control(container)
-        if selection is None:
-            continue
-        container_index, control_index, previous_state = selection
-        next_control = (
-            page.locator(".d-pagination")
-            .nth(container_index)
-            .locator(".d-pagination-page")
-            .nth(control_index)
+    candidates = [
+        candidate
+        for container in containers
+        if (candidate := _pagination_candidate(container)) is not None
+    ]
+    if len(candidates) > 1:
+        raise IdentityCollectionError(
+            "multiple visible note pagination containers"
         )
-        return next_control, previous_state
-    return None
+    if not candidates:
+        return None
+
+    container_index, controls, active_page, first_impression = candidates[0]
+    selection = _select_next_control(controls, active_page)
+    if selection is None:
+        return None
+    control_index = selection
+    next_control = (
+        page.locator(".d-pagination")
+        .nth(container_index)
+        .locator(".d-pagination-page")
+        .nth(control_index)
+    )
+    return (
+        next_control,
+        {
+            "containerIndex": container_index,
+            "activePage": str(active_page),
+            "firstCardImpression": first_impression,
+        },
+    )
 
 
-def _select_next_control(
+def _pagination_candidate(
     container: Any,
-) -> tuple[int, int, dict[str, str | None]] | None:
+) -> tuple[int, list[Any], int, str | None] | None:
     if not isinstance(container, dict):
         raise IdentityCollectionError("pagination container data is invalid")
     controls = container.get("controls")
@@ -296,7 +329,16 @@ def _select_next_control(
             break
     if active_page is None:
         return None
+    first_impression = container.get("firstCardImpression")
+    if first_impression is not None and not isinstance(first_impression, str):
+        raise IdentityCollectionError("pagination container data is invalid")
+    return container_index, controls, active_page, first_impression
 
+
+def _select_next_control(
+    controls: list[Any],
+    active_page: int,
+) -> int | None:
     for control in controls:
         if not isinstance(control, dict):
             raise IdentityCollectionError("pagination control data is invalid")
@@ -313,14 +355,7 @@ def _select_next_control(
         control_index = control.get("controlIndex")
         if not isinstance(control_index, int):
             raise IdentityCollectionError("pagination control data is invalid")
-        return (
-            container_index,
-            control_index,
-            {
-                "activePage": str(active_page),
-                "firstCardImpression": container.get("firstCardImpression"),
-            },
-        )
+        return control_index
     return None
 
 

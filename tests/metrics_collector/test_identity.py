@@ -1,6 +1,6 @@
 import ast
 import inspect
-from datetime import datetime
+from datetime import datetime, tzinfo
 from html.parser import HTMLParser
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -18,6 +18,14 @@ from metrics_collector.models import NoteIdentity
 
 TZ = ZoneInfo("Asia/Shanghai")
 FIXTURES = Path(__file__).parents[1] / "fixtures" / "metrics_collector"
+
+
+class _NaiveTimezone(tzinfo):
+    def utcoffset(self, dt):
+        return None
+
+    def dst(self, dt):
+        return None
 
 
 class _NoteManagerParser(HTMLParser):
@@ -102,10 +110,10 @@ class FakeLocator:
         if self.selector == ".d-pagination":
             return [
                 {
-                    "containerIndex": 0,
+                    "containerIndex": container_index,
                     "controls": [
                         {**control, "controlIndex": index}
-                        for index, control in enumerate(current["controls"])
+                        for index, control in enumerate(container["controls"])
                     ],
                     "firstCardImpression": (
                         current["cards"][0]["impression"]
@@ -113,6 +121,10 @@ class FakeLocator:
                         else None
                     ),
                 }
+                for container_index, container in enumerate(
+                    self.page.pagination_containers(current)
+                )
+                if container.get("visible", True)
             ]
         raise AssertionError(f"unexpected evaluate_all selector: {self.selector}")
 
@@ -146,7 +158,10 @@ class FakeLocator:
         self.page.click_calls.append(
             (self.container_index, self.control_index)
         )
-        controls = self.page.pages[self.page.page_index]["controls"]
+        current = self.page.pages[self.page.page_index]
+        controls = self.page.pagination_containers(current)[
+            self.container_index
+        ]["controls"]
         control = controls[self.control_index]
         if control["disabled"] or control["ariaDisabled"] == "true":
             raise AssertionError("disabled pagination control was clicked")
@@ -168,13 +183,21 @@ class FakePage:
         self.locator_calls.append(selector)
         return FakeLocator(self, selector)
 
+    @staticmethod
+    def pagination_containers(page_data):
+        return page_data.get(
+            "paginationContainers",
+            [{"controls": page_data["controls"]}],
+        )
+
     def wait_for_function(self, expression, arg=None, timeout=None):
         self.wait_calls.append((expression, arg, timeout))
         current = self.pages[self.page_index]
+        container = self.pagination_containers(current)[arg["containerIndex"]]
         active_page = next(
             (
                 control["dataPage"]
-                for control in current["controls"]
+                for control in container["controls"]
                 if control["ariaCurrent"] == "page"
                 or "active" in control["className"].split()
             ),
@@ -231,6 +254,32 @@ def test_extract_note_identities_uses_one_bulk_card_boundary(fixture_pages):
     assert page.locator_calls == [".note-card"]
     assert len(page.evaluate_all_calls) == 1
     assert page.click_calls == []
+
+
+@pytest.mark.parametrize("invalid_timezone", [None, object(), _NaiveTimezone()])
+def test_extract_rejects_invalid_timezone_before_reading_cards(
+    invalid_timezone,
+    fixture_pages,
+):
+    page = FakePage(fixture_pages)
+
+    with pytest.raises(ValueError, match="timezone must produce aware datetimes"):
+        extract_note_identities(page, invalid_timezone)
+
+    assert page.locator_calls == []
+
+
+@pytest.mark.parametrize("invalid_timezone", [None, object(), _NaiveTimezone()])
+def test_collect_rejects_invalid_timezone_before_reading_cards(
+    invalid_timezone,
+    fixture_pages,
+):
+    page = FakePage(fixture_pages)
+
+    with pytest.raises(ValueError, match="timezone must produce aware datetimes"):
+        collect_note_identities(page, max_pages=2, timezone=invalid_timezone)
+
+    assert page.locator_calls == []
 
 
 @pytest.mark.parametrize(
@@ -378,6 +427,56 @@ def test_collect_stops_when_next_control_is_absent(fixture_pages, ready_calls):
     assert page.visited_pages == [1]
     assert page.click_calls == []
     assert page.wait_calls == []
+
+
+def test_collect_rejects_multiple_visible_pagination_candidates(
+    fixture_pages,
+    ready_calls,
+):
+    first_page = fixture_pages[0]
+    first_page["paginationContainers"] = [
+        {"controls": [dict(control) for control in first_page["controls"]]},
+        {"controls": [dict(control) for control in first_page["controls"]]},
+    ]
+    page = FakePage(fixture_pages)
+
+    with pytest.raises(
+        IdentityCollectionError,
+        match="multiple visible note pagination containers",
+    ):
+        collect_note_identities(page, max_pages=2, timezone=TZ)
+
+    assert page.click_calls == []
+    assert page.wait_calls == []
+
+
+def test_collect_scopes_transition_to_selected_pagination_container(
+    fixture_pages,
+    ready_calls,
+):
+    for fixture_page in fixture_pages:
+        unrelated_controls = [
+            {
+                **control,
+                "ariaCurrent": None,
+                "className": control["className"].replace("active", ""),
+            }
+            for control in fixture_page["controls"]
+        ]
+        fixture_page["paginationContainers"] = [
+            {"controls": unrelated_controls},
+            {"controls": fixture_page["controls"]},
+        ]
+    page = FakePage(fixture_pages)
+
+    collect_note_identities(page, max_pages=2, timezone=TZ)
+
+    assert page.click_calls == [(1, 1)]
+    assert len(page.wait_calls) == 1
+    expression, previous_state, _ = page.wait_calls[0]
+    assert previous_state["containerIndex"] == 1
+    assert "previous.containerIndex" in expression
+    assert "for (const container of document.querySelectorAll" not in expression
 
 
 def test_collect_calls_early_stop_after_each_page(fixture_pages, ready_calls):
