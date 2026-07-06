@@ -1,47 +1,42 @@
-from .node_a_01_retrieve_memory import retrieve_memory_node
-from .node_a_trend_scout import trend_scout_node
-from .node_b_angle_strategist import angle_strategist_node
-from .node_b_novelty_guard import novelty_guard_node
-from .node_c_virality_scorer import virality_scorer_node
-from .node_d_outline_architect import outline_architect_node
-from .node_e_draft_writer import draft_writer_node
-from .node_f_title_lab import title_lab_node
-from .node_g_title_ranker import title_ranker_node
-from .node_h_r1_reflector import r1_reflector_node
-from .node_j_decision_engine import decision_engine_node
+from importlib import import_module
 
-# The following imports are based on the usage in graph.py.
-# The filenames are assumed based on the project's naming convention.
-# Please ensure these files exist or adjust the import paths accordingly.
-from .node_i_r2_compliance import r2_compliance_node
-from .node_k_hashtag_seo import hashtag_node
-from .node_l_visual_director import visual_director_node
-from .node_m_image_sourcing import image_sourcing_node
-from .node_n_image_qa import image_qa_node
-from .node_o_assembler import assembler_node
-from .node_p_content_writer import content_writer_node
-from .node_q_human_review import human_review_node
-from .node_o_storyboards_generator import storyboards_generator_node
+_EXPORTS = {
+    "domain_router_node": "src.nodes.node_a_00_domain_router",
+    "domain_confirmation_node": "src.nodes.node_a_00_domain_confirmation",
+    "retrieve_memory_node": "src.nodes.node_a_01_retrieve_memory",
+    "trend_scout_node": "src.nodes.node_a_trend_scout",
+    "angle_strategist_node": "src.nodes.node_b_angle_strategist",
+    "novelty_guard_node": "src.nodes.node_b_novelty_guard",
+    "virality_scorer_node": "src.nodes.node_c_virality_scorer",
+    "evidence_brief_node": "src.nodes.node_c_01_evidence_brief",
+    "outline_architect_node": "src.nodes.node_d_outline_architect",
+    "draft_writer_node": "src.nodes.node_e_draft_writer",
+    "title_lab_node": "src.nodes.node_f_title_lab",
+    "title_ranker_node": "src.nodes.node_g_title_ranker",
+    "r1_reflector_node": "src.nodes.node_h_r1_reflector",
+    "decision_engine_node": "src.nodes.node_j_decision_engine",
+    "r2_compliance_node": "src.nodes.node_i_r2_compliance",
+    "hashtag_node": "src.nodes.node_k_hashtag_seo",
+    "visual_director_node": "src.nodes.node_l_visual_director",
+    "image_sourcing_node": "src.nodes.node_m_image_sourcing",
+    "image_qa_node": "src.nodes.node_n_image_qa",
+    "assembler_node": "src.nodes.node_o_assembler",
+    "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
+    "content_writer_node": "src.nodes.node_p_content_writer",
+    "human_review_node": "src.nodes.node_q_human_review",
+    "final_policy_guard_node": "src.nodes.node_q_01_final_policy_guard",
+}
 
-__all__ = [
-    "retrieve_memory_node",
-    "trend_scout_node",
-    "angle_strategist_node",
-    "novelty_guard_node",
-    "virality_scorer_node",
-    "outline_architect_node",
-    "draft_writer_node",
-    "title_lab_node",
-    "title_ranker_node",
-    "r1_reflector_node",
-    "decision_engine_node",
-    "r2_compliance_node",
-    "hashtag_node",
-    "visual_director_node",
-    "image_sourcing_node",
-    "image_qa_node",
-    "assembler_node",
-    "content_writer_node",
-    "human_review_node",
-    "storyboards_generator_node"
-    ]
+__all__ = list(_EXPORTS)
+
+
+def __getattr__(name):
+    try:
+        module_name = _EXPORTS[name]
+    except KeyError as exc:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}") from exc
+
+    module = import_module(module_name)
+    value = getattr(module, name)
+    globals()[name] = value
+    return value

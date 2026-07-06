@@ -4,7 +4,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, HashTagOutput
-from src.prompts import all_prompts
+from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 def hashtag_node(state: AgentState) -> AgentState:
     """
@@ -19,12 +19,25 @@ def hashtag_node(state: AgentState) -> AgentState:
 
     decision_output = state["decision_output"]
     hashtag_input = decision_output.normalized_input.hashtag_input
+    domain_context = state.get("domain_context", {})
+    content_policy = state.get("content_policy", {})
     
-    system_prompt = all_prompts["NODE_K_HASHTAG_SEO"]    
+    system_prompt = compose_prompt_for_state("hashtag_seo", state)
     template = PromptTemplate(
-        input_variables=["hashtag_input"],
-        template="这是hashtag_input：{hashtag_input}, 请按 system 规则进行处理。")
-    human_prompt = template.format(hashtag_input=hashtag_input)
+        input_variables=["hashtag_input", "domain_context", "content_policy"],
+        template=(
+            "输入参数如下：\n"
+            "- hashtag_input:\n{hashtag_input}\n"
+            "- domain_context:\n{domain_context}\n"
+            "- content_policy:\n{content_policy}\n"
+            "请按 system 规则进行处理。"
+        ),
+    )
+    human_prompt = template.format(
+        hashtag_input=serialize_prompt_value(hashtag_input),
+        domain_context=serialize_prompt_value(domain_context),
+        content_policy=serialize_prompt_value(content_policy),
+    )
 
     messages = [
         SystemMessage(content=system_prompt),

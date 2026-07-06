@@ -158,6 +158,7 @@ next_node 只能是以下之一：
 4) 若 next_node == "HASHTAG_SEO"：
 - editorial_tasks 必须为空（或省略）
 - 仅传递可发布 content_snapshot（title+md + topic元信息）
+- hashtag_input 只需提供内容字段，以下字段由代码根据 state.trends 和 topic_id 注入：topic_id、angle_id、domain、subdomain、content_intent、risk_level、risk_flags
 
 ------------------------------------------------
 【输出要求（必须严格 JSON；不要输出多余文字，不需要添加代码块标签（如 ```json））】
@@ -246,9 +247,7 @@ next_node 只能是以下之一：
         "draft_id": "string",
         "final_title": "string",
         "final_md": "string",
-        "topic_id": "string",
         "topic": "string",
-        "angle_id": "string",
         "angle": "string",
         "target_group": "string",
         "core_pain": "string",

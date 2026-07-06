@@ -19,6 +19,12 @@ CREATE TABLE IF NOT EXISTS contents (
     angle_id TEXT,
     angle TEXT,
 
+    domain TEXT,
+    subdomain TEXT,
+    content_intent TEXT,
+    profile_version TEXT,
+    risk_level TEXT,
+
     target_group TEXT,
     core_pain TEXT,
 
@@ -46,12 +52,16 @@ CREATE TABLE IF NOT EXISTS contents (
 CREATE TABLE IF NOT EXISTS metrics (
     content_id TEXT PRIMARY KEY,
 
+    impressions INTEGER,
     views INTEGER DEFAULT 0,
+    cover_click_rate REAL,
     likes INTEGER DEFAULT 0,
     saves INTEGER DEFAULT 0,
     comments INTEGER DEFAULT 0,
     shares INTEGER DEFAULT 0,
     followers_gained INTEGER DEFAULT 0,
+    avg_watch_time_seconds INTEGER,
+    danmaku_count INTEGER,
 
     like_rate REAL DEFAULT 0,
     save_rate REAL DEFAULT 0,
@@ -66,6 +76,53 @@ CREATE TABLE IF NOT EXISTS metrics (
     FOREIGN KEY (content_id) REFERENCES contents(content_id)
         ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS metrics_history (
+    content_id TEXT NOT NULL,
+    collected_date TEXT NOT NULL,
+    source TEXT NOT NULL,
+
+    impressions INTEGER,
+    views INTEGER,
+    cover_click_rate REAL,
+    likes INTEGER,
+    saves INTEGER,
+    comments INTEGER,
+    shares INTEGER,
+    followers_gained INTEGER,
+    avg_watch_time_seconds INTEGER,
+    danmaku_count INTEGER,
+
+    like_rate REAL,
+    save_rate REAL,
+    comment_rate REAL,
+    share_rate REAL,
+    engagement_rate REAL,
+
+    performance_level TEXT,
+    collected_at TEXT NOT NULL,
+
+    PRIMARY KEY (content_id, collected_date),
+    FOREIGN KEY (content_id) REFERENCES contents(content_id)
+        ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS metrics_collection_runs (
+    scheduled_date TEXT PRIMARY KEY,
+    execution_date TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    exported_rows INTEGER NOT NULL DEFAULT 0,
+    updated_rows INTEGER NOT NULL DEFAULT 0,
+    skipped_rows INTEGER NOT NULL DEFAULT 0,
+    ambiguous_rows INTEGER NOT NULL DEFAULT 0,
+    matched_post_ids INTEGER NOT NULL DEFAULT 0,
+    error_summary TEXT
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_collection_runs_execution_date
+ON metrics_collection_runs(execution_date);
 
 CREATE TABLE IF NOT EXISTS memory_events (
     event_id TEXT PRIMARY KEY,
@@ -89,6 +146,12 @@ ON contents(topic);
 
 CREATE INDEX IF NOT EXISTS idx_contents_angle
 ON contents(angle);
+
+CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain
+ON contents(domain, subdomain);
+
+CREATE INDEX IF NOT EXISTS idx_contents_domain_subdomain_created_at
+ON contents(domain, subdomain, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_metrics_performance_level
 ON metrics(performance_level);

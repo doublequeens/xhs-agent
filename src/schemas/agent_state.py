@@ -1,6 +1,8 @@
 from typing import TypedDict, List, Optional
 
 from memory.memory_manager import XHSMemoryManager
+from src.domain import ContentPolicy, DomainContext, DomainName
+from src.evidence.models import EvidenceBrief
 from .topic import TopicItem
 from .angle import AngleStrategy
 from .novelty_guard import NoveltyCheckResults
@@ -19,8 +21,13 @@ from .image_qa import FinalImages
 
 class AgentState(TypedDict):
     trends_num: int
+    domain: Optional[DomainName]
     focus_keyword: Optional[str]
+    domain_context: Optional[DomainContext]
+    content_policy: Optional[ContentPolicy]
     memory_context: Optional[dict]
+    evidence_briefs: dict[str, EvidenceBrief]
+    final_policy_issues: list[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]
     novelty_check_results: NoveltyCheckResults
@@ -42,4 +49,7 @@ class AgentState(TypedDict):
     review_status: Optional[str]
     review_feedback: Optional[str]
     review_round: Optional[int]
+    review_route: Optional[str]
+    pending_human_publish_patch: Optional[dict]
+    pending_human_replace_storyboards: Optional[bool]
     data_writed: Optional[bool]

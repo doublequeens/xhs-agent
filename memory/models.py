@@ -22,6 +22,11 @@ class ContentRecord:
     topic_id: Optional[str] = None
     angle_id: Optional[str] = None
     angle: Optional[str] = None
+    domain: Optional[str] = None
+    subdomain: Optional[str] = None
+    content_intent: Optional[str] = None
+    profile_version: Optional[str] = None
+    risk_level: Optional[str] = None
 
     target_group: Optional[str] = None
     core_pain: Optional[str] = None
@@ -51,12 +56,12 @@ class ContentRecord:
 class MetricsRecord:
     content_id: str
 
-    views: int = 0
-    likes: int = 0
-    saves: int = 0
-    comments: int = 0
-    shares: int = 0
-    followers_gained: int = 0
+    views: Optional[int] = 0
+    likes: Optional[int] = 0
+    saves: Optional[int] = 0
+    comments: Optional[int] = 0
+    shares: Optional[int] = 0
+    followers_gained: Optional[int] = 0
 
     like_rate: float = 0
     save_rate: float = 0
@@ -67,12 +72,17 @@ class MetricsRecord:
     performance_level: str = "unknown"
     updated_at: Optional[str] = None
 
+    impressions: Optional[int] = None
+    cover_click_rate: Optional[float] = None
+    avg_watch_time_seconds: Optional[int] = None
+    danmaku_count: Optional[int] = None
+
 
 @dataclass
 class MemoryContext:
-    recent_contents: list[dict[str, Any]]
-    recent_topics_to_avoid: list[str]
-    recent_angles_to_avoid: list[str]
-    high_performing_patterns: list[dict[str, Any]]
-    low_performing_patterns: list[dict[str, Any]]
+    same_subdomain_recent: list[dict[str, Any]]
+    same_domain_patterns: list[dict[str, Any]]
+    global_format_patterns: list[dict[str, Any]]
+    topics_to_avoid: list[str]
+    angles_to_avoid: list[str]
     recent_hashtags: list[str]

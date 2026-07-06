@@ -1,6 +1,6 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List
-from .decision import RevisionMeta
+from .decision import RevisionMeta, StoryboardVisibleText
 
 class R1Scores(BaseModel):
     clarity_score: float
@@ -25,6 +25,7 @@ class R1Output(BaseModel):
     target_group: str
     core_pain: str
     best_cover_copy: str
+    storyboard_visible_text: List[StoryboardVisibleText] = Field(default_factory=list)
     scores: R1Scores
     revision_meta: RevisionMeta
     task_report: TaskReport

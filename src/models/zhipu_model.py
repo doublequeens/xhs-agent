@@ -14,7 +14,7 @@ class ZhipuModel(BaseLLMModel):
     A wrapper class for Zhipu AI models.
     """
 
-    def __init__(self, model_name: str = "GLM-5.1", temperature: float = 0.7, tools: list = None, **kwargs):
+    def __init__(self, model_name: str = "GLM-5.2", temperature: float = 0.7, tools: list = None, **kwargs):
         """
         Initializes the ZhipuModel with the specified parameters.
 

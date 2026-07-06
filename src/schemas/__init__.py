@@ -13,9 +13,10 @@ from .id_images import IdImageItems
 from .image_sourcing import RetrievedImageItem, IDMatchedImageItems, ImageCandidateItem, ImageCandidates
 from .image import ImageItem
 from .visual_director import ImageScriptList
-from .decision import DecisionTrace, NormalizedInput, HashTagInput, DecisionOutput, DecisionOutput, RevisionMeta
+from .decision import DecisionTrace, NormalizedInput, HashTagInput, DecisionOutput, DecisionOutput, RevisionMeta, R2Input
 from .hashtag import HashTagOutput
 from .image_qa import FinalImages, FinalImageItem 
+from .storyboard import StoryboardFrame, StoryboardPayload
 
 
 __all__ = [
@@ -34,8 +35,9 @@ __all__ = [
     "RetrievedImageItem", "IDMatchedImageItems", "ImageCandidateItem", "ImageCandidates",
     "ImageItem",
     "ImageScriptList",
-    "DecisionTrace", "NormalizedInput", "HashTagInput", "DecisionOutput",
+    "DecisionTrace", "NormalizedInput", "HashTagInput", "DecisionOutput", "R2Input",
     "RevisionMeta",
     "HashTagOutput",
-    "FinalImages", "FinalImageItem"
+    "FinalImages", "FinalImageItem",
+    "StoryboardFrame", "StoryboardPayload",
 ]

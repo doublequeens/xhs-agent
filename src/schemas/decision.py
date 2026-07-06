@@ -1,5 +1,8 @@
-from pydantic import BaseModel, field_validator
-from typing import List, Optional, Any
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+from src.domain.models import ContentIntent, DomainName, RiskLevel
 
 class SingleTask(BaseModel):
     task_id: str
@@ -30,6 +33,7 @@ class ContentCandidate(BaseModel):
     angle: str
     target_group: str
     core_pain: str
+    storyboard_visible_text: List["StoryboardVisibleText"] = Field(default_factory=list)
 
 class RevisionMeta(BaseModel):
     revision_id: str
@@ -40,7 +44,15 @@ class RevisionMeta(BaseModel):
 class DecisionTrace(BaseModel):
     source_node: str
     why_this_route: List[str]
-    
+
+
+class StoryboardVisibleText(BaseModel):
+    frame_id: Optional[str] = None
+    frame_title: str = ""
+    on_image_copy: str = ""
+    narration: str = ""
+
+
 class R1Input(BaseModel):
     content_candidate: ContentCandidate
     editorial_tasks: EditorialTasks
@@ -58,6 +70,7 @@ class R2ContentSnapShoot(BaseModel):
     target_group: str
     core_pain: str
     best_cover_copy: str
+    storyboard_visible_text: List[StoryboardVisibleText] = Field(default_factory=list)
 
 class R2Input(BaseModel):
     content_snapshot: R2ContentSnapShoot
@@ -67,8 +80,15 @@ class R2Input(BaseModel):
 class HashTagInput(BaseModel):
     final_title: str
     final_md: str
+    topic_id: str
+    angle_id: str
     topic: str
     angle: str
+    domain: DomainName
+    subdomain: str
+    content_intent: ContentIntent
+    risk_level: RiskLevel
+    risk_flags: list[str]
     target_group: str
     core_pain: str
     best_cover_copy: str
