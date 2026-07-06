@@ -10,6 +10,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Any, Iterator, Optional
 
 from memory.migrations import (
+    deduplicate_content_post_ids,
     migrate_contents_domain_fields,
     migrate_metrics_collection_schema,
 )
@@ -173,6 +174,7 @@ class XHSMemoryManager:
                         conn.execute(statement)
                 migrate_contents_domain_fields(conn)
                 migrate_metrics_collection_schema(conn)
+                deduplicate_content_post_ids(conn)
                 self._create_required_indexes(conn)
             except Exception:
                 conn.execute(f"ROLLBACK TO {_INIT_DB_SAVEPOINT}")

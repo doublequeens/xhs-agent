@@ -566,6 +566,92 @@ def test_init_db_runs_schema_then_migration_on_legacy_database(tmp_path):
     } <= set(_table_columns(manager.connect(), "metrics"))
 
 
+def test_init_db_deduplicates_legacy_post_ids_before_unique_index(tmp_path):
+    db_path = tmp_path / "duplicate-post-ids.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            published_at TEXT,
+            post_id TEXT,
+            url TEXT,
+            topic TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.executemany(
+        """
+        INSERT INTO contents(
+            content_id, status, created_at, published_at, post_id, url, topic
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                "older-draft",
+                "generated",
+                "2026-07-01T10:00:00+08:00",
+                None,
+                "duplicate-post",
+                "https://www.xiaohongshu.com/explore/duplicate-post",
+                "旧草稿",
+            ),
+            (
+                "published-winner",
+                "published",
+                "2026-07-02T10:00:00+08:00",
+                "2026-07-03T10:00:00+08:00",
+                "duplicate-post",
+                "https://www.xiaohongshu.com/explore/duplicate-post",
+                "已发布",
+            ),
+            (
+                "unique",
+                "published",
+                "2026-07-04T10:00:00+08:00",
+                "2026-07-04T12:00:00+08:00",
+                "unique-post",
+                "https://www.xiaohongshu.com/explore/unique-post",
+                "唯一",
+            ),
+        ],
+    )
+    connection.commit()
+    connection.close()
+
+    manager = XHSMemoryManager(db_path)
+    manager.init_db(SCHEMA_PATH)
+    manager.init_db(SCHEMA_PATH)
+
+    rows = {
+        row["content_id"]: dict(row)
+        for row in manager.connect().execute(
+            """
+            SELECT content_id, post_id, url
+            FROM contents
+            ORDER BY content_id
+            """
+        )
+    }
+    assert rows["published-winner"]["post_id"] == "duplicate-post"
+    assert rows["published-winner"]["url"] == (
+        "https://www.xiaohongshu.com/explore/duplicate-post"
+    )
+    assert rows["older-draft"] == {
+        "content_id": "older-draft",
+        "post_id": None,
+        "url": None,
+    }
+    assert rows["unique"]["post_id"] == "unique-post"
+    assert "idx_contents_unique_post_id" in _index_names(manager.connect())
+
+
 def test_init_db_rolls_back_all_schema_changes_when_metrics_migration_fails(
     tmp_path, monkeypatch
 ):

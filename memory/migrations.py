@@ -193,3 +193,57 @@ def migrate_metrics_collection_schema(connection: sqlite3.Connection) -> None:
         raise
     else:
         connection.execute("RELEASE migrate_metrics_collection_schema")
+
+
+def deduplicate_content_post_ids(connection: sqlite3.Connection) -> None:
+    existing_columns = _existing_columns(connection)
+    if "post_id" not in existing_columns:
+        return
+
+    connection.execute("SAVEPOINT deduplicate_content_post_ids")
+    try:
+        order_terms: list[str] = []
+        if "status" in existing_columns:
+            order_terms.append(
+                "CASE WHEN status = 'published' THEN 0 ELSE 1 END"
+            )
+        if "published_at" in existing_columns:
+            order_terms.extend(
+                [
+                    "CASE WHEN published_at IS NOT NULL THEN 0 ELSE 1 END",
+                    "COALESCE(published_at, '') DESC",
+                ]
+            )
+        if "created_at" in existing_columns:
+            order_terms.append("COALESCE(created_at, '') DESC")
+        order_terms.append("content_id ASC")
+        set_terms = ["post_id = NULL"]
+        if "url" in existing_columns:
+            set_terms.append("url = NULL")
+
+        connection.execute(
+            f"""
+            UPDATE contents
+            SET {", ".join(set_terms)}
+            WHERE rowid IN (
+                SELECT rowid
+                FROM (
+                    SELECT
+                        rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY post_id
+                            ORDER BY {", ".join(order_terms)}
+                        ) AS duplicate_rank
+                    FROM contents
+                    WHERE post_id IS NOT NULL
+                )
+                WHERE duplicate_rank > 1
+            )
+            """
+        )
+    except Exception:
+        connection.execute("ROLLBACK TO deduplicate_content_post_ids")
+        connection.execute("RELEASE deduplicate_content_post_ids")
+        raise
+    else:
+        connection.execute("RELEASE deduplicate_content_post_ids")
