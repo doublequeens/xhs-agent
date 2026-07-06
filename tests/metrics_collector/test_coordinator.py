@@ -39,7 +39,8 @@ POST_ID = "0123456789abcdef01234567"
 
 
 class FakeManager:
-    def __init__(self) -> None:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
         self.completed_execution_dates: set[str] = set()
         self.unbound_candidates: list[dict[str, object]] = []
         self.start_calls: list[tuple[str, str]] = []
@@ -66,6 +67,7 @@ class FakeManager:
             self.completed_execution_dates.add(str(summary["execution_date"]))
 
     def get_unbound_published_candidates(self) -> list[dict[str, object]]:
+        self.events.append("get_candidates")
         return list(self.unbound_candidates)
 
     def bind_post_identity(
@@ -112,7 +114,8 @@ class FakeManager:
 
 
 class FakeBrowser:
-    def __init__(self) -> None:
+    def __init__(self, events: list[str]) -> None:
+        self.events = events
         self.page = SimpleNamespace(name="page")
         self.navigate_calls: list[str] = []
         self.raise_on_url: dict[str, Exception] = {}
@@ -128,6 +131,7 @@ class FakeBrowser:
         return False
 
     def navigate(self, url: str) -> None:
+        self.events.append(f"navigate:{url}")
         self.navigate_calls.append(url)
         if url in self.raise_on_url:
             raise self.raise_on_url[url]
@@ -161,11 +165,13 @@ class FakeIdentityCollector:
 
 
 class FakeExporter:
-    def __init__(self, workbook_path: Path) -> None:
+    def __init__(self, workbook_path: Path, events: list[str]) -> None:
+        self.events = events
         self.calls: list[object] = []
         self.workbook_path = workbook_path
 
     def export(self, page) -> Path:
+        self.events.append("export")
         self.calls.append(page)
         return self.workbook_path
 
@@ -209,6 +215,7 @@ class FakeMatcher:
 
 @pytest.fixture
 def deps(tmp_path):
+    events: list[str] = []
     workbook_path = tmp_path / "downloaded.xlsx"
     workbook_path.write_bytes(b"fake workbook")
     config = replace(
@@ -216,11 +223,11 @@ def deps(tmp_path):
         download_dir=tmp_path / "downloads",
         diagnostics_dir=tmp_path / "diagnostics",
     )
-    manager = FakeManager()
-    browser = FakeBrowser()
+    manager = FakeManager(events)
+    browser = FakeBrowser(events)
     browser_factory = FakeBrowserFactory(browser)
     identity_collector = FakeIdentityCollector()
-    exporter = FakeExporter(workbook_path)
+    exporter = FakeExporter(workbook_path, events)
     parser = FakeParser()
     matcher = FakeMatcher()
     coordinator = CollectionCoordinator(
@@ -243,6 +250,7 @@ def deps(tmp_path):
         matcher=matcher,
         coordinator=coordinator,
         workbook_path=workbook_path,
+        events=events,
     )
 
 
@@ -324,6 +332,11 @@ def test_no_unbound_content_skips_note_manager(deps):
     assert deps.identity_collector.calls == []
     assert deps.exporter.calls == [deps.browser.page]
     assert deps.browser.navigate_calls == [deps.config.data_analysis_url]
+    assert deps.events == [
+        f"navigate:{deps.config.data_analysis_url}",
+        "get_candidates",
+        "export",
+    ]
 
 
 def test_unbound_content_reads_list_and_generates_stable_url(deps):
@@ -343,9 +356,17 @@ def test_unbound_content_reads_list_and_generates_stable_url(deps):
 
     deps.coordinator.collect(now=AT_22)
 
-    assert deps.browser.navigate_calls[:2] == [
+    assert deps.browser.navigate_calls == [
+        deps.config.data_analysis_url,
         deps.config.note_manager_url,
         deps.config.data_analysis_url,
+    ]
+    assert deps.events == [
+        f"navigate:{deps.config.data_analysis_url}",
+        "get_candidates",
+        f"navigate:{deps.config.note_manager_url}",
+        f"navigate:{deps.config.data_analysis_url}",
+        "export",
     ]
     assert deps.manager.bind_calls == [
         {

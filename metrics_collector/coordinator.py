@@ -114,18 +114,19 @@ class CollectionCoordinator:
 
         workbook_path: Path | None = None
         try:
-            candidates = _candidate_list(
-                self.manager.get_unbound_published_candidates()
-            )
             matched_post_ids = 0
             with self.browser_factory() as browser:
+                browser.navigate(self.config.data_analysis_url)
+                candidates = _candidate_list(
+                    self.manager.get_unbound_published_candidates()
+                )
                 if candidates:
                     browser.navigate(self.config.note_manager_url)
                     matched_post_ids = self._bind_note_identities(
                         browser.page,
                         candidates,
                     )
-                browser.navigate(self.config.data_analysis_url)
+                    browser.navigate(self.config.data_analysis_url)
                 workbook_path = self._export(browser.page)
 
             rows = self.parser(workbook_path, self.config.timezone)
