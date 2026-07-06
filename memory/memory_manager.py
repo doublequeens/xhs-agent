@@ -22,6 +22,7 @@ _TERMINAL_COLLECTION_STATUSES = {
     "partial_success",
     "auth_required",
     "verification_required",
+    "access_blocked",
     "blocked",
     "failed",
 }
