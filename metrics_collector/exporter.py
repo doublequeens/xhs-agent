@@ -5,6 +5,15 @@ from metrics_collector.browser import assert_creator_center_ready
 
 
 _DOWNLOAD_BUTTON_SELECTOR = "button.download-btn"
+_BUTTON_VISIBLE_WAIT = (
+    "(selector) => {\n"
+    "    return Array.from(document.querySelectorAll(selector)).some((button) => {\n"
+    "        const style = window.getComputedStyle(button);\n"
+    "        return style.visibility !== 'hidden' && "
+    "style.display !== 'none' && button.getClientRects().length > 0;\n"
+    "    });\n"
+    "}"
+)
 _BUTTON_ENABLED_WAIT = (
     "(selector) => {\n"
     "    const buttons = Array.from(document.querySelectorAll(selector));\n"
@@ -71,18 +80,25 @@ class MetricsExporter:
 
 def _wait_for_unique_download_button(page, download_button) -> None:
     try:
-        download_button.wait_for(state="visible")
+        page.wait_for_function(_BUTTON_VISIBLE_WAIT, arg=_DOWNLOAD_BUTTON_SELECTOR)
         button_count = download_button.count()
     except Exception as exc:
+        button_count = _count_download_buttons(download_button)
+        if button_count != 1:
+            raise _unexpected_button_count(button_count) from exc
         if _looks_like_timeout(exc):
             raise ExportError("download button timed out") from exc
         raise ExportError("download button not ready") from exc
 
     if button_count != 1:
-        raise ExportError(
-            "expected exactly one button.download-btn, "
-            f"found {button_count}"
-        )
+        raise _unexpected_button_count(button_count)
+
+    try:
+        download_button.wait_for(state="visible")
+    except Exception as exc:
+        if _looks_like_timeout(exc):
+            raise ExportError("download button timed out") from exc
+        raise ExportError("download button not ready") from exc
 
     try:
         page.wait_for_function(
@@ -93,6 +109,20 @@ def _wait_for_unique_download_button(page, download_button) -> None:
         if _looks_like_timeout(exc):
             raise ExportError("download button did not become enabled") from exc
         raise ExportError("download button enabled check failed") from exc
+
+
+def _count_download_buttons(download_button) -> int:
+    try:
+        return download_button.count()
+    except Exception as exc:
+        raise ExportError("download button count failed") from exc
+
+
+def _unexpected_button_count(button_count: int) -> ExportError:
+    return ExportError(
+        "expected exactly one button.download-btn, "
+        f"found {button_count}"
+    )
 
 
 def _validate_suggested_filename(suggested_filename: str) -> None:

@@ -9,6 +9,15 @@ from metrics_collector.exporter import ExportError, MetricsExporter
 HEALTHY_URL = "https://creator.xiaohongshu.com/statistics/data-analysis"
 HEALTHY_BODY = "小红书创作服务平台 数据分析"
 VALID_XLSX_BYTES = b"PK\x03\x04official workbook content"
+BUTTON_VISIBLE_WAIT = (
+    "(selector) => {\n"
+    "    return Array.from(document.querySelectorAll(selector)).some((button) => {\n"
+    "        const style = window.getComputedStyle(button);\n"
+    "        return style.visibility !== 'hidden' && "
+    "style.display !== 'none' && button.getClientRects().length > 0;\n"
+    "    });\n"
+    "}"
+)
 BUTTON_ENABLED_WAIT = (
     "(selector) => {\n"
     "    const buttons = Array.from(document.querySelectorAll(selector));\n"
@@ -37,7 +46,8 @@ class FakeButtonLocator:
 
     def wait_for(self, **options):
         self.page.wait_for_calls.append(options)
-        self.page.download_button_count = self.page.ready_download_button_count
+        if self.page.download_button_count != 1:
+            raise AssertionError("strict mode violation")
 
     def count(self):
         return self.page.download_button_count
@@ -139,6 +149,13 @@ class FakePage:
 
     def wait_for_function(self, expression, *, arg=None):
         self.wait_for_function_calls.append((expression, arg))
+        if expression == BUTTON_VISIBLE_WAIT:
+            self.download_button_count = self.ready_download_button_count
+            if self.download_button_count < 1:
+                raise TimeoutError("button visible timed out")
+            return
+        if expression != BUTTON_ENABLED_WAIT:
+            raise AssertionError(f"unexpected wait expression: {expression}")
         self.download_button_enabled = self.ready_download_button_enabled
         if not self.download_button_enabled:
             raise TimeoutError("button enabled timed out")
@@ -153,7 +170,8 @@ def test_export_clicks_once_and_saves_completed_xlsx(tmp_path):
     assert fake_page.export_clicks == 1
     assert fake_page.enabled_evaluate_calls == []
     assert fake_page.wait_for_function_calls == [
-        (BUTTON_ENABLED_WAIT, "button.download-btn")
+        (BUTTON_VISIBLE_WAIT, "button.download-btn"),
+        (BUTTON_ENABLED_WAIT, "button.download-btn"),
     ]
     assert fake_page.expect_download_calls == 1
     assert path.suffix == ".xlsx"
@@ -174,7 +192,10 @@ def test_export_waits_for_delayed_visible_download_button(tmp_path):
     assert path.exists()
     assert fake_page.wait_for_calls == [{"state": "visible"}]
     assert fake_page.enabled_evaluate_calls == []
-    assert len(fake_page.wait_for_function_calls) == 1
+    assert fake_page.wait_for_function_calls == [
+        (BUTTON_VISIBLE_WAIT, "button.download-btn"),
+        (BUTTON_ENABLED_WAIT, "button.download-btn"),
+    ]
     assert fake_page.export_clicks == 1
     assert fake_page.expect_download_calls == 1
 
@@ -192,7 +213,8 @@ def test_export_waits_for_visible_button_to_become_enabled(tmp_path):
     assert fake_page.wait_for_calls == [{"state": "visible"}]
     assert fake_page.enabled_evaluate_calls == []
     assert fake_page.wait_for_function_calls == [
-        (BUTTON_ENABLED_WAIT, "button.download-btn")
+        (BUTTON_VISIBLE_WAIT, "button.download-btn"),
+        (BUTTON_ENABLED_WAIT, "button.download-btn"),
     ]
     assert fake_page.export_clicks == 1
     assert fake_page.expect_download_calls == 1
@@ -207,7 +229,10 @@ def test_export_rejects_disabled_download_button_without_clicking(tmp_path):
 
     assert fake_page.wait_for_calls == [{"state": "visible"}]
     assert fake_page.enabled_evaluate_calls == []
-    assert len(fake_page.wait_for_function_calls) == 1
+    assert fake_page.wait_for_function_calls == [
+        (BUTTON_VISIBLE_WAIT, "button.download-btn"),
+        (BUTTON_ENABLED_WAIT, "button.download-btn"),
+    ]
     assert fake_page.export_clicks == 0
     assert fake_page.expect_download_calls == 0
 
@@ -245,6 +270,10 @@ def test_export_requires_exactly_one_download_button_without_clicking(
     with pytest.raises(ExportError, match="exactly one"):
         exporter.export(fake_page)
 
+    assert fake_page.wait_for_calls == []
+    assert fake_page.wait_for_function_calls == [
+        (BUTTON_VISIBLE_WAIT, "button.download-btn")
+    ]
     assert fake_page.export_clicks == 0
     assert fake_page.expect_download_calls == 0
 
