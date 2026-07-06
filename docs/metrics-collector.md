@@ -8,8 +8,13 @@ browser profile under `~/.xhs-agent`.
 ```bash
 pip install -r requirements.txt
 playwright install chromium
+brew install --cask google-chrome
 python -m metrics_collector auth
 ```
+
+The collector is configured for Playwright's `chrome` channel, so Google Chrome
+must be installed in addition to running the required Chromium installation
+command above. If Chrome is already installed, skip the Homebrew command.
 
 Complete the Xiaohongshu login in the opened browser and press Enter only after
 the creator data page loads successfully.

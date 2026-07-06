@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import sys
 from pathlib import Path
 from typing import Sequence
@@ -98,7 +99,16 @@ def _run_install_launchagent() -> int:
         user_home / ".xhs-agent" / "logs",
     )
     plist_path = install_launchagent(payload, user_home)
-    print(f"launchctl bootstrap gui/{os.getuid()} {plist_path}")
+    print(
+        shlex.join(
+            [
+                "launchctl",
+                "bootstrap",
+                f"gui/{os.getuid()}",
+                str(plist_path),
+            ]
+        )
+    )
     return 0
 
 

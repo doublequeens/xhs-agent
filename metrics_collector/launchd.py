@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import os
 import plistlib
-import tempfile
+import secrets
+import stat
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -36,33 +37,121 @@ def build_launchagent_payload(
 def install_launchagent(
     payload: Mapping[str, Any], user_home: Path | str
 ) -> Path:
-    launchagents_dir = Path(user_home) / "Library" / "LaunchAgents"
-    if launchagents_dir.is_symlink():
-        raise ValueError("refusing to use symlink LaunchAgents directory")
-    launchagents_dir.mkdir(parents=True, exist_ok=True)
+    home = Path(os.path.abspath(user_home))
+    home.mkdir(parents=True, exist_ok=True)
+    home_fd = _open_directory(home)
+    launchagents_fd = -1
+    try:
+        library_fd = _open_or_create_directory(home_fd, "Library")
+        try:
+            launchagents_fd = _open_or_create_directory(
+                library_fd, "LaunchAgents"
+            )
+        finally:
+            os.close(library_fd)
+
+        state_fd = _open_or_create_directory(
+            home_fd, ".xhs-agent", mode=0o700
+        )
+        os.close(state_fd)
+        _prepare_log_directories(payload, home, home_fd)
+
+        _write_plist(payload, launchagents_fd)
+    finally:
+        if launchagents_fd >= 0:
+            os.close(launchagents_fd)
+        os.close(home_fd)
+
+    launchagents_dir = home / "Library" / "LaunchAgents"
     plist_path = launchagents_dir / f"{LABEL}.plist"
-    if plist_path.is_symlink():
+    return plist_path
+
+
+def _prepare_log_directories(
+    payload: Mapping[str, Any], home: Path, home_fd: int
+) -> None:
+    for key in ("StandardOutPath", "StandardErrorPath"):
+        log_dir = Path(os.path.abspath(payload[key])).parent
+        try:
+            relative = log_dir.relative_to(home)
+        except ValueError as exc:
+            raise ValueError("log path must remain within user home") from exc
+        if not relative.parts:
+            raise ValueError("log path must use a directory within user home")
+
+        parent_fd = os.dup(home_fd)
+        try:
+            for component in relative.parts:
+                child_fd = _open_or_create_directory(parent_fd, component)
+                os.close(parent_fd)
+                parent_fd = child_fd
+            os.fchmod(parent_fd, 0o700)
+        finally:
+            os.close(parent_fd)
+
+
+def _write_plist(payload: Mapping[str, Any], launchagents_fd: int) -> None:
+    plist_name = f"{LABEL}.plist"
+    try:
+        target_stat = os.stat(
+            plist_name, dir_fd=launchagents_fd, follow_symlinks=False
+        )
+    except FileNotFoundError:
+        target_stat = None
+    if target_stat is not None and stat.S_ISLNK(target_stat.st_mode):
         raise ValueError("refusing to replace symlink plist target")
 
-    for key in ("StandardOutPath", "StandardErrorPath"):
-        log_dir = Path(payload[key]).parent
-        if log_dir.is_symlink():
-            raise ValueError("refusing to use symlink log directory")
-        log_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        log_dir.chmod(0o700)
-
-    fd, temporary_name = tempfile.mkstemp(
-        prefix=f".{LABEL}.", suffix=".tmp", dir=launchagents_dir
-    )
-    temporary_path = Path(temporary_name)
+    temporary_name = f".{LABEL}.{secrets.token_hex(8)}.tmp"
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
+    fd = os.open(temporary_name, flags, 0o600, dir_fd=launchagents_fd)
     try:
         with os.fdopen(fd, "wb") as plist_file:
             plistlib.dump(dict(payload), plist_file)
             plist_file.flush()
             os.fsync(plist_file.fileno())
-        temporary_path.chmod(0o600)
-        os.replace(temporary_path, plist_path)
+        os.replace(
+            temporary_name,
+            plist_name,
+            src_dir_fd=launchagents_fd,
+            dst_dir_fd=launchagents_fd,
+        )
+        os.fsync(launchagents_fd)
     except BaseException:
-        temporary_path.unlink(missing_ok=True)
+        try:
+            os.unlink(temporary_name, dir_fd=launchagents_fd)
+        except FileNotFoundError:
+            pass
         raise
-    return plist_path
+
+
+def _open_directory(path: Path) -> int:
+    try:
+        return os.open(path, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
+    except OSError as exc:
+        raise ValueError("refusing symlink or non-directory user home") from exc
+
+
+def _open_or_create_directory(
+    parent_fd: int, name: str, mode: int = 0o755
+) -> int:
+    try:
+        os.mkdir(name, mode=mode, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    try:
+        directory_fd = os.open(
+            name,
+            os.O_RDONLY | _DIRECTORY | _NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        raise ValueError(
+            f"refusing symlink or non-directory path component: {name}"
+        ) from exc
+    if mode == 0o700:
+        os.fchmod(directory_fd, mode)
+    return directory_fd
+
+
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
