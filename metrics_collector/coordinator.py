@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import Counter
 from datetime import date, datetime, time, timedelta
 import os
 from pathlib import Path
@@ -24,6 +25,7 @@ from metrics_collector.models import (
     CollectionSummary,
     ContentCandidate,
     ExportedMetrics,
+    MatchResult,
     NoteIdentity,
 )
 from metrics_collector.workbook import WorkbookFormatError, parse_metrics_workbook
@@ -322,14 +324,18 @@ class CollectionCoordinator:
             self.config.max_note_manager_pages,
             self.config.timezone,
         )
+        matches, conflicting_content_ids = _match_batch(
+            self.matcher,
+            identities,
+            candidates,
+        )
         matched_count = 0
-        for identity in identities:
-            match = self.matcher.match(
-                identity.title,
-                identity.published_at,
-                candidates,
-            )
-            if match.status != "matched" or match.content_id is None:
+        for identity, match in zip(identities, matches):
+            if (
+                match.status != "matched"
+                or match.content_id is None
+                or match.content_id in conflicting_content_ids
+            ):
                 continue
             self.manager.bind_post_identity(
                 content_id=match.content_id,
@@ -353,11 +359,23 @@ class CollectionCoordinator:
         records: list[MetricsRecord] = []
         ambiguous_rows = 0
         skipped_rows = 0
-        for row in rows:
-            match = self.matcher.match(row.title, row.published_at, candidates)
-            if match.status == "matched" and match.content_id is not None:
+        matches, conflicting_content_ids = _match_batch(
+            self.matcher,
+            rows,
+            candidates,
+        )
+        for row, match in zip(rows, matches):
+            is_batch_conflict = (
+                match.status == "matched"
+                and match.content_id in conflicting_content_ids
+            )
+            if (
+                match.status == "matched"
+                and match.content_id is not None
+                and not is_batch_conflict
+            ):
                 records.append(_metrics_record_from_row(match.content_id, row))
-            elif match.status == "ambiguous":
+            elif match.status == "ambiguous" or is_batch_conflict:
                 ambiguous_rows += 1
                 skipped_rows += 1
             else:
@@ -387,6 +405,28 @@ class CollectionCoordinator:
 
 def _candidate_list(rows: list[dict[str, object]]) -> list[ContentCandidate]:
     return [_candidate_from_mapping(row) for row in rows]
+
+
+def _match_batch(
+    matcher: Any,
+    sources: list[NoteIdentity] | list[ExportedMetrics],
+    candidates: list[ContentCandidate],
+) -> tuple[list[MatchResult], set[str]]:
+    matches = [
+        matcher.match(source.title, source.published_at, candidates)
+        for source in sources
+    ]
+    matched_content_ids = [
+        match.content_id
+        for match in matches
+        if match.status == "matched" and match.content_id is not None
+    ]
+    conflicting_content_ids = {
+        content_id
+        for content_id, count in Counter(matched_content_ids).items()
+        if count > 1
+    }
+    return matches, conflicting_content_ids
 
 
 def _candidate_from_mapping(row: dict[str, object]) -> ContentCandidate:

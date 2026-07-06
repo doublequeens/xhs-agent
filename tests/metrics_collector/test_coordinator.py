@@ -456,6 +456,76 @@ def test_unbound_content_reads_list_and_generates_stable_url(deps):
     assert deps.manager.finish_summaries[-1]["matched_post_ids"] == 1
 
 
+def test_identity_batch_skips_all_sources_with_conflicting_content_ids(deps):
+    deps.manager.unbound_candidates = [
+        candidate_dict("content-1", "first conflict"),
+        candidate_dict("content-2", "unique"),
+        candidate_dict("content-3", "repeated source"),
+    ]
+    first_conflict = NoteIdentity(
+        post_id="111111111111111111111111",
+        title="first conflict",
+        published_at=datetime(2026, 7, 5, 10, 0, tzinfo=TZ),
+    )
+    unique = NoteIdentity(
+        post_id="222222222222222222222222",
+        title="unique",
+        published_at=datetime(2026, 7, 5, 11, 0, tzinfo=TZ),
+    )
+    second_conflict = NoteIdentity(
+        post_id="333333333333333333333333",
+        title="second conflict",
+        published_at=datetime(2026, 7, 5, 13, 0, tzinfo=TZ),
+    )
+    repeated = NoteIdentity(
+        post_id="444444444444444444444444",
+        title="repeated source",
+        published_at=datetime(2026, 7, 5, 14, 0, tzinfo=TZ),
+    )
+    deps.identity_collector.identities = [
+        first_conflict,
+        unique,
+        second_conflict,
+        repeated,
+        repeated,
+    ]
+    deps.matcher.results_by_title.update(
+        {
+            "first conflict": MatchResult(
+                "matched", "content-1", 0.99, ("content-1",)
+            ),
+            "unique": MatchResult(
+                "matched", "content-2", 0.98, ("content-2",)
+            ),
+            "second conflict": MatchResult(
+                "matched", "content-1", 0.97, ("content-1",)
+            ),
+            "repeated source": MatchResult(
+                "matched", "content-3", 0.96, ("content-3",)
+            ),
+        }
+    )
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert deps.manager.bind_calls == [
+        {
+            "content_id": "content-2",
+            "post_id": unique.post_id,
+            "url": deps.config.note_url(unique.post_id),
+            "published_at": unique.published_at.isoformat(),
+        }
+    ]
+    assert result.matched_post_ids == 1
+    assert [call["title"] for call in deps.matcher.calls] == [
+        "first conflict",
+        "unique",
+        "second conflict",
+        "repeated source",
+        "repeated source",
+    ]
+
+
 def test_auth_failure_stops_before_export(deps):
     deps.browser.raise_on_url[deps.config.data_analysis_url] = (
         AuthenticationRequired("login required token=secret")
@@ -507,6 +577,58 @@ def test_ambiguous_rows_are_skipped_but_confident_rows_update(deps):
         avg_watch_time_seconds=17,
         danmaku_count=1,
     )
+
+
+def test_metrics_batch_skips_all_rows_with_conflicting_content_ids(deps):
+    first_conflict = exported_row("first conflict")
+    unique = exported_row("unique")
+    second_conflict = replace(
+        exported_row("second conflict"),
+        published_at=datetime(2026, 7, 5, 13, 0, tzinfo=TZ),
+    )
+    repeated = exported_row("repeated source")
+    deps.parser.rows = [
+        first_conflict,
+        unique,
+        second_conflict,
+        repeated,
+        repeated,
+    ]
+    deps.matcher.results_by_title.update(
+        {
+            "first conflict": MatchResult(
+                "matched", "content-1", 0.99, ("content-1",)
+            ),
+            "unique": MatchResult(
+                "matched", "content-2", 0.98, ("content-2",)
+            ),
+            "second conflict": MatchResult(
+                "matched", "content-1", 0.97, ("content-1",)
+            ),
+            "repeated source": MatchResult(
+                "matched", "content-3", 0.96, ("content-3",)
+            ),
+        }
+    )
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert result.status == "partial_success"
+    assert result.exported_rows == 5
+    assert result.updated_rows == 1
+    assert result.ambiguous_rows == 4
+    assert result.skipped_rows == 4
+    assert [
+        record.content_id
+        for record in deps.manager.update_calls[0]["records"]
+    ] == ["content-2"]
+    assert [call["title"] for call in deps.matcher.calls] == [
+        "first conflict",
+        "unique",
+        "second conflict",
+        "repeated source",
+        "repeated source",
+    ]
 
 
 def test_workbook_validation_failure_preserves_file_and_writes_no_metrics(deps):
