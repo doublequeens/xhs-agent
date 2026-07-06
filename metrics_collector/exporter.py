@@ -85,7 +85,10 @@ def _wait_for_unique_download_button(page, download_button) -> None:
         )
 
     try:
-        page.wait_for_function(_BUTTON_ENABLED_WAIT, _DOWNLOAD_BUTTON_SELECTOR)
+        page.wait_for_function(
+            _BUTTON_ENABLED_WAIT,
+            arg=_DOWNLOAD_BUTTON_SELECTOR,
+        )
     except Exception as exc:
         if _looks_like_timeout(exc):
             raise ExportError("download button did not become enabled") from exc

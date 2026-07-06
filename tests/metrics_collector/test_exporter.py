@@ -137,7 +137,7 @@ class FakePage:
         self.expect_download_calls += 1
         return FakeExpectDownload(self)
 
-    def wait_for_function(self, expression, arg=None):
+    def wait_for_function(self, expression, *, arg=None):
         self.wait_for_function_calls.append((expression, arg))
         self.download_button_enabled = self.ready_download_button_enabled
         if not self.download_button_enabled:
