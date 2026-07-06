@@ -71,26 +71,8 @@ _LIST_TRANSITION_SCRIPT = """
     ) {
         return false;
     }
-    let activePage = null;
-    for (const control of container.querySelectorAll('.d-pagination-page')) {
-        const classes = (control.className || '').split(/\\s+/);
-        if (
-            control.getAttribute('aria-current') === 'page'
-            || control.getAttribute('aria-current') === 'true'
-            || control.getAttribute('data-active') === 'true'
-            || classes.includes('active')
-        ) {
-            activePage = control.getAttribute('data-page');
-            break;
-        }
-    }
-    return (
-        firstCardImpression !== null
-        && firstCardImpression !== previous.firstCardImpression
-    ) || (
-        activePage !== null
-        && activePage !== previous.activePage
-    );
+    return firstCardImpression !== null
+        && firstCardImpression !== previous.firstCardImpression;
 }
 """
 
@@ -271,19 +253,18 @@ def _find_next_page_control(
     if not isinstance(containers, list):
         raise IdentityCollectionError("pagination inspection returned invalid data")
 
-    candidates = [
-        candidate
-        for container in containers
-        if (candidate := _pagination_candidate(container)) is not None
-    ]
-    if len(candidates) > 1:
+    if len(containers) > 1:
         raise IdentityCollectionError(
             "multiple visible note pagination containers"
         )
-    if not candidates:
+    if not containers:
         return None
 
-    container_index, controls, active_page, first_impression = candidates[0]
+    candidate = _pagination_candidate(containers[0])
+    if candidate is None:
+        return None
+
+    container_index, controls, active_page, first_impression = candidate
     selection = _select_next_control(controls, active_page)
     if selection is None:
         return None

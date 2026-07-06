@@ -208,11 +208,14 @@ class FakePage:
             if current["cards"]
             else None
         )
-        assert (
-            active_page != arg["activePage"]
-            or first_impression != arg["firstCardImpression"]
-        )
-        return True
+        note_list_changed = first_impression != arg["firstCardImpression"]
+        active_page_changed = active_page != arg["activePage"]
+        if note_list_changed or (
+            active_page_changed
+            and "activePage !== previous.activePage" in expression
+        ):
+            return True
+        raise TimeoutError("list did not transition")
 
 
 @pytest.fixture
@@ -450,7 +453,7 @@ def test_collect_rejects_multiple_visible_pagination_candidates(
     assert page.wait_calls == []
 
 
-def test_collect_scopes_transition_to_selected_pagination_container(
+def test_collect_rejects_multiple_visible_pagination_containers_even_without_active_page(
     fixture_pages,
     ready_calls,
 ):
@@ -465,6 +468,27 @@ def test_collect_scopes_transition_to_selected_pagination_container(
         ]
         fixture_page["paginationContainers"] = [
             {"controls": unrelated_controls},
+            {"controls": fixture_page["controls"]},
+        ]
+    page = FakePage(fixture_pages)
+
+    with pytest.raises(
+        IdentityCollectionError,
+        match="multiple visible note pagination containers",
+    ):
+        collect_note_identities(page, max_pages=2, timezone=TZ)
+
+    assert page.click_calls == []
+    assert page.wait_calls == []
+
+
+def test_collect_ignores_hidden_pagination_containers(
+    fixture_pages,
+    ready_calls,
+):
+    for fixture_page in fixture_pages:
+        fixture_page["paginationContainers"] = [
+            {"controls": fixture_page["controls"], "visible": False},
             {"controls": fixture_page["controls"]},
         ]
     page = FakePage(fixture_pages)
@@ -504,13 +528,31 @@ def test_collect_waits_for_concrete_transition_with_bounded_timeout(
     collect_note_identities(page, max_pages=2, timezone=TZ)
 
     assert len(page.wait_calls) == 1
-    _, previous_state, timeout = page.wait_calls[0]
+    expression, previous_state, timeout = page.wait_calls[0]
     assert previous_state["activePage"] == "1"
     assert previous_state["firstCardImpression"].endswith(
         '"6a49ebd3000000001503fdd0"}}}'
     )
+    assert "activePage !== previous.activePage" not in expression
     assert timeout is not None
     assert 0 < timeout <= 10_000
+
+
+def test_collect_rejects_transition_when_only_active_page_changes(
+    fixture_pages,
+    ready_calls,
+):
+    fixture_pages[1]["cards"] = [dict(card) for card in fixture_pages[0]["cards"]]
+    page = FakePage(fixture_pages)
+
+    with pytest.raises(
+        IdentityCollectionError,
+        match="page 1 pagination transition timed out",
+    ):
+        collect_note_identities(page, max_pages=2, timezone=TZ)
+
+    assert page.click_calls == [(0, 1)]
+    assert page.wait_calls
 
 
 def test_collect_rejects_conflicting_duplicate_across_pages(
