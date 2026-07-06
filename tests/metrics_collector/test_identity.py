@@ -515,6 +515,30 @@ def test_collect_rejects_multiple_visible_pagination_candidates(
     assert page.wait_calls == []
 
 
+def test_collect_rejects_multiple_visible_pagination_before_single_page_extraction(
+    fixture_pages,
+    ready_calls,
+):
+    first_page = fixture_pages[0]
+    first_page["paginationContainers"] = [
+        {"controls": [dict(control) for control in first_page["controls"]]},
+        {"controls": [dict(control) for control in first_page["controls"]]},
+    ]
+    page = FakePage([first_page])
+
+    with pytest.raises(
+        IdentityCollectionError,
+        match="multiple visible note pagination containers",
+    ):
+        collect_note_identities(page, max_pages=1, timezone=TZ)
+
+    assert [selector for selector, _ in page.evaluate_all_calls] == [
+        ".d-pagination"
+    ]
+    assert page.click_calls == []
+    assert page.wait_calls == []
+
+
 def test_collect_rejects_multiple_visible_pagination_containers_even_without_active_page(
     fixture_pages,
     ready_calls,

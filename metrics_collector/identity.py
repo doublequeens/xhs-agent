@@ -174,6 +174,7 @@ def collect_note_identities(
     identities: list[NoteIdentity] = []
     identities_by_id: dict[str, NoteIdentity] = {}
     for page_number in range(1, max_pages + 1):
+        pagination_container = _visible_pagination_container(page)
         try:
             page_identities = extract_note_identities(page, timezone)
         except IdentityCollectionError as error:
@@ -195,7 +196,7 @@ def collect_note_identities(
         if page_number == max_pages:
             break
 
-        next_page = _find_next_page_control(page)
+        next_page = _find_next_page_control(page, pagination_container)
         if next_page is None:
             break
         next_control, previous_state = next_page
@@ -291,9 +292,7 @@ def _validate_timezone(value: Any) -> tzinfo:
     return value
 
 
-def _find_next_page_control(
-    page: Any,
-) -> tuple[Any, dict[str, str | int | None]] | None:
+def _visible_pagination_container(page: Any) -> Any | None:
     try:
         containers = page.locator(".d-pagination").evaluate_all(
             _PAGINATION_STATE_SCRIPT
@@ -310,7 +309,17 @@ def _find_next_page_control(
     if not containers:
         return None
 
-    candidate = _pagination_candidate(containers[0])
+    return containers[0]
+
+
+def _find_next_page_control(
+    page: Any,
+    pagination_container: Any | None,
+) -> tuple[Any, dict[str, str | int | None]] | None:
+    if pagination_container is None:
+        return None
+
+    candidate = _pagination_candidate(pagination_container)
     if candidate is None:
         return None
 
