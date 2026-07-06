@@ -67,11 +67,51 @@ def preserve_diagnostic_workbook(
         raise DiagnosticPreservationError("diagnostic preservation failed")
     diagnostics_path.chmod(0o700)
 
-    destination = _unique_diagnostic_path(workbook_path, diagnostics_path, now)
-    shutil.move(str(workbook_path), str(destination))
-    destination.chmod(0o600)
+    source_fd = _open_verified_source(workbook_path, workbook_stat)
+    destination, destination_fd = _create_diagnostic_destination(
+        workbook_path,
+        diagnostics_path,
+        now,
+    )
+    copied = False
+    try:
+        with os.fdopen(source_fd, "rb") as source, os.fdopen(
+            destination_fd,
+            "wb",
+        ) as target:
+            source_fd = -1
+            destination_fd = -1
+            shutil.copyfileobj(source, target, length=1024 * 1024)
+            target.flush()
+            os.fsync(target.fileno())
+            os.fchmod(target.fileno(), 0o600)
+        copied = True
+    finally:
+        _close_fd_if_open(source_fd)
+        _close_fd_if_open(destination_fd)
+        if not copied:
+            _unlink_if_present(destination)
+
+    try:
+        current_source_stat = workbook_path.lstat()
+    except OSError as error:
+        _unlink_if_present(destination)
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
+    if not _same_file_identity(workbook_stat, current_source_stat):
+        _unlink_if_present(destination)
+        raise DiagnosticPreservationError("diagnostic preservation failed")
+
     now_timestamp = now.timestamp()
-    os.utime(destination, (now_timestamp, now_timestamp))
+    os.utime(destination, (now_timestamp, now_timestamp), follow_symlinks=False)
+    try:
+        workbook_path.unlink()
+    except OSError as error:
+        _unlink_if_present(destination)
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
     _prune_old_diagnostics(diagnostics_path, retention_days, now_timestamp)
     return destination
 
@@ -424,20 +464,71 @@ def _safe_validation_error(error: WorkbookFormatError) -> str:
     return "workbook validation failed"
 
 
-def _unique_diagnostic_path(
+def _open_verified_source(workbook_path: Path, expected_stat: os.stat_result) -> int:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        source_fd = os.open(workbook_path, flags)
+    except OSError as error:
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
+    try:
+        opened_stat = os.fstat(source_fd)
+        if (
+            not stat.S_ISREG(opened_stat.st_mode)
+            or not _same_file_identity(expected_stat, opened_stat)
+        ):
+            raise DiagnosticPreservationError("diagnostic preservation failed")
+    except Exception:
+        _close_fd_if_open(source_fd)
+        raise
+    return source_fd
+
+
+def _create_diagnostic_destination(
     workbook_path: Path,
     diagnostics_dir: Path,
     now: datetime,
-) -> Path:
+) -> tuple[Path, int]:
     suffix = workbook_path.suffix or ".xlsx"
     stem = workbook_path.stem or "workbook"
     timestamp = now.strftime("%Y%m%dT%H%M%S")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     for index in range(1000):
         collision_suffix = "" if index == 0 else f"-{index}"
         candidate = diagnostics_dir / f"{timestamp}-{stem}{collision_suffix}{suffix}"
-        if not candidate.exists() and not candidate.is_symlink():
-            return candidate
-    raise RuntimeError("could not allocate diagnostic workbook path")
+        try:
+            return candidate, os.open(candidate, flags, 0o600)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise DiagnosticPreservationError(
+                "diagnostic preservation failed"
+            ) from error
+    raise DiagnosticPreservationError("diagnostic preservation failed")
+
+
+def _same_file_identity(
+    left: os.stat_result,
+    right: os.stat_result,
+) -> bool:
+    return left.st_dev == right.st_dev and left.st_ino == right.st_ino
+
+
+def _close_fd_if_open(fd: int) -> None:
+    if fd < 0:
+        return
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def _unlink_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _prune_old_diagnostics(

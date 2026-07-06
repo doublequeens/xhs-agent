@@ -25,6 +25,16 @@ METRICS_COLLECTION_COLUMNS: dict[str, str] = {
     "danmaku_count": "INTEGER",
 }
 
+METRICS_COLLECTION_RUN_COLUMNS: dict[str, str] = {
+    "completed_at": "TEXT",
+    "exported_rows": "INTEGER NOT NULL DEFAULT 0",
+    "updated_rows": "INTEGER NOT NULL DEFAULT 0",
+    "skipped_rows": "INTEGER NOT NULL DEFAULT 0",
+    "ambiguous_rows": "INTEGER NOT NULL DEFAULT 0",
+    "matched_post_ids": "INTEGER NOT NULL DEFAULT 0",
+    "error_summary": "TEXT",
+}
+
 
 def _existing_columns(
     connection: sqlite3.Connection, table_name: str = "contents"
@@ -132,13 +142,41 @@ def migrate_metrics_collection_schema(connection: sqlite3.Connection) -> None:
             )
             """
         )
+        existing_run_columns = _existing_columns(connection, "metrics_collection_runs")
+        for column_name, column_type in METRICS_COLLECTION_RUN_COLUMNS.items():
+            if column_name not in existing_run_columns:
+                connection.execute(
+                    "ALTER TABLE metrics_collection_runs "
+                    f"ADD COLUMN {column_name} {column_type}"
+                )
         connection.execute(
             """
             DELETE FROM metrics_collection_runs
-            WHERE rowid NOT IN (
-                SELECT MIN(rowid)
-                FROM metrics_collection_runs
-                GROUP BY execution_date
+            WHERE rowid IN (
+                SELECT rowid
+                FROM (
+                    SELECT
+                        rowid,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY execution_date
+                            ORDER BY
+                                CASE
+                                    WHEN status IN ('success', 'partial_success')
+                                    THEN 0
+                                    ELSE 1
+                                END,
+                                CASE
+                                    WHEN completed_at IS NOT NULL
+                                    THEN 0
+                                    ELSE 1
+                                END,
+                                COALESCE(completed_at, '') DESC,
+                                COALESCE(started_at, '') DESC,
+                                rowid DESC
+                        ) AS duplicate_rank
+                    FROM metrics_collection_runs
+                )
+                WHERE duplicate_rank > 1
             )
             """
         )

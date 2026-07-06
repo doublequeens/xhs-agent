@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from memory.models import MetricsRecord
+import metrics_collector.coordinator as coordinator_module
 from metrics_collector.browser import (
     AccessBlocked,
     AuthenticationRequired,
@@ -637,6 +638,26 @@ def test_failed_workbooks_move_to_diagnostics_and_prune_only_old_diagnostics(
     assert new_diagnostic.exists()
     assert unrelated_old.exists()
     assert stat.S_IMODE(preserved.stat().st_mode) == 0o600
+
+
+def test_diagnostic_preservation_does_not_use_shutil_move(tmp_path, monkeypatch):
+    workbook = tmp_path / "failed.xlsx"
+    workbook.write_bytes(b"failed")
+
+    def fail_move(*args, **kwargs):
+        raise AssertionError("shutil.move should not be used")
+
+    monkeypatch.setattr(coordinator_module.shutil, "move", fail_move)
+
+    preserved = preserve_diagnostic_workbook(
+        workbook,
+        tmp_path / "diagnostics",
+        retention_days=7,
+        now=AT_22,
+    )
+
+    assert not workbook.exists()
+    assert preserved.read_bytes() == b"failed"
 
 
 def test_diagnostic_workbook_rejects_symlinked_diagnostics_dir(tmp_path):

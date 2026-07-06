@@ -295,17 +295,36 @@ def test_migrate_metrics_collection_schema_deduplicates_execution_dates(tmp_path
             scheduled_date TEXT PRIMARY KEY,
             execution_date TEXT NOT NULL,
             status TEXT NOT NULL,
-            started_at TEXT NOT NULL
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            exported_rows INTEGER NOT NULL DEFAULT 0,
+            updated_rows INTEGER NOT NULL DEFAULT 0,
+            skipped_rows INTEGER NOT NULL DEFAULT 0,
+            ambiguous_rows INTEGER NOT NULL DEFAULT 0,
+            matched_post_ids INTEGER NOT NULL DEFAULT 0,
+            error_summary TEXT
         )
         """
     )
     connection.execute(
         """
         INSERT INTO metrics_collection_runs
-            (scheduled_date, execution_date, status, started_at)
+            (scheduled_date, execution_date, status, started_at, completed_at)
         VALUES
-            ('2026-07-05', '2026-07-06', 'failed', '2026-07-06T09:00:00+08:00'),
-            ('2026-07-06', '2026-07-06', 'running', '2026-07-06T22:00:00+08:00')
+            (
+                '2026-07-05',
+                '2026-07-06',
+                'failed',
+                '2026-07-06T09:00:00+08:00',
+                '2026-07-06T09:05:00+08:00'
+            ),
+            (
+                '2026-07-06',
+                '2026-07-06',
+                'success',
+                '2026-07-06T22:00:00+08:00',
+                '2026-07-06T22:05:00+08:00'
+            )
         """
     )
     connection.commit()
@@ -314,12 +333,12 @@ def test_migrate_metrics_collection_schema_deduplicates_execution_dates(tmp_path
 
     rows = connection.execute(
         """
-        SELECT scheduled_date, execution_date
+        SELECT scheduled_date, execution_date, status
         FROM metrics_collection_runs
         ORDER BY scheduled_date
         """
     ).fetchall()
-    assert rows == [("2026-07-05", "2026-07-06")]
+    assert rows == [("2026-07-06", "2026-07-06", "success")]
     with pytest.raises(sqlite3.IntegrityError):
         connection.execute(
             """
@@ -332,6 +351,68 @@ def test_migrate_metrics_collection_schema_deduplicates_execution_dates(tmp_path
             VALUES ('2026-07-07', '2026-07-06', 'running', '2026-07-07T09:00:00+08:00')
             """
         )
+
+
+def test_init_db_adds_missing_legacy_run_ledger_columns(tmp_path):
+    db_path = tmp_path / "legacy-run-columns.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE contents (content_id TEXT PRIMARY KEY)")
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE metrics_collection_runs (
+            scheduled_date TEXT PRIMARY KEY,
+            execution_date TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    manager = XHSMemoryManager(db_path)
+    manager.init_db(SCHEMA_PATH)
+
+    assert _table_columns(manager.connect(), "metrics_collection_runs") == [
+        "scheduled_date",
+        "execution_date",
+        "status",
+        "started_at",
+        "completed_at",
+        "exported_rows",
+        "updated_rows",
+        "skipped_rows",
+        "ambiguous_rows",
+        "matched_post_ids",
+        "error_summary",
+    ]
+    manager.start_collection_run("2026-07-05", "2026-07-06")
+    manager.finish_collection_run(
+        {
+            "scheduled_date": "2026-07-05",
+            "execution_date": "2026-07-06",
+            "status": "failed",
+            "exported_rows": 1,
+            "updated_rows": 0,
+            "skipped_rows": 1,
+            "ambiguous_rows": 0,
+            "matched_post_ids": 0,
+            "error_summary": "safe",
+        }
+    )
+    row = manager.connect().execute(
+        """
+        SELECT status, completed_at, exported_rows, error_summary
+        FROM metrics_collection_runs
+        WHERE scheduled_date = '2026-07-05'
+        """
+    ).fetchone()
+    assert row[0] == "failed"
+    assert row[1] is not None
+    assert row[2:] == (1, "safe")
 
 
 def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
