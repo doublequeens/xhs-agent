@@ -63,57 +63,66 @@ def preserve_diagnostic_workbook(
     if diagnostics_path.is_symlink():
         raise DiagnosticPreservationError("diagnostic preservation failed")
     diagnostics_path.mkdir(parents=True, exist_ok=True)
-    if diagnostics_path.is_symlink() or not diagnostics_path.is_dir():
-        raise DiagnosticPreservationError("diagnostic preservation failed")
-    diagnostics_path.chmod(0o700)
+    diagnostics_fd = _open_verified_diagnostics_dir(diagnostics_path)
 
-    source_fd = _open_verified_source(workbook_path, workbook_stat)
-    destination, destination_fd = _create_diagnostic_destination(
-        workbook_path,
-        diagnostics_path,
-        now,
-    )
-    copied = False
     try:
-        with os.fdopen(source_fd, "rb") as source, os.fdopen(
-            destination_fd,
-            "wb",
-        ) as target:
-            source_fd = -1
-            destination_fd = -1
-            shutil.copyfileobj(source, target, length=1024 * 1024)
-            target.flush()
-            os.fsync(target.fileno())
-            os.fchmod(target.fileno(), 0o600)
-        copied = True
+        source_fd = _open_verified_source(workbook_path, workbook_stat)
+        destination, destination_name, destination_fd = (
+            _create_diagnostic_destination(
+                workbook_path,
+                diagnostics_path,
+                diagnostics_fd,
+                now,
+            )
+        )
+        copied = False
+        try:
+            with os.fdopen(source_fd, "rb") as source, os.fdopen(
+                destination_fd,
+                "wb",
+            ) as target:
+                source_fd = -1
+                destination_fd = -1
+                shutil.copyfileobj(source, target, length=1024 * 1024)
+                target.flush()
+                os.fsync(target.fileno())
+                os.fchmod(target.fileno(), 0o600)
+            copied = True
+        finally:
+            _close_fd_if_open(source_fd)
+            _close_fd_if_open(destination_fd)
+            if not copied:
+                _unlink_relative_if_present(destination_name, diagnostics_fd)
+
+        try:
+            current_source_stat = workbook_path.lstat()
+        except OSError as error:
+            _unlink_relative_if_present(destination_name, diagnostics_fd)
+            raise DiagnosticPreservationError(
+                "diagnostic preservation failed"
+            ) from error
+        if not _same_file_identity(workbook_stat, current_source_stat):
+            _unlink_relative_if_present(destination_name, diagnostics_fd)
+            raise DiagnosticPreservationError("diagnostic preservation failed")
+
+        now_timestamp = now.timestamp()
+        os.utime(
+            destination_name,
+            (now_timestamp, now_timestamp),
+            dir_fd=diagnostics_fd,
+            follow_symlinks=False,
+        )
+        try:
+            workbook_path.unlink()
+        except OSError as error:
+            _unlink_relative_if_present(destination_name, diagnostics_fd)
+            raise DiagnosticPreservationError(
+                "diagnostic preservation failed"
+            ) from error
+        _prune_old_diagnostics(diagnostics_fd, retention_days, now_timestamp)
+        return destination
     finally:
-        _close_fd_if_open(source_fd)
-        _close_fd_if_open(destination_fd)
-        if not copied:
-            _unlink_if_present(destination)
-
-    try:
-        current_source_stat = workbook_path.lstat()
-    except OSError as error:
-        _unlink_if_present(destination)
-        raise DiagnosticPreservationError(
-            "diagnostic preservation failed"
-        ) from error
-    if not _same_file_identity(workbook_stat, current_source_stat):
-        _unlink_if_present(destination)
-        raise DiagnosticPreservationError("diagnostic preservation failed")
-
-    now_timestamp = now.timestamp()
-    os.utime(destination, (now_timestamp, now_timestamp), follow_symlinks=False)
-    try:
-        workbook_path.unlink()
-    except OSError as error:
-        _unlink_if_present(destination)
-        raise DiagnosticPreservationError(
-            "diagnostic preservation failed"
-        ) from error
-    _prune_old_diagnostics(diagnostics_path, retention_days, now_timestamp)
-    return destination
+        _close_fd_if_open(diagnostics_fd)
 
 
 class CollectionCoordinator:
@@ -485,20 +494,49 @@ def _open_verified_source(workbook_path: Path, expected_stat: os.stat_result) ->
     return source_fd
 
 
+def _open_verified_diagnostics_dir(diagnostics_path: Path) -> int:
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        diagnostics_fd = os.open(diagnostics_path, flags)
+    except OSError as error:
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
+    try:
+        diagnostics_stat = os.fstat(diagnostics_fd)
+        if not stat.S_ISDIR(diagnostics_stat.st_mode):
+            raise DiagnosticPreservationError("diagnostic preservation failed")
+        os.fchmod(diagnostics_fd, 0o700)
+    except Exception:
+        _close_fd_if_open(diagnostics_fd)
+        raise
+    return diagnostics_fd
+
+
 def _create_diagnostic_destination(
     workbook_path: Path,
     diagnostics_dir: Path,
+    diagnostics_fd: int,
     now: datetime,
-) -> tuple[Path, int]:
+) -> tuple[Path, str, int]:
     suffix = workbook_path.suffix or ".xlsx"
     stem = workbook_path.stem or "workbook"
     timestamp = now.strftime("%Y%m%dT%H%M%S")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
     for index in range(1000):
         collision_suffix = "" if index == 0 else f"-{index}"
-        candidate = diagnostics_dir / f"{timestamp}-{stem}{collision_suffix}{suffix}"
+        candidate_name = f"{timestamp}-{stem}{collision_suffix}{suffix}"
+        candidate = diagnostics_dir / candidate_name
         try:
-            return candidate, os.open(candidate, flags, 0o600)
+            return (
+                candidate,
+                candidate_name,
+                os.open(candidate_name, flags, 0o600, dir_fd=diagnostics_fd),
+            )
         except FileExistsError:
             continue
         except OSError as error:
@@ -524,25 +562,42 @@ def _close_fd_if_open(fd: int) -> None:
         pass
 
 
-def _unlink_if_present(path: Path) -> None:
+def _unlink_relative_if_present(name: str, dir_fd: int) -> None:
     try:
-        path.unlink()
+        os.unlink(name, dir_fd=dir_fd)
     except FileNotFoundError:
         pass
 
 
 def _prune_old_diagnostics(
-    diagnostics_dir: Path,
+    diagnostics_fd: int,
     retention_days: int,
     now_timestamp: float,
 ) -> None:
     cutoff = now_timestamp - (retention_days * 24 * 60 * 60)
-    for candidate in diagnostics_dir.iterdir():
-        if candidate.is_symlink() or not candidate.is_file():
+    try:
+        names = os.listdir(diagnostics_fd)
+    except OSError as error:
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
+    for name in names:
+        try:
+            candidate_stat = os.stat(
+                name,
+                dir_fd=diagnostics_fd,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            continue
+        if (
+            stat.S_ISLNK(candidate_stat.st_mode)
+            or not stat.S_ISREG(candidate_stat.st_mode)
+        ):
             continue
         try:
-            if candidate.stat().st_mtime < cutoff:
-                candidate.unlink()
+            if candidate_stat.st_mtime < cutoff:
+                os.unlink(name, dir_fd=diagnostics_fd)
         except FileNotFoundError:
             continue
 

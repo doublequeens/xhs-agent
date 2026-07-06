@@ -660,6 +660,76 @@ def test_diagnostic_preservation_does_not_use_shutil_move(tmp_path, monkeypatch)
     assert preserved.read_bytes() == b"failed"
 
 
+def test_diagnostic_destination_is_created_relative_to_verified_dir_fd(
+    tmp_path,
+    monkeypatch,
+):
+    workbook = tmp_path / "failed.xlsx"
+    workbook.write_bytes(b"failed")
+    original_open = coordinator_module.os.open
+    open_calls = []
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        open_calls.append((path, flags, dir_fd))
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(coordinator_module.os, "open", tracking_open)
+
+    preserved = preserve_diagnostic_workbook(
+        workbook,
+        tmp_path / "diagnostics",
+        retention_days=7,
+        now=AT_22,
+    )
+
+    assert preserved.name == "20260706T220000-failed.xlsx"
+    assert any(
+        path == preserved.name and dir_fd is not None
+        for path, _flags, dir_fd in open_calls
+    )
+
+
+def test_diagnostic_preservation_uses_verified_dir_fd_after_path_replacement(
+    tmp_path,
+    monkeypatch,
+):
+    workbook = tmp_path / "failed.xlsx"
+    workbook.write_bytes(b"failed")
+    diagnostics_dir = tmp_path / "diagnostics"
+    verified_dir = tmp_path / "verified-diagnostics"
+    attacker_dir = tmp_path / "attacker"
+    attacker_dir.mkdir()
+    original_open = coordinator_module.os.open
+    replaced = False
+
+    def tracking_open(path, flags, mode=0o777, *, dir_fd=None):
+        nonlocal replaced
+        fd = original_open(path, flags, mode, dir_fd=dir_fd)
+        if (
+            not replaced
+            and dir_fd is None
+            and Path(path) == diagnostics_dir
+            and flags & getattr(coordinator_module.os, "O_DIRECTORY", 0)
+        ):
+            diagnostics_dir.rename(verified_dir)
+            diagnostics_dir.symlink_to(attacker_dir, target_is_directory=True)
+            replaced = True
+        return fd
+
+    monkeypatch.setattr(coordinator_module.os, "open", tracking_open)
+
+    preserve_diagnostic_workbook(
+        workbook,
+        diagnostics_dir,
+        retention_days=7,
+        now=AT_22,
+    )
+
+    preserved_name = "20260706T220000-failed.xlsx"
+    assert (verified_dir / preserved_name).read_bytes() == b"failed"
+    assert not (attacker_dir / preserved_name).exists()
+
+
 def test_diagnostic_workbook_rejects_symlinked_diagnostics_dir(tmp_path):
     workbook = tmp_path / "failed.xlsx"
     workbook.write_bytes(b"failed")
