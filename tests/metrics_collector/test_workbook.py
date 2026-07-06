@@ -683,3 +683,45 @@ def test_invalid_workbook_files_raise_contextual_format_error(
     message = str(exc_info.value)
     assert str(path) in message
     assert "workbook" in message
+
+
+def test_rejects_workbook_with_excessive_uncompressed_zip_size(
+    tmp_path,
+    monkeypatch,
+):
+    path = build_workbook(tmp_path, [VALID_ROW])
+    monkeypatch.setattr(
+        "metrics_collector.workbook.MAX_XLSX_UNCOMPRESSED_BYTES",
+        1,
+    )
+
+    with pytest.raises(
+        WorkbookFormatError,
+        match="uncompressed size exceeds limit",
+    ):
+        parse_metrics_workbook(path, TZ)
+
+
+def test_rejects_workbook_with_too_many_rows(tmp_path, monkeypatch):
+    path = build_workbook(tmp_path, [VALID_ROW])
+    monkeypatch.setattr("metrics_collector.workbook.MAX_WORKBOOK_ROWS", 1)
+
+    with pytest.raises(WorkbookFormatError, match="row limit exceeded"):
+        parse_metrics_workbook(path, TZ)
+
+
+def test_rejects_workbook_with_excessively_long_text_cell(
+    tmp_path,
+    monkeypatch,
+):
+    path = build_workbook(
+        tmp_path,
+        [replace(VALID_ROW, "笔记标题", "超长标题")],
+    )
+    monkeypatch.setattr("metrics_collector.workbook.MAX_CELL_TEXT_LENGTH", 2)
+
+    with pytest.raises(
+        WorkbookFormatError,
+        match=r"row 2.*笔记标题.*cell text exceeds limit",
+    ):
+        parse_metrics_workbook(path, TZ)

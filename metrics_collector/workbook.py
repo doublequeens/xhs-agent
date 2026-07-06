@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 from typing import Any, Callable, TypeVar
 from xml.etree.ElementTree import ParseError
-from zipfile import BadZipFile
+from zipfile import BadZipFile, ZipFile
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
@@ -61,6 +61,12 @@ _WORKBOOK_READ_ERRORS = (
     ParseError,
     ValueError,
 )
+MAX_XLSX_BYTES = 10 * 1024 * 1024
+MAX_XLSX_ZIP_ENTRIES = 200
+MAX_XLSX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
+MAX_XLSX_COMPRESSION_RATIO = 100.0
+MAX_WORKBOOK_ROWS = 10_000
+MAX_CELL_TEXT_LENGTH = 5_000
 _T = TypeVar("_T")
 
 
@@ -85,6 +91,61 @@ def _error(row_number: int, field: str, detail: str) -> WorkbookFormatError:
 
 def _workbook_error(path: Path, detail: str) -> WorkbookFormatError:
     return WorkbookFormatError(f"workbook {path}: {detail}")
+
+
+def _preflight_xlsx(path: Path) -> None:
+    if not path.exists():
+        return
+    try:
+        path_stat = path.stat()
+    except OSError as exc:
+        raise _workbook_error(path, f"could not inspect workbook: {exc}") from exc
+    if not path.is_file():
+        raise _workbook_error(path, "expected a regular workbook file")
+    if path_stat.st_size > MAX_XLSX_BYTES:
+        raise _workbook_error(path, "file size exceeds limit")
+    if path.suffix.lower() != ".xlsx":
+        return
+
+    try:
+        with ZipFile(path) as workbook_zip:
+            entries = workbook_zip.infolist()
+    except BadZipFile:
+        return
+    if len(entries) > MAX_XLSX_ZIP_ENTRIES:
+        raise _workbook_error(path, "zip entry count exceeds limit")
+
+    uncompressed_size = sum(entry.file_size for entry in entries)
+    if uncompressed_size > MAX_XLSX_UNCOMPRESSED_BYTES:
+        raise _workbook_error(path, "uncompressed size exceeds limit")
+    compressed_size = sum(entry.compress_size for entry in entries)
+    if uncompressed_size > 0 and compressed_size == 0:
+        raise _workbook_error(path, "compression ratio exceeds limit")
+    if compressed_size > 0:
+        compression_ratio = uncompressed_size / compressed_size
+        if compression_ratio > MAX_XLSX_COMPRESSION_RATIO:
+            raise _workbook_error(path, "compression ratio exceeds limit")
+
+
+def _validate_row_limits(path: Path, row_number: int, row: tuple[Any, ...]) -> None:
+    del row
+    if row_number > MAX_WORKBOOK_ROWS:
+        raise _workbook_error(path, "row limit exceeded")
+
+
+def _validate_field_text_limit(row_number: int, field: str, value: Any) -> None:
+    if isinstance(value, str) and len(value) > MAX_CELL_TEXT_LENGTH:
+        raise _error(row_number, field, "cell text exceeds limit")
+
+
+def _validate_required_field_text_limits(
+    row: tuple[Any, ...],
+    row_number: int,
+    columns: dict[str, int],
+) -> None:
+    for field, column_index in columns.items():
+        if column_index < len(row):
+            _validate_field_text_limit(row_number, field, row[column_index])
 
 
 def _header_candidate(
@@ -183,6 +244,7 @@ def _validate_formula_free_workbook(
             start=1,
         ):
             values = tuple(cell.value for cell in cells)
+            _validate_row_limits(path, row_number, values)
             columns, counts = _header_candidate(values, row_number)
             if columns is not None:
                 if header is not None:
@@ -201,6 +263,7 @@ def _validate_formula_free_workbook(
                     counts,
                 )
                 continue
+            _validate_required_field_text_limits(values, row_number, header[1])
             for field, column_index in header[1].items():
                 if (
                     column_index < len(cells)
@@ -349,6 +412,7 @@ def _parse_row(
     supplied_timezone: ZoneInfo,
 ) -> ExportedMetrics:
     title_value = _cell(row, columns, "笔记标题")
+    _validate_field_text_limit(row_number, "笔记标题", title_value)
     if not isinstance(title_value, str) or not title_value.strip():
         raise _error(row_number, "笔记标题", "title is required")
     title = title_value.strip()
@@ -388,6 +452,8 @@ def parse_metrics_workbook(
     path: Path,
     timezone: ZoneInfo,
 ) -> list[ExportedMetrics]:
+    path = Path(path)
+    _preflight_xlsx(path)
     expected_header = _validate_formula_free_workbook(path)
 
     def parse(sheet: Any) -> list[ExportedMetrics]:
@@ -399,6 +465,7 @@ def parse_metrics_workbook(
             sheet.iter_rows(values_only=True),
             start=1,
         ):
+            _validate_row_limits(path, row_number, row)
             columns, counts = _header_candidate(row, row_number)
             if columns is not None:
                 if header is not None:
@@ -425,6 +492,7 @@ def parse_metrics_workbook(
                 continue
             if _is_empty_row(row):
                 continue
+            _validate_required_field_text_limits(row, row_number, header[1])
             parsed = _parse_row(row, row_number, header[1], timezone)
             identity = (normalize_title(parsed.title), parsed.published_at)
             if identity in identities:
