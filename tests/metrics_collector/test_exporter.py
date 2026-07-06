@@ -9,9 +9,15 @@ from metrics_collector.exporter import ExportError, MetricsExporter
 HEALTHY_URL = "https://creator.xiaohongshu.com/statistics/data-analysis"
 HEALTHY_BODY = "小红书创作服务平台 数据分析"
 VALID_XLSX_BYTES = b"PK\x03\x04official workbook content"
-BUTTON_ENABLED_CHECK = (
-    "(button) => !button.disabled && "
-    "button.getAttribute('aria-disabled') !== 'true'"
+BUTTON_ENABLED_WAIT = (
+    "(selector) => {\n"
+    "    const buttons = Array.from(document.querySelectorAll(selector));\n"
+    "    if (buttons.length !== 1) return false;\n"
+    "    const button = buttons[0];\n"
+    "    return !button.disabled && "
+    "button.getAttribute('aria-disabled') !== 'true' && "
+    "!button.classList.contains('disabled');\n"
+    "}"
 )
 
 
@@ -93,6 +99,7 @@ class FakePage:
         url=HEALTHY_URL,
         ready_download_button_count=None,
         download_button_enabled=True,
+        ready_download_button_enabled=None,
     ):
         self.url = url
         self.download = download if download is not None else FakeDownload()
@@ -103,12 +110,18 @@ class FakePage:
             else download_button_count
         )
         self.download_button_enabled = download_button_enabled
+        self.ready_download_button_enabled = (
+            ready_download_button_enabled
+            if ready_download_button_enabled is not None
+            else download_button_enabled
+        )
         self.body_text = body_text
         self.timeout_on_value = timeout_on_value
         self.readiness_error = readiness_error
         self.export_clicks = 0
         self.expect_download_calls = 0
         self.wait_for_calls = []
+        self.wait_for_function_calls = []
         self.enabled_evaluate_calls = []
         self.locator_calls = []
 
@@ -124,6 +137,12 @@ class FakePage:
         self.expect_download_calls += 1
         return FakeExpectDownload(self)
 
+    def wait_for_function(self, expression, arg=None):
+        self.wait_for_function_calls.append((expression, arg))
+        self.download_button_enabled = self.ready_download_button_enabled
+        if not self.download_button_enabled:
+            raise TimeoutError("button enabled timed out")
+
 
 def test_export_clicks_once_and_saves_completed_xlsx(tmp_path):
     fake_page = FakePage()
@@ -132,14 +151,17 @@ def test_export_clicks_once_and_saves_completed_xlsx(tmp_path):
     path = exporter.export(fake_page)
 
     assert fake_page.export_clicks == 1
-    assert fake_page.enabled_evaluate_calls == [BUTTON_ENABLED_CHECK]
+    assert fake_page.enabled_evaluate_calls == []
+    assert fake_page.wait_for_function_calls == [
+        (BUTTON_ENABLED_WAIT, "button.download-btn")
+    ]
     assert fake_page.expect_download_calls == 1
     assert path.suffix == ".xlsx"
     assert path.exists()
     assert path.read_bytes() == VALID_XLSX_BYTES
 
 
-def test_export_waits_for_delayed_visible_enabled_download_button(tmp_path):
+def test_export_waits_for_delayed_visible_download_button(tmp_path):
     fake_page = FakePage(
         download_button_count=0,
         ready_download_button_count=1,
@@ -151,7 +173,27 @@ def test_export_waits_for_delayed_visible_enabled_download_button(tmp_path):
 
     assert path.exists()
     assert fake_page.wait_for_calls == [{"state": "visible"}]
-    assert len(fake_page.enabled_evaluate_calls) == 1
+    assert fake_page.enabled_evaluate_calls == []
+    assert len(fake_page.wait_for_function_calls) == 1
+    assert fake_page.export_clicks == 1
+    assert fake_page.expect_download_calls == 1
+
+
+def test_export_waits_for_visible_button_to_become_enabled(tmp_path):
+    fake_page = FakePage(
+        download_button_enabled=False,
+        ready_download_button_enabled=True,
+    )
+    exporter = MetricsExporter(download_dir=tmp_path)
+
+    path = exporter.export(fake_page)
+
+    assert path.exists()
+    assert fake_page.wait_for_calls == [{"state": "visible"}]
+    assert fake_page.enabled_evaluate_calls == []
+    assert fake_page.wait_for_function_calls == [
+        (BUTTON_ENABLED_WAIT, "button.download-btn")
+    ]
     assert fake_page.export_clicks == 1
     assert fake_page.expect_download_calls == 1
 
@@ -164,7 +206,8 @@ def test_export_rejects_disabled_download_button_without_clicking(tmp_path):
         exporter.export(fake_page)
 
     assert fake_page.wait_for_calls == [{"state": "visible"}]
-    assert len(fake_page.enabled_evaluate_calls) == 1
+    assert fake_page.enabled_evaluate_calls == []
+    assert len(fake_page.wait_for_function_calls) == 1
     assert fake_page.export_clicks == 0
     assert fake_page.expect_download_calls == 0
 

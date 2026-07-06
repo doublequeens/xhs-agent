@@ -4,9 +4,16 @@ from uuid import uuid4
 from metrics_collector.browser import assert_creator_center_ready
 
 
-_BUTTON_ENABLED_CHECK = (
-    "(button) => !button.disabled && "
-    "button.getAttribute('aria-disabled') !== 'true'"
+_DOWNLOAD_BUTTON_SELECTOR = "button.download-btn"
+_BUTTON_ENABLED_WAIT = (
+    "(selector) => {\n"
+    "    const buttons = Array.from(document.querySelectorAll(selector));\n"
+    "    if (buttons.length !== 1) return false;\n"
+    "    const button = buttons[0];\n"
+    "    return !button.disabled && "
+    "button.getAttribute('aria-disabled') !== 'true' && "
+    "!button.classList.contains('disabled');\n"
+    "}"
 )
 
 
@@ -21,8 +28,8 @@ class MetricsExporter:
     def export(self, page) -> Path:
         assert_creator_center_ready(page)
 
-        download_button = page.locator("button.download-btn")
-        _wait_for_unique_download_button(download_button)
+        download_button = page.locator(_DOWNLOAD_BUTTON_SELECTOR)
+        _wait_for_unique_download_button(page, download_button)
 
         try:
             with page.expect_download() as download_info:
@@ -62,7 +69,7 @@ class MetricsExporter:
         raise ExportError("could not allocate unique export path")
 
 
-def _wait_for_unique_download_button(download_button) -> None:
+def _wait_for_unique_download_button(page, download_button) -> None:
     try:
         download_button.wait_for(state="visible")
         button_count = download_button.count()
@@ -78,13 +85,11 @@ def _wait_for_unique_download_button(download_button) -> None:
         )
 
     try:
-        is_enabled = download_button.evaluate(_BUTTON_ENABLED_CHECK)
+        page.wait_for_function(_BUTTON_ENABLED_WAIT, _DOWNLOAD_BUTTON_SELECTOR)
     except Exception as exc:
         if _looks_like_timeout(exc):
-            raise ExportError("download button timed out") from exc
-        raise ExportError("download button not ready") from exc
-    if not is_enabled:
-        raise ExportError("download button is not enabled")
+            raise ExportError("download button did not become enabled") from exc
+        raise ExportError("download button enabled check failed") from exc
 
 
 def _validate_suggested_filename(suggested_filename: str) -> None:
