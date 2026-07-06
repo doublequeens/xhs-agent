@@ -52,6 +52,7 @@ class FakePage:
         body_error=None,
         final_url=None,
         scoped_error_text="",
+        ready_after_wait_text=None,
     ):
         self.url = url
         self.body_text = body_text
@@ -60,7 +61,9 @@ class FakePage:
         self.body_error = body_error
         self.final_url = final_url
         self.scoped_error_text = scoped_error_text
+        self.ready_after_wait_text = ready_after_wait_text
         self.goto_calls = []
+        self.wait_for_function_calls = []
         self.locator_calls = []
         self.evaluate_calls = []
 
@@ -74,6 +77,11 @@ class FakePage:
     def locator(self, selector):
         self.locator_calls.append(selector)
         return FakeBodyLocator(self)
+
+    def wait_for_function(self, expression, arg=None, **options):
+        self.wait_for_function_calls.append((expression, arg, options))
+        if self.ready_after_wait_text is not None:
+            self.body_text = self.ready_after_wait_text
 
 
 class FakeContext:
@@ -386,6 +394,31 @@ def test_navigate_uses_bounded_domcontentloaded_goto(tmp_path, browser_fakes):
         (
             HEALTHY_URL,
             {"wait_until": "domcontentloaded", "timeout": 30_000},
+        )
+    ]
+
+
+def test_navigate_waits_for_spa_body_before_readiness_check(tmp_path):
+    page = FakePage(body_text="", ready_after_wait_text=HEALTHY_BODY)
+    context = FakeContext([page])
+    session = BrowserSession(
+        _config(tmp_path),
+        playwright_factory=FakePlaywrightFactory(FakePlaywright(context)),
+    )
+    session.start()
+
+    assert session.navigate(HEALTHY_URL) is page.response
+
+    assert page.wait_for_function_calls == [
+        (
+            """
+                ([marker, limit]) => {
+                    const text = (document.body?.innerText || '').slice(0, limit);
+                    return text.includes(marker);
+                }
+                """,
+            ["创作服务平台", 10_000],
+            {"timeout": 30_000},
         )
     ]
 

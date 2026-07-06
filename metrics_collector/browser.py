@@ -12,6 +12,7 @@ from metrics_collector.config import CollectorConfig
 _BODY_TEXT_LIMIT = 10_000
 _CREATOR_HOST = "creator.xiaohongshu.com"
 _NAVIGATION_TIMEOUT_MS = 30_000
+_READINESS_MARKER = "创作服务平台"
 
 
 class CollectorBrowserError(RuntimeError):
@@ -114,6 +115,7 @@ class BrowserSession:
             )
 
         requested_path = urlparse(url).path
+        _wait_for_creator_body_marker(self.page)
         assert_creator_center_ready(self.page, expected_path=requested_path)
         return response
 
@@ -251,11 +253,27 @@ def assert_creator_center_ready(
     error_text = error_text if isinstance(error_text, str) else ""
 
     _raise_for_stop_text(error_text)
-    has_readiness_marker = "创作服务平台" in body_text
+    has_readiness_marker = _READINESS_MARKER in body_text
     if not has_readiness_marker and len(body_text.strip()) <= 2_000:
         _raise_for_stop_text(body_text)
     if not has_readiness_marker:
         raise BrowserNavigationError("creator page not ready")
+
+
+def _wait_for_creator_body_marker(page: Any) -> None:
+    try:
+        page.wait_for_function(
+            """
+                ([marker, limit]) => {
+                    const text = (document.body?.innerText || '').slice(0, limit);
+                    return text.includes(marker);
+                }
+                """,
+            arg=[_READINESS_MARKER, _BODY_TEXT_LIMIT],
+            timeout=_NAVIGATION_TIMEOUT_MS,
+        )
+    except Exception:
+        pass
 
 
 def _raise_for_stop_text(text: str) -> None:
