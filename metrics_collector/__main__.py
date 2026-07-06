@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import os
+import sys
+from pathlib import Path
 from typing import Sequence
 
 from memory.memory_manager import XHSMemoryManager
 from metrics_collector.browser import BrowserSession
 from metrics_collector.config import CollectorConfig
 from metrics_collector.coordinator import CollectionCoordinator
+from metrics_collector.launchd import (
+    build_launchagent_payload,
+    install_launchagent,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -23,6 +30,10 @@ def build_parser() -> argparse.ArgumentParser:
         "collect",
         help="run one daily metrics collection",
     )
+    subparsers.add_parser(
+        "install-launchagent",
+        help="install the daily macOS LaunchAgent plist",
+    )
     return parser
 
 
@@ -35,6 +46,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _run_auth(config)
     if args.command == "collect":
         return _run_collect(config)
+    if args.command == "install-launchagent":
+        return _run_install_launchagent()
 
     parser.error(f"unknown command: {args.command}")
     return 2
@@ -74,6 +87,19 @@ def _run_collect(config: CollectorConfig) -> int:
     if summary.error_summary:
         print(f"error={summary.error_summary}")
     return 0 if summary.status in _OK_STATUSES else 1
+
+
+def _run_install_launchagent() -> int:
+    user_home = Path.home()
+    repo_root = Path(__file__).resolve().parent.parent
+    payload = build_launchagent_payload(
+        sys.executable,
+        repo_root,
+        user_home / ".xhs-agent" / "logs",
+    )
+    plist_path = install_launchagent(payload, user_home)
+    print(f"launchctl bootstrap gui/{os.getuid()} {plist_path}")
+    return 0
 
 
 _OK_STATUSES = {
