@@ -10,6 +10,7 @@ import pytest
 from metrics_collector.launchd import (
     LABEL,
     build_launchagent_payload,
+    ensure_launchagent_timezone,
     install_launchagent,
 )
 
@@ -36,6 +37,29 @@ def test_payload_runs_collect_at_2200_and_at_load(tmp_path):
         "StandardOutPath": str(log_dir / "collector.out.log"),
         "StandardErrorPath": str(log_dir / "collector.err.log"),
     }
+
+
+def test_timezone_validation_accepts_asia_shanghai_localtime_symlink(tmp_path):
+    zoneinfo = tmp_path / "zoneinfo" / "Asia"
+    zoneinfo.mkdir(parents=True)
+    shanghai = zoneinfo / "Shanghai"
+    shanghai.write_text("tz")
+    localtime = tmp_path / "localtime"
+    localtime.symlink_to(shanghai)
+
+    ensure_launchagent_timezone("Asia/Shanghai", localtime_path=localtime)
+
+
+def test_timezone_validation_rejects_non_beijing_localtime_symlink(tmp_path):
+    zoneinfo = tmp_path / "zoneinfo" / "America"
+    zoneinfo.mkdir(parents=True)
+    los_angeles = zoneinfo / "Los_Angeles"
+    los_angeles.write_text("tz")
+    localtime = tmp_path / "localtime"
+    localtime.symlink_to(los_angeles)
+
+    with pytest.raises(ValueError, match="Asia/Shanghai"):
+        ensure_launchagent_timezone("Asia/Shanghai", localtime_path=localtime)
 
 
 def test_install_writes_only_user_launchagents_and_valid_plist(tmp_path):
@@ -200,6 +224,7 @@ def test_install_launchagent_cli_uses_current_python_and_prints_command(
 
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(os, "getuid", lambda: 501)
+    monkeypatch.setattr(cli, "ensure_launchagent_timezone", lambda timezone: None)
 
     def fake_install(payload, user_home):
         captured["payload"] = payload
@@ -234,6 +259,7 @@ def test_install_launchagent_cli_quotes_plist_path_with_spaces(
     )
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(os, "getuid", lambda: 501)
+    monkeypatch.setattr(cli, "ensure_launchagent_timezone", lambda timezone: None)
     monkeypatch.setattr(
         cli, "install_launchagent", lambda payload, user_home: installed_path
     )
@@ -258,6 +284,7 @@ def test_documentation_states_chrome_channel_prerequisite():
     assert CollectorConfig.default().browser_channel == "chrome"
     assert "playwright install chromium" in documentation
     assert "Google Chrome" in documentation
+    assert "Asia/Shanghai" in documentation
 
 
 def test_fchmod_failure_closes_directory_fd(monkeypatch, tmp_path):

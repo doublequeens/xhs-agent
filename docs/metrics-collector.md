@@ -38,6 +38,15 @@ This writes
 collection at 22:00 and at login, and prints the exact bootstrap command. It
 does not run `launchctl` and never requires `sudo`.
 
+The 22:00 schedule is implemented with macOS `StartCalendarInterval`, which
+uses the system local timezone. Keep the macOS system timezone set to
+`Asia/Shanghai`; the installer verifies this before writing the LaunchAgent.
+You can check the common symlink-based setup with:
+
+```bash
+readlink /etc/localtime
+```
+
 Load, inspect, and remove the agent with:
 
 ```bash

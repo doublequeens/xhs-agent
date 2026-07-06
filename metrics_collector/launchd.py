@@ -11,6 +11,27 @@ from typing import Any, Mapping
 LABEL = "com.xhs-agent.metrics-collector"
 
 
+def ensure_launchagent_timezone(
+    expected_timezone: str,
+    *,
+    localtime_path: Path | str = Path("/etc/localtime"),
+) -> None:
+    path = Path(localtime_path)
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError(
+            "cannot verify macOS system timezone for LaunchAgent"
+        ) from exc
+    if not path.is_symlink() or not resolved.as_posix().endswith(
+        f"/{expected_timezone}"
+    ):
+        raise ValueError(
+            "LaunchAgent StartCalendarInterval uses macOS system local time; "
+            f"set system timezone to {expected_timezone} before installing"
+        )
+
+
 def build_launchagent_payload(
     python_path: Path | str,
     repo_root: Path | str,

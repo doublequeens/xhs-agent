@@ -13,6 +13,7 @@ from metrics_collector.config import CollectorConfig
 from metrics_collector.coordinator import CollectionCoordinator
 from metrics_collector.launchd import (
     build_launchagent_payload,
+    ensure_launchagent_timezone,
     install_launchagent,
 )
 
@@ -48,7 +49,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "collect":
         return _run_collect(config)
     if args.command == "install-launchagent":
-        return _run_install_launchagent()
+        return _run_install_launchagent(config)
 
     parser.error(f"unknown command: {args.command}")
     return 2
@@ -90,7 +91,8 @@ def _run_collect(config: CollectorConfig) -> int:
     return 0 if summary.status in _OK_STATUSES else 1
 
 
-def _run_install_launchagent() -> int:
+def _run_install_launchagent(config: CollectorConfig) -> int:
+    ensure_launchagent_timezone(config.timezone.key)
     user_home = Path.home()
     repo_root = Path(__file__).resolve().parent.parent
     payload = build_launchagent_payload(
