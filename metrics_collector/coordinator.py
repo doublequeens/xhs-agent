@@ -120,7 +120,11 @@ def preserve_diagnostic_workbook(
                 "diagnostic preservation failed"
             ) from error
         _prune_old_diagnostics(diagnostics_fd, retention_days, now_timestamp)
-        return destination
+        return _verified_diagnostic_return_path(
+            destination,
+            destination_name,
+            diagnostics_fd,
+        )
     finally:
         _close_fd_if_open(diagnostics_fd)
 
@@ -567,6 +571,27 @@ def _unlink_relative_if_present(name: str, dir_fd: int) -> None:
         os.unlink(name, dir_fd=dir_fd)
     except FileNotFoundError:
         pass
+
+
+def _verified_diagnostic_return_path(
+    destination: Path,
+    destination_name: str,
+    diagnostics_fd: int,
+) -> Path:
+    try:
+        fd_stat = os.stat(
+            destination_name,
+            dir_fd=diagnostics_fd,
+            follow_symlinks=False,
+        )
+        path_stat = destination.lstat()
+    except OSError as error:
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
+    if not _same_file_identity(fd_stat, path_stat):
+        raise DiagnosticPreservationError("diagnostic preservation failed")
+    return destination
 
 
 def _prune_old_diagnostics(

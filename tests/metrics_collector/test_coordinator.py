@@ -718,16 +718,21 @@ def test_diagnostic_preservation_uses_verified_dir_fd_after_path_replacement(
 
     monkeypatch.setattr(coordinator_module.os, "open", tracking_open)
 
-    preserve_diagnostic_workbook(
-        workbook,
-        diagnostics_dir,
-        retention_days=7,
-        now=AT_22,
-    )
+    with pytest.raises(
+        DiagnosticPreservationError,
+        match="diagnostic preservation failed",
+    ):
+        preserve_diagnostic_workbook(
+            workbook,
+            diagnostics_dir,
+            retention_days=7,
+            now=AT_22,
+        )
 
     preserved_name = "20260706T220000-failed.xlsx"
     assert (verified_dir / preserved_name).read_bytes() == b"failed"
     assert not (attacker_dir / preserved_name).exists()
+    assert not (diagnostics_dir / preserved_name).exists()
 
 
 def test_diagnostic_workbook_rejects_symlinked_diagnostics_dir(tmp_path):
