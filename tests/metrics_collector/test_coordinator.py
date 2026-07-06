@@ -305,6 +305,24 @@ def test_scheduled_date_for_uses_previous_date_before_cutoff():
     assert scheduled_date_for(AT_23, time(22, 0)) == AT_23.date()
 
 
+def test_candidate_list_accepts_legacy_non_padded_hour_reference_time():
+    candidates = coordinator_module._candidate_list(
+        [
+            candidate_dict()
+            | {"reference_time": "2026-05-08T7:00:00+08:00"}
+        ]
+    )
+
+    assert candidates[0].reference_time == datetime(
+        2026,
+        5,
+        8,
+        7,
+        0,
+        tzinfo=TZ,
+    )
+
+
 def test_completed_today_skips_browser(deps):
     deps.manager.completed_execution_dates.add(AT_22.date().isoformat())
 

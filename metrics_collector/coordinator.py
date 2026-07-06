@@ -456,7 +456,7 @@ def _candidate_from_mapping(row: dict[str, object]) -> ContentCandidate:
     if isinstance(reference_time, datetime):
         parsed_reference_time = reference_time
     elif isinstance(reference_time, str):
-        parsed_reference_time = datetime.fromisoformat(reference_time)
+        parsed_reference_time = _parse_candidate_reference_time(reference_time)
     else:
         raise TypeError("candidate reference_time must be datetime or ISO string")
 
@@ -467,6 +467,13 @@ def _candidate_from_mapping(row: dict[str, object]) -> ContentCandidate:
         reference_time=parsed_reference_time,
         post_id=post_id if isinstance(post_id, str) else None,
     )
+
+
+def _parse_candidate_reference_time(reference_time: str) -> datetime:
+    try:
+        return datetime.fromisoformat(reference_time)
+    except ValueError:
+        return datetime.strptime(reference_time, "%Y-%m-%dT%H:%M:%S%z")
 
 
 def _metrics_record_from_row(

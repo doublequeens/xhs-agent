@@ -421,11 +421,20 @@ def test_skips_wholly_empty_rows_and_parses_every_nonempty_row(tmp_path):
     assert [row.title for row in rows] == ["室外补防晒技巧", "第二篇"]
 
 
+def test_skips_rows_missing_title_because_they_cannot_be_matched(tmp_path):
+    missing_title = replace(VALID_ROW, "笔记标题", None)
+    second = replace(VALID_ROW, "笔记标题", "第二篇")
+    second = replace(second, "首次发布时间", "2026-05-17 10:00")
+    path = build_workbook(tmp_path, [VALID_ROW, missing_title, second])
+
+    rows = parse_metrics_workbook(path, TZ)
+
+    assert [row.title for row in rows] == ["室外补防晒技巧", "第二篇"]
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("笔记标题", None),
-        ("笔记标题", "   "),
         ("首次发布时间", None),
         ("首次发布时间", " "),
     ],

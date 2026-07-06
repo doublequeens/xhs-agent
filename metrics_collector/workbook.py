@@ -448,6 +448,11 @@ def _parse_row(
     )
 
 
+def _missing_match_title(row: tuple[Any, ...], columns: dict[str, int]) -> bool:
+    title_value = _cell(row, columns, "笔记标题")
+    return not isinstance(title_value, str) or not title_value.strip()
+
+
 def parse_metrics_workbook(
     path: Path,
     timezone: ZoneInfo,
@@ -493,6 +498,8 @@ def parse_metrics_workbook(
             if _is_empty_row(row):
                 continue
             _validate_required_field_text_limits(row, row_number, header[1])
+            if _missing_match_title(row, header[1]):
+                continue
             parsed = _parse_row(row, row_number, header[1], timezone)
             identity = (normalize_title(parsed.title), parsed.published_at)
             if identity in identities:
