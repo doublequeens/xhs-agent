@@ -121,6 +121,9 @@ CREATE TABLE IF NOT EXISTS metrics_collection_runs (
     error_summary TEXT
 );
 
+CREATE UNIQUE INDEX IF NOT EXISTS idx_metrics_collection_runs_execution_date
+ON metrics_collection_runs(execution_date);
+
 CREATE TABLE IF NOT EXISTS memory_events (
     event_id TEXT PRIMARY KEY,
     content_id TEXT,

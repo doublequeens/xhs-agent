@@ -248,6 +248,90 @@ def test_migrate_metrics_collection_schema_is_idempotent_for_legacy_metrics(tmp_
     } <= set(_table_columns(connection, "metrics"))
     assert _table_exists(connection, "metrics_history")
     assert _table_exists(connection, "metrics_collection_runs")
+    assert (
+        "idx_metrics_collection_runs_execution_date"
+        in _index_names(connection, "metrics_collection_runs")
+    )
+    assert _index_columns(
+        connection,
+        "idx_metrics_collection_runs_execution_date",
+    ) == ["execution_date"]
+
+    connection.execute(
+        """
+        INSERT INTO metrics_collection_runs(
+            scheduled_date,
+            execution_date,
+            status,
+            started_at
+        )
+        VALUES ('2026-07-05', '2026-07-06', 'failed', '2026-07-06T09:00:00+08:00')
+        """
+    )
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """
+            INSERT INTO metrics_collection_runs(
+                scheduled_date,
+                execution_date,
+                status,
+                started_at
+            )
+            VALUES ('2026-07-06', '2026-07-06', 'running', '2026-07-06T22:00:00+08:00')
+            """
+        )
+
+
+def test_migrate_metrics_collection_schema_deduplicates_execution_dates(tmp_path):
+    db_path = tmp_path / "legacy-duplicate-runs.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE contents (content_id TEXT PRIMARY KEY)")
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.execute(
+        """
+        CREATE TABLE metrics_collection_runs (
+            scheduled_date TEXT PRIMARY KEY,
+            execution_date TEXT NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        """
+        INSERT INTO metrics_collection_runs
+            (scheduled_date, execution_date, status, started_at)
+        VALUES
+            ('2026-07-05', '2026-07-06', 'failed', '2026-07-06T09:00:00+08:00'),
+            ('2026-07-06', '2026-07-06', 'running', '2026-07-06T22:00:00+08:00')
+        """
+    )
+    connection.commit()
+
+    migrate_metrics_collection_schema(connection)
+
+    rows = connection.execute(
+        """
+        SELECT scheduled_date, execution_date
+        FROM metrics_collection_runs
+        ORDER BY scheduled_date
+        """
+    ).fetchall()
+    assert rows == [("2026-07-05", "2026-07-06")]
+    with pytest.raises(sqlite3.IntegrityError):
+        connection.execute(
+            """
+            INSERT INTO metrics_collection_runs(
+                scheduled_date,
+                execution_date,
+                status,
+                started_at
+            )
+            VALUES ('2026-07-07', '2026-07-06', 'running', '2026-07-07T09:00:00+08:00')
+            """
+        )
 
 
 def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
@@ -316,6 +400,14 @@ def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
     assert _primary_key_columns(connection, "metrics_collection_runs") == [
         "scheduled_date"
     ]
+    assert (
+        "idx_metrics_collection_runs_execution_date"
+        in _index_names(connection, "metrics_collection_runs")
+    )
+    assert _index_columns(
+        connection,
+        "idx_metrics_collection_runs_execution_date",
+    ) == ["execution_date"]
     run_details = _column_details(connection, "metrics_collection_runs")
     for required_column in ("execution_date", "status", "started_at"):
         assert run_details[required_column][1] is True

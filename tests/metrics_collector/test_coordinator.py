@@ -521,7 +521,24 @@ def test_workbook_validation_failure_preserves_file_and_writes_no_metrics(deps):
     assert preserved[0].read_bytes() == b"fake workbook"
     assert stat.S_IMODE(deps.config.diagnostics_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE(preserved[0].stat().st_mode) == 0o600
-    assert "missing required headers" in str(result.error_summary)
+    assert result.error_summary == "workbook validation failed"
+
+
+def test_workbook_validation_error_summary_does_not_leak_path_or_token(
+    deps,
+    tmp_path,
+):
+    secret_path = tmp_path / "token-secret.xlsx"
+    deps.parser.error = WorkbookFormatError(
+        f"workbook {secret_path}: missing headers token=secret"
+    )
+
+    result = deps.coordinator.collect(now=AT_22)
+
+    assert result.status == "failed"
+    assert result.error_summary == "workbook validation failed"
+    assert str(secret_path) not in str(result.error_summary)
+    assert "secret" not in str(result.error_summary)
 
 
 def test_diagnostic_preservation_failure_still_finishes_run(deps, tmp_path):
@@ -642,6 +659,45 @@ def test_diagnostic_workbook_rejects_symlinked_diagnostics_dir(tmp_path):
         )
 
     assert workbook.exists()
+
+
+def test_diagnostic_workbook_rejects_symlinked_source(tmp_path):
+    target = tmp_path / "target.xlsx"
+    target.write_bytes(b"target")
+    source = tmp_path / "source.xlsx"
+    source.symlink_to(target)
+
+    with pytest.raises(
+        DiagnosticPreservationError,
+        match="diagnostic preservation failed",
+    ):
+        preserve_diagnostic_workbook(
+            source,
+            tmp_path / "diagnostics",
+            retention_days=7,
+            now=AT_22,
+        )
+
+    assert source.is_symlink()
+    assert target.read_bytes() == b"target"
+
+
+def test_diagnostic_workbook_rejects_non_regular_source(tmp_path):
+    source = tmp_path / "source-directory"
+    source.mkdir()
+
+    with pytest.raises(
+        DiagnosticPreservationError,
+        match="diagnostic preservation failed",
+    ):
+        preserve_diagnostic_workbook(
+            source,
+            tmp_path / "diagnostics",
+            retention_days=7,
+            now=AT_22,
+        )
+
+    assert source.is_dir()
 
 
 def test_diagnostic_pruning_does_not_follow_symlinked_entries(tmp_path):

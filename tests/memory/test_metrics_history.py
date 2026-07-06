@@ -811,6 +811,21 @@ def test_start_collection_run_rejects_duplicate_claim_without_reset(manager):
     assert manager.has_attempted_execution_date("2026-07-05") is True
 
 
+def test_start_collection_run_rejects_duplicate_execution_date(manager):
+    manager.start_collection_run("2026-07-05", "2026-07-06")
+
+    with pytest.raises(
+        memory_manager_module.CollectionRunAlreadyClaimed,
+        match="2026-07-06",
+    ):
+        manager.start_collection_run("2026-07-06", "2026-07-06")
+
+    rows = manager.connect().execute(
+        "SELECT scheduled_date, execution_date FROM metrics_collection_runs"
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [("2026-07-05", "2026-07-06")]
+
+
 def test_finish_collection_run_rejects_wrong_or_stale_completion(manager):
     manager.start_collection_run("2026-07-05", "2026-07-06")
     summary = {

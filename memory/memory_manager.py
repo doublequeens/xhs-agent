@@ -967,24 +967,25 @@ class XHSMemoryManager:
         execution_date: str,
     ) -> None:
         with self.connect() as conn:
-            result = conn.execute(
-                """
-                INSERT INTO metrics_collection_runs (
-                    scheduled_date,
-                    execution_date,
-                    status,
-                    started_at
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO metrics_collection_runs (
+                        scheduled_date,
+                        execution_date,
+                        status,
+                        started_at
+                    )
+                    VALUES (?, ?, 'running', ?)
+                    """,
+                    (scheduled_date, execution_date, utc_now_iso()),
                 )
-                VALUES (?, ?, 'running', ?)
-                ON CONFLICT(scheduled_date) DO NOTHING
-                """,
-                (scheduled_date, execution_date, utc_now_iso()),
-            )
-            if result.rowcount != 1:
+            except sqlite3.IntegrityError as error:
                 raise CollectionRunAlreadyClaimed(
-                    f"Collection run already claimed for scheduled_date: "
-                    f"{scheduled_date}"
-                )
+                    "Collection run already claimed for "
+                    f"scheduled_date={scheduled_date}, "
+                    f"execution_date={execution_date}"
+                ) from error
 
     def finish_collection_run(self, summary: dict[str, object]) -> None:
         self._validate_collection_summary(summary)

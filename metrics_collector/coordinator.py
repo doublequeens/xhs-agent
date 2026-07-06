@@ -4,6 +4,7 @@ from datetime import date, datetime, time, timedelta
 import os
 from pathlib import Path
 import shutil
+import stat
 from typing import Any, Callable
 
 from memory.memory_manager import CollectionRunAlreadyClaimed
@@ -51,6 +52,14 @@ def preserve_diagnostic_workbook(
 ) -> Path:
     workbook_path = Path(path)
     diagnostics_path = Path(diagnostics_dir)
+    try:
+        workbook_stat = workbook_path.lstat()
+    except OSError as error:
+        raise DiagnosticPreservationError(
+            "diagnostic preservation failed"
+        ) from error
+    if not stat.S_ISREG(workbook_stat.st_mode):
+        raise DiagnosticPreservationError("diagnostic preservation failed")
     if diagnostics_path.is_symlink():
         raise DiagnosticPreservationError("diagnostic preservation failed")
     diagnostics_path.mkdir(parents=True, exist_ok=True)
@@ -393,7 +402,11 @@ def _preserve_if_present(
     config: CollectorConfig,
     now: datetime,
 ) -> str | None:
-    if workbook_path is None or not workbook_path.exists():
+    if (
+        workbook_path is None
+        or not workbook_path.exists()
+        and not workbook_path.is_symlink()
+    ):
         return None
     try:
         preserve_diagnostic_workbook(
@@ -408,8 +421,7 @@ def _preserve_if_present(
 
 
 def _safe_validation_error(error: WorkbookFormatError) -> str:
-    message = str(error)
-    return message[:500] if message else "workbook validation failed"
+    return "workbook validation failed"
 
 
 def _unique_diagnostic_path(

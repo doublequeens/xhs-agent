@@ -132,6 +132,23 @@ def migrate_metrics_collection_schema(connection: sqlite3.Connection) -> None:
             )
             """
         )
+        connection.execute(
+            """
+            DELETE FROM metrics_collection_runs
+            WHERE rowid NOT IN (
+                SELECT MIN(rowid)
+                FROM metrics_collection_runs
+                GROUP BY execution_date
+            )
+            """
+        )
+        connection.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_metrics_collection_runs_execution_date
+            ON metrics_collection_runs(execution_date)
+            """
+        )
     except Exception:
         connection.execute("ROLLBACK TO migrate_metrics_collection_schema")
         connection.execute("RELEASE migrate_metrics_collection_schema")
