@@ -16,12 +16,7 @@ class MetricsExporter:
         assert_creator_center_ready(page)
 
         download_button = page.locator("button.download-btn")
-        button_count = download_button.count()
-        if button_count != 1:
-            raise ExportError(
-                "expected exactly one button.download-btn, "
-                f"found {button_count}"
-            )
+        _wait_for_unique_download_button(download_button)
 
         try:
             with page.expect_download() as download_info:
@@ -39,15 +34,13 @@ class MetricsExporter:
         try:
             download.save_as(destination)
         except Exception as exc:
+            _remove_if_present(destination)
             raise ExportError("failed to save export download") from exc
 
         try:
             _validate_saved_workbook(destination)
         except ExportError:
-            try:
-                destination.unlink()
-            except FileNotFoundError:
-                pass
+            _remove_if_present(destination)
             raise
 
         return destination
@@ -61,6 +54,29 @@ class MetricsExporter:
             if not candidate.exists():
                 return candidate
         raise ExportError("could not allocate unique export path")
+
+
+def _wait_for_unique_download_button(download_button) -> None:
+    try:
+        download_button.wait_for(state="visible")
+        button_count = download_button.count()
+    except Exception as exc:
+        if _looks_like_timeout(exc):
+            raise ExportError("download button timed out") from exc
+        raise ExportError("download button not ready") from exc
+
+    if button_count != 1:
+        raise ExportError(
+            "expected exactly one button.download-btn, "
+            f"found {button_count}"
+        )
+
+    try:
+        download_button.click(trial=True)
+    except Exception as exc:
+        if _looks_like_timeout(exc):
+            raise ExportError("download button timed out") from exc
+        raise ExportError("download button not ready") from exc
 
 
 def _validate_suggested_filename(suggested_filename: str) -> None:
@@ -83,6 +99,13 @@ def _validate_saved_workbook(path: Path) -> None:
         raise ExportError("export download is empty")
     if signature != b"PK\x03\x04":
         raise ExportError("export download has invalid ZIP signature")
+
+
+def _remove_if_present(path: Path) -> None:
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _looks_like_timeout(exc: Exception) -> bool:

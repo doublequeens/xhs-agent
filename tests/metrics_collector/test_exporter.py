@@ -25,10 +25,20 @@ class FakeButtonLocator:
     def __init__(self, page):
         self.page = page
 
+    def wait_for(self, **options):
+        self.page.wait_for_calls.append(options)
+        self.page.download_button_count = self.page.ready_download_button_count
+        self.page.download_button_actionable = True
+
     def count(self):
         return self.page.download_button_count
 
-    def click(self):
+    def click(self, **options):
+        if options.get("trial"):
+            self.page.trial_clicks += 1
+            if not self.page.download_button_actionable:
+                raise TimeoutError("button not actionable")
+            return
         self.page.export_clicks += 1
 
 
@@ -75,15 +85,25 @@ class FakePage:
         timeout_on_value=False,
         readiness_error=None,
         url=HEALTHY_URL,
+        ready_download_button_count=None,
+        download_button_actionable=True,
     ):
         self.url = url
         self.download = download if download is not None else FakeDownload()
         self.download_button_count = download_button_count
+        self.ready_download_button_count = (
+            ready_download_button_count
+            if ready_download_button_count is not None
+            else download_button_count
+        )
+        self.download_button_actionable = download_button_actionable
         self.body_text = body_text
         self.timeout_on_value = timeout_on_value
         self.readiness_error = readiness_error
         self.export_clicks = 0
+        self.trial_clicks = 0
         self.expect_download_calls = 0
+        self.wait_for_calls = []
         self.locator_calls = []
 
     def locator(self, selector):
@@ -110,6 +130,23 @@ def test_export_clicks_once_and_saves_completed_xlsx(tmp_path):
     assert path.suffix == ".xlsx"
     assert path.exists()
     assert path.read_bytes() == VALID_XLSX_BYTES
+
+
+def test_export_waits_for_delayed_visible_enabled_download_button(tmp_path):
+    fake_page = FakePage(
+        download_button_count=0,
+        ready_download_button_count=1,
+        download_button_actionable=False,
+    )
+    exporter = MetricsExporter(download_dir=tmp_path)
+
+    path = exporter.export(fake_page)
+
+    assert path.exists()
+    assert fake_page.wait_for_calls == [{"state": "visible"}]
+    assert fake_page.trial_clicks == 1
+    assert fake_page.export_clicks == 1
+    assert fake_page.expect_download_calls == 1
 
 
 def test_export_rejects_non_xlsx_download(tmp_path):
@@ -206,6 +243,26 @@ def test_export_does_not_retry_after_save_failure(tmp_path):
 
     assert fake_page.export_clicks == 1
     assert fake_page.expect_download_calls == 1
+
+
+def test_export_removes_partial_file_after_save_failure(tmp_path):
+    class PartiallyFailingDownload(FakeDownload):
+        def save_as(self, path):
+            self.save_paths.append(Path(path))
+            Path(path).write_bytes(VALID_XLSX_BYTES)
+            raise OSError("connection reset")
+
+    download = PartiallyFailingDownload()
+    fake_page = FakePage(download=download)
+    exporter = MetricsExporter(download_dir=tmp_path)
+
+    with pytest.raises(ExportError, match="save"):
+        exporter.export(fake_page)
+
+    assert fake_page.export_clicks == 1
+    assert fake_page.expect_download_calls == 1
+    assert len(download.save_paths) == 1
+    assert not download.save_paths[0].exists()
 
 
 def test_export_uses_unique_paths_for_repeated_suggested_filename(tmp_path):
