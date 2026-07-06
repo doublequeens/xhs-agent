@@ -4,6 +4,12 @@ from uuid import uuid4
 from metrics_collector.browser import assert_creator_center_ready
 
 
+_BUTTON_ENABLED_CHECK = (
+    "(button) => !button.disabled && "
+    "button.getAttribute('aria-disabled') !== 'true'"
+)
+
+
 class ExportError(RuntimeError):
     pass
 
@@ -72,11 +78,13 @@ def _wait_for_unique_download_button(download_button) -> None:
         )
 
     try:
-        download_button.click(trial=True)
+        is_enabled = download_button.evaluate(_BUTTON_ENABLED_CHECK)
     except Exception as exc:
         if _looks_like_timeout(exc):
             raise ExportError("download button timed out") from exc
         raise ExportError("download button not ready") from exc
+    if not is_enabled:
+        raise ExportError("download button is not enabled")
 
 
 def _validate_suggested_filename(suggested_filename: str) -> None:

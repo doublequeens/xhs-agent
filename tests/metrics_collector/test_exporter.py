@@ -9,6 +9,10 @@ from metrics_collector.exporter import ExportError, MetricsExporter
 HEALTHY_URL = "https://creator.xiaohongshu.com/statistics/data-analysis"
 HEALTHY_BODY = "小红书创作服务平台 数据分析"
 VALID_XLSX_BYTES = b"PK\x03\x04official workbook content"
+BUTTON_ENABLED_CHECK = (
+    "(button) => !button.disabled && "
+    "button.getAttribute('aria-disabled') !== 'true'"
+)
 
 
 class FakeBodyLocator:
@@ -28,17 +32,19 @@ class FakeButtonLocator:
     def wait_for(self, **options):
         self.page.wait_for_calls.append(options)
         self.page.download_button_count = self.page.ready_download_button_count
-        self.page.download_button_actionable = True
 
     def count(self):
         return self.page.download_button_count
 
+    def evaluate(self, expression):
+        self.page.enabled_evaluate_calls.append(expression)
+        return self.page.download_button_enabled
+
     def click(self, **options):
         if options.get("trial"):
-            self.page.trial_clicks += 1
-            if not self.page.download_button_actionable:
-                raise TimeoutError("button not actionable")
-            return
+            raise AssertionError("trial click is not allowed")
+        if not self.page.download_button_enabled:
+            raise AssertionError("disabled button was clicked")
         self.page.export_clicks += 1
 
 
@@ -86,7 +92,7 @@ class FakePage:
         readiness_error=None,
         url=HEALTHY_URL,
         ready_download_button_count=None,
-        download_button_actionable=True,
+        download_button_enabled=True,
     ):
         self.url = url
         self.download = download if download is not None else FakeDownload()
@@ -96,14 +102,14 @@ class FakePage:
             if ready_download_button_count is not None
             else download_button_count
         )
-        self.download_button_actionable = download_button_actionable
+        self.download_button_enabled = download_button_enabled
         self.body_text = body_text
         self.timeout_on_value = timeout_on_value
         self.readiness_error = readiness_error
         self.export_clicks = 0
-        self.trial_clicks = 0
         self.expect_download_calls = 0
         self.wait_for_calls = []
+        self.enabled_evaluate_calls = []
         self.locator_calls = []
 
     def locator(self, selector):
@@ -126,6 +132,7 @@ def test_export_clicks_once_and_saves_completed_xlsx(tmp_path):
     path = exporter.export(fake_page)
 
     assert fake_page.export_clicks == 1
+    assert fake_page.enabled_evaluate_calls == [BUTTON_ENABLED_CHECK]
     assert fake_page.expect_download_calls == 1
     assert path.suffix == ".xlsx"
     assert path.exists()
@@ -136,7 +143,7 @@ def test_export_waits_for_delayed_visible_enabled_download_button(tmp_path):
     fake_page = FakePage(
         download_button_count=0,
         ready_download_button_count=1,
-        download_button_actionable=False,
+        download_button_enabled=True,
     )
     exporter = MetricsExporter(download_dir=tmp_path)
 
@@ -144,9 +151,22 @@ def test_export_waits_for_delayed_visible_enabled_download_button(tmp_path):
 
     assert path.exists()
     assert fake_page.wait_for_calls == [{"state": "visible"}]
-    assert fake_page.trial_clicks == 1
+    assert len(fake_page.enabled_evaluate_calls) == 1
     assert fake_page.export_clicks == 1
     assert fake_page.expect_download_calls == 1
+
+
+def test_export_rejects_disabled_download_button_without_clicking(tmp_path):
+    fake_page = FakePage(download_button_enabled=False)
+    exporter = MetricsExporter(download_dir=tmp_path)
+
+    with pytest.raises(ExportError, match="enabled"):
+        exporter.export(fake_page)
+
+    assert fake_page.wait_for_calls == [{"state": "visible"}]
+    assert len(fake_page.enabled_evaluate_calls) == 1
+    assert fake_page.export_clicks == 0
+    assert fake_page.expect_download_calls == 0
 
 
 def test_export_rejects_non_xlsx_download(tmp_path):
