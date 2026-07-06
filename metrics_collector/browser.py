@@ -39,9 +39,15 @@ class BrowserSession:
         self,
         config: CollectorConfig,
         playwright_factory: Callable[[], Any] = sync_playwright,
+        repository_root: Path | None = None,
     ) -> None:
         self.config = config
         self._playwright_factory = playwright_factory
+        self.repository_root = (
+            repository_root.resolve()
+            if repository_root is not None
+            else Path(__file__).resolve().parents[1]
+        )
         self._playwright: Any | None = None
         self.context: Any | None = None
         self.page: Any | None = None
@@ -58,11 +64,10 @@ class BrowserSession:
             self.config.profile_dir,
             self.config.download_dir,
         )
-        repository_root = Path.cwd().resolve()
         for path in private_directories:
-            _validate_private_directory(path, repository_root)
+            _validate_private_directory(path, self.repository_root)
         for path in private_directories:
-            _create_private_directory(path, repository_root)
+            _create_private_directory(path, self.repository_root)
 
         self._playwright = self._playwright_factory().start()
         try:
@@ -108,7 +113,8 @@ class BrowserSession:
                 f"creator center navigation returned HTTP {status}"
             )
 
-        assert_creator_center_ready(self.page)
+        requested_path = urlparse(url).path
+        assert_creator_center_ready(self.page, expected_path=requested_path)
         return response
 
     def close(self) -> None:
@@ -134,6 +140,8 @@ class BrowserSession:
                 cleanup_errors.append(error)
             else:
                 self._playwright = None
+                self.context = None
+                self.page = None
 
         if cleanup_errors:
             primary_error = cleanup_errors[0]
@@ -157,7 +165,10 @@ class BrowserSession:
         return False
 
 
-def assert_creator_center_ready(page: Any) -> None:
+def assert_creator_center_ready(
+    page: Any,
+    expected_path: str | None = None,
+) -> None:
     try:
         current_url = page.url
         parsed_url = urlparse(current_url)
@@ -191,17 +202,64 @@ def assert_creator_center_ready(page: Any) -> None:
     ):
         raise VerificationRequired("creator center verification required")
 
+    if (
+        expected_path is not None
+        and _normalize_url_path(parsed_url.path)
+        != _normalize_url_path(expected_path)
+    ):
+        raise BrowserNavigationError("unexpected creator page path")
+
     try:
-        body_text = page.locator("body").evaluate(
-            "(body, limit) => body.innerText.slice(0, limit)",
+        page_text = page.locator("body").evaluate(
+            """
+            (body, limit) => {
+                const selectors = [
+                    '[role="alert"]',
+                    '[class*="error" i]',
+                    '[class*="toast" i]',
+                    '[class*="message" i]',
+                    '[class*="error-page" i]'
+                ].join(',');
+                const parts = [];
+                let used = 0;
+                for (const element of body.querySelectorAll(selectors)) {
+                    const text = (element.innerText || '').trim();
+                    const remaining = limit - used;
+                    if (!text || remaining <= 0) {
+                        continue;
+                    }
+                    const bounded = text.slice(0, remaining);
+                    parts.push(bounded);
+                    used += bounded.length + 1;
+                }
+                return {
+                    bodyText: (body.innerText || '').slice(0, limit),
+                    errorText: parts.join('\\n').slice(0, limit)
+                };
+            }
+            """,
             _BODY_TEXT_LIMIT,
         )
     except Exception as error:
         raise BrowserNavigationError("creator page inspection failed") from error
 
-    text = body_text if isinstance(body_text, str) else ""
-    text_lower = text.lower()
+    if not isinstance(page_text, dict):
+        raise BrowserNavigationError("creator page inspection failed")
+    body_text = page_text.get("bodyText")
+    error_text = page_text.get("errorText")
+    body_text = body_text if isinstance(body_text, str) else ""
+    error_text = error_text if isinstance(error_text, str) else ""
 
+    _raise_for_stop_text(error_text)
+    has_readiness_marker = "创作服务平台" in body_text
+    if not has_readiness_marker and len(body_text.strip()) <= 2_000:
+        _raise_for_stop_text(body_text)
+    if not has_readiness_marker:
+        raise BrowserNavigationError("creator page not ready")
+
+
+def _raise_for_stop_text(text: str) -> None:
+    text_lower = text.lower()
     access_markers = (
         "操作频繁",
         "访问受限",
@@ -224,9 +282,6 @@ def assert_creator_center_ready(page: Any) -> None:
     login_markers = ("短信登录", "扫码登录", "请登录")
     if any(marker in text for marker in login_markers):
         raise AuthenticationRequired("creator center authentication required")
-
-    if "创作服务平台" not in text:
-        raise BrowserNavigationError("creator page not ready")
 
 
 def _validate_private_directory(path: Path, repository_root: Path) -> None:
@@ -292,3 +347,7 @@ def _add_cleanup_note(primary_error: BaseException, cleanup_error: Exception) ->
     if cleanup_notes:
         details = f"{details}; {'; '.join(cleanup_notes)}"
     primary_error.add_note(f"Browser cleanup failed: {details}")
+
+
+def _normalize_url_path(path: str) -> str:
+    return path.rstrip("/") or "/"

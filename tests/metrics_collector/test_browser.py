@@ -35,7 +35,10 @@ class FakeBodyLocator:
         self.page.evaluate_calls.append((expression, limit))
         if self.page.body_error is not None:
             raise self.page.body_error
-        return self.page.body_text[:limit]
+        return {
+            "bodyText": self.page.body_text[:limit],
+            "errorText": self.page.scoped_error_text[:limit],
+        }
 
 
 class FakePage:
@@ -48,6 +51,7 @@ class FakePage:
         goto_error=None,
         body_error=None,
         final_url=None,
+        scoped_error_text="",
     ):
         self.url = url
         self.body_text = body_text
@@ -55,6 +59,7 @@ class FakePage:
         self.goto_error = goto_error
         self.body_error = body_error
         self.final_url = final_url
+        self.scoped_error_text = scoped_error_text
         self.goto_calls = []
         self.locator_calls = []
         self.evaluate_calls = []
@@ -288,11 +293,11 @@ def test_context_manager_preserves_body_error_when_cleanup_fails(tmp_path):
             raise ValueError("collection failed")
 
     assert "context cleanup failed" in "\n".join(exc_info.value.__notes__)
-    assert session.context is context
+    assert session.context is None
+    assert session.page is None
     assert session._playwright is None
-    context.close_error = None
     session.close()
-    assert context.close_calls == 2
+    assert context.close_calls == 1
 
 
 def test_close_stops_runtime_even_when_context_close_fails(tmp_path):
@@ -308,15 +313,12 @@ def test_close_stops_runtime_even_when_context_close_fails(tmp_path):
 
     assert context.close_calls == 1
     assert playwright.stop_calls == 1
-    assert session.context is context
-    assert session.page is not None
-    assert session._playwright is None
-    context.close_error = None
-    session.close()
-    assert context.close_calls == 2
-    assert playwright.stop_calls == 1
     assert session.context is None
     assert session.page is None
+    assert session._playwright is None
+    session.close()
+    assert context.close_calls == 1
+    assert playwright.stop_calls == 1
 
 
 def test_close_is_idempotent_when_runtime_stop_fails(tmp_path):
@@ -466,6 +468,61 @@ def test_navigate_rejects_untrusted_final_origin(tmp_path, final_url):
         session.navigate(HEALTHY_URL)
 
 
+@pytest.mark.parametrize(
+    "final_url",
+    [
+        "https://creator.xiaohongshu.com/",
+        "https://creator.xiaohongshu.com/statistics",
+        "https://creator.xiaohongshu.com/new/note-manager",
+    ],
+)
+def test_navigate_rejects_same_host_redirect_to_different_path(tmp_path, final_url):
+    page = FakePage(final_url=final_url)
+    context = FakeContext([page])
+    session = BrowserSession(
+        _config(tmp_path),
+        playwright_factory=FakePlaywrightFactory(FakePlaywright(context)),
+    )
+    session.start()
+
+    with pytest.raises(BrowserNavigationError, match="unexpected creator page path"):
+        session.navigate(f"{HEALTHY_URL}?source=test#summary")
+
+
+@pytest.mark.parametrize(
+    "final_url",
+    [
+        f"{HEALTHY_URL}/",
+        f"{HEALTHY_URL}?source=redirected",
+        f"{HEALTHY_URL}/?source=redirected#summary",
+    ],
+)
+def test_navigate_accepts_same_path_with_trailing_slash_query_or_fragment(
+    tmp_path, final_url
+):
+    page = FakePage(final_url=final_url)
+    context = FakeContext([page])
+    session = BrowserSession(
+        _config(tmp_path),
+        playwright_factory=FakePlaywrightFactory(FakePlaywright(context)),
+    )
+    session.start()
+
+    assert session.navigate(f"{HEALTHY_URL}?source=request#top") is page.response
+
+
+def test_standalone_readiness_can_require_expected_path():
+    page = FakePage(
+        url="https://creator.xiaohongshu.com/new/note-manager",
+    )
+
+    with pytest.raises(BrowserNavigationError, match="unexpected creator page path"):
+        assert_creator_center_ready(
+            page,
+            expected_path="/statistics/data-analysis/",
+        )
+
+
 @pytest.mark.parametrize("body", ["", "创作中心 数据分析"])
 def test_ready_page_requires_positive_platform_evidence(body):
     with pytest.raises(BrowserNavigationError, match="creator page not ready"):
@@ -522,6 +579,25 @@ def test_access_restriction_markers_stop_collection(body):
         assert_creator_center_ready(FakePage(body_text=body))
 
 
+@pytest.mark.parametrize(
+    ("scoped_error_text", "error"),
+    [
+        ("操作频繁，请稍后再试", AccessBlocked),
+        ("Forbidden", AccessBlocked),
+        ("请完成安全验证", VerificationRequired),
+        ("请登录后继续", AuthenticationRequired),
+    ],
+)
+def test_scoped_error_ui_text_stops_healthy_page(scoped_error_text, error):
+    page = FakePage(
+        body_text=HEALTHY_BODY,
+        scoped_error_text=scoped_error_text,
+    )
+
+    with pytest.raises(error):
+        assert_creator_center_ready(page)
+
+
 def test_login_url_takes_precedence_over_body_challenge_markers():
     page = FakePage(
         url="https://creator.xiaohongshu.com/login",
@@ -558,6 +634,8 @@ def test_verification_url_takes_precedence_over_access_body_marker():
         f"{HEALTHY_BODY} 内容标题：验证码功能说明 浏览量 20",
         f"{HEALTHY_BODY} 获取验证码的产品说明",
         f"{HEALTHY_BODY} 登录后可以查看更多历史数据",
+        f"{HEALTHY_BODY} 笔记标题：操作频繁怎么办",
+        f"{HEALTHY_BODY} 笔记标题：Forbidden City 旅行攻略",
     ],
 )
 def test_ordinary_creator_prose_does_not_signal_stop_state(body):
@@ -586,6 +664,10 @@ def test_body_text_is_extracted_once_and_bounded_to_10000_characters():
     expression, limit = page.evaluate_calls[0]
     assert "innerText" in expression
     assert "slice" in expression
+    assert 'role="alert"' in expression
+    assert "toast" in expression
+    assert "message" in expression
+    assert "error-page" in expression
     assert limit == 10_000
 
 
@@ -663,12 +745,33 @@ def test_start_rejects_existing_directory_owned_by_another_user(
     assert factory.calls == 0
 
 
-def test_start_rejects_private_directories_inside_repository(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
+def test_start_rejects_private_directories_inside_repository(tmp_path):
     config = replace(
         _config(tmp_path),
         profile_dir=tmp_path / "profile",
         download_dir=tmp_path / "downloads",
+    )
+    factory = FakePlaywrightFactory(FakePlaywright(FakeContext()))
+
+    with pytest.raises(CollectorBrowserError, match="outside repository"):
+        BrowserSession(
+            config,
+            playwright_factory=factory,
+            repository_root=tmp_path,
+        ).start()
+
+    assert factory.calls == 0
+    assert not config.profile_dir.exists()
+    assert not config.download_dir.exists()
+
+
+def test_repository_safety_is_stable_from_nested_repo_cwd(monkeypatch):
+    repository_root = Path(__file__).resolve().parents[2]
+    monkeypatch.chdir(repository_root / "tests" / "metrics_collector")
+    config = replace(
+        CollectorConfig.default(),
+        profile_dir=repository_root / ".private-profile",
+        download_dir=repository_root / ".private-downloads",
     )
     factory = FakePlaywrightFactory(FakePlaywright(FakeContext()))
 
@@ -678,6 +781,24 @@ def test_start_rejects_private_directories_inside_repository(tmp_path, monkeypat
     assert factory.calls == 0
     assert not config.profile_dir.exists()
     assert not config.download_dir.exists()
+
+
+def test_default_home_profile_is_allowed_when_cwd_is_home(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.chdir(home)
+    config = CollectorConfig.default(home=home)
+    context = FakeContext([FakePage()])
+    session = BrowserSession(
+        config,
+        playwright_factory=FakePlaywrightFactory(FakePlaywright(context)),
+    )
+
+    session.start()
+
+    assert config.profile_dir.is_dir()
+    assert config.download_dir.is_dir()
+    session.close()
 
 
 def test_start_only_chmods_configured_target_directories(tmp_path):
