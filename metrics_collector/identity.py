@@ -10,6 +10,7 @@ from metrics_collector.models import NoteIdentity
 _POST_ID_PATTERN = re.compile(r"[0-9a-f]{24}")
 _PUBLISHED_AT_PATTERN = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}")
 _TRANSITION_TIMEOUT_MS = 5_000
+_NOTE_CARD_READY_TIMEOUT_MS = 5_000
 
 _CARD_DATA_SCRIPT = """
 (cards) => {
@@ -126,6 +127,15 @@ _LIST_TRANSITION_SCRIPT = """
 }
 """
 
+_NOTE_CARD_READY_SCRIPT = """
+() => Array.from(document.querySelectorAll('.note-card')).some((card) => {
+    const style = window.getComputedStyle(card);
+    return card.getClientRects().length > 0
+        && style.display !== 'none'
+        && style.visibility !== 'hidden';
+})
+"""
+
 
 class IdentityCollectionError(RuntimeError):
     pass
@@ -175,6 +185,7 @@ def collect_note_identities(
     identities_by_id: dict[str, NoteIdentity] = {}
     for page_number in range(1, max_pages + 1):
         pagination_container = _visible_pagination_container(page)
+        _wait_for_note_cards(page, page_number)
         try:
             page_identities = extract_note_identities(page, timezone)
         except IdentityCollectionError as error:
@@ -209,7 +220,7 @@ def collect_note_identities(
         try:
             page.wait_for_function(
                 _LIST_TRANSITION_SCRIPT,
-                previous_state,
+                arg=previous_state,
                 timeout=_TRANSITION_TIMEOUT_MS,
             )
         except Exception as error:
@@ -219,6 +230,18 @@ def collect_note_identities(
         assert_creator_center_ready(page)
 
     return identities
+
+
+def _wait_for_note_cards(page: Any, page_number: int) -> None:
+    try:
+        page.wait_for_function(
+            _NOTE_CARD_READY_SCRIPT,
+            timeout=_NOTE_CARD_READY_TIMEOUT_MS,
+        )
+    except Exception as error:
+        raise IdentityCollectionError(
+            f"page {page_number}: note cards did not load"
+        ) from error
 
 
 def _parse_card(

@@ -104,6 +104,8 @@ def _script_filters_visible_cards(expression):
 
 
 def _visible_cards(page_data):
+    if not page_data.get("cardsReady", True):
+        return []
     return [card for card in page_data["cards"] if card.get("visible", True)]
 
 
@@ -225,6 +227,9 @@ class FakePage:
     def wait_for_function(self, expression, arg=None, timeout=None):
         self.wait_calls.append((expression, arg, timeout))
         current = self.pages[self.page_index]
+        if ".note-card" in expression and arg is None:
+            current["cardsReady"] = True
+            return True
         container = self.pagination_containers(current)[arg["containerIndex"]]
         active_page = next(
             (
@@ -253,6 +258,14 @@ class FakePage:
         ):
             return True
         raise TimeoutError("list did not transition")
+
+
+def _note_card_waits(page):
+    return [call for call in page.wait_calls if call[1] is None]
+
+
+def _transition_waits(page):
+    return [call for call in page.wait_calls if call[1] is not None]
 
 
 @pytest.fixture
@@ -473,6 +486,29 @@ def test_collect_two_pages_dedupes_in_deterministic_order(
     assert page.locator_calls.count(".note-card") == 2
 
 
+def test_collect_waits_for_note_cards_before_extracting_first_page(
+    fixture_pages,
+):
+    first_page = {**fixture_pages[0], "cardsReady": False}
+    page = FakePage([first_page])
+
+    identities = collect_note_identities(page, max_pages=1, timezone=TZ)
+
+    assert [identity.post_id for identity in identities] == [
+        "6a49ebd3000000001503fdd0",
+        "6a49ebd3000000001503fdd1",
+    ]
+    wait_expression, wait_arg, wait_timeout = page.wait_calls[0]
+    assert ".note-card" in wait_expression
+    assert "getClientRects" in wait_expression
+    assert wait_arg is None
+    assert wait_timeout == 5_000
+    assert [selector for selector, _ in page.evaluate_all_calls] == [
+        ".d-pagination",
+        ".note-card",
+    ]
+
+
 def test_collect_stops_for_disabled_next_control(fixture_pages, ready_calls):
     page = FakePage(fixture_pages)
 
@@ -491,7 +527,7 @@ def test_collect_stops_when_next_control_is_absent(fixture_pages, ready_calls):
 
     assert page.visited_pages == [1]
     assert page.click_calls == []
-    assert page.wait_calls == []
+    assert _transition_waits(page) == []
 
 
 def test_collect_rejects_multiple_visible_pagination_candidates(
@@ -582,8 +618,9 @@ def test_collect_ignores_hidden_pagination_containers(
     collect_note_identities(page, max_pages=2, timezone=TZ)
 
     assert page.click_calls == [(1, 1)]
-    assert len(page.wait_calls) == 1
-    expression, previous_state, _ = page.wait_calls[0]
+    transition_waits = _transition_waits(page)
+    assert len(transition_waits) == 1
+    expression, previous_state, _ = transition_waits[0]
     assert previous_state["containerIndex"] == 1
     assert "previous.containerIndex" in expression
     assert "for (const container of document.querySelectorAll" not in expression
@@ -602,7 +639,7 @@ def test_collect_calls_early_stop_after_each_page(fixture_pages, ready_calls):
 
     assert observed == [tuple(identities)]
     assert page.click_calls == []
-    assert page.wait_calls == []
+    assert _transition_waits(page) == []
 
 
 def test_collect_waits_for_concrete_transition_with_bounded_timeout(
@@ -613,8 +650,9 @@ def test_collect_waits_for_concrete_transition_with_bounded_timeout(
 
     collect_note_identities(page, max_pages=2, timezone=TZ)
 
-    assert len(page.wait_calls) == 1
-    expression, previous_state, timeout = page.wait_calls[0]
+    transition_waits = _transition_waits(page)
+    assert len(transition_waits) == 1
+    expression, previous_state, timeout = transition_waits[0]
     assert previous_state["activePage"] == "1"
     assert previous_state["cardSignature"].splitlines()[0].endswith(
         '"6a49ebd3000000001503fdd0"}}}'
@@ -697,7 +735,7 @@ def test_collect_rejects_transition_when_only_active_page_changes(
         collect_note_identities(page, max_pages=2, timezone=TZ)
 
     assert page.click_calls == [(0, 1)]
-    assert page.wait_calls
+    assert _transition_waits(page)
 
 
 def test_collect_rejects_conflicting_duplicate_across_pages(
