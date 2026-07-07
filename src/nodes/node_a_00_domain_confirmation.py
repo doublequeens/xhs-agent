@@ -9,10 +9,14 @@ def domain_confirmation_node(state: AgentState) -> dict:
     context = state.get("domain_context")
     if context is None:
         raise ValueError("domain_confirmation_node requires `domain_context` in state.")
+    interactive = state.get("interactive", True)
 
     if (
-        context.classification_confidence >= 0.65
-        and context.classification_source != "explicit_domain_default_subdomain"
+        not interactive
+        or (
+            context.classification_confidence >= 0.65
+            and context.classification_source != "explicit_domain_default_subdomain"
+        )
     ):
         return {}
 

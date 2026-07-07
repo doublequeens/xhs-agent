@@ -311,6 +311,7 @@ def main():
     graph = create_graph()
 
     initial_state = {
+        "interactive": True,
         "domain": args.domain,
         "subdomain": args.subdomain,
         "domain_context": None,

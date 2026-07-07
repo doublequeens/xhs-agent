@@ -8,7 +8,7 @@ def domain_router_node(state: AgentState) -> dict:
         state.get("domain"),
         state.get("focus_keyword") or "",
         state.get("subdomain"),
-        interactive=True,
+        interactive=state.get("interactive", True),
     )
     profile = get_domain_profile(context.domain, version=context.profile_version)
 

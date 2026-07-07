@@ -61,3 +61,23 @@
   - explicit `domain + subdomain` routing still skips interrupt;
   - explicit `domain` with default subdomain now interrupts and accepts a resumed subdomain selection.
 - Verified with `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q` after the test update.
+
+## Review follow-up fix: interactive state plumbing
+
+- Added `interactive` to `AgentState` and seeded `initial_state["interactive"] = True` in `main.py` so CLI behavior remains interactive by default.
+- Updated `domain_router_node()` to pass `interactive=state.get("interactive", True)` into `resolve_domain(...)` instead of hardcoding interactive mode.
+- Updated `domain_confirmation_node()` to skip the confirmation interrupt when `interactive` is explicitly `False`, allowing future non-interactive runs to keep the router-selected default subdomain.
+- Added node coverage proving:
+  - interactive default still interrupts for explicit domain without explicit subdomain;
+  - non-interactive state routes to `classification_source="explicit_domain_default_subdomain"` and does not force confirmation.
+- Added a `tests/test_main.py` assertion that fresh CLI state defaults `interactive` to `True`.
+
+### Earlier out-of-brief test update
+
+- Earlier in Task 1, `tests/nodes/test_domain_nodes.py` was updated even though the original brief listed different primary test files. That earlier update remains in place because the current review finding is specifically about node-level interactive vs non-interactive behavior, and this file is the narrowest place to prove it.
+
+### Verification
+
+- Command: `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q`
+- Result: `42 passed, 2 warnings`
+- Warning summary: unrelated pytest temp-directory cleanup warnings from the environment.

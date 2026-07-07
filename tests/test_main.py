@@ -343,3 +343,36 @@ def test_main_rejects_subdomain_outside_domain(monkeypatch):
         main.main()
 
     assert exc_info.value.code == 2
+
+
+def test_main_initial_state_defaults_to_interactive(monkeypatch):
+    main = _load_main(monkeypatch)
+    captured = {}
+
+    class FakeMemoryManager:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def init_db(self, *args, **kwargs):
+            pass
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(values={}, next=())
+
+        def stream(self, *_args, **_kwargs):
+            return iter(())
+
+    monkeypatch.setattr(main, "XHSMemoryManager", FakeMemoryManager)
+    monkeypatch.setattr(main, "create_graph", lambda: FakeGraph())
+
+    def fake_load_run_state(graph, config, initial_state):
+        captured["initial_state"] = initial_state
+        return SimpleNamespace(values={}, next=()), initial_state
+
+    monkeypatch.setattr(main, "load_run_state", fake_load_run_state)
+    monkeypatch.setattr("sys.argv", ["main.py", "--focus_keyword", "改善睡眠"])
+
+    main.main()
+
+    assert captured["initial_state"]["interactive"] is True

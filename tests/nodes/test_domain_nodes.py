@@ -79,6 +79,54 @@ def test_domain_confirmation_node_interrupts_and_accepts_resume_for_default_subd
     assert result["content_policy"] == build_content_policy(get_domain_profile("wellness"))
 
 
+def test_domain_confirmation_node_still_interrupts_for_interactive_default_subdomain(
+    monkeypatch,
+):
+    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"domain": "beauty", "subdomain": "makeup_basics"}
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fake_interrupt)
+
+    result = domain_confirmation_node({"domain_context": context, "interactive": True})
+
+    assert captured["payload"]["kind"] == "domain_confirmation"
+    assert captured["payload"]["context"]["classification_source"] == "explicit_domain_default_subdomain"
+    assert result["domain_context"].domain == "beauty"
+    assert result["domain_context"].subdomain == "makeup_basics"
+    assert result["domain_context"].classification_source == "explicit"
+
+
+def test_domain_router_and_confirmation_skip_interrupt_when_non_interactive(monkeypatch):
+    routed = domain_router_node(
+        {
+            "domain": "beauty",
+            "subdomain": None,
+            "focus_keyword": "改善睡眠",
+            "interactive": False,
+        }
+    )
+    captured = {"called": False}
+
+    def fail_interrupt(_payload):
+        captured["called"] = True
+        raise AssertionError("interrupt should not be called")
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fail_interrupt)
+
+    confirmation_result = domain_confirmation_node(
+        {"domain_context": routed["domain_context"], "interactive": False}
+    )
+
+    assert routed["domain_context"].classification_source == "explicit_domain_default_subdomain"
+    assert routed["domain_context"].classification_confidence == 1
+    assert confirmation_result == {}
+    assert captured["called"] is False
+
+
 def test_domain_confirmation_node_rejects_invalid_subdomain(monkeypatch):
     context = resolve_domain(domain=None, focus_keyword="完全无关的关键词")
 
