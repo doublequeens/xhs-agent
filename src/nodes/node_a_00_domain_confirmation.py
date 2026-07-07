@@ -10,7 +10,10 @@ def domain_confirmation_node(state: AgentState) -> dict:
     if context is None:
         raise ValueError("domain_confirmation_node requires `domain_context` in state.")
 
-    if context.classification_confidence >= 0.65:
+    if (
+        context.classification_confidence >= 0.65
+        and context.classification_source != "explicit_domain_default_subdomain"
+    ):
         return {}
 
     resume = interrupt(
@@ -35,8 +38,10 @@ def domain_confirmation_node(state: AgentState) -> dict:
             f"Unsupported subdomain: {selected_subdomain} for domain {selected_domain}"
         )
 
-    updated_context = resolve_domain(domain=selected_domain, focus_keyword="").model_copy(
-        update={"subdomain": selected_subdomain}
+    updated_context = resolve_domain(
+        domain=selected_domain,
+        subdomain=selected_subdomain,
+        focus_keyword="",
     )
 
     return {

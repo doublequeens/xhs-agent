@@ -4,7 +4,12 @@ from src.schemas import AgentState
 
 
 def domain_router_node(state: AgentState) -> dict:
-    context = resolve_domain(state.get("domain"), state.get("focus_keyword") or "")
+    context = resolve_domain(
+        state.get("domain"),
+        state.get("focus_keyword") or "",
+        state.get("subdomain"),
+        interactive=True,
+    )
     profile = get_domain_profile(context.domain, version=context.profile_version)
 
     return {

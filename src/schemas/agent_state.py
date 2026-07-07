@@ -22,6 +22,7 @@ from .image_qa import FinalImages
 class AgentState(TypedDict):
     trends_num: int
     domain: Optional[DomainName]
+    subdomain: Optional[str]
     focus_keyword: Optional[str]
     domain_context: Optional[DomainContext]
     content_policy: Optional[ContentPolicy]

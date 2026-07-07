@@ -315,3 +315,31 @@ def test_export_publish_package_requires_valid_domain_metadata(monkeypatch, tmp_
 
     with pytest.raises(ValueError, match="publish_package requires valid domain and profile_version metadata"):
         main.export_publish_package(publish_package)
+
+
+def test_main_rejects_subdomain_without_domain(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["main.py", "--subdomain", "daily_habits"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 2
+
+
+def test_main_rejects_subdomain_outside_domain(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        ["main.py", "--domain", "healthy_lifestyle", "--subdomain", "skincare"],
+    )
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 2

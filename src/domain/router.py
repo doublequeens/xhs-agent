@@ -9,16 +9,40 @@ def _risk_level_for_domain(domain: str) -> RiskLevel:
     return "low"
 
 
-def resolve_domain(domain: str | None, focus_keyword: str) -> DomainContext:
+def resolve_domain(
+    domain: str | None,
+    focus_keyword: str,
+    subdomain: str | None = None,
+    *,
+    interactive: bool = True,
+) -> DomainContext:
     keyword = (focus_keyword or "").casefold()
+
+    if subdomain and not domain:
+        raise ValueError("subdomain requires domain")
 
     if domain:
         profile = get_domain_profile(domain)
+        if subdomain is not None:
+            if subdomain not in profile.allowed_subdomains:
+                allowed = ", ".join(profile.allowed_subdomains)
+                raise ValueError(
+                    f"Unsupported subdomain: {subdomain} for domain {domain}. "
+                    f"Allowed subdomains: {allowed}"
+                )
+            return DomainContext(
+                domain=profile.domain,
+                subdomain=subdomain,
+                classification_source="explicit",
+                classification_confidence=1,
+                profile_version=profile.version,
+                risk_level=_risk_level_for_domain(profile.domain),
+            )
         return DomainContext(
             domain=profile.domain,
             subdomain=profile.default_subdomain,
-            classification_source="explicit",
-            classification_confidence=1,
+            classification_source="explicit_domain_default_subdomain",
+            classification_confidence=0.85 if interactive else 1,
             profile_version=profile.version,
             risk_level=_risk_level_for_domain(profile.domain),
         )

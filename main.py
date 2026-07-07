@@ -251,6 +251,11 @@ def main():
         help="Explicit domain for routing",
     )
     parser.add_argument(
+        "--subdomain",
+        type=str,
+        help="Explicit subdomain for the selected domain",
+    )
+    parser.add_argument(
         "--thread-id",
         type=str,
         help="Existing conversation thread ID to resume",
@@ -262,6 +267,15 @@ def main():
     # parser.add_argument("--mode", type=str, default="manual", choices=["auto", "manual"], help="Publishing mode")
     
     args = parser.parse_args()
+    if args.subdomain and not args.domain:
+        parser.error("--subdomain requires --domain")
+    if args.domain and args.subdomain:
+        profile = get_domain_profile(args.domain)
+        if args.subdomain not in profile.allowed_subdomains:
+            parser.error(
+                "--subdomain must be one of "
+                f"{', '.join(profile.allowed_subdomains)} for domain {args.domain}"
+            )
     
     init_message = f"Starting Xiaohongshu Agent"
     if args.provider:
@@ -270,6 +284,8 @@ def main():
         init_message += f" with topic focus keyword: {args.focus_keyword},"
     if args.domain:
         init_message += f" with domain: {args.domain},"
+    if args.subdomain:
+        init_message += f" with subdomain: {args.subdomain},"
     if args.topic_num:
         init_message += f" with topic number: {args.topic_num}."
     print(init_message)
@@ -296,6 +312,7 @@ def main():
 
     initial_state = {
         "domain": args.domain,
+        "subdomain": args.subdomain,
         "domain_context": None,
         "content_policy": None,
         "memory_context": None,
