@@ -65,6 +65,8 @@ def collect_topic_signals(
 
     if weather_signal is not None:
         signals.append(weather_signal)
+    else:
+        degraded_reasons.append("weather_signal_unavailable")
 
     stored_rows = manager.get_active_trend_signals(
         domain=domain,

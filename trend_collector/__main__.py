@@ -37,7 +37,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if summary.error_summary:
             print(f"error={summary.error_summary}")
-        return 0 if summary.status == "success" else 1
+        return 0 if summary.status in {"success", "skipped"} else 1
     if args.command == "install-launchagent":
         user_home = Path.home()
         repo_root = Path(__file__).resolve().parent.parent

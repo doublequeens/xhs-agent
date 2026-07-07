@@ -183,6 +183,15 @@ CREATE TABLE IF NOT EXISTS trend_signals (
 CREATE INDEX IF NOT EXISTS idx_trend_signals_scope_active
 ON trend_signals(domain, subdomain, active_from, expires_at);
 
+CREATE TABLE IF NOT EXISTS trend_collection_runs (
+    collection_date TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    collected_signals INTEGER NOT NULL DEFAULT 0,
+    error_summary TEXT
+);
+
 CREATE TABLE IF NOT EXISTS topic_generation_traces (
     run_id TEXT PRIMARY KEY,
     domain TEXT NOT NULL,

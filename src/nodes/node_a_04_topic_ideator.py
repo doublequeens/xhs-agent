@@ -6,6 +6,38 @@ from src.prompts.composer import compose_prompt_for_state, serialize_prompt_valu
 from src.schemas.topic import TopicItem
 
 
+def _brief_seed_keys(creative_briefs: list[object]) -> set[tuple[str, str, str, str]]:
+    keys: set[tuple[str, str, str, str]] = set()
+    for brief in creative_briefs:
+        signal = brief.signal if hasattr(brief, "signal") else brief["signal"]
+        get_value = signal.get if isinstance(signal, dict) else lambda key: getattr(signal, key)
+        keys.add(
+            (
+                get_value("signal_type"),
+                get_value("signal_name"),
+                get_value("why_now"),
+                get_value("domain_translation"),
+            )
+        )
+    return keys
+
+
+def _validate_candidates_bound_to_briefs(
+    candidates: list[TopicItem], creative_briefs: list[object]
+) -> None:
+    allowed_seed_keys = _brief_seed_keys(creative_briefs)
+    for candidate in candidates:
+        seed = candidate.creative_seed
+        seed_key = (
+            seed.signal_type,
+            seed.signal_name,
+            seed.why_now,
+            seed.domain_translation,
+        )
+        if seed_key not in allowed_seed_keys:
+            raise RuntimeError("creative_seed must match an input brief signal")
+
+
 def topic_ideator_node(state: dict) -> dict:
     creative_briefs = state.get("creative_briefs", [])
     domain_context = state.get("domain_context", {})
@@ -38,5 +70,7 @@ def topic_ideator_node(state: dict) -> dict:
         raise RuntimeError(
             f"Process terminated due to topic ideator schema error: {error}"
         ) from error
+
+    _validate_candidates_bound_to_briefs(candidates, creative_briefs)
 
     return {"topic_candidates": candidates}

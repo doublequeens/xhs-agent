@@ -6,6 +6,9 @@ from typing import Literal, Protocol
 
 from src.schemas.topic_signal import TopicSignal
 
+
+DEFAULT_WEATHER_CITY = "上海"
+
 WeatherType = Literal["high_heat", "cold_wave", "rainy", "humid", "dry", "windy", "normal"]
 
 @dataclass(frozen=True)
@@ -20,6 +23,56 @@ class WeatherSnapshot:
 
 class WeatherProvider(Protocol):
     def get_weather(self, city: str, today: date) -> WeatherSnapshot: ...
+
+
+class ShanghaiGeneralizedWeatherProvider:
+    """Offline seasonal weather approximation for low-risk topic framing."""
+
+    source = "generalized_shanghai_weather"
+
+    def get_weather(self, city: str, today: date) -> WeatherSnapshot:
+        normalized_city = city or DEFAULT_WEATHER_CITY
+        weather_type: WeatherType
+        temperature_high: int | None
+        temperature_low: int | None
+        humidity_bucket: str
+
+        if today.month in (7, 8):
+            weather_type = "high_heat"
+            temperature_high = 35
+            temperature_low = 28
+            humidity_bucket = "humid"
+        elif today.month in (6,):
+            weather_type = "humid"
+            temperature_high = 30
+            temperature_low = 24
+            humidity_bucket = "humid"
+        elif today.month in (12, 1, 2):
+            weather_type = "cold_wave"
+            temperature_high = 8
+            temperature_low = 2
+            humidity_bucket = "dry"
+        elif today.month in (3, 4):
+            weather_type = "rainy"
+            temperature_high = 20
+            temperature_low = 12
+            humidity_bucket = "normal"
+        else:
+            weather_type = "normal"
+            temperature_high = None
+            temperature_low = None
+            humidity_bucket = "normal"
+
+        return WeatherSnapshot(
+            city=normalized_city,
+            date=today,
+            weather_type=weather_type,
+            temperature_high=temperature_high,
+            temperature_low=temperature_low,
+            humidity_bucket=humidity_bucket,
+            source=self.source,
+        )
+
 
 def weather_signal_from_snapshot(
     snapshot: WeatherSnapshot,

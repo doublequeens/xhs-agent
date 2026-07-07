@@ -2,7 +2,14 @@ from src.schemas.topic import TopicItem
 from src.topic_signals.diversity import filter_topic_candidates
 
 
-def _topic(topic_id, topic, signal_name, content_intent="checklist"):
+def _topic(
+    topic_id,
+    topic,
+    signal_name,
+    content_intent="checklist",
+    signal_type="calendar",
+    evergreen_pain="长期痛点。",
+):
     return TopicItem(
         topic_id=topic_id,
         topic=topic,
@@ -17,11 +24,11 @@ def _topic(topic_id, topic, signal_name, content_intent="checklist"):
         risk_level="low",
         risk_flags=[],
         creative_seed={
-            "signal_type": "calendar",
+            "signal_type": signal_type,
             "signal_name": signal_name,
             "why_now": "当前有效。",
             "domain_translation": "转译为生活习惯。",
-            "evergreen_pain": "长期痛点。",
+            "evergreen_pain": evergreen_pain,
             "timely_framing": "当前时机。",
         },
     )
@@ -38,3 +45,28 @@ def test_filter_topic_candidates_removes_near_duplicates():
     )
     assert [item.topic_id for item in selected] == ["tp_001", "tp_003"]
     assert metrics["unique_signal_count"] == 2
+
+
+def test_filter_topic_candidates_reports_real_signal_mix_metrics():
+    selected, metrics = filter_topic_candidates(
+        [
+            _topic(
+                "tp_001",
+                "高温天上班族补水提醒",
+                "上海高温天",
+                signal_type="weather",
+            ),
+            _topic(
+                "tp_002",
+                "长期久坐人群活动提醒",
+                "通用生活场景",
+                signal_type="evergreen_context",
+                evergreen_pain="",
+            ),
+        ],
+        trends_num=2,
+    )
+
+    assert [item.topic_id for item in selected] == ["tp_001", "tp_002"]
+    assert metrics["timely_signal_ratio"] == 0.5
+    assert metrics["evergreen_pain_ratio"] == 0.5

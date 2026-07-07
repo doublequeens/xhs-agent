@@ -5,6 +5,17 @@ from src.nodes.node_a_02_topic_signal_collector import topic_signal_collector_no
 from src.nodes.node_a_03_creative_brief_builder import creative_brief_builder_node
 
 
+class EmptyManager:
+    def __init__(self, path):
+        self.path = path
+
+    def init_db(self, schema_path):
+        pass
+
+    def get_active_trend_signals(self, domain, subdomain, today):
+        return []
+
+
 def test_topic_signal_collector_uses_calendar(monkeypatch, tmp_path):
     calendar = tmp_path / "trend_calendar.yml"
     calendar.write_text(
@@ -37,6 +48,37 @@ signals:
     )
 
     assert result["topic_signals"][0].signal_name == "高温天"
+
+
+def test_topic_signal_collector_uses_default_shanghai_weather(
+    monkeypatch, tmp_path
+):
+    calendar = tmp_path / "trend_calendar.yml"
+    calendar.write_text("signals: []\n", encoding="utf-8")
+    monkeypatch.setattr(
+        "src.nodes.node_a_02_topic_signal_collector.CALENDAR_PATH",
+        calendar,
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_02_topic_signal_collector.XHSMemoryManager",
+        EmptyManager,
+    )
+
+    result = topic_signal_collector_node(
+        {
+            "domain_context": {
+                "domain": "healthy_lifestyle",
+                "subdomain": "daily_habits",
+            },
+            "_today_for_test": date(2026, 7, 7),
+            "_now_for_test": datetime(2026, 7, 7, tzinfo=ZoneInfo("Asia/Shanghai")),
+        }
+    )
+
+    assert [signal.signal_name for signal in result["topic_signals"]] == [
+        "上海高温天"
+    ]
+    assert result["topic_generation_degraded_reason"] is None
 
 
 def test_creative_brief_builder_uses_topic_signals():

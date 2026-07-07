@@ -8,7 +8,11 @@ from src.nodes.node_a_05_topic_diversity_filter import topic_diversity_filter_no
 
 
 class FakeModel:
+    def __init__(self, state):
+        self.state = state
+
     def execute(self, messages):
+        signal = self.state["creative_briefs"][0].signal
         return [
             {
                 "topic_id": "tp_001",
@@ -24,10 +28,10 @@ class FakeModel:
                 "risk_level": "low",
                 "risk_flags": [],
                 "creative_seed": {
-                    "signal_type": "seasonal",
-                    "signal_name": "高温天",
-                    "why_now": "高温天让补水提醒更有时机感。",
-                    "domain_translation": "转译为健康生活方式下的饮水习惯提醒。",
+                    "signal_type": signal.signal_type,
+                    "signal_name": signal.signal_name,
+                    "why_now": signal.why_now,
+                    "domain_translation": signal.domain_translation,
                     "evergreen_pain": "忙起来容易忘记喝水。",
                     "timely_framing": "高温天更容易注意到补水问题。",
                 },
@@ -36,10 +40,13 @@ class FakeModel:
 
 
 def test_signal_driven_topic_generation_offline(monkeypatch):
-    monkeypatch.setattr("src.nodes.node_a_04_topic_ideator.get_model", lambda: FakeModel())
     monkeypatch.setattr(
-        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
-        lambda task, state: "system prompt",
+        "src.nodes.node_a_02_topic_signal_collector.XHSMemoryManager",
+        lambda *a, **k: _EmptyManager(),
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_05_topic_diversity_filter.XHSMemoryManager",
+        lambda *a, **k: _EmptyManager(),
     )
 
     state = {
@@ -53,6 +60,13 @@ def test_signal_driven_topic_generation_offline(monkeypatch):
 
     state.update(topic_signal_collector_node(state))
     state.update(creative_brief_builder_node(state))
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model", lambda: FakeModel(state)
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
     state.update(topic_ideator_node(state))
     state.update(topic_diversity_filter_node(state))
 
@@ -94,27 +108,31 @@ def test_signal_driven_topic_generation_degrades_when_no_signals(monkeypatch, tm
         "src.nodes.node_a_05_topic_diversity_filter.XHSMemoryManager",
         lambda *a, **k: _EmptyManager(),
     )
-    monkeypatch.setattr("src.nodes.node_a_04_topic_ideator.get_model", lambda: FakeModel())
-    monkeypatch.setattr(
-        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
-        lambda task, state: "system prompt",
-    )
 
     state = {
         "domain_context": {"domain": "healthy_lifestyle", "subdomain": "daily_habits"},
         "content_policy": {"risk_level": "low"},
         "memory_context": {},
         "trends_num": 1,
-        "_today_for_test": date(2026, 7, 7),
-        "_now_for_test": datetime(2026, 7, 7, tzinfo=ZoneInfo("Asia/Shanghai")),
+        "_today_for_test": date(2026, 5, 7),
+        "_now_for_test": datetime(2026, 5, 7, tzinfo=ZoneInfo("Asia/Shanghai")),
     }
 
     state.update(topic_signal_collector_node(state))
     state.update(creative_brief_builder_node(state))
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model", lambda: FakeModel(state)
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
     state.update(topic_ideator_node(state))
     state.update(topic_diversity_filter_node(state))
 
-    assert state["topic_generation_degraded_reason"] == "no_active_signals"
+    assert (
+        state["topic_generation_degraded_reason"]
+        == "weather_signal_unavailable;no_active_signals"
+    )
     assert state["trends"][0].creative_seed.why_now
     assert state["topic_generation_trace"].filtered_candidates_count == 1
-

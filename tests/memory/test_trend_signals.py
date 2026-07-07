@@ -105,3 +105,31 @@ def test_save_topic_generation_trace(tmp_path):
     ).fetchone()
 
     assert row["domain"] == "healthy_lifestyle"
+
+
+def test_record_and_query_successful_trend_collection_run(tmp_path):
+    manager = _manager(tmp_path)
+
+    assert manager.has_successful_trend_collection("2026-07-07") is False
+
+    manager.record_trend_collection_run(
+        {
+            "collection_date": "2026-07-07",
+            "status": "success",
+            "started_at": "2026-07-07T22:00:00+08:00",
+            "completed_at": "2026-07-07T22:01:00+08:00",
+            "collected_signals": 2,
+            "error_summary": None,
+        }
+    )
+
+    assert manager.has_successful_trend_collection("2026-07-07") is True
+    row = manager.connect().execute(
+        """
+        SELECT status, collected_signals
+        FROM trend_collection_runs
+        WHERE collection_date = ?
+        """,
+        ("2026-07-07",),
+    ).fetchone()
+    assert tuple(row) == ("success", 2)

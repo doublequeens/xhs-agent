@@ -35,6 +35,20 @@ class FakeModel:
         ]
 
 
+class OffBriefSeedModel:
+    def execute(self, messages):
+        item = FakeModel().execute(messages)[0]
+        item["creative_seed"] = {
+            "signal_type": "creator_center",
+            "signal_name": "最近爆火话题",
+            "why_now": "大家都在讨论。",
+            "domain_translation": "随便转译。",
+            "evergreen_pain": "怕麻烦。",
+            "timely_framing": "最近很火。",
+        }
+        return [item]
+
+
 def _brief():
     signal = TopicSignal(
         signal_id="sig_001",
@@ -84,3 +98,25 @@ def test_topic_ideator_generates_topic_candidates(monkeypatch):
         }
     )
     assert result["topic_candidates"][0].creative_seed.signal_name == "上海高温天"
+
+
+def test_topic_ideator_rejects_creative_seed_not_bound_to_input_brief(monkeypatch):
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model", lambda: OffBriefSeedModel()
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
+
+    with pytest.raises(RuntimeError, match="creative_seed must match an input brief"):
+        topic_ideator_node(
+            {
+                "creative_briefs": [_brief()],
+                "domain_context": {
+                    "domain": "healthy_lifestyle",
+                    "subdomain": "hydration",
+                },
+                "content_policy": {"risk_level": "low"},
+            }
+        )

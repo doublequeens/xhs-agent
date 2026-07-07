@@ -284,6 +284,18 @@ def migrate_topic_generation_schema(connection: sqlite3.Connection) -> None:
         )
         connection.execute(
             """
+            CREATE TABLE IF NOT EXISTS trend_collection_runs (
+                collection_date TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                completed_at TEXT,
+                collected_signals INTEGER NOT NULL DEFAULT 0,
+                error_summary TEXT
+            )
+            """
+        )
+        connection.execute(
+            """
             CREATE TABLE IF NOT EXISTS topic_generation_traces (
                 run_id TEXT PRIMARY KEY,
                 domain TEXT NOT NULL,

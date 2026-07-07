@@ -12,13 +12,17 @@ class _TrendTitleParser(HTMLParser):
         super().__init__()
         self.titles: list[str] = []
         self._capture = False
+        self._capture_depth = 0
         self._buffer: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         classes = set(dict(attrs).get("class", "").split())
         if "trend-title" in classes:
             self._capture = True
+            self._capture_depth = 1
             self._buffer = []
+        elif self._capture:
+            self._capture_depth += 1
 
     def handle_data(self, data):
         if self._capture:
@@ -26,10 +30,14 @@ class _TrendTitleParser(HTMLParser):
 
     def handle_endtag(self, tag):
         if self._capture:
+            self._capture_depth -= 1
+            if self._capture_depth > 0:
+                return
             title = "".join(self._buffer).strip()
             if title:
                 self.titles.append(title)
             self._capture = False
+            self._capture_depth = 0
             self._buffer = []
 
 

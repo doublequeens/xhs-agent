@@ -11,6 +11,8 @@ class TrendCollectorConfig:
     timezone: ZoneInfo
     creator_center_url: str
     max_items_per_block: int
+    target_domain: str
+    target_subdomain: str
 
     @classmethod
     def default(cls, home: Path | None = None) -> "TrendCollectorConfig":
@@ -22,4 +24,6 @@ class TrendCollectorConfig:
             timezone=ZoneInfo("Asia/Shanghai"),
             creator_center_url="https://creator.xiaohongshu.com/",
             max_items_per_block=20,
+            target_domain="healthy_lifestyle",
+            target_subdomain="daily_habits",
         )

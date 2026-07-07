@@ -5,6 +5,11 @@ from zoneinfo import ZoneInfo
 from memory.memory_manager import XHSMemoryManager
 from src.schemas import AgentState
 from src.topic_signals.collector import collect_topic_signals
+from src.topic_signals.weather import (
+    DEFAULT_WEATHER_CITY,
+    ShanghaiGeneralizedWeatherProvider,
+    weather_signal_from_snapshot,
+)
 
 
 CALENDAR_PATH = Path("config/trend_calendar.yml")
@@ -25,6 +30,20 @@ def topic_signal_collector_node(state: AgentState) -> dict:
 
     manager = XHSMemoryManager("data/xhs_memory.db")
     manager.init_db("memory/schema.sql")
+    weather_signal = None
+    try:
+        weather_snapshot = ShanghaiGeneralizedWeatherProvider().get_weather(
+            DEFAULT_WEATHER_CITY,
+            today,
+        )
+        weather_signal = weather_signal_from_snapshot(
+            weather_snapshot,
+            domain=domain,
+            subdomain=subdomain,
+            collected_at=now,
+        )
+    except Exception:
+        weather_signal = None
     signals, degraded_reason = collect_topic_signals(
         manager=manager,
         calendar_path=CALENDAR_PATH,
@@ -32,7 +51,7 @@ def topic_signal_collector_node(state: AgentState) -> dict:
         subdomain=subdomain,
         today=today,
         collected_at=now,
-        weather_signal=None,
+        weather_signal=weather_signal,
     )
 
     return {

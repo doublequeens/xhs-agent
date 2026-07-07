@@ -1754,6 +1754,50 @@ class XHSMemoryManager:
             result.append(item)
         return result
 
+    def has_successful_trend_collection(self, collection_date: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM trend_collection_runs
+                WHERE collection_date = ?
+                  AND status = 'success'
+                LIMIT 1
+                """,
+                (collection_date,),
+            ).fetchone()
+        return row is not None
+
+    def record_trend_collection_run(self, summary: dict[str, object]) -> None:
+        with self._immediate_transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO trend_collection_runs (
+                    collection_date,
+                    status,
+                    started_at,
+                    completed_at,
+                    collected_signals,
+                    error_summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection_date) DO UPDATE SET
+                    status = excluded.status,
+                    started_at = excluded.started_at,
+                    completed_at = excluded.completed_at,
+                    collected_signals = excluded.collected_signals,
+                    error_summary = excluded.error_summary
+                """,
+                (
+                    summary["collection_date"],
+                    summary["status"],
+                    summary["started_at"],
+                    summary.get("completed_at"),
+                    summary.get("collected_signals", 0),
+                    summary.get("error_summary"),
+                ),
+            )
+
     def save_topic_generation_trace(self, trace: object) -> None:
         payload = trace.model_dump() if hasattr(trace, "model_dump") else dict(trace)
         with self._immediate_transaction() as conn:

@@ -60,7 +60,7 @@ signals:
         weather_signal=None,
     )
 
-    assert degraded is None
+    assert degraded == "weather_signal_unavailable"
     assert [signal.signal_id for signal in signals] == [
         "calendar_summer_heat",
         "sig_db",
@@ -88,9 +88,8 @@ def test_collect_topic_signals_falls_back_to_evergreen_when_empty(tmp_path):
         weather_signal=None,
     )
 
-    assert degraded == "no_active_signals"
+    assert degraded == "weather_signal_unavailable;no_active_signals"
     assert [signal.signal_id for signal in signals] == ["evergreen_fallback"]
     fallback = signals[0]
     assert fallback.signal_type == "evergreen_context"
     assert fallback.metadata == {"fallback": True}
-

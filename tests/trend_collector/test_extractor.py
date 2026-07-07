@@ -14,6 +14,18 @@ def test_extract_trend_titles_from_html_fixture():
     assert titles == ["高温天通勤补水", "夏日健康生活打卡"]
 
 
+def test_extract_trend_titles_keeps_nested_markup_text_together():
+    titles = extract_trend_titles_from_html(
+        """
+        <section data-block="note-inspiration">
+          <span class="trend-title">高温天<strong>通勤</strong>补水</span>
+        </section>
+        """
+    )
+
+    assert titles == ["高温天通勤补水"]
+
+
 def test_normalize_creator_trends_to_signals():
     signals = normalize_creator_trends(
         ["高温天通勤补水"],

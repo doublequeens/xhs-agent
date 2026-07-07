@@ -22,6 +22,12 @@ def _average_pairwise_similarity(items: list[TopicItem]) -> float:
     return sum(scores) / len(scores)
 
 
+def _ratio(count: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    return round(count / total, 4)
+
+
 def filter_topic_candidates(
     candidates: list[TopicItem],
     *,
@@ -51,6 +57,15 @@ def filter_topic_candidates(
         if len(selected) == trends_num:
             break
 
+    selected_count = len(selected)
+    timely_count = sum(
+        1
+        for item in selected
+        if item.creative_seed.signal_type != "evergreen_context"
+    )
+    evergreen_pain_count = sum(
+        1 for item in selected if item.creative_seed.evergreen_pain.strip()
+    )
     metrics = {
         "unique_signal_count": len(
             {item.creative_seed.signal_name for item in selected}
@@ -61,8 +76,8 @@ def filter_topic_candidates(
         "average_pairwise_title_similarity": round(
             _average_pairwise_similarity(selected), 4
         ),
-        "timely_signal_ratio": 1.0 if selected else 0.0,
-        "evergreen_pain_ratio": 1.0 if selected else 0.0,
+        "timely_signal_ratio": _ratio(timely_count, selected_count),
+        "evergreen_pain_ratio": _ratio(evergreen_pain_count, selected_count),
     }
 
     return selected, metrics
