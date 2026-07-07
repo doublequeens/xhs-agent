@@ -35,7 +35,7 @@ def test_trend_collector_launchagent_payload():
         "trend_collector",
         "collect",
     ]
-    assert payload["StartCalendarInterval"] == {"Hour": 16, "Minute": 30}
+    assert payload["StartCalendarInterval"] == {"Hour": 22, "Minute": 30}
 
 
 def test_payload_has_full_shape_with_separate_logs_and_no_runatload():
@@ -80,7 +80,7 @@ def test_installed_plist_carries_trend_label_and_secure_mode(tmp_path):
     data = plistlib.loads(plist_path.read_bytes())
     assert data["Label"] == "com.xhs-agent.trend-collector"
     assert data["ProgramArguments"] == ["/usr/bin/python3", "-m", "trend_collector", "collect"]
-    assert data["StartCalendarInterval"] == {"Hour": 16, "Minute": 30}
+    assert data["StartCalendarInterval"] == {"Hour": 22, "Minute": 30}
     assert (plist_path.stat().st_mode & 0o777) == 0o600
 
 

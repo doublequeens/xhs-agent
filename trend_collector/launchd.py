@@ -24,7 +24,7 @@ def build_launchagent_payload(
             "collect",
         ],
         "WorkingDirectory": str(repo_root),
-        "StartCalendarInterval": {"Hour": 16, "Minute": 30},
+        "StartCalendarInterval": {"Hour": 22, "Minute": 30},
         "RunAtLoad": False,
         "ProcessType": "Background",
         "StandardOutPath": str(logs / "trend_collector.out.log"),
