@@ -100,7 +100,16 @@ def _install_graph_doubles(
         events["memory_calls"].append(state["domain_context"].domain)
         return {"memory_context": {}}
 
-    def trend_node(state):
+    def topic_signal_collector_node(_state):
+        return {"topic_signals": [], "topic_generation_degraded_reason": None}
+
+    def creative_brief_builder_node(_state):
+        return {"creative_briefs": []}
+
+    def topic_ideator_node(_state):
+        return {"topic_candidates": []}
+
+    def topic_diversity_filter_node(state):
         context = state["domain_context"]
         if context.domain == "beauty":
             intent, risk = "experience", "low"
@@ -302,7 +311,10 @@ def _install_graph_doubles(
         "domain_router_node": domain_router_node,
         "domain_confirmation_node": domain_confirmation_node,
         "retrieve_memory_node": memory_node,
-        "trend_scout_node": trend_node,
+        "topic_signal_collector_node": topic_signal_collector_node,
+        "creative_brief_builder_node": creative_brief_builder_node,
+        "topic_ideator_node": topic_ideator_node,
+        "topic_diversity_filter_node": topic_diversity_filter_node,
         "angle_strategist_node": passthrough("angles", []),
         "novelty_guard_node": passthrough("novelty_check_results", []),
         "virality_scorer_node": lambda _state: {
