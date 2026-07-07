@@ -65,3 +65,32 @@ signals:
         "calendar_summer_heat",
         "sig_db",
     ]
+
+
+def test_collect_topic_signals_falls_back_to_evergreen_when_empty(tmp_path):
+    """When no source yields a signal, the collector degrades to an evergreen
+    fallback signal (instead of leaving downstream to crash) and records the
+    degradation reason."""
+    calendar = tmp_path / "trend_calendar.yml"
+    calendar.write_text("signals: []\n", encoding="utf-8")
+
+    class EmptyManager:
+        def get_active_trend_signals(self, domain, subdomain, today):
+            return []
+
+    signals, degraded = collect_topic_signals(
+        manager=EmptyManager(),
+        calendar_path=calendar,
+        domain="healthy_lifestyle",
+        subdomain="daily_habits",
+        today=date(2026, 7, 7),
+        collected_at=datetime(2026, 7, 7, tzinfo=ZoneInfo("Asia/Shanghai")),
+        weather_signal=None,
+    )
+
+    assert degraded == "no_active_signals"
+    assert [signal.signal_id for signal in signals] == ["evergreen_fallback"]
+    fallback = signals[0]
+    assert fallback.signal_type == "evergreen_context"
+    assert fallback.metadata == {"fallback": True}
+

@@ -1,3 +1,4 @@
+from datetime import date, datetime
 from typing import TypedDict, List, Optional
 
 from memory.memory_manager import XHSMemoryManager
@@ -61,3 +62,7 @@ class AgentState(TypedDict):
     pending_human_publish_patch: Optional[dict]
     pending_human_replace_storyboards: Optional[bool]
     data_writed: Optional[bool]
+    # Test-injection hooks only: nodes fall back to real now()/today() when
+    # these are absent. Never set in production initial_state.
+    _now_for_test: Optional[datetime]
+    _today_for_test: Optional[date]
