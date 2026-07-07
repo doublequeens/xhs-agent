@@ -33,6 +33,8 @@ class AgentState(TypedDict):
     topic_signals: List[TopicSignal]
     creative_briefs: List[CreativeBrief]
     topic_generation_trace: Optional[TopicGenerationTrace]
+    topic_candidates: List[TopicItem]
+    topic_generation_degraded_reason: Optional[str]
     final_policy_issues: list[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]
