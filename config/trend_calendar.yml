@@ -1,0 +1,43 @@
+signals:
+  - id: summer_heat
+    signal_type: seasonal
+    signal_name: 高温天
+    active_from: 2026-06-15
+    active_to: 2026-08-31
+    applicable_domains:
+      healthy_lifestyle:
+        subdomains: [hydration, exercise, daily_habits]
+        angles:
+          - 高温天喝水容易忽略的细节
+          - 不想运动时的低门槛活动量
+          - 午后困倦和作息安排
+      beauty:
+        subdomains: [skincare, bodycare]
+        angles:
+          - 高温通勤后的清爽护理
+          - 出汗后的温和清洁
+    avoid:
+      - 中暑治疗建议
+      - 电解质补充剂推荐
+      - 疾病诊断
+  - id: back_to_school
+    signal_type: calendar
+    signal_name: 开学季
+    active_from: 2026-08-15
+    active_to: 2026-09-15
+    applicable_domains:
+      healthy_lifestyle:
+        subdomains: [daily_habits, nutrition_basics, sedentary_habits]
+        angles:
+          - 作息重建
+          - 早餐准备
+          - 久坐学习间隙活动
+      wellness:
+        subdomains: [sleep, daily_routine]
+        angles:
+          - 晚睡后逐步拉回节奏
+          - 开学前一周的低压力准备
+    avoid:
+      - 治疗焦虑
+      - 提高成绩承诺
+      - 药物建议
