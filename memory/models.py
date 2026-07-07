@@ -77,6 +77,10 @@ class MetricsRecord:
     avg_watch_time_seconds: Optional[int] = None
     danmaku_count: Optional[int] = None
 
+    published_at: Optional[str] = None
+    post_id: Optional[str] = None
+    url: Optional[str] = None
+
 
 @dataclass
 class MemoryContext:

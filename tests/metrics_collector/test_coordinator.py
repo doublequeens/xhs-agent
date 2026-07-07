@@ -582,7 +582,14 @@ def test_ambiguous_rows_are_skipped_but_confident_rows_update(deps):
     assert result.ambiguous_rows == 1
     assert len(deps.manager.update_calls) == 1
     record = deps.manager.update_calls[0]["records"][0]
-    assert record == MetricsRecord(
+    assert record.content_id == "content-1"
+    assert record.published_at == "2026-07-05T12:00:00+08:00"
+    assert record.post_id is None
+    assert record.url is None
+    assert replace(
+        record,
+        published_at=None,
+    ) == MetricsRecord(
         content_id="content-1",
         views=200,
         likes=20,
@@ -595,6 +602,33 @@ def test_ambiguous_rows_are_skipped_but_confident_rows_update(deps):
         avg_watch_time_seconds=17,
         danmaku_count=1,
     )
+
+
+def test_matched_metric_rows_carry_publication_metadata_for_content_backfill(deps):
+    deps.manager.metric_match_candidates = [
+        candidate_dict("bound-content", "bound title")
+        | {"post_id": POST_ID}
+    ]
+    deps.parser.rows = [
+        replace(
+            exported_row("bound title"),
+            published_at=datetime(2026, 7, 5, 13, 29, tzinfo=TZ),
+        )
+    ]
+    deps.matcher.results_by_title["bound title"] = MatchResult(
+        "matched",
+        "bound-content",
+        1.0,
+        ("bound-content",),
+    )
+
+    deps.coordinator.collect(now=AT_22)
+
+    record = deps.manager.update_calls[0]["records"][0]
+    assert record.content_id == "bound-content"
+    assert record.published_at == "2026-07-05T13:29:00+08:00"
+    assert record.post_id == POST_ID
+    assert record.url == deps.config.note_url(POST_ID)
 
 
 def test_metrics_batch_skips_all_rows_with_conflicting_content_ids(deps):

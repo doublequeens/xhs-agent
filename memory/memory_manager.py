@@ -626,9 +626,88 @@ class XHSMemoryManager:
                     source,
                     collected_at,
                 )
+                self._backfill_content_publication_metadata(conn, source_record)
                 self._insert_metrics_updated_event(conn, merged_record)
                 merged_records.append(merged_record)
         return merged_records
+
+    def _backfill_content_publication_metadata(
+        self,
+        connection: sqlite3.Connection,
+        record: MetricsRecord,
+    ) -> None:
+        if not (record.published_at or record.post_id or record.url):
+            return
+
+        target = connection.execute(
+            """
+            SELECT post_id, published_at, url
+            FROM contents
+            WHERE content_id = ?
+            """,
+            (record.content_id,),
+        ).fetchone()
+        if target is None:
+            raise ValueError(f"No content found with content_id: {record.content_id}")
+
+        existing_post_id = target["post_id"]
+        if (
+            record.post_id is not None
+            and existing_post_id is not None
+            and existing_post_id != record.post_id
+        ):
+            raise ValueError(
+                f"Content {record.content_id} is already bound to post_id: "
+                f"{existing_post_id}"
+            )
+        if record.post_id is not None:
+            owner = connection.execute(
+                """
+                SELECT content_id
+                FROM contents
+                WHERE post_id = ? AND content_id <> ?
+                LIMIT 1
+                """,
+                (record.post_id, record.content_id),
+            ).fetchone()
+            if owner is not None:
+                raise ValueError(
+                    f"post_id {record.post_id} is already bound to another "
+                    f"content: {owner['content_id']}"
+                )
+
+        connection.execute(
+            """
+            UPDATE contents
+            SET status = 'published',
+                published_at = CASE
+                    WHEN (published_at IS NULL OR published_at = '')
+                         AND ? IS NOT NULL
+                    THEN ?
+                    ELSE published_at
+                END,
+                post_id = CASE
+                    WHEN post_id IS NULL AND ? IS NOT NULL
+                    THEN ?
+                    ELSE post_id
+                END,
+                url = CASE
+                    WHEN (url IS NULL OR url = '') AND ? IS NOT NULL
+                    THEN ?
+                    ELSE url
+                END
+            WHERE content_id = ?
+            """,
+            (
+                record.published_at,
+                record.published_at,
+                record.post_id,
+                record.post_id,
+                record.url,
+                record.url,
+                record.content_id,
+            ),
+        )
 
     def _merge_metrics_record(
         self,

@@ -386,6 +386,7 @@ class CollectionCoordinator:
             rows,
             candidates,
         )
+        candidates_by_id = {candidate.content_id: candidate for candidate in candidates}
         for row, match in zip(rows, matches):
             is_batch_conflict = (
                 match.status == "matched"
@@ -396,7 +397,14 @@ class CollectionCoordinator:
                 and match.content_id is not None
                 and not is_batch_conflict
             ):
-                records.append(_metrics_record_from_row(match.content_id, row))
+                records.append(
+                    _metrics_record_from_row(
+                        match.content_id,
+                        row,
+                        candidates_by_id.get(match.content_id),
+                        self.config,
+                    )
+                )
             elif match.status == "ambiguous" or is_batch_conflict:
                 ambiguous_rows += 1
                 skipped_rows += 1
@@ -479,7 +487,10 @@ def _parse_candidate_reference_time(reference_time: str) -> datetime:
 def _metrics_record_from_row(
     content_id: str,
     row: ExportedMetrics,
+    candidate: ContentCandidate | None,
+    config: CollectorConfig,
 ) -> MetricsRecord:
+    post_id = candidate.post_id if candidate is not None else None
     return MetricsRecord(
         content_id=content_id,
         views=row.views,
@@ -492,7 +503,19 @@ def _metrics_record_from_row(
         cover_click_rate=row.cover_click_rate,
         avg_watch_time_seconds=row.avg_watch_time_seconds,
         danmaku_count=row.danmaku_count,
+        published_at=row.published_at.isoformat(),
+        post_id=post_id,
+        url=_note_url_or_none(config, post_id),
     )
+
+
+def _note_url_or_none(config: CollectorConfig, post_id: str | None) -> str | None:
+    if post_id is None:
+        return None
+    try:
+        return config.note_url(post_id)
+    except ValueError:
+        return None
 
 
 def _summary_dict(summary: CollectionSummary) -> dict[str, object]:

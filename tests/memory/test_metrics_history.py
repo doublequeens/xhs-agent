@@ -117,6 +117,34 @@ def test_batch_update_writes_latest_and_history_with_merged_calculations(manager
     ]
 
 
+def test_batch_update_backfills_content_publication_metadata(manager):
+    save_content(manager, "content-1")
+
+    manager.update_metrics_batch(
+        [
+            MetricsRecord(
+                content_id="content-1",
+                views=200,
+                likes=10,
+                saves=8,
+                comments=4,
+                post_id="post-1",
+                url="https://www.xiaohongshu.com/explore/post-1",
+                published_at="2026-07-05T13:29:00+08:00",
+            )
+        ],
+        collected_date="2026-07-06",
+        source="creator_center_note_export_v1",
+    )
+
+    content = manager.get_content_by_id("content-1")
+    assert content is not None
+    assert content["status"] == "published"
+    assert content["post_id"] == "post-1"
+    assert content["url"] == "https://www.xiaohongshu.com/explore/post-1"
+    assert content["published_at"] == "2026-07-05T13:29:00+08:00"
+
+
 def test_none_preserves_latest_and_zero_overwrites(manager):
     save_content(manager, "content-1")
     manager.update_metrics(
