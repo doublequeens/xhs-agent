@@ -166,13 +166,28 @@ def r2_compliance_node(state: AgentState) -> AgentState:
                 )
             }
         )
+    deterministic_policy_rule_ids = [issue.rule_id for issue in deterministic_policy_issues]
     matched_policy_rules = _dedupe_strings(
-        list(audit.matched_policy_rules) + [issue.rule_id for issue in deterministic_policy_issues]
+        list(audit.matched_policy_rules) + deterministic_policy_rule_ids
     )
     unresolved_claims = _dedupe_strings(list(audit.unresolved_claims) + unresolved_claims)
+    clean_fully_compliant = (
+        audit.compliance_status == "fully_compliant"
+        and not audit.issues
+        and not audit.required_fixes
+        and not deterministic_policy_rule_ids
+        and not unresolved_claims
+    )
+    block_publish = False if clean_fully_compliant else bool(
+        audit.block_publish
+        or audit.required_fixes
+        or deterministic_policy_rule_ids
+        or unresolved_claims
+        or audit.compliance_status == "high_risk_detected"
+    )
     r2_output.compliance_audit = audit.model_copy(
         update={
-            "block_publish": bool(audit.block_publish or matched_policy_rules or unresolved_claims),
+            "block_publish": block_publish,
             "matched_policy_rules": matched_policy_rules,
             "unresolved_claims": unresolved_claims,
         }

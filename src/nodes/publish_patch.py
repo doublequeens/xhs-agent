@@ -2,6 +2,7 @@ from __future__ import annotations
 
 
 STORYBOARD_VISIBLE_FIELDS = ("frame_title", "on_image_copy", "narration")
+TITLE_MAX_LENGTH = 20
 ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "title",
     "content",
@@ -21,6 +22,18 @@ ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "risk_level",
     "risk_flags",
 }
+
+
+def enforce_title_length(title, max_length: int = TITLE_MAX_LENGTH) -> str:
+    return str(title or "")[:max_length]
+
+
+def enforce_publish_package_title_length(publish_package: dict) -> dict:
+    if "title" not in publish_package:
+        return publish_package
+    normalized = dict(publish_package)
+    normalized["title"] = enforce_title_length(normalized.get("title"))
+    return normalized
 
 
 def merge_publish_package(

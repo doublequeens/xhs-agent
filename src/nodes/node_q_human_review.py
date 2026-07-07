@@ -2,7 +2,11 @@ from langgraph.types import interrupt
 
 from src.schemas import DecisionOutput, DecisionTrace, NormalizedInput, R2ContentSnapShoot, R2Input, RevisionMeta
 from src.schemas import AgentState
-from src.nodes.publish_patch import extract_storyboard_visible_text, merge_publish_package
+from src.nodes.publish_patch import (
+    enforce_publish_package_title_length,
+    extract_storyboard_visible_text,
+    merge_publish_package,
+)
 
 
 def _get_value(payload, key, default=None):
@@ -144,6 +148,7 @@ def human_review_node(state: AgentState) -> AgentState:
     publish_package = state.get("publish_package")
     if not publish_package:
         raise ValueError("human_review_node requires `publish_package` in state.")
+    publish_package = enforce_publish_package_title_length(publish_package)
 
     review_round = state.get("review_round", 0) or 0
     final_policy_issues = list(state.get("final_policy_issues") or [])
@@ -178,11 +183,13 @@ def human_review_node(state: AgentState) -> AgentState:
                 edited_publish_package,
                 replace_storyboards=replace_storyboards,
             )
+            publish_package = enforce_publish_package_title_length(publish_package)
             pending_patch = merge_publish_package(
                 pending_patch,
                 edited_publish_package,
                 replace_storyboards=replace_storyboards,
             )
+            pending_patch = enforce_publish_package_title_length(pending_patch)
             pending_replace_storyboards = pending_replace_storyboards or replace_storyboards
             visible_text_edited = visible_text_edited or _has_visible_text_edits(
                 prior_publish_package,

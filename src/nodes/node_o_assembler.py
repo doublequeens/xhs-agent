@@ -2,7 +2,12 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState
-from src.nodes.publish_patch import merge_publish_package, publish_patch_for_assembler
+from src.nodes.publish_patch import (
+    enforce_publish_package_title_length,
+    enforce_title_length,
+    merge_publish_package,
+    publish_patch_for_assembler,
+)
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 
@@ -66,7 +71,7 @@ def assembler_node(state: AgentState) -> AgentState:
     publish_package_json = llm.execute(messages)
     publish_package_json.update(
         {
-            "title": _get_value(final_content, "final_title"),
+            "title": enforce_title_length(_get_value(final_content, "final_title")),
             "content": _get_value(final_content, "final_md"),
             "topic_id": _get_value(final_content, "topic_id"),
             "topic": _get_value(final_content, "topic"),
@@ -89,6 +94,7 @@ def assembler_node(state: AgentState) -> AgentState:
             publish_package_json,
             publish_patch_for_assembler(pending_patch),
         )
+    publish_package_json = enforce_publish_package_title_length(publish_package_json)
     return {
         "publish_package": publish_package_json
     }

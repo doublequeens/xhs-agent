@@ -448,6 +448,50 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["profile_version"] == "wellness-v1"
 
 
+def test_assembler_enforces_title_max_length_including_punctuation(monkeypatch):
+    from src.nodes import node_o_assembler as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "images": [],
+                "hashtags": ["#x"],
+                "notes": [],
+                "storyboard_strategy": "auto",
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    result = module.assembler_node(
+        {
+            "final_content": SimpleNamespace(
+                final_title="1234567890123456789！超长标题",
+                final_md="body",
+                topic_id="tp_001",
+                topic="睡眠改善",
+                angle_id="ag_001",
+                angle="睡眠策略",
+                target_group="上班族",
+                core_pain="熬夜后疲惫",
+                best_cover_copy="cover",
+                domain="wellness",
+                subdomain="sleep",
+                content_intent="how_to",
+                risk_level="medium",
+                risk_flags=["medical-adjacent"],
+            ),
+            "hashtags": SimpleNamespace(hashtags=["#x"]),
+            "final_images": SimpleNamespace(image_final_choices=[]),
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+        }
+    )
+
+    title = result["publish_package"]["title"]
+    assert title == "1234567890123456789！"
+    assert len(title) == 20
+
+
 def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(monkeypatch):
     from src.nodes import node_o_assembler as module
 

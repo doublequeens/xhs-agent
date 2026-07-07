@@ -152,6 +152,59 @@ def test_r2_compliance_node_blocks_publish_when_deterministic_guard_finds_issues
     assert "guaranteed_outcome" in prompt_text
 
 
+def test_r2_compliance_node_does_not_block_clean_fully_compliant_safety_rules(monkeypatch):
+    class FakeModel:
+        def execute(self, messages):
+            return {
+                "content_snapshot": {
+                    "draft_id": "draft_001",
+                    "revised_title": "作息记录",
+                    "revised_md": "分享我的作息调整记录。",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "作息调整",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                },
+                "compliance_audit": {
+                    "compliance_status": "fully_compliant",
+                    "issues": [],
+                    "required_fixes": [],
+                    "suggested_fixes": [],
+                    "block_publish": True,
+                    "matched_policy_rules": [
+                        "no_prohibited_topics",
+                        "no_prohibited_claims",
+                        "disclaimer_included",
+                    ],
+                    "unresolved_claims": [],
+                },
+                "revision_meta": {
+                    "revision_id": "rev_001",
+                    "round": 1,
+                    "diff_summary": ["clean"],
+                    "next_actions": ["publish"],
+                },
+            }
+
+    monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
+
+    result = r2_module.r2_compliance_node(
+        _r2_state(title="作息记录", body="分享我的作息调整记录。")
+    )
+
+    audit = result["r2_output"].compliance_audit
+
+    assert audit.block_publish is False
+    assert audit.matched_policy_rules == [
+        "no_prohibited_topics",
+        "no_prohibited_claims",
+        "disclaimer_included",
+    ]
+
+
 def test_r2_compliance_node_blocks_publish_for_unresolved_claims(monkeypatch):
     captured = {}
 
@@ -502,6 +555,43 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
     }
     assert result["decision_output"].normalized_input.r2_input.revision_meta.round == 2
     assert result["decision_output"].normalized_input.r2_input.decision_trace.source_node == "HUMAN_REVIEW"
+
+
+def test_human_review_enforces_title_max_length_including_punctuation(monkeypatch):
+    def fake_interrupt(_payload):
+        return {
+            "approved": True,
+            "edited_publish_package": {"title": "1234567890123456789！超长标题"},
+            "feedback": "edited",
+        }
+
+    monkeypatch.setattr("src.nodes.node_q_human_review.interrupt", fake_interrupt)
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(),
+            "review_round": 0,
+            "final_policy_issues": [],
+            "domain_context": {"profile_version": "wellness-v1"},
+            "r2_output": SimpleNamespace(
+                content_snapshot=SimpleNamespace(draft_id="draft_001"),
+                revision_meta=SimpleNamespace(
+                    revision_id="rev_001",
+                    round=1,
+                    diff_summary=["first pass"],
+                    next_actions=["human review"],
+                ),
+            ),
+        }
+    )
+
+    title = result["publish_package"]["title"]
+    assert title == "1234567890123456789！"
+    assert len(title) == 20
+    assert (
+        result["decision_output"].normalized_input.r2_input.content_snapshot.revised_title
+        == title
+    )
 
 
 def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypatch):
