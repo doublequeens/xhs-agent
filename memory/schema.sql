@@ -158,3 +158,42 @@ ON metrics(performance_level);
 
 CREATE INDEX IF NOT EXISTS idx_metrics_engagement_rate
 ON metrics(engagement_rate);
+
+CREATE TABLE IF NOT EXISTS trend_signals (
+    signal_id TEXT PRIMARY KEY,
+    source TEXT NOT NULL,
+    source_url TEXT,
+    raw_title TEXT,
+    normalized_signal TEXT NOT NULL,
+    signal_type TEXT NOT NULL,
+    signal_name TEXT NOT NULL,
+    domain TEXT NOT NULL,
+    subdomain TEXT NOT NULL,
+    why_now TEXT NOT NULL,
+    domain_translation TEXT NOT NULL,
+    risk_level TEXT NOT NULL,
+    avoid_topics TEXT NOT NULL DEFAULT '[]',
+    confidence REAL NOT NULL,
+    active_from TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    collected_at TEXT NOT NULL,
+    metadata TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_trend_signals_scope_active
+ON trend_signals(domain, subdomain, active_from, expires_at);
+
+CREATE TABLE IF NOT EXISTS topic_generation_traces (
+    run_id TEXT PRIMARY KEY,
+    domain TEXT NOT NULL,
+    subdomain TEXT NOT NULL,
+    trends_num INTEGER NOT NULL,
+    signals_used TEXT NOT NULL,
+    creative_briefs_sampled TEXT NOT NULL,
+    generated_candidates_count INTEGER NOT NULL,
+    filtered_candidates_count INTEGER NOT NULL,
+    final_trends TEXT NOT NULL,
+    diversity_metrics TEXT NOT NULL,
+    degraded_reason TEXT,
+    created_at TEXT NOT NULL
+);
