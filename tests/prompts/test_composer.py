@@ -21,10 +21,10 @@ def test_all_task_files_compose_for_each_domain_profile(domain):
         assert f'"domain": "{profile.domain}"' in prompt
         composed_count += 1
 
-    assert composed_count == 15
+    assert composed_count == len(TASK_FILES)
 
 
-def test_task_profile_matrix_has_45_successful_compositions():
+def test_task_profile_matrix_composes_every_task_for_every_domain():
     from src.prompts.composer import compose_prompt
 
     success_count = 0
@@ -35,7 +35,7 @@ def test_task_profile_matrix_has_45_successful_compositions():
             assert compose_prompt(task, profile)
             success_count += 1
 
-    assert success_count == 45
+    assert success_count == len(TASK_FILES) * len(("beauty", "wellness", "healthy_lifestyle"))
 
 
 def test_compose_prompt_includes_task_safety_and_profile_payload_for_wellness():

@@ -25,6 +25,7 @@ _EXPORTS = {
     "content_writer_node": "src.nodes.node_p_content_writer",
     "human_review_node": "src.nodes.node_q_human_review",
     "final_policy_guard_node": "src.nodes.node_q_01_final_policy_guard",
+    "topic_ideator_node": "src.nodes.node_a_04_topic_ideator",
 }
 
 __all__ = list(_EXPORTS)

@@ -26,6 +26,7 @@ TASK_FILES = {
     "assembler": "assembler.txt",
     "storyboards_generator": "storyboards_generator.txt",
     "storyboards_images_generator": "storyboards_images_generator.txt",
+    "topic_ideator": "topic_ideator.txt",
 }
 
 
