@@ -6,6 +6,17 @@ from src.domain import build_content_policy, get_domain_profile, get_topic_metad
 from src.schemas.topic import TopicItem
 
 
+def _creative_seed():
+    return {
+        "signal_type": "evergreen_context",
+        "signal_name": "测试默认信号",
+        "why_now": "测试中使用稳定 evergreen 信号。",
+        "domain_translation": "测试中保持原 domain/subdomain。",
+        "evergreen_pain": "测试核心痛点。",
+        "timely_framing": "测试时机包装。",
+    }
+
+
 def _topic(topic_id="tp_001"):
     return TopicItem(
         topic_id=topic_id,
@@ -20,6 +31,7 @@ def _topic(topic_id="tp_001"):
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-adjacent"],
+        creative_seed=_creative_seed(),
     )
 
 
@@ -82,6 +94,7 @@ def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
                     "content_intent": "how_to",
                     "risk_level": "low",
                     "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+                    "creative_seed": _creative_seed(),
                 }
             ]
 
@@ -126,6 +139,7 @@ def test_trend_scout_normalizes_basic_science_risk_level(monkeypatch):
                     "content_intent": "basic_science",
                     "risk_level": "low",
                     "risk_flags": ["medical-adjacent"],
+                    "creative_seed": _creative_seed(),
                 }
             ]
 

@@ -18,6 +18,7 @@ from .hashtag import HashTagOutput
 from .visual_director import ImageScriptList
 from .image_sourcing import ImageCandidates
 from .image_qa import FinalImages
+from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
 
 class AgentState(TypedDict):
     trends_num: int
@@ -29,6 +30,9 @@ class AgentState(TypedDict):
     content_policy: Optional[ContentPolicy]
     memory_context: Optional[dict]
     evidence_briefs: dict[str, EvidenceBrief]
+    topic_signals: List[TopicSignal]
+    creative_briefs: List[CreativeBrief]
+    topic_generation_trace: Optional[TopicGenerationTrace]
     final_policy_issues: list[dict]
     trends: List[TopicItem]
     angles: List[AngleStrategy]

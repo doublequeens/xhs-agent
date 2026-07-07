@@ -20,6 +20,14 @@ def _topic(*, topic_id: str, topic: str, content_intent: str, risk_level: str) -
         content_intent=content_intent,
         risk_level=risk_level,
         risk_flags=["medical-adjacent"],
+        creative_seed={
+            "signal_type": "evergreen_context",
+            "signal_name": "测试默认信号",
+            "why_now": "测试中使用稳定 evergreen 信号。",
+            "domain_translation": "测试中保持原 domain/subdomain。",
+            "evergreen_pain": "测试核心痛点。",
+            "timely_framing": "测试时机包装。",
+        },
     )
 
 

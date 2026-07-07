@@ -24,6 +24,17 @@ from src.schemas.decision import RevisionMeta
 from src.schemas.topic import TopicItem
 
 
+def _creative_seed():
+    return {
+        "signal_type": "evergreen_context",
+        "signal_name": "测试默认信号",
+        "why_now": "测试中使用稳定 evergreen 信号。",
+        "domain_translation": "测试中保持原 domain/subdomain。",
+        "evergreen_pain": "测试核心痛点。",
+        "timely_framing": "测试时机包装。",
+    }
+
+
 class _EvidenceProvider:
     def __init__(self, events, *, has_results=True):
         self.events = events
@@ -112,6 +123,7 @@ def _install_graph_doubles(
                     content_intent=intent,
                     risk_level=risk,
                     risk_flags=[],
+                    creative_seed=_creative_seed(),
                 )
             ]
         }
