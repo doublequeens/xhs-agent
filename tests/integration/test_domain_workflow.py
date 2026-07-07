@@ -374,7 +374,7 @@ def _run_to_review(graph, initial_state, thread_id):
     "initial_state,expected",
     [
         (
-            {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+            {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
             ("beauty", "skincare", "experience", "low", False),
         ),
         (
@@ -445,7 +445,7 @@ def test_blocked_r2_cannot_reach_hashtags(graph_factory):
 
     with pytest.raises(RuntimeError, match="blocked before hashtags"):
         graph.invoke(
-            {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+            {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
             config={"configurable": {"thread_id": "blocked-r2"}},
         )
 
@@ -457,7 +457,7 @@ def test_human_treatment_edit_returns_to_review_before_write(graph_factory):
     graph, events = graph_factory()
     config, _interrupted = _run_to_review(
         graph,
-        {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+        {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
         "human-edit",
     )
 
@@ -481,7 +481,7 @@ def test_rejected_review_never_calls_memory_writes(graph_factory):
     graph, events = graph_factory()
     config, _interrupted = _run_to_review(
         graph,
-        {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+        {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
         "rejected-review",
     )
 

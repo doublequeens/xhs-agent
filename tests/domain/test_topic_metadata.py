@@ -24,8 +24,8 @@ def _creative_seed():
 def _load_main(monkeypatch):
     models = ModuleType("src.models")
     models.set_default_provider = lambda _provider: None
-    prompts = ModuleType("src.prompts")
-    prompts.all_prompts = {}
+    composer = ModuleType("src.prompts.composer")
+    composer.compose_prompt = lambda *args, **kwargs: ""
     graph = ModuleType("src.graph")
     graph.create_graph = lambda: object()
     memory_memory_manager = ModuleType("memory.memory_manager")
@@ -40,7 +40,7 @@ def _load_main(monkeypatch):
     memory_memory_manager.XHSMemoryManager = FakeMemoryManager
 
     monkeypatch.setitem(sys.modules, "src.models", models)
-    monkeypatch.setitem(sys.modules, "src.prompts", prompts)
+    monkeypatch.setitem(sys.modules, "src.prompts.composer", composer)
     monkeypatch.setitem(sys.modules, "src.graph", graph)
     monkeypatch.setitem(sys.modules, "memory.memory_manager", memory_memory_manager)
     sys.modules.pop("main", None)
@@ -211,6 +211,7 @@ def test_main_initial_state_includes_metadata_briefs(monkeypatch):
     def fake_parse_args():
         return SimpleNamespace(
             domain=None,
+            subdomain=None,
             thread_id=None,
             focus_keyword=None,
             topic_num=10,
