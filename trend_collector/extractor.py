@@ -7,6 +7,19 @@ from html.parser import HTMLParser
 from src.schemas.topic_signal import TopicSignal
 
 
+IGNORED_TITLES = {
+    "创作服务平台",
+    "发布笔记",
+    "首页",
+    "笔记管理",
+    "数据看板",
+    "活动中心",
+    "笔记灵感",
+    "创作学院",
+    "创作百科",
+}
+
+
 class _TrendTitleParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -17,7 +30,7 @@ class _TrendTitleParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         classes = set(dict(attrs).get("class", "").split())
-        if "trend-title" in classes:
+        if "trend-title" in classes or "title" in classes:
             self._capture = True
             self._capture_depth = 1
             self._buffer = []
@@ -47,6 +60,8 @@ def extract_trend_titles_from_html(html: str) -> list[str]:
     unique: list[str] = []
     seen = set()
     for title in parser.titles:
+        if title in IGNORED_TITLES:
+            continue
         if title not in seen:
             seen.add(title)
             unique.append(title)
@@ -59,10 +74,14 @@ def normalize_creator_trends(
     domain: str,
     subdomain: str,
     collected_at: datetime,
+    metadata: dict[str, object] | None = None,
 ) -> list[TopicSignal]:
     signals: list[TopicSignal] = []
     for title in titles:
-        digest = sha1(f"{domain}:{subdomain}:{title}".encode("utf-8")).hexdigest()[:12]
+        metadata_payload = dict(metadata or {})
+        digest = sha1(
+            f"{domain}:{subdomain}:{metadata_payload}:{title}".encode("utf-8")
+        ).hexdigest()[:12]
         signals.append(
             TopicSignal(
                 signal_id=f"creator_{digest}",
@@ -81,7 +100,7 @@ def normalize_creator_trends(
                 expires_at=(collected_at + timedelta(days=7)).date(),
                 collected_at=collected_at,
                 raw_title=title,
-                metadata={},
+                metadata=metadata_payload,
             )
         )
     return signals

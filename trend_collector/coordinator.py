@@ -24,10 +24,8 @@ class TrendCollectionCoordinator:
             return TrendCollectionSummary(status="skipped", collected_signals=0)
         try:
             with BrowserSession(browser_config) as browser:
-                browser.navigate(self.config.creator_center_url)
-                html = browser.page.content()
-            titles = extract_trend_titles_from_html(html)[: self.config.max_items_per_block]
-            if not titles:
+                titles_by_scope = self._collect_titles(browser)
+            if not titles_by_scope:
                 error_summary = "creator center trend structure not found"
                 manager.record_trend_collection_run(
                     {
@@ -44,12 +42,17 @@ class TrendCollectionCoordinator:
                     collected_signals=0,
                     error_summary=error_summary,
                 )
-            signals = normalize_creator_trends(
-                titles,
-                domain=self.config.target_domain,
-                subdomain=self.config.target_subdomain,
-                collected_at=now,
-            )
+            signals = []
+            for titles, metadata in titles_by_scope:
+                signals.extend(
+                    normalize_creator_trends(
+                        titles,
+                        domain=self.config.target_domain,
+                        subdomain=self.config.target_subdomain,
+                        collected_at=now,
+                        metadata=metadata,
+                    )
+                )
             manager.upsert_trend_signals(signals)
             manager.record_trend_collection_run(
                 {
@@ -81,3 +84,33 @@ class TrendCollectionCoordinator:
                 status="failed",
                 error_summary=error_summary,
             )
+
+    def _collect_titles(self, browser) -> list[tuple[list[str], dict[str, object]]]:
+        titles_by_scope: list[tuple[list[str], dict[str, object]]] = []
+        browser.navigate(self.config.creator_center_url)
+        browser.page.wait_for_timeout(5_000)
+        for category in self.config.inspiration_categories:
+            browser.page.get_by_text(category, exact=True).click(timeout=10_000)
+            browser.page.wait_for_timeout(1_500)
+            titles = extract_trend_titles_from_html(browser.page.content())[
+                : self.config.max_items_per_block
+            ]
+            if titles:
+                titles_by_scope.append(
+                    (
+                        titles,
+                        {
+                            "surface": "inspiration",
+                            "category": category,
+                        },
+                    )
+                )
+
+        browser.navigate(self.config.events_center_url)
+        browser.page.wait_for_timeout(5_000)
+        event_titles = extract_trend_titles_from_html(browser.page.content())[
+            : self.config.max_items_per_block
+        ]
+        if event_titles:
+            titles_by_scope.append((event_titles, {"surface": "events"}))
+        return titles_by_scope
