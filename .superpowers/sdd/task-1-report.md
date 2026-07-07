@@ -53,3 +53,11 @@
 ## Concerns if any
 
 - `tests/nodes/test_domain_nodes.py::test_domain_confirmation_node_skips_interrupt_for_high_confidence` now conflicts with Task 1’s required behavior. I did not modify that file because it is outside the allowed write scope from the brief.
+
+## Fix report
+
+- Updated `tests/nodes/test_domain_nodes.py` so the skip-path coverage now matches the new confirmation rule:
+  - inferred high-confidence routing still skips interrupt;
+  - explicit `domain + subdomain` routing still skips interrupt;
+  - explicit `domain` with default subdomain now interrupts and accepts a resumed subdomain selection.
+- Verified with `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q` after the test update.

@@ -24,8 +24,10 @@ def test_domain_router_node_returns_context_and_policy():
     assert result["content_policy"].risk_level == result["domain_context"].risk_level
 
 
-def test_domain_confirmation_node_skips_interrupt_for_high_confidence(monkeypatch):
-    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
+def test_domain_confirmation_node_skips_interrupt_for_high_confidence_inferred_domain(
+    monkeypatch,
+):
+    context = resolve_domain(domain=None, focus_keyword="改善睡眠")
 
     def fail_interrupt(_payload):
         raise AssertionError("interrupt should not be called")
@@ -35,8 +37,27 @@ def test_domain_confirmation_node_skips_interrupt_for_high_confidence(monkeypatc
     assert domain_confirmation_node({"domain_context": context}) == {}
 
 
-def test_domain_confirmation_node_interrupts_and_accepts_resume(monkeypatch):
-    context = resolve_domain(domain=None, focus_keyword="完全无关的关键词")
+def test_domain_confirmation_node_skips_interrupt_for_explicit_domain_with_subdomain(
+    monkeypatch,
+):
+    context = resolve_domain(
+        domain="beauty",
+        subdomain="skincare",
+        focus_keyword="改善睡眠",
+    )
+
+    def fail_interrupt(_payload):
+        raise AssertionError("interrupt should not be called")
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fail_interrupt)
+
+    assert domain_confirmation_node({"domain_context": context}) == {}
+
+
+def test_domain_confirmation_node_interrupts_and_accepts_resume_for_default_subdomain(
+    monkeypatch,
+):
+    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
     captured = {}
 
     def fake_interrupt(payload):
@@ -49,6 +70,7 @@ def test_domain_confirmation_node_interrupts_and_accepts_resume(monkeypatch):
 
     assert captured["payload"]["kind"] == "domain_confirmation"
     assert "message" in captured["payload"]
+    assert captured["payload"]["context"]["classification_source"] == "explicit_domain_default_subdomain"
     assert result["domain_context"].domain == "wellness"
     assert result["domain_context"].subdomain == "sleep"
     assert result["domain_context"].classification_source == "explicit"
