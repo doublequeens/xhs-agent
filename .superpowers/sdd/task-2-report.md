@@ -1,174 +1,91 @@
-# Task 2 Report: Topic Signal and Creative Metadata Schemas
+# Task 2 Report: Profile-Bound Typed Content Contracts
 
-## Scope
+## Status
 
-Implemented Task 2 exactly as scoped in `.superpowers/sdd/task-2-brief.md`:
+Completed and committed as `1eff35e` (`feat: require profile-bound content contracts`).
 
-- Added `src/schemas/topic_signal.py`
-- Added `CreativeSeed` and required `TopicItem.creative_seed`
-- Added AgentState fields for topic signal / creative brief / generation trace contracts
-- Updated existing tests/fixtures that now require `creative_seed`
+## Delivered
 
-Not implemented:
-
-- persistence
-- graph node behavior for topic signals
-- topic signal collection logic
-- later-task runtime wiring
-
-## Implementation Details
-
-### New schema module
-
-Created `src/schemas/topic_signal.py` with:
-
-- `SignalType`
-- `SignalRiskLevel`
-- `TopicSignal`
-- `CreativeSeed`
-- `CreativeBrief`
-- `TopicGenerationTrace`
-
-The interfaces follow the brief exactly, including:
-
-- `confidence: float = Field(ge=0, le=1)`
-- `trends_num: int = Field(gt=0)`
-- `generated_candidates_count` / `filtered_candidates_count` with `Field(ge=0)`
-
-### TopicItem contract
-
-Updated `src/schemas/topic.py` so `TopicItem` now requires:
-
-- `creative_seed: CreativeSeed`
-
-### AgentState contract
-
-Updated `src/schemas/agent_state.py` to include:
-
-- `topic_signals: List[TopicSignal]`
-- `creative_briefs: List[CreativeBrief]`
-- `topic_generation_trace: Optional[TopicGenerationTrace]`
-
-`subdomain: Optional[str]` was already present and did not need to be added.
-
-### Test fixture updates
-
-Updated existing fixtures that construct `TopicItem` or feed normalized trend payloads into `TopicItem(**...)` so they now include the exact default `creative_seed` from the brief:
-
-```python
-{
-    "signal_type": "evergreen_context",
-    "signal_name": "测试默认信号",
-    "why_now": "测试中使用稳定 evergreen 信号。",
-    "domain_translation": "测试中保持原 domain/subdomain。",
-    "evergreen_pain": "测试核心痛点。",
-    "timely_framing": "测试时机包装。",
-}
-```
+- Added `ContentContract` with non-empty fields, an 8–42 character first-screen
+  promise, and the permitted visual-mode literal values.
+- Made `TopicItem.content_contract` required, so candidate contracts survive
+  the existing diversity filter as part of the `TopicItem` stored in
+  `state["trends"]`.
+- Made creative briefs require a `CreatorProfile`; their audience is the exact
+  profile audience and their pain/situation comes only from that profile.
+- Passed the state profile into the creative-brief builder and made Topic
+  Ideator require a profile before it parses candidates.
+- Validated every parsed candidate's domain/subdomain, target group, contract
+  audience, and visual mode against the creator profile.
+- Updated the Topic Ideator JSON prompt to require a complete contract and a
+  concrete screenshot asset.
+- Updated every directly affected `TopicItem` fixture, including the offline
+  signal-to-diversity integration path, to supply a beauty-profile contract.
 
 ## RED / GREEN Evidence
 
-### RED
+The inherited staged changes already contained the contract schema and several
+tests, so no RED result is claimed for that pre-existing work.
 
-Added `tests/schemas/test_topic_signal.py` first, before production edits.
-
-Command:
-
-```bash
-pytest tests/schemas/test_topic_signal.py -q
-```
-
-Result:
-
-- Failed during collection with `ModuleNotFoundError: No module named 'src.schemas.topic_signal'`
-
-This confirmed the new contract did not exist yet.
-
-### GREEN
-
-After implementing the schemas and required fixture updates:
-
-Command:
+I added the missing behavior test for a missing creator profile before changing
+production code:
 
 ```bash
-pytest tests/schemas/test_topic_signal.py -q
+python -m pytest tests/nodes/test_topic_ideator.py -v
 ```
 
-Result:
+RED result: `1 failed, 3 passed`; the new test expected `ValueError("creator
+profile is required")`, but the node accepted the state.
 
-- `4 passed in 0.03s`
+After making the profile mandatory, the same command passed with `4 passed`.
+Additional tests for target-group, contract-audience, and visual-mode mismatch
+were then added to cover the inherited validation paths; these passed
+immediately, so no RED claim is made for those pre-existing paths.
 
-## Test Commands and Results
-
-### Required focused schema test
-
-Command:
+## Verification
 
 ```bash
-pytest tests/schemas/test_topic_signal.py -q
+python -m pytest tests/schemas/test_content_contract.py tests/topic_signals/test_briefs.py tests/nodes/test_topic_ideator.py -v
 ```
 
-Result:
-
-- `4 passed in 0.03s`
-
-### Required related schema/node suite
-
-Command:
+Result: `9 passed in 1.86s`.
 
 ```bash
-pytest tests/nodes tests/schemas -q
+python -m pytest tests/domain/test_topic_metadata.py tests/integration/test_domain_workflow.py tests/nodes/test_evidence_brief.py tests/nodes/test_metadata_flow.py tests/schemas/test_topic_signal.py tests/test_signal_driven_topic_generation_integration.py tests/topic_signals/test_diversity.py -v
 ```
 
-Result:
-
-- `86 passed, 2 warnings in 4.55s`
-
-Warnings were unrelated pytest temp-directory cleanup warnings from the environment.
-
-### Additional verification on directly modified non-node tests
-
-Command:
+Result: `53 passed, 2 warnings in 3.93s`. The warnings were pytest temporary
+directory cleanup (`rm_rf`, `OSError: Directory not empty`) from the local
+environment, not test failures.
 
 ```bash
-pytest tests/domain/test_topic_metadata.py tests/integration/test_domain_workflow.py -q
+git diff --cached --check
+git diff --check
 ```
 
-Result:
+Result: both commands exited cleanly with no whitespace errors.
 
-- `5 failed, 10 passed, 2 warnings in 3.60s`
+## Committed Files
 
-These failures appear unrelated to Task 2 schema scope:
-
-1. `tests/domain/test_topic_metadata.py::test_main_initial_state_includes_metadata_briefs`
-   - failure: `ModuleNotFoundError: No module named 'src.prompts.composer'; 'src.prompts' is not a package`
-   - cause appears to be the test's local import stubbing, not the schema changes
-2. `tests/integration/test_domain_workflow.py::*`
-   - failures involve domain confirmation interrupt/review routing and missing `publish_package`
-   - no failure referenced `creative_seed`, `TopicSignal`, `CreativeBrief`, or `TopicGenerationTrace`
-
-I did not change runtime graph/review behavior because that is outside Task 2 scope.
-
-## Files Changed
-
-- `src/schemas/topic_signal.py`
+- `src/schemas/content_contract.py`
 - `src/schemas/topic.py`
-- `src/schemas/agent_state.py`
-- `tests/schemas/test_topic_signal.py`
+- `src/topic_signals/briefs.py`
+- `src/nodes/node_a_03_creative_brief_builder.py`
+- `src/nodes/node_a_04_topic_ideator.py`
+- `src/prompts/base/topic_ideator.txt`
+- `tests/schemas/test_content_contract.py`
+- `tests/topic_signals/test_briefs.py`
+- `tests/nodes/test_topic_ideator.py`
 - `tests/domain/test_topic_metadata.py`
 - `tests/integration/test_domain_workflow.py`
-- `tests/nodes/test_metadata_flow.py`
 - `tests/nodes/test_evidence_brief.py`
-
-## Self-Review
-
-- The new schema interfaces match the brief exactly.
-- `TopicItem.creative_seed` is required, not optional, per brief.
-- Legacy fixtures were updated with the prescribed default seed rather than weakening validation.
-- No persistence, collector logic, or later-task graph behavior was added.
-- Write scope stayed within the brief-listed schema files plus tests that needed fixture updates.
+- `tests/nodes/test_metadata_flow.py`
+- `tests/schemas/test_topic_signal.py`
+- `tests/test_signal_driven_topic_generation_integration.py`
+- `tests/topic_signals/test_diversity.py`
 
 ## Concerns
 
-- Additional domain/integration tests currently fail for reasons that appear pre-existing or outside Task 2 scope.
-- I am committing the Task 2 schema/data-contract work with the required schema/node suite green, while documenting those unrelated failures explicitly.
+- The worktree still has an unrelated modified `.superpowers/sdd/task-1-report.md`
+  and an untracked `docs/superpowers/plans/2026-07-10-beauty-account-content-workflow.md`.
+  Neither was changed or committed by Task 2.
