@@ -376,3 +376,7 @@ def test_main_initial_state_defaults_to_interactive(monkeypatch):
     main.main()
 
     assert captured["initial_state"]["interactive"] is True
+    assert (
+        captured["initial_state"]["creator_profile"].profile_id
+        == "commuting_beauty_women_v1"
+    )

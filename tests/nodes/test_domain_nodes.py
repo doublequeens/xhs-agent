@@ -24,6 +24,51 @@ def test_domain_router_node_returns_context_and_policy():
     assert result["content_policy"].risk_level == result["domain_context"].risk_level
 
 
+def test_domain_router_rejects_out_of_scope_explicit_domain():
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    with pytest.raises(ValueError, match="outside creator profile scope"):
+        domain_router_node(
+            {
+                "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+                "domain": "healthy_lifestyle",
+                "subdomain": "daily_habits",
+                "focus_keyword": "久坐",
+            }
+        )
+
+
+def test_domain_router_uses_creator_profile_defaults_when_scope_is_omitted():
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    result = domain_router_node(
+        {
+            "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+            "domain": None,
+            "subdomain": None,
+            "focus_keyword": "久坐",
+        }
+    )
+
+    assert result["domain_context"].domain == "beauty"
+    assert result["domain_context"].subdomain == "skincare"
+
+
+def test_domain_confirmation_rejects_resume_outside_creator_profile_scope(monkeypatch):
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    context = resolve_domain(domain="beauty", focus_keyword="防晒")
+    monkeypatch.setattr(
+        "src.nodes.node_a_00_domain_confirmation.interrupt",
+        lambda _payload: {"domain": "wellness", "subdomain": "sleep"},
+    )
+
+    with pytest.raises(ValueError, match="outside creator profile scope"):
+        domain_confirmation_node(
+            {"domain_context": context, "creator_profile": COMMUTING_BEAUTY_WOMEN_V1}
+        )
+
+
 def test_domain_confirmation_node_skips_interrupt_for_high_confidence_inferred_domain(
     monkeypatch,
 ):

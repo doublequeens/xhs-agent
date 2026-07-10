@@ -36,6 +36,10 @@ def domain_confirmation_node(state: AgentState) -> dict:
     if not selected_domain or not selected_subdomain:
         raise ValueError("Domain confirmation requires both `domain` and `subdomain`.")
 
+    creator_profile = state.get("creator_profile")
+    if creator_profile is not None:
+        creator_profile.assert_domain_scope(selected_domain, selected_subdomain)
+
     profile = get_domain_profile(selected_domain)
     if selected_subdomain not in profile.allowed_subdomains:
         raise ValueError(

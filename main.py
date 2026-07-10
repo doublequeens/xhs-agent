@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
+from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
@@ -312,6 +313,7 @@ def main():
 
     initial_state = {
         "interactive": True,
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
         "domain": args.domain,
         "subdomain": args.subdomain,
         "domain_context": None,

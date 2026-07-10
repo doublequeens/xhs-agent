@@ -1,7 +1,8 @@
 from datetime import date, datetime
-from typing import TypedDict, List, Optional
+from typing import Any, TypedDict, List, Optional
 
 from memory.memory_manager import XHSMemoryManager
+from src.creator_profile import CreatorProfile
 from src.domain import ContentPolicy, DomainContext, DomainName
 from src.evidence.models import EvidenceBrief
 from .topic import TopicItem
@@ -24,6 +25,7 @@ from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
 class AgentState(TypedDict):
     trends_num: int
     interactive: Optional[bool]
+    creator_profile: Optional[CreatorProfile]
     domain: Optional[DomainName]
     subdomain: Optional[str]
     focus_keyword: Optional[str]
@@ -54,6 +56,7 @@ class AgentState(TypedDict):
     image_scripts: ImageScriptList
     image_candidates: ImageCandidates
     final_images: FinalImages
+    carousel_qa_result: Optional[Any]
     publish_package: dict
     review_status: Optional[str]
     review_feedback: Optional[str]
