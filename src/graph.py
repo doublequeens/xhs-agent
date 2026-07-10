@@ -14,6 +14,7 @@ from src.schemas import AgentState
 import src.nodes as nodes
 from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
 from src.nodes.node_q_human_review import route_after_human_review
+from src.nodes.node_p_carousel_qa import route_after_carousel_qa
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
@@ -96,6 +97,7 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("r2_compliance", nodes.r2_compliance_node)
     builder.add_node("hashtag", nodes.hashtag_node)
     builder.add_node("storyboard_generator", nodes.storyboards_generator_node)
+    builder.add_node("carousel_qa", nodes.carousel_qa_node)
     # builder.add_node("visual_director", visual_director_node)
     # builder.add_node("image_sourcing", image_sourcing_node)
     # builder.add_node("image_qa", image_qa_node)
@@ -130,7 +132,12 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_edge("image_sourcing", "image_qa")
     # builder.add_edge("image_qa", "assembler")
     builder.add_edge("assembler", "storyboard_generator")
-    builder.add_edge("storyboard_generator", "human_review")
+    builder.add_edge("storyboard_generator", "carousel_qa")
+    builder.add_conditional_edges(
+        "carousel_qa",
+        route_after_carousel_qa,
+        {"r1_reflector": "r1_reflector", "human_review": "human_review"},
+    )
     builder.add_conditional_edges(
         "human_review",
         route_after_human_review,

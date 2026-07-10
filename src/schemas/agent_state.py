@@ -20,6 +20,7 @@ from .hashtag import HashTagOutput
 from .visual_director import ImageScriptList
 from .image_sourcing import ImageCandidates
 from .image_qa import FinalImages
+from .carousel_qa import CarouselQAResult
 from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
 
 class AgentState(TypedDict):
@@ -56,7 +57,7 @@ class AgentState(TypedDict):
     image_scripts: ImageScriptList
     image_candidates: ImageCandidates
     final_images: FinalImages
-    carousel_qa_result: NotRequired[Optional[Any]]
+    carousel_qa_result: NotRequired[Optional[CarouselQAResult]]
     publish_package: dict
     review_status: Optional[str]
     review_feedback: Optional[str]

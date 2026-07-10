@@ -22,6 +22,7 @@ _EXPORTS = {
     "image_qa_node": "src.nodes.node_n_image_qa",
     "assembler_node": "src.nodes.node_o_assembler",
     "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
+    "carousel_qa_node": "src.nodes.node_p_carousel_qa",
     "content_writer_node": "src.nodes.node_p_content_writer",
     "human_review_node": "src.nodes.node_q_human_review",
     "final_policy_guard_node": "src.nodes.node_q_01_final_policy_guard",

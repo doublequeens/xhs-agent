@@ -13,6 +13,21 @@ def test_graph_contains_signal_driven_topic_nodes():
     assert "topic_diversity_filter" in nodes
 
 
+def test_graph_routes_storyboards_through_carousel_qa():
+    graph = create_graph(checkpointer=InMemorySaver())
+    graph_view = graph.get_graph()
+
+    assert "carousel_qa" in graph_view.nodes
+    assert any(
+        edge.source == "storyboard_generator" and edge.target == "carousel_qa"
+        for edge in graph_view.edges
+    )
+    assert not any(
+        edge.source == "storyboard_generator" and edge.target == "human_review"
+        for edge in graph_view.edges
+    )
+
+
 def test_graph_no_longer_routes_through_trend_scout():
     graph = create_graph(checkpointer=InMemorySaver())
     nodes = set(graph.get_graph().nodes)

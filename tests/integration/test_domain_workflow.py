@@ -310,6 +310,35 @@ def _install_graph_doubles(
             }
         }
 
+    def storyboard_generator_node(state):
+        contract = state["trends"][0].content_contract
+        storyboards = [
+            {
+                "frame_id": f"frame_{index:03d}",
+                "frame_title": f"第 {index} 张",
+                "visual_description": "高对比文字信息卡",
+                "scene_background": "干净浅色背景",
+                "composition": "清晰分区",
+                "text_area": "顶部标题区",
+                "on_image_copy": (
+                    contract.first_screen_promise if index == 1 else f"第 {index} 个要点"
+                ),
+                "narration": f"第 {index} 步说明",
+                "image_prompt_cn": "手机端可读的文字卡",
+                "image_prompt_en": "readable mobile text card",
+                "card_role": "cover" if index == 1 else "step",
+                "is_screenshot_asset": index == 3,
+                "visual_mode": contract.visual_mode,
+            }
+            for index in range(1, 7)
+        ]
+        return {
+            "publish_package": {
+                **state["publish_package"],
+                "storyboards": storyboards,
+            }
+        }
+
     def writer_node(_state):
         events["writer_calls"] += 1
         events["structured_writes"] += 1
@@ -339,7 +368,7 @@ def _install_graph_doubles(
         "r2_compliance_node": r2_node,
         "hashtag_node": hashtag_node,
         "assembler_node": assembler_node,
-        "storyboards_generator_node": lambda _state: {},
+        "storyboards_generator_node": storyboard_generator_node,
         "human_review_node": human_review_node,
         "final_policy_guard_node": final_policy_guard_node,
         "content_writer_node": writer_node,
