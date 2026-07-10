@@ -63,7 +63,11 @@ def serialize_prompt_value(payload: Any) -> str:
     return json.dumps(_normalize_payload(payload), ensure_ascii=False, indent=2, sort_keys=True)
 
 
-def compose_prompt(task: str, profile: DomainProfile) -> str:
+def _compose_prompt(
+    task: str,
+    profile: DomainProfile,
+    creator_profile: Any | None = None,
+) -> str:
     try:
         base_filename = TASK_FILES[task]
     except KeyError as exc:
@@ -72,10 +76,25 @@ def compose_prompt(task: str, profile: DomainProfile) -> str:
     sections = [
         _read_prompt_file(BASE_DIR / base_filename),
         _read_prompt_file(FRAGMENTS_DIR / "safety_common.txt"),
-        _read_prompt_file(FRAGMENTS_DIR / f"{profile.domain}.txt"),
-        "【Domain Profile】\n" + _serialize_profile(profile),
     ]
+    if creator_profile is not None:
+        sections.extend(
+            [
+                _read_prompt_file(FRAGMENTS_DIR / "creator_profile.txt"),
+                "【Creator Profile】\n" + serialize_prompt_value(creator_profile),
+            ]
+        )
+    sections.extend(
+        [
+            _read_prompt_file(FRAGMENTS_DIR / f"{profile.domain}.txt"),
+            "【Domain Profile】\n" + _serialize_profile(profile),
+        ]
+    )
     return "\n\n".join(sections)
+
+
+def compose_prompt(task: str, profile: DomainProfile) -> str:
+    return _compose_prompt(task, profile)
 
 
 def compose_prompt_for_state(
@@ -111,15 +130,9 @@ def compose_prompt_for_state(
             f"{task} requires state.domain_context with both domain and profile_version."
         )
 
-    prompt = compose_prompt(task, get_domain_profile(domain, version=profile_version))
+    profile = get_domain_profile(domain, version=profile_version)
     creator_profile = state.get("creator_profile")
     if creator_profile is None:
-        return prompt
+        return compose_prompt(task, profile)
 
-    return "\n\n".join(
-        [
-            prompt,
-            _read_prompt_file(FRAGMENTS_DIR / "creator_profile.txt"),
-            "【Creator Profile】\n" + serialize_prompt_value(creator_profile),
-        ]
-    )
+    return _compose_prompt(task, profile, creator_profile)

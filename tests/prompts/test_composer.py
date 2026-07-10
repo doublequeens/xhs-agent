@@ -178,6 +178,19 @@ def test_stateful_prompt_includes_creator_profile_fragment():
     assert "不使用卡通角色、IP 或纯装饰性 AI 插图" in prompt
 
 
+def test_stateful_prompt_layers_creator_profile_between_safety_and_domain_fragments():
+    from src.prompts.composer import compose_prompt_for_state
+
+    prompt = compose_prompt_for_state("draft_writer", _profile_bound_state())
+
+    assert (
+        prompt.index("【Shared Safety Rules】")
+        < prompt.index("【Creator Profile Contract】")
+        < prompt.index("【Creator Profile】")
+        < prompt.index("【Domain Fragment】")
+    )
+
+
 def test_serialize_prompt_value_json_serializes_nested_evidence_briefs_with_url_strings():
     from src.prompts.composer import serialize_prompt_value
 
