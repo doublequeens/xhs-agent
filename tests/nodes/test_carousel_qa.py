@@ -86,7 +86,7 @@ def test_carousel_qa_rejects_missing_screenshot_asset():
     assert (task.source, task.severity, task.location_hint) == (
         "carousel_qa",
         "high",
-        "storyboards",
+        "storyboards[0].is_screenshot_asset",
     )
 
 
@@ -117,7 +117,42 @@ def test_carousel_qa_reports_each_deterministic_contract_failure():
         "banned_decorative_term",
         "duplicate_on_image_copy",
     }
+    assert {
+        issue.rule_id: issue.location_hint
+        for issue in result["carousel_qa_result"].issues
+    } == {
+        "card_count_out_of_range": "storyboards[0].frame_id",
+        "cover_role_missing": "storyboards[0].card_role",
+        "first_screen_promise_mismatch": "storyboards[0].on_image_copy",
+        "visual_mode_mismatch": "storyboards[1].visual_mode",
+        "banned_decorative_term": "storyboards[2].visual_description",
+        "duplicate_on_image_copy": "storyboards[4].on_image_copy",
+    }
+    assert all(
+        task.location_hint.startswith("storyboards[")
+        for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
+    )
     assert _route_after_qa()(result) == "r1_reflector"
+
+
+def test_carousel_qa_empty_storyboards_reports_independent_first_card_failures():
+    result = _qa_node()(_state(storyboards=[]))
+
+    issues_by_rule = {
+        issue.rule_id: issue.location_hint
+        for issue in result["carousel_qa_result"].issues
+    }
+    assert issues_by_rule == {
+        "card_count_out_of_range": "storyboards[0].frame_id",
+        "cover_role_missing": "storyboards[0].card_role",
+        "first_screen_promise_mismatch": "storyboards[0].on_image_copy",
+        "missing_screenshot_asset": "storyboards[0].is_screenshot_asset",
+    }
+    tasks_by_rule = {
+        task.task_id.removeprefix("carousel_qa_").rsplit("_", 1)[0]: task.location_hint
+        for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
+    }
+    assert tasks_by_rule == issues_by_rule
 
 
 def test_carousel_qa_rejects_contract_visual_mode_outside_active_creator_profile():
@@ -128,4 +163,8 @@ def test_carousel_qa_rejects_contract_visual_mode_outside_active_creator_profile
 
     result = _qa_node()(state)
 
-    assert result["carousel_qa_result"].issues[0].rule_id == "creator_profile_visual_mode_mismatch"
+    issue = result["carousel_qa_result"].issues[0]
+    assert (issue.rule_id, issue.location_hint) == (
+        "creator_profile_visual_mode_mismatch",
+        "storyboards[0].visual_mode",
+    )

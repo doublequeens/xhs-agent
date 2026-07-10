@@ -88,7 +88,7 @@ def validate_carousel(
             _issue(
                 "creator_profile_visual_mode_mismatch",
                 "The content contract visual mode is not allowed by the active creator profile.",
-                "content_contract.visual_mode",
+                _location(0, "visual_mode"),
                 before=contract.visual_mode,
                 after_hint="Use a visual mode allowed by the active creator profile.",
             )
@@ -99,44 +99,43 @@ def validate_carousel(
             _issue(
                 "card_count_out_of_range",
                 "A carousel must contain six to eight cards.",
-                "storyboards",
+                _location(0, "frame_id"),
                 before=str(len(frames)),
                 after_hint="Provide between 6 and 8 cards.",
             )
         )
 
-    if frames:
-        cover = frames[0]
-        if _get_value(cover, "card_role") != "cover":
-            issues.append(
-                _issue(
-                    "cover_role_missing",
-                    "The first carousel card must have card_role == 'cover'.",
-                    _location(0, "card_role"),
-                    frame=cover,
-                    before=str(_get_value(cover, "card_role") or ""),
-                    after_hint="Set the first card role to cover.",
-                )
+    cover = frames[0] if frames else None
+    if _get_value(cover, "card_role") != "cover":
+        issues.append(
+            _issue(
+                "cover_role_missing",
+                "The first carousel card must have card_role == 'cover'.",
+                _location(0, "card_role"),
+                frame=cover,
+                before=str(_get_value(cover, "card_role") or ""),
+                after_hint="Set the first card role to cover.",
             )
-        cover_copy = str(_get_value(cover, "on_image_copy") or "")
-        if cover_copy != contract.first_screen_promise:
-            issues.append(
-                _issue(
-                    "first_screen_promise_mismatch",
-                    "The first card on-image copy must exactly equal the first-screen promise.",
-                    _location(0, "on_image_copy"),
-                    frame=cover,
-                    before=cover_copy,
-                    after_hint=contract.first_screen_promise,
-                )
+        )
+    cover_copy = str(_get_value(cover, "on_image_copy") or "")
+    if cover_copy != contract.first_screen_promise:
+        issues.append(
+            _issue(
+                "first_screen_promise_mismatch",
+                "The first card on-image copy must exactly equal the first-screen promise.",
+                _location(0, "on_image_copy"),
+                frame=cover,
+                before=cover_copy,
+                after_hint=contract.first_screen_promise,
             )
+        )
 
     if not any(bool(_get_value(frame, "is_screenshot_asset")) for frame in frames):
         issues.append(
             _issue(
                 "missing_screenshot_asset",
                 "At least one card must be marked as a screenshot asset.",
-                "storyboards",
+                _location(0, "is_screenshot_asset"),
                 after_hint="Mark the card that presents the contract screenshot asset.",
             )
         )
