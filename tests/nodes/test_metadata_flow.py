@@ -705,6 +705,91 @@ def test_storyboard_first_card_and_screenshot_asset_follow_contract(monkeypatch)
     assert all("小蝾螈" not in frame["image_prompt_cn"] for frame in frames)
 
 
+def test_storyboard_first_card_requires_cover_role_at_runtime(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            frames = [_storyboard_frame(index) for index in range(1, 7)]
+            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
+            frames[0]["card_role"] = "step"
+            return {"storyboards": frames}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(RuntimeError, match="card_role == 'cover'"):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {"topic_id": "tp_001"},
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+            }
+        )
+
+
+def test_storyboard_revalidates_contract_after_pending_human_patch(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            frames = [_storyboard_frame(index) for index in range(1, 7)]
+            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
+            return {"storyboards": frames}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(RuntimeError, match="card_role == 'cover'"):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {"topic_id": "tp_001"},
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "pending_human_publish_patch": {
+                    "storyboards": [{"frame_id": "frame_001", "card_role": "step"}]
+                },
+            }
+        )
+
+
+def test_storyboard_revalidates_contract_after_r2_visible_text_patch(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            frames = [_storyboard_frame(index) for index in range(1, 7)]
+            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
+            return {"storyboards": frames}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(RuntimeError, match="first card must exactly equal"):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {"topic_id": "tp_001"},
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "pending_human_publish_patch": {
+                    "storyboards": [{"frame_id": "frame_001", "image_prompt_cn": "reviewed"}]
+                },
+                "r2_output": SimpleNamespace(
+                    content_snapshot=SimpleNamespace(
+                        storyboard_visible_text=[
+                            {
+                                "frame_id": "frame_001",
+                                "frame_title": "R2 revised",
+                                "on_image_copy": "contract-bypassing cover copy",
+                                "narration": "R2 narration",
+                            }
+                        ]
+                    )
+                ),
+            }
+        )
+
+
 @pytest.mark.parametrize(
     ("storyboards", "error_match"),
     [

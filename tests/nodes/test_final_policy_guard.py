@@ -1012,7 +1012,7 @@ def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review
                 {
                     "frame_id": "frame_001",
                     "frame_title": "作息调整记录",
-                    "on_image_copy": "逐步调整",
+                    "on_image_copy": "通勤前快速掌握基础步骤",
                     "narration": "分享个人体验",
                 }
             ]
@@ -1043,7 +1043,7 @@ def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review
 
     first_frame = regenerated["publish_package"]["storyboards"][0]
     assert first_frame["frame_title"] == "作息调整记录"
-    assert first_frame["on_image_copy"] == "逐步调整"
+    assert first_frame["on_image_copy"] == "通勤前快速掌握基础步骤"
     assert first_frame["narration"] == "分享个人体验"
     assert first_frame["image_prompt_cn"] == "人工审核后的提示词"
     assert first_frame["narrative_role"] == "opening"
