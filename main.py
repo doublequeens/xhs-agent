@@ -106,7 +106,9 @@ def export_publish_package(publish_package: dict) -> None:
         "title": publish_package.get("title", ""),
         "content": publish_package.get("content", ""),
         "cover_copy": publish_package.get("cover_copy", ""),
-        "storyboards": publish_package.get("storyboards", [])
+        "content_contract": publish_package.get("content_contract", {}),
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1.model_dump(mode="json"),
+        "storyboards": publish_package.get("storyboards", []),
         }
     image_prompt = (
         f"{storyboards_image_gen_prompt}\n\n"

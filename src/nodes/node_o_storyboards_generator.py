@@ -8,6 +8,33 @@ from src.nodes.publish_patch import (
 )
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
+
+def _get_value(payload, key):
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
+
+def _selected_content_contract(state: AgentState, publish_package: dict) -> dict:
+    topic_id = publish_package.get("topic_id")
+    matches = [
+        topic
+        for topic in state.get("trends") or []
+        if _get_value(topic, "topic_id") == topic_id
+    ]
+    if not matches:
+        raise ValueError(f"Unknown topic_id: {topic_id}")
+    if len(matches) > 1:
+        raise ValueError(f"Duplicate topic_id: {topic_id}")
+
+    content_contract = _get_value(matches[0], "content_contract")
+    if content_contract is None:
+        raise ValueError(f"Selected topic {topic_id} requires content_contract")
+    if hasattr(content_contract, "model_dump"):
+        return content_contract.model_dump(mode="json")
+    return dict(content_contract)
+
+
 def storyboards_generator_node(state: AgentState) -> AgentState:
     """
     A node that generates storyboards.
@@ -19,17 +46,19 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     """
 
     
-    publish_package = state.get("publish_package", "")
+    publish_package = state.get("publish_package", {})
+    content_contract = _selected_content_contract(state, publish_package)
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", {})
 
     system_prompt = compose_prompt_for_state("storyboards_generator", state)
     template = PromptTemplate(
-        input_variables=["publish_package", "domain_context", "content_policy", "evidence_briefs"],
+        input_variables=["publish_package", "content_contract", "domain_context", "content_policy", "evidence_briefs"],
         template=(
             "输入参数如下：\n"
             "- publish_package:\n{publish_package}\n"
+            "- content_contract:\n{content_contract}\n"
             "- domain_context:\n{domain_context}\n"
             "- content_policy:\n{content_policy}\n"
             "- evidence_briefs:\n{evidence_briefs}\n"
@@ -38,6 +67,7 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     )
     human_prompt = template.format(
         publish_package=serialize_prompt_value(publish_package),
+        content_contract=serialize_prompt_value(content_contract),
         domain_context=serialize_prompt_value(domain_context),
         content_policy=serialize_prompt_value(content_policy),
         evidence_briefs=serialize_prompt_value(evidence_briefs),
@@ -53,9 +83,18 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     except Exception as exc:
         raise RuntimeError(f"Storyboard output failed validation: {exc}") from exc
 
+    storyboards = storyboard_payload.storyboards
+    if storyboards[0].on_image_copy != content_contract["first_screen_promise"]:
+        raise RuntimeError(
+            "Storyboard first card must exactly equal content_contract.first_screen_promise."
+        )
+    if not any(frame.is_screenshot_asset for frame in storyboards):
+        raise RuntimeError("Storyboard output requires at least one screenshot asset card.")
+
     merged_publish_package = dict(publish_package)
+    merged_publish_package["content_contract"] = content_contract
     merged_publish_package["storyboards"] = [
-        frame.model_dump() for frame in storyboard_payload.storyboards
+        frame.model_dump() for frame in storyboards
     ]
 
     pending_patch = state.get("pending_human_publish_patch")

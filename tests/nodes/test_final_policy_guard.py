@@ -34,6 +34,15 @@ def _publish_package(**overrides):
         "risk_level": "medium",
         "risk_flags": ["medical-adjacent"],
         "profile_version": "wellness-v1",
+        "content_contract": {
+            "audience": "上班族",
+            "trigger_situation": "通勤前",
+            "decision_problem": "如何安排日常习惯",
+            "first_screen_promise": "通勤前快速掌握基础步骤",
+            "screenshot_asset": "步骤清单截图",
+            "proof_asset": "执行前后对比",
+            "visual_mode": "text_card",
+        },
     }
     package.update(overrides)
     return package
@@ -48,7 +57,6 @@ def _storyboard_frame(frame_id, **overrides):
         "aspect_ratio": "3:4",
         "recommended_size": "1080x1440",
         "visual_description": f"场景 {frame_id}",
-        "character_action": "记录作息",
         "scene_background": "卧室",
         "composition": "居中构图",
         "text_area": "顶部留白",
@@ -57,7 +65,10 @@ def _storyboard_frame(frame_id, **overrides):
         "image_prompt_cn": f"原始提示词 {frame_id}",
         "image_prompt_en": f"prompt {frame_id}",
         "negative_prompt": "horror",
-        "continuity_note": "保持角色一致",
+        "card_role": "cover" if frame_id == "frame_001" else "step",
+        "is_screenshot_asset": frame_id == "frame_003",
+        "visual_mode": "text_card",
+        "proof_asset_usage": "none",
     }
     frame.update(overrides)
     return frame
@@ -983,8 +994,9 @@ def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review
 
     regenerated_frames = [
         _storyboard_frame(f"frame_{index:03d}", frame_title=f"重新生成 {index}")
-        for index in range(1, 9)
+        for index in range(1, 7)
     ]
+    regenerated_frames[0]["on_image_copy"] = "通勤前快速掌握基础步骤"
 
     class FakeStoryboardModel:
         def execute(self, _messages):
@@ -1020,6 +1032,12 @@ def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review
             },
             "content_policy": {},
             "evidence_briefs": {},
+            "trends": [
+                SimpleNamespace(
+                    topic_id="tp_001",
+                    content_contract=_publish_package()["content_contract"],
+                )
+            ],
         }
     )
 

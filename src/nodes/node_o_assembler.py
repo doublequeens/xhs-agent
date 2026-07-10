@@ -16,6 +16,25 @@ def _get_value(payload, key):
         return payload.get(key)
     return getattr(payload, key, None)
 
+
+def _selected_content_contract(state: AgentState, topic_id: str) -> dict:
+    matches = [
+        topic
+        for topic in state.get("trends") or []
+        if _get_value(topic, "topic_id") == topic_id
+    ]
+    if not matches:
+        raise ValueError(f"Unknown topic_id: {topic_id}")
+    if len(matches) > 1:
+        raise ValueError(f"Duplicate topic_id: {topic_id}")
+
+    content_contract = _get_value(matches[0], "content_contract")
+    if content_contract is None:
+        raise ValueError(f"Selected topic {topic_id} requires content_contract")
+    if hasattr(content_contract, "model_dump"):
+        return content_contract.model_dump(mode="json")
+    return dict(content_contract)
+
 def assembler_node(state: AgentState) -> AgentState:
     """
     A node that assembles the final content by combining the draft, title, and images based on the visual direction using Gemini models.
@@ -31,6 +50,8 @@ def assembler_node(state: AgentState) -> AgentState:
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", [])
+    topic_id = _get_value(final_content, "topic_id")
+    content_contract = _selected_content_contract(state, topic_id)
 
     system_prompt = compose_prompt_for_state("assembler", state)
     template = PromptTemplate(
@@ -73,7 +94,7 @@ def assembler_node(state: AgentState) -> AgentState:
         {
             "title": enforce_title_length(_get_value(final_content, "final_title")),
             "content": _get_value(final_content, "final_md"),
-            "topic_id": _get_value(final_content, "topic_id"),
+            "topic_id": topic_id,
             "topic": _get_value(final_content, "topic"),
             "angle_id": _get_value(final_content, "angle_id"),
             "angle": _get_value(final_content, "angle"),
@@ -86,6 +107,7 @@ def assembler_node(state: AgentState) -> AgentState:
             "content_intent": _get_value(final_content, "content_intent"),
             "risk_level": _get_value(final_content, "risk_level"),
             "risk_flags": list(_get_value(final_content, "risk_flags") or []),
+            "content_contract": content_contract,
         }
     )
     pending_patch = state.get("pending_human_publish_patch")

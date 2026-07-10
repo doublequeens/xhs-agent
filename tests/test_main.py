@@ -254,6 +254,33 @@ def test_export_publish_package_uses_wellness_composed_prompt(monkeypatch, tmp_p
     assert "夏季底妆搓泥脱妆" not in prompt_text
 
 
+def test_export_publish_package_includes_content_contract_and_creator_profile(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+
+    main.export_publish_package(
+        {
+            "title": "通勤底妆指南",
+            "content": "body",
+            "cover_copy": "先看这张",
+            "storyboards": [],
+            "content_contract": {
+                "first_screen_promise": "通勤前 3 分钟底妆不搓泥",
+                "screenshot_asset": "防晒成膜计时截图",
+            },
+            "domain": "beauty",
+            "profile_version": "beauty-v1",
+        }
+    )
+
+    prompt_file = next(tmp_path.glob("outputs/publish/*/Storyboard_images_generator_prompt.txt"))
+    prompt_text = prompt_file.read_text(encoding="utf-8")
+    assert '"content_contract"' in prompt_text
+    assert "通勤前 3 分钟底妆不搓泥" in prompt_text
+    assert '"creator_profile"' in prompt_text
+    assert '"profile_id": "commuting_beauty_women_v1"' in prompt_text
+
+
 def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
     monkeypatch,
     tmp_path,
