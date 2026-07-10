@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from typing import Any
 
+from pydantic import ValidationError
+
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas.agent_state import AgentState
 from src.schemas.carousel_qa import CarouselQAIssue, CarouselQAResult
 from src.schemas.content_contract import ContentContract
+from src.schemas.storyboard import StoryboardPayload
 from src.schemas.decision import (
     ContentCandidate,
     DecisionOutput,
@@ -73,14 +76,63 @@ def _normalized_copy(value: Any) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
+def _schema_location(location: tuple[Any, ...]) -> str:
+    result = ""
+    for segment in location:
+        if isinstance(segment, int):
+            result += f"[{segment}]"
+        elif result:
+            result += f".{segment}"
+        else:
+            result = str(segment)
+    return result or "storyboards"
+
+
+def _schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
+    try:
+        StoryboardPayload.model_validate({"storyboards": raw_frames})
+    except ValidationError as exc:
+        issues = []
+        for error in exc.errors():
+            location = tuple(error["loc"])
+            if (
+                location == ("storyboards",)
+                and error["type"] in {"too_short", "too_long"}
+            ):
+                # The deterministic card-count rule below produces the more
+                # actionable task for this same condition.
+                continue
+            frame = None
+            if (
+                isinstance(raw_frames, list)
+                and len(location) > 1
+                and isinstance(location[1], int)
+                and location[1] < len(raw_frames)
+            ):
+                frame = raw_frames[location[1]]
+            issues.append(
+                _issue(
+                    "storyboard_schema_invalid",
+                    f"Storyboard schema validation failed: {error['msg']}",
+                    _schema_location(location),
+                    frame=frame,
+                    before=str(error.get("input") or ""),
+                    after_hint="Provide a schema-valid storyboard frame or carousel payload.",
+                )
+            )
+        return issues
+    return []
+
+
 def validate_carousel(
     package: dict,
     contract: ContentContract,
     creator_profile: Any = None,
 ) -> list[CarouselQAIssue]:
     """Return deterministic, independently actionable carousel contract violations."""
-    issues: list[CarouselQAIssue] = []
-    frames = list(package.get("storyboards") or [])
+    raw_frames = package.get("storyboards")
+    issues = _schema_issues(raw_frames)
+    frames = raw_frames if isinstance(raw_frames, list) else []
 
     allowed_visual_modes = _get_value(creator_profile, "visual_modes")
     if allowed_visual_modes is not None and contract.visual_mode not in allowed_visual_modes:

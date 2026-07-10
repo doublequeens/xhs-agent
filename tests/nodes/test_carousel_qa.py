@@ -18,7 +18,11 @@ def _contract(**overrides):
 def _frame(index, **overrides):
     frame = {
         "frame_id": f"frame_{index:03d}",
+        "narrative_role": "封面钩子" if index == 1 else "步骤展开",
         "frame_title": f"第 {index} 张",
+        "image_orientation": "vertical",
+        "aspect_ratio": "3:4",
+        "recommended_size": "1080x1440",
         "visual_description": "高对比文字信息卡",
         "scene_background": "干净浅色背景",
         "composition": "清晰分区",
@@ -27,6 +31,7 @@ def _frame(index, **overrides):
         "narration": f"第 {index} 步说明",
         "image_prompt_cn": "手机端可读的文字卡",
         "image_prompt_en": "readable mobile text card",
+        "negative_prompt": "realistic, horror",
         "card_role": "cover" if index == 1 else "step",
         "is_screenshot_asset": index == 3,
         "visual_mode": "text_card",
@@ -153,6 +158,27 @@ def test_carousel_qa_empty_storyboards_reports_independent_first_card_failures()
         for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
     }
     assert tasks_by_rule == issues_by_rule
+
+
+def test_carousel_qa_turns_schema_failures_into_atomic_r1_tasks():
+    state = _state()
+    del state["publish_package"]["storyboards"][0]["negative_prompt"]
+
+    result = _qa_node()(state)
+
+    schema_issue = next(
+        issue
+        for issue in result["carousel_qa_result"].issues
+        if issue.rule_id == "storyboard_schema_invalid"
+    )
+    task = next(
+        task
+        for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
+        if task.location_hint == schema_issue.location_hint
+    )
+    assert schema_issue.location_hint == "storyboards[0].negative_prompt"
+    assert task.source == "carousel_qa"
+    assert task.severity == "high"
 
 
 def test_carousel_qa_rejects_contract_visual_mode_outside_active_creator_profile():

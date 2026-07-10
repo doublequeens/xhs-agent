@@ -705,8 +705,9 @@ def test_storyboard_first_card_and_screenshot_asset_follow_contract(monkeypatch)
     assert all("小蝾螈" not in frame["image_prompt_cn"] for frame in frames)
 
 
-def test_storyboard_first_card_requires_cover_role_at_runtime(monkeypatch):
+def test_storyboard_generator_leaves_cover_role_rejection_to_carousel_qa(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
         def execute(self, _messages):
@@ -717,19 +718,25 @@ def test_storyboard_first_card_requires_cover_role_at_runtime(monkeypatch):
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
-    with pytest.raises(RuntimeError, match="card_role == 'cover'"):
-        module.storyboards_generator_node(
-            {
-                "publish_package": {"topic_id": "tp_001"},
-                "trends": [_topic()],
-                "domain_context": _domain_context(),
-                "content_policy": _content_policy(),
-            }
-        )
+    state = {
+        "publish_package": {"topic_id": "tp_001"},
+        "trends": [_topic()],
+        "domain_context": _domain_context(),
+        "content_policy": _content_policy(),
+    }
+
+    generated = module.storyboards_generator_node(state)
+    qa_result = carousel_qa_node({**state, **generated})
+
+    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
+    assert {
+        issue.rule_id for issue in qa_result["carousel_qa_result"].issues
+    } == {"cover_role_missing"}
 
 
-def test_storyboard_revalidates_contract_after_pending_human_patch(monkeypatch):
+def test_storyboard_generator_leaves_patched_cover_role_rejection_to_carousel_qa(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
         def execute(self, _messages):
@@ -739,22 +746,28 @@ def test_storyboard_revalidates_contract_after_pending_human_patch(monkeypatch):
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
-    with pytest.raises(RuntimeError, match="card_role == 'cover'"):
-        module.storyboards_generator_node(
-            {
-                "publish_package": {"topic_id": "tp_001"},
-                "trends": [_topic()],
-                "domain_context": _domain_context(),
-                "content_policy": _content_policy(),
-                "pending_human_publish_patch": {
-                    "storyboards": [{"frame_id": "frame_001", "card_role": "step"}]
-                },
-            }
-        )
+    state = {
+        "publish_package": {"topic_id": "tp_001"},
+        "trends": [_topic()],
+        "domain_context": _domain_context(),
+        "content_policy": _content_policy(),
+        "pending_human_publish_patch": {
+            "storyboards": [{"frame_id": "frame_001", "card_role": "step"}]
+        },
+    }
+
+    generated = module.storyboards_generator_node(state)
+    qa_result = carousel_qa_node({**state, **generated})
+
+    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
+    assert {
+        issue.rule_id for issue in qa_result["carousel_qa_result"].issues
+    } == {"cover_role_missing"}
 
 
-def test_storyboard_revalidates_contract_after_r2_visible_text_patch(monkeypatch):
+def test_storyboard_generator_leaves_patched_cover_copy_rejection_to_carousel_qa(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
         def execute(self, _messages):
@@ -764,30 +777,35 @@ def test_storyboard_revalidates_contract_after_r2_visible_text_patch(monkeypatch
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
-    with pytest.raises(RuntimeError, match="first card must exactly equal"):
-        module.storyboards_generator_node(
-            {
-                "publish_package": {"topic_id": "tp_001"},
-                "trends": [_topic()],
-                "domain_context": _domain_context(),
-                "content_policy": _content_policy(),
-                "pending_human_publish_patch": {
-                    "storyboards": [{"frame_id": "frame_001", "image_prompt_cn": "reviewed"}]
-                },
-                "r2_output": SimpleNamespace(
-                    content_snapshot=SimpleNamespace(
-                        storyboard_visible_text=[
-                            {
-                                "frame_id": "frame_001",
-                                "frame_title": "R2 revised",
-                                "on_image_copy": "contract-bypassing cover copy",
-                                "narration": "R2 narration",
-                            }
-                        ]
-                    )
-                ),
-            }
-        )
+    state = {
+        "publish_package": {"topic_id": "tp_001"},
+        "trends": [_topic()],
+        "domain_context": _domain_context(),
+        "content_policy": _content_policy(),
+        "pending_human_publish_patch": {
+            "storyboards": [{"frame_id": "frame_001", "image_prompt_cn": "reviewed"}]
+        },
+        "r2_output": SimpleNamespace(
+            content_snapshot=SimpleNamespace(
+                storyboard_visible_text=[
+                    {
+                        "frame_id": "frame_001",
+                        "frame_title": "R2 revised",
+                        "on_image_copy": "contract-bypassing cover copy",
+                        "narration": "R2 narration",
+                    }
+                ]
+            )
+        ),
+    }
+
+    generated = module.storyboards_generator_node(state)
+    qa_result = carousel_qa_node({**state, **generated})
+
+    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
+    assert {
+        issue.rule_id for issue in qa_result["carousel_qa_result"].issues
+    } == {"first_screen_promise_mismatch"}
 
 
 @pytest.mark.parametrize(
@@ -799,8 +817,11 @@ def test_storyboard_revalidates_contract_after_r2_visible_text_patch(monkeypatch
         ("not-a-list", "storyboards"),
     ],
 )
-def test_storyboards_generator_rejects_invalid_storyboard_payload(monkeypatch, storyboards, error_match):
+def test_storyboard_generator_routes_schema_invalid_payload_to_carousel_qa(
+    monkeypatch, storyboards, error_match
+):
     from src.nodes import node_o_storyboards_generator as module
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
         def execute(self, messages):
@@ -808,32 +829,42 @@ def test_storyboards_generator_rejects_invalid_storyboard_payload(monkeypatch, s
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
-    with pytest.raises(RuntimeError, match=error_match):
-        module.storyboards_generator_node(
-            {
-                "publish_package": {
-                    "title": "久坐间隙活动指南",
-                    "content": "body",
-                    "topic_id": "tp_001",
-                    "topic": "睡眠改善",
-                    "angle_id": "ag_001",
-                    "angle": "睡眠策略",
-                    "target_group": "上班族",
-                    "core_pain": "熬夜后疲惫",
-                    "cover_copy": "cover",
-                    "images": [],
-                    "hashtags": ["#x"],
-                    "notes": ["note"],
-                    "storyboard_strategy": "scenario_companion",
-                    "domain": "wellness",
-                    "profile_version": "wellness-v1",
-                    "subdomain": "sleep",
-                    "content_intent": "how_to",
-                    "risk_level": "medium",
-                    "risk_flags": ["medical-adjacent", "sleep-adjacent"],
-                },
-                "trends": [_topic()],
-                "domain_context": _domain_context(),
-                "content_policy": _content_policy(),
-            }
-        )
+    state = {
+        "publish_package": {
+            "title": "久坐间隙活动指南",
+            "content": "body",
+            "topic_id": "tp_001",
+            "topic": "睡眠改善",
+            "angle_id": "ag_001",
+            "angle": "睡眠策略",
+            "target_group": "上班族",
+            "core_pain": "熬夜后疲惫",
+            "cover_copy": "cover",
+            "images": [],
+            "hashtags": ["#x"],
+            "notes": ["note"],
+            "storyboard_strategy": "scenario_companion",
+            "domain": "wellness",
+            "profile_version": "wellness-v1",
+            "subdomain": "sleep",
+            "content_intent": "how_to",
+            "risk_level": "medium",
+            "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+        },
+        "trends": [_topic()],
+        "domain_context": _domain_context(),
+        "content_policy": _content_policy(),
+    }
+
+    generated = module.storyboards_generator_node(state)
+    qa_result = carousel_qa_node({**state, **generated})
+
+    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
+    assert any(
+        error_match in issue.location_hint or error_match in issue.message
+        for issue in qa_result["carousel_qa_result"].issues
+    )
+    assert all(
+        task.source == "carousel_qa"
+        for task in qa_result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
+    )

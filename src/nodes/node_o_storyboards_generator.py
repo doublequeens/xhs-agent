@@ -1,7 +1,7 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 from src.models import get_model
-from src.schemas import AgentState, StoryboardPayload
+from src.schemas import AgentState
 from src.nodes.publish_patch import (
     merge_publish_package,
     storyboard_patch_without_visible_text,
@@ -33,24 +33,6 @@ def _selected_content_contract(state: AgentState, publish_package: dict) -> dict
     if hasattr(content_contract, "model_dump"):
         return content_contract.model_dump(mode="json")
     return dict(content_contract)
-
-
-def _validate_storyboard_contract(storyboard_json: dict, content_contract: dict):
-    try:
-        storyboards = StoryboardPayload.model_validate(storyboard_json).storyboards
-    except Exception as exc:
-        raise RuntimeError(f"Storyboard output failed validation: {exc}") from exc
-
-    first_card = storyboards[0]
-    if first_card.card_role != "cover":
-        raise RuntimeError("Storyboard first card must have card_role == 'cover'.")
-    if first_card.on_image_copy != content_contract["first_screen_promise"]:
-        raise RuntimeError(
-            "Storyboard first card must exactly equal content_contract.first_screen_promise."
-        )
-    if not any(frame.is_screenshot_asset for frame in storyboards):
-        raise RuntimeError("Storyboard output requires at least one screenshot asset card.")
-    return storyboards
 
 
 def storyboards_generator_node(state: AgentState) -> AgentState:
@@ -96,13 +78,15 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     ]
 
     storyboard_json = get_model().execute(messages)
-    storyboards = _validate_storyboard_contract(storyboard_json, content_contract)
+    storyboards = (
+        storyboard_json.get("storyboards")
+        if isinstance(storyboard_json, dict)
+        else None
+    )
 
     merged_publish_package = dict(publish_package)
     merged_publish_package["content_contract"] = content_contract
-    merged_publish_package["storyboards"] = [
-        frame.model_dump() for frame in storyboards
-    ]
+    merged_publish_package["storyboards"] = storyboards
 
     pending_patch = state.get("pending_human_publish_patch")
     if pending_patch:
@@ -128,14 +112,6 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
                 merged_publish_package,
                 {"storyboards": visible_patch},
             )
-
-    final_storyboards = _validate_storyboard_contract(
-        {"storyboards": merged_publish_package.get("storyboards")},
-        content_contract,
-    )
-    merged_publish_package["storyboards"] = [
-        frame.model_dump() for frame in final_storyboards
-    ]
 
     return {
         "publish_package": merged_publish_package,

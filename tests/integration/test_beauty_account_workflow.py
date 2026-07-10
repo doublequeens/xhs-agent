@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from types import SimpleNamespace
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
@@ -6,9 +7,40 @@ from langgraph.checkpoint.memory import InMemorySaver
 import src.graph as graph_module
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.schemas.content_contract import ContentContract
-from src.schemas.decision import DecisionOutput, NormalizedInput
+from src.schemas.decision import DecisionOutput, HashTagInput, NormalizedInput
+from src.schemas.hashtag import HashTagOutput
+from src.schemas.storyboard import StoryboardFrame
 from src.schemas.topic import TopicItem
 from src.schemas.topic_signal import CreativeSeed, TopicSignal
+
+
+def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:
+    return [
+        StoryboardFrame(
+            frame_id=f"frame_{index:03d}",
+            narrative_role="封面钩子" if index == 1 else "步骤展开",
+            frame_title=f"第 {index} 张",
+            image_orientation="vertical",
+            aspect_ratio="3:4",
+            recommended_size="1080x1440",
+            visual_description="高对比文字信息卡",
+            scene_background="干净浅色背景",
+            composition="清晰分区",
+            text_area="顶部标题区",
+            on_image_copy=(
+                contract.first_screen_promise if index == 1 else f"第 {index} 个要点"
+            ),
+            narration=f"第 {index} 步说明",
+            image_prompt_cn="手机端可读的文字卡",
+            image_prompt_en="readable mobile text card",
+            negative_prompt="cartoon, mascot",
+            card_role="cover" if index == 1 else "step",
+            is_screenshot_asset=index == 4,
+            visual_mode=contract.visual_mode,
+            proof_asset_usage="none",
+        ).model_dump()
+        for index in range(1, 7)
+    ]
 
 
 @pytest.fixture
@@ -61,51 +93,63 @@ def beauty_account_workflow():
             timely_framing="早高峰前的一次性判断清单。",
         ),
     )
-    storyboards = [
-        {
-            "frame_id": f"frame_{index:03d}",
-            "frame_title": f"第 {index} 张",
-            "visual_description": "高对比文字信息卡",
-            "scene_background": "干净浅色背景",
-            "composition": "清晰分区",
-            "text_area": "顶部标题区",
-            "on_image_copy": (
-                contract.first_screen_promise if index == 1 else f"第 {index} 个要点"
-            ),
-            "narration": f"第 {index} 步说明",
-            "image_prompt_cn": "手机端可读的文字卡",
-            "image_prompt_en": "readable mobile text card",
-            "card_role": "cover" if index == 1 else "step",
-            "is_screenshot_asset": index == 4,
-            "visual_mode": contract.visual_mode,
-        }
-        for index in range(1, 7)
-    ]
-    state = {
+    final_content = HashTagInput(
+        final_title="通勤防晒底妆不搓泥",
+        final_md="先给防晒成膜时间，再上底妆。",
+        topic_id=topic.topic_id,
+        angle_id="ag_sunscreen_order",
+        topic=topic.topic,
+        angle="防晒与底妆顺序",
+        domain=topic.domain,
+        subdomain=topic.subdomain,
+        content_intent=topic.content_intent,
+        risk_level=topic.risk_level,
+        risk_flags=[],
+        target_group=topic.target_group,
+        core_pain=topic.core_pain,
+        best_cover_copy=contract.first_screen_promise,
+    )
+    return {
         "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
         "topic_signals": [signal],
         "trends": [topic],
+        "domain_context": {
+            "domain": "beauty",
+            "subdomain": "skincare",
+            "profile_version": "beauty-v1",
+        },
+        "final_content": final_content,
+        "hashtags": HashTagOutput(hashtags=["#通勤底妆"]),
+        "final_images": SimpleNamespace(image_final_choices=[]),
     }
-    package = {
-        "draft_id": "draft_sunscreen_commute",
-        "topic_id": topic.topic_id,
-        "topic": topic.topic,
-        "angle_id": "ag_sunscreen_order",
-        "angle": "防晒与底妆顺序",
-        "target_group": topic.target_group,
-        "core_pain": topic.core_pain,
-        "title": "通勤防晒底妆不搓泥",
-        "content": "先给防晒成膜时间，再上底妆。",
-        "cover_copy": contract.first_screen_promise,
-        "storyboards": storyboards,
-        "domain": topic.domain,
-        "subdomain": topic.subdomain,
-    }
-    return {**state, "publish_package": package}
 
 
 class _ReachedWorkflowNode(Exception):
     pass
+
+
+def _install_controlled_models(monkeypatch, storyboards, captured):
+    from src.nodes import node_o_assembler as assembler_module
+    from src.nodes import node_o_storyboards_generator as storyboard_module
+
+    class FakeAssemblerModel:
+        def execute(self, _messages):
+            captured["assembler_calls"] = captured.get("assembler_calls", 0) + 1
+            return {
+                "images": [],
+                "hashtags": ["#model-output"],
+                "notes": [],
+                "storyboard_strategy": "checklist",
+            }
+
+    class FakeStoryboardModel:
+        def execute(self, messages):
+            captured["storyboard_calls"] = captured.get("storyboard_calls", 0) + 1
+            captured["storyboard_prompt"] = messages[1].content
+            return {"storyboards": storyboards}
+
+    monkeypatch.setattr(assembler_module, "get_model", lambda: FakeAssemblerModel())
+    monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
 
 
 def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
@@ -144,8 +188,6 @@ def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
         "title_lab_node",
         "title_ranker_node",
         "hashtag_node",
-        "assembler_node",
-        "storyboards_generator_node",
     ):
         monkeypatch.setattr(graph_module.nodes, node_name, passthrough)
 
@@ -162,15 +204,17 @@ def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
     )
 
 
-def _run_carousel_path(monkeypatch, state):
+def _run_carousel_path(monkeypatch, state, storyboards):
     reached_nodes = []
+    captured = {}
+    _install_controlled_models(monkeypatch, storyboards, captured)
     _install_controlled_upstream_nodes(monkeypatch, reached_nodes)
     graph = graph_module.create_graph(checkpointer=InMemorySaver())
 
     with pytest.raises(_ReachedWorkflowNode):
         graph.invoke(state, config={"configurable": {"thread_id": "carousel-path"}})
 
-    return reached_nodes
+    return reached_nodes, captured
 
 
 def test_beauty_package_reaches_human_review_with_account_contract(
@@ -178,20 +222,22 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     monkeypatch,
 ):
     state = beauty_account_workflow
-    package = state["publish_package"]
+    contract = state["trends"][0].content_contract
 
     assert state["creator_profile"].profile_id == "commuting_beauty_women_v1"
     assert state["topic_signals"][0].domain == "beauty"
     assert state["topic_signals"][0].subdomain == "skincare"
-    assert package["domain"] in state["creator_profile"].allowed_domains
-    assert package["subdomain"] in state["creator_profile"].allowed_subdomains
-    assert 6 <= len(package["storyboards"]) <= 8
-    assert (
-        package["storyboards"][0]["on_image_copy"]
-        == state["trends"][0].content_contract.first_screen_promise
+    assert 6 <= len(_schema_valid_storyboards(contract)) <= 8
+
+    reached_nodes, captured = _run_carousel_path(
+        monkeypatch, state, _schema_valid_storyboards(contract)
     )
-    assert any(frame["is_screenshot_asset"] for frame in package["storyboards"])
-    assert _run_carousel_path(monkeypatch, state) == ["human_review"]
+
+    assert reached_nodes == ["human_review"]
+    assert captured["assembler_calls"] == 1
+    assert captured["storyboard_calls"] == 1
+    assert '"content_contract"' in captured["storyboard_prompt"]
+    assert contract.first_screen_promise in captured["storyboard_prompt"]
 
 
 def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
@@ -199,7 +245,11 @@ def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
     monkeypatch,
 ):
     state = beauty_account_workflow
-    package = state["publish_package"]
-    package["storyboards"][0]["on_image_copy"] = "泛泛的护肤建议"
+    storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
+    storyboards[0]["on_image_copy"] = "泛泛的护肤建议"
 
-    assert _run_carousel_path(monkeypatch, state) == ["r1_reflector"]
+    reached_nodes, captured = _run_carousel_path(monkeypatch, state, storyboards)
+
+    assert reached_nodes == ["r1_reflector"]
+    assert captured["assembler_calls"] == 1
+    assert captured["storyboard_calls"] == 1
