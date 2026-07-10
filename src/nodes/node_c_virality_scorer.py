@@ -19,16 +19,18 @@ def virality_scorer_node(state: AgentState) -> AgentState:
 
     # angle_options = state.get("angles", [])
     novelty_check_results = state.get("novelty_check_results", [])
+    trends = state.get("trends", [])
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     # trends_options = state.get("trends", [])
 
     system_prompt = compose_prompt_for_state("virality_scorer", state)
     template = PromptTemplate(
-        input_variables=["novelty_check_results", "domain_context", "content_policy"],
+        input_variables=["novelty_check_results", "trends", "domain_context", "content_policy"],
         template=(
             "输入参数如下：\n"
             "- novelty_check_results:\n{novelty_check_results}\n"
+            "- trends（每个 topic 的 content_contract 是评分的硬约束）：\n{trends}\n"
             "- domain_context:\n{domain_context}\n"
             "- content_policy:\n{content_policy}\n"
             "请根据 system 规则评估传播潜力。"
@@ -36,6 +38,7 @@ def virality_scorer_node(state: AgentState) -> AgentState:
     )
     human_prompt = template.format(
         novelty_check_results=serialize_prompt_value(novelty_check_results),
+        trends=serialize_prompt_value(trends),
         domain_context=serialize_prompt_value(domain_context),
         content_policy=serialize_prompt_value(content_policy),
     )

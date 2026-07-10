@@ -111,4 +111,15 @@ def compose_prompt_for_state(
             f"{task} requires state.domain_context with both domain and profile_version."
         )
 
-    return compose_prompt(task, get_domain_profile(domain, version=profile_version))
+    prompt = compose_prompt(task, get_domain_profile(domain, version=profile_version))
+    creator_profile = state.get("creator_profile")
+    if creator_profile is None:
+        return prompt
+
+    return "\n\n".join(
+        [
+            prompt,
+            _read_prompt_file(FRAGMENTS_DIR / "creator_profile.txt"),
+            "【Creator Profile】\n" + serialize_prompt_value(creator_profile),
+        ]
+    )
