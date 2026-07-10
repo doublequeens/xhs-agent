@@ -1,10 +1,12 @@
 from datetime import date, datetime
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 
+import src.graph as graph_module
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
-from src.nodes.node_p_carousel_qa import carousel_qa_node, route_after_carousel_qa
 from src.schemas.content_contract import ContentContract
+from src.schemas.decision import DecisionOutput, NormalizedInput
 from src.schemas.topic import TopicItem
 from src.schemas.topic_signal import CreativeSeed, TopicSignal
 
@@ -99,14 +101,84 @@ def beauty_account_workflow():
         "domain": topic.domain,
         "subdomain": topic.subdomain,
     }
-    carousel_qa = carousel_qa_node({**state, "publish_package": package})
-    return state, package, carousel_qa
+    return {**state, "publish_package": package}
+
+
+class _ReachedWorkflowNode(Exception):
+    pass
+
+
+def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
+    def passthrough(_state):
+        return {}
+
+    def route_to_hashtag(_state):
+        return {
+            "decision_output": DecisionOutput(
+                next_node="HASHTAG_SEO",
+                normalized_input=NormalizedInput(),
+            )
+        }
+
+    def record_reached(node_name):
+        def node(_state):
+            reached_nodes.append(node_name)
+            raise _ReachedWorkflowNode(node_name)
+
+        return node
+
+    for node_name in (
+        "domain_router_node",
+        "domain_confirmation_node",
+        "retrieve_memory_node",
+        "topic_signal_collector_node",
+        "creative_brief_builder_node",
+        "topic_ideator_node",
+        "topic_diversity_filter_node",
+        "angle_strategist_node",
+        "novelty_guard_node",
+        "virality_scorer_node",
+        "evidence_brief_node",
+        "outline_architect_node",
+        "draft_writer_node",
+        "title_lab_node",
+        "title_ranker_node",
+        "hashtag_node",
+        "assembler_node",
+        "storyboards_generator_node",
+    ):
+        monkeypatch.setattr(graph_module.nodes, node_name, passthrough)
+
+    monkeypatch.setattr(graph_module.nodes, "decision_engine_node", route_to_hashtag)
+    monkeypatch.setattr(
+        graph_module.nodes,
+        "human_review_node",
+        record_reached("human_review"),
+    )
+    monkeypatch.setattr(
+        graph_module.nodes,
+        "r1_reflector_node",
+        record_reached("r1_reflector"),
+    )
+
+
+def _run_carousel_path(monkeypatch, state):
+    reached_nodes = []
+    _install_controlled_upstream_nodes(monkeypatch, reached_nodes)
+    graph = graph_module.create_graph(checkpointer=InMemorySaver())
+
+    with pytest.raises(_ReachedWorkflowNode):
+        graph.invoke(state, config={"configurable": {"thread_id": "carousel-path"}})
+
+    return reached_nodes
 
 
 def test_beauty_package_reaches_human_review_with_account_contract(
     beauty_account_workflow,
+    monkeypatch,
 ):
-    state, package, carousel_qa = beauty_account_workflow
+    state = beauty_account_workflow
+    package = state["publish_package"]
 
     assert state["creator_profile"].profile_id == "commuting_beauty_women_v1"
     assert state["topic_signals"][0].domain == "beauty"
@@ -119,16 +191,15 @@ def test_beauty_package_reaches_human_review_with_account_contract(
         == state["trends"][0].content_contract.first_screen_promise
     )
     assert any(frame["is_screenshot_asset"] for frame in package["storyboards"])
-    assert carousel_qa["carousel_qa_result"].passed is True
-    assert route_after_carousel_qa(carousel_qa) == "human_review"
+    assert _run_carousel_path(monkeypatch, state) == ["human_review"]
 
 
-def test_invalid_beauty_carousel_routes_back_to_r1(beauty_account_workflow):
-    state, package, _carousel_qa = beauty_account_workflow
+def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
+    beauty_account_workflow,
+    monkeypatch,
+):
+    state = beauty_account_workflow
+    package = state["publish_package"]
     package["storyboards"][0]["on_image_copy"] = "泛泛的护肤建议"
 
-    result = carousel_qa_node({**state, "publish_package": package})
-
-    assert result["carousel_qa_result"].passed is False
-    assert result["decision_output"].next_node == "R1_REFLECTOR"
-    assert route_after_carousel_qa(result) == "r1_reflector"
+    assert _run_carousel_path(monkeypatch, state) == ["r1_reflector"]
