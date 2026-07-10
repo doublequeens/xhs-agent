@@ -2,8 +2,9 @@
 
 ## Status
 
-Proposed and approved for implementation on 2026-07-10. This document is the
-review gate before code changes begin.
+Implemented on 2026-07-10 on `feature/beauty-account-workflow`. The workflow
+now enforces the account contract from domain selection through deterministic
+carousel QA before human review.
 
 ## Objective
 
@@ -155,6 +156,15 @@ replace compliance or human review.
 
 It returns atomic edit tasks compatible with the existing `decision_engine` /
 `r1_reflector` loop.
+
+The implemented deterministic QA rules reject a package when its contract
+visual mode is outside the active CreatorProfile, it has fewer than six or more
+than eight cards, its first card is not a cover, its first-card copy does not
+exactly equal the contract's `first_screen_promise`, no card is marked as a
+screenshot asset, any card's visual mode differs from the contract, a
+decorative/cartoon term appears in a decorative field, or visible on-image copy
+is duplicated. A rejected package receives atomic edit tasks and routes to R1;
+a passing package routes to human review.
 
 ## Prompt Architecture
 
