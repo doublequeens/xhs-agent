@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.schemas.topic_signal import TopicSignal
 from src.topic_signals.briefs import build_creative_briefs
 
@@ -31,6 +32,7 @@ def test_build_creative_briefs_generates_two_x_trends_num():
         [_signal("sig_1", "高温天"), _signal("sig_2", "周一开工")],
         trends_num=5,
         memory_context={"high_performing_patterns": []},
+        creator_profile=COMMUTING_BEAUTY_WOMEN_V1,
         seed=7,
     )
 
@@ -38,3 +40,8 @@ def test_build_creative_briefs_generates_two_x_trends_num():
     assert len({brief.signal.signal_id for brief in briefs}) > 1
     assert len({brief.content_intent for brief in briefs}) >= 2
     assert all(brief.brief_id.startswith("br_") for brief in briefs)
+    assert {brief.audience for brief in briefs} == {COMMUTING_BEAUTY_WOMEN_V1.audience}
+    assert not {"健身新手", "久坐人群"} & {brief.audience for brief in briefs}
+    assert {brief.pain for brief in briefs} <= set(
+        COMMUTING_BEAUTY_WOMEN_V1.primary_situations
+    )

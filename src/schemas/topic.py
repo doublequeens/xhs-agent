@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 
 from src.domain.models import ContentIntent, DomainName, RiskLevel
+from src.schemas.content_contract import ContentContract
 from src.schemas.topic_signal import CreativeSeed
 
 
@@ -17,4 +18,5 @@ class TopicItem(BaseModel):
     content_intent: ContentIntent
     risk_level: RiskLevel
     risk_flags: list[str]
+    content_contract: ContentContract
     creative_seed: CreativeSeed

@@ -1,6 +1,7 @@
 from datetime import date, datetime
 from zoneinfo import ZoneInfo
 
+from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.nodes.node_a_02_topic_signal_collector import topic_signal_collector_node
 from src.nodes.node_a_03_creative_brief_builder import creative_brief_builder_node
 from src.nodes.node_a_04_topic_ideator import topic_ideator_node
@@ -16,24 +17,33 @@ class FakeModel:
         return [
             {
                 "topic_id": "tp_001",
-                "topic": "高温通勤日，上班族的低门槛补水提醒",
-                "target_group": "上班族",
-                "core_pain": "忙起来忘记喝水",
-                "hook": "不是猛灌水，而是把提醒放进通勤和办公节奏里。",
+                "topic": "高温通勤日，防晒后底妆如何不搓泥",
+                "target_group": COMMUTING_BEAUTY_WOMEN_V1.audience,
+                "core_pain": "防晒后上妆容易搓泥",
+                "hook": "通勤前两步避开防晒搓泥。",
                 "content_form": "checklist",
-                "risk_note": "不涉及疾病治疗或补剂建议。",
-                "domain": "healthy_lifestyle",
-                "subdomain": "daily_habits",
+                "risk_note": "不涉及疾病诊断或治疗建议。",
+                "domain": "beauty",
+                "subdomain": "skincare",
                 "content_intent": "checklist",
                 "risk_level": "low",
                 "risk_flags": [],
+                "content_contract": {
+                    "audience": COMMUTING_BEAUTY_WOMEN_V1.audience,
+                    "trigger_situation": "早八通勤前",
+                    "decision_problem": "防晒后是否能立刻上底妆",
+                    "first_screen_promise": "通勤前两步避开防晒搓泥",
+                    "screenshot_asset": "防晒霜与粉底的上脸对比",
+                    "proof_asset": "不同用量的搓泥对比图",
+                    "visual_mode": "text_plus_real_proof",
+                },
                 "creative_seed": {
                     "signal_type": signal.signal_type,
                     "signal_name": signal.signal_name,
                     "why_now": signal.why_now,
                     "domain_translation": signal.domain_translation,
-                    "evergreen_pain": "忙起来容易忘记喝水。",
-                    "timely_framing": "高温天更容易注意到补水问题。",
+                    "evergreen_pain": "防晒后上妆容易搓泥。",
+                    "timely_framing": "高温天更容易出现脱妆和搓泥问题。",
                 },
             }
         ]
@@ -50,7 +60,8 @@ def test_signal_driven_topic_generation_offline(monkeypatch):
     )
 
     state = {
-        "domain_context": {"domain": "healthy_lifestyle", "subdomain": "daily_habits"},
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+        "domain_context": {"domain": "beauty", "subdomain": "skincare"},
         "content_policy": {"risk_level": "low"},
         "memory_context": {},
         "trends_num": 1,
@@ -110,7 +121,8 @@ def test_signal_driven_topic_generation_degrades_when_no_signals(monkeypatch, tm
     )
 
     state = {
-        "domain_context": {"domain": "healthy_lifestyle", "subdomain": "daily_habits"},
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+        "domain_context": {"domain": "beauty", "subdomain": "skincare"},
         "content_policy": {"risk_level": "low"},
         "memory_context": {},
         "trends_num": 1,

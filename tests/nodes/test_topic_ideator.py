@@ -3,6 +3,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.nodes.node_a_04_topic_ideator import topic_ideator_node
 from src.schemas.topic_signal import CreativeBrief, TopicSignal
 
@@ -12,17 +13,26 @@ class FakeModel:
         return [
             {
                 "topic_id": "tp_001",
-                "topic": "高温通勤日，上班族的低门槛补水提醒",
-                "target_group": "上班族",
-                "core_pain": "忙起来忘记喝水",
-                "hook": "不是猛灌水，而是把提醒放进通勤和办公节奏里。",
+                "topic": "高温通勤日，防晒后底妆如何不搓泥",
+                "target_group": COMMUTING_BEAUTY_WOMEN_V1.audience,
+                "core_pain": "防晒后上妆容易搓泥",
+                "hook": "通勤前两步避开防晒搓泥。",
                 "content_form": "checklist",
-                "risk_note": "不涉及疾病治疗或补剂建议。",
-                "domain": "healthy_lifestyle",
-                "subdomain": "hydration",
+                "risk_note": "不涉及疾病诊断或治疗建议。",
+                "domain": "beauty",
+                "subdomain": "skincare",
                 "content_intent": "checklist",
                 "risk_level": "low",
                 "risk_flags": [],
+                "content_contract": {
+                    "audience": COMMUTING_BEAUTY_WOMEN_V1.audience,
+                    "trigger_situation": "早八通勤前",
+                    "decision_problem": "防晒后是否能立刻上底妆",
+                    "first_screen_promise": "通勤前两步避开防晒搓泥",
+                    "screenshot_asset": "防晒霜与粉底的上脸对比",
+                    "proof_asset": "不同用量的搓泥对比图",
+                    "visual_mode": "text_plus_real_proof",
+                },
                 "creative_seed": {
                     "signal_type": "weather",
                     "signal_name": "上海高温天",
@@ -71,12 +81,21 @@ def _brief():
     return CreativeBrief(
         brief_id="br_001",
         signal=signal,
-        audience="上班族",
-        pain="没时间",
+        audience=COMMUTING_BEAUTY_WOMEN_V1.audience,
+        pain="early commute",
         content_intent="checklist",
         contrast_frame="低门槛",
         historical_pattern_hint=None,
     )
+
+
+def profile_bound_state(profile=COMMUTING_BEAUTY_WOMEN_V1):
+    return {
+        "creator_profile": profile,
+        "creative_briefs": [_brief()],
+        "domain_context": {"domain": "beauty", "subdomain": "skincare"},
+        "content_policy": {"risk_level": "low"},
+    }
 
 
 def test_topic_ideator_generates_topic_candidates(monkeypatch):
@@ -87,16 +106,7 @@ def test_topic_ideator_generates_topic_candidates(monkeypatch):
         "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
         lambda task, state: "system prompt",
     )
-    result = topic_ideator_node(
-        {
-            "creative_briefs": [_brief()],
-            "domain_context": {
-                "domain": "healthy_lifestyle",
-                "subdomain": "hydration",
-            },
-            "content_policy": {"risk_level": "low"},
-        }
-    )
+    result = topic_ideator_node(profile_bound_state())
     assert result["topic_candidates"][0].creative_seed.signal_name == "上海高温天"
 
 
@@ -110,13 +120,90 @@ def test_topic_ideator_rejects_creative_seed_not_bound_to_input_brief(monkeypatc
     )
 
     with pytest.raises(RuntimeError, match="creative_seed must match an input brief"):
-        topic_ideator_node(
-            {
-                "creative_briefs": [_brief()],
-                "domain_context": {
-                    "domain": "healthy_lifestyle",
-                    "subdomain": "hydration",
-                },
-                "content_policy": {"risk_level": "low"},
-            }
-        )
+        topic_ideator_node(profile_bound_state())
+
+
+def test_topic_ideator_rejects_candidate_outside_creator_profile(monkeypatch):
+    class OutsideProfileModel:
+        def execute(self, messages):
+            item = FakeModel().execute(messages)[0]
+            item["domain"] = "wellness"
+            return [item]
+
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model", lambda: OutsideProfileModel()
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
+
+    with pytest.raises(ValueError, match="outside creator profile scope"):
+        topic_ideator_node(profile_bound_state())
+
+
+def test_topic_ideator_requires_creator_profile(monkeypatch):
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model", lambda: FakeModel()
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
+
+    state = profile_bound_state()
+    state.pop("creator_profile")
+
+    with pytest.raises(ValueError, match="creator profile is required"):
+        topic_ideator_node(state)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "profile", "message"),
+    [
+        (
+            "target_group",
+            "其他受众",
+            COMMUTING_BEAUTY_WOMEN_V1,
+            "candidate target_group must equal creator profile audience",
+        ),
+        (
+            "content_contract.audience",
+            "其他受众",
+            COMMUTING_BEAUTY_WOMEN_V1,
+            "content contract audience must equal creator profile audience",
+        ),
+        (
+            "content_contract.visual_mode",
+            "comparison_table",
+            COMMUTING_BEAUTY_WOMEN_V1.model_copy(
+                update={"visual_modes": ("text_card",)}
+            ),
+            "content contract visual mode is not allowed by creator profile",
+        ),
+    ],
+)
+def test_topic_ideator_rejects_profile_contract_mismatch(
+    monkeypatch, field, value, profile, message
+):
+    class MismatchedContractModel:
+        def execute(self, messages):
+            item = FakeModel().execute(messages)[0]
+            if field.startswith("content_contract."):
+                contract_field = field.removeprefix("content_contract.")
+                item["content_contract"][contract_field] = value
+            else:
+                item[field] = value
+            return [item]
+
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model",
+        lambda: MismatchedContractModel(),
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
+
+    with pytest.raises(ValueError, match=message):
+        topic_ideator_node(profile_bound_state(profile))

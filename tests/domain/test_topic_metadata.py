@@ -21,6 +21,18 @@ def _creative_seed():
     }
 
 
+def _content_contract():
+    return {
+        "audience": "上班族",
+        "trigger_situation": "通勤前",
+        "decision_problem": "如何安排日常习惯",
+        "first_screen_promise": "通勤前快速掌握基础步骤",
+        "screenshot_asset": "步骤清单截图",
+        "proof_asset": "执行前后对比",
+        "visual_mode": "text_card",
+    }
+
+
 def _load_main(monkeypatch):
     models = ModuleType("src.models")
     models.set_default_provider = lambda _provider: None
@@ -61,6 +73,7 @@ def test_topic_item_accepts_domain_metadata():
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-disorder"],
+        content_contract=_content_contract(),
         creative_seed=_creative_seed(),
     )
 
@@ -85,6 +98,7 @@ def test_get_topic_metadata_returns_expected_metadata_and_copies_risk_flags():
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-disorder"],
+        content_contract=_content_contract(),
         creative_seed=_creative_seed(),
     )
 
@@ -116,6 +130,7 @@ def test_get_topic_metadata_rejects_unknown_topic_id():
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent"],
+        content_contract=_content_contract(),
         creative_seed=_creative_seed(),
     )
 
@@ -138,6 +153,7 @@ def test_get_topic_metadata_rejects_duplicate_topic_id():
             content_intent="how_to",
             risk_level="medium",
             risk_flags=["medical-adjacent"],
+            content_contract=_content_contract(),
             creative_seed=_creative_seed(),
         ),
         TopicItem(
@@ -153,6 +169,7 @@ def test_get_topic_metadata_rejects_duplicate_topic_id():
             content_intent="checklist",
             risk_level="medium",
             risk_flags=["medical-adjacent"],
+            content_contract=_content_contract(),
             creative_seed=_creative_seed(),
         ),
     ]

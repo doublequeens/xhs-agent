@@ -1,6 +1,7 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 
+from src.creator_profile import CreatorProfile
 from src.models import get_model
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas.topic import TopicItem
@@ -38,8 +39,26 @@ def _validate_candidates_bound_to_briefs(
             raise RuntimeError("creative_seed must match an input brief signal")
 
 
+def _validate_candidates_bound_to_profile(
+    candidates: list[TopicItem], profile: CreatorProfile
+) -> None:
+    for candidate in candidates:
+        profile.assert_domain_scope(candidate.domain, candidate.subdomain)
+        if candidate.target_group != profile.audience:
+            raise ValueError("candidate target_group must equal creator profile audience")
+        if candidate.content_contract.audience != profile.audience:
+            raise ValueError("content contract audience must equal creator profile audience")
+        if candidate.content_contract.visual_mode not in profile.visual_modes:
+            raise ValueError(
+                "content contract visual mode is not allowed by creator profile"
+            )
+
+
 def topic_ideator_node(state: dict) -> dict:
     creative_briefs = state.get("creative_briefs", [])
+    creator_profile = state.get("creator_profile")
+    if creator_profile is None:
+        raise ValueError("creator profile is required")
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
 
@@ -72,5 +91,6 @@ def topic_ideator_node(state: dict) -> dict:
         ) from error
 
     _validate_candidates_bound_to_briefs(candidates, creative_briefs)
+    _validate_candidates_bound_to_profile(candidates, creator_profile)
 
     return {"topic_candidates": candidates}

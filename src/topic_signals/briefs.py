@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import random
 
+from src.creator_profile import CreatorProfile
 from src.domain.models import ContentIntent
 from src.schemas.topic_signal import CreativeBrief, TopicSignal
 
 
-AUDIENCES = ["上班族", "学生党", "久坐人群", "健身新手", "生活习惯新手"]
-PAINS = ["没时间", "懒得做", "做了没效果", "怕麻烦", "不知道对错"]
 INTENTS: list[ContentIntent] = ["how_to", "checklist", "myth_busting", "experience"]
 CONTRAST_FRAMES = ["低门槛", "误区纠偏", "场景清单", "3分钟行动", "反常识"]
 
@@ -25,6 +24,7 @@ def build_creative_briefs(
     *,
     trends_num: int,
     memory_context: dict,
+    creator_profile: CreatorProfile,
     seed: int = 0,
 ) -> list[CreativeBrief]:
     if trends_num <= 0:
@@ -55,8 +55,11 @@ def build_creative_briefs(
             CreativeBrief(
                 brief_id=f"br_{index + 1:03d}",
                 signal=signal,
-                audience=AUDIENCES[index % len(AUDIENCES)],
-                pain=PAINS[(index + rng.randrange(len(PAINS))) % len(PAINS)],
+                audience=creator_profile.audience,
+                pain=creator_profile.primary_situations[
+                    (index + rng.randrange(len(creator_profile.primary_situations)))
+                    % len(creator_profile.primary_situations)
+                ],
                 content_intent=INTENTS[index % len(INTENTS)],
                 contrast_frame=CONTRAST_FRAMES[index % len(CONTRAST_FRAMES)],
                 historical_pattern_hint=_historical_hint(memory_context, index),

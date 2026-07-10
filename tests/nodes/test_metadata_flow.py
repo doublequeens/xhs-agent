@@ -17,6 +17,18 @@ def _creative_seed():
     }
 
 
+def _content_contract():
+    return {
+        "audience": "上班族",
+        "trigger_situation": "通勤前",
+        "decision_problem": "如何安排日常习惯",
+        "first_screen_promise": "通勤前快速掌握基础步骤",
+        "screenshot_asset": "步骤清单截图",
+        "proof_asset": "执行前后对比",
+        "visual_mode": "text_card",
+    }
+
+
 def _topic(topic_id="tp_001"):
     return TopicItem(
         topic_id=topic_id,
@@ -31,6 +43,7 @@ def _topic(topic_id="tp_001"):
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-adjacent"],
+        content_contract=_content_contract(),
         creative_seed=_creative_seed(),
     )
 
@@ -94,6 +107,7 @@ def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
                     "content_intent": "how_to",
                     "risk_level": "low",
                     "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+                    "content_contract": _content_contract(),
                     "creative_seed": _creative_seed(),
                 }
             ]
@@ -139,6 +153,7 @@ def test_trend_scout_normalizes_basic_science_risk_level(monkeypatch):
                     "content_intent": "basic_science",
                     "risk_level": "low",
                     "risk_flags": ["medical-adjacent"],
+                    "content_contract": _content_contract(),
                     "creative_seed": _creative_seed(),
                 }
             ]
