@@ -20,13 +20,17 @@ def domain_confirmation_node(state: AgentState) -> dict:
     ):
         return {}
 
-    resume = interrupt(
-        {
-            "kind": "domain_confirmation",
-            "message": "当前内容领域判断置信度较低，请确认 domain 和 subdomain。",
-            "context": context.model_dump(),
-        }
-    )
+    interrupt_payload = {
+        "kind": "domain_confirmation",
+        "message": "当前内容领域判断置信度较低，请确认 domain 和 subdomain。",
+        "context": context.model_dump(),
+    }
+    creator_profile = state.get("creator_profile")
+    if creator_profile is not None:
+        interrupt_payload["allowed_domains"] = creator_profile.allowed_domains
+        interrupt_payload["allowed_subdomains"] = creator_profile.allowed_subdomains
+
+    resume = interrupt(interrupt_payload)
 
     if not isinstance(resume, dict):
         raise ValueError("Domain confirmation resume payload must be a dict.")
@@ -36,7 +40,6 @@ def domain_confirmation_node(state: AgentState) -> dict:
     if not selected_domain or not selected_subdomain:
         raise ValueError("Domain confirmation requires both `domain` and `subdomain`.")
 
-    creator_profile = state.get("creator_profile")
     if creator_profile is not None:
         creator_profile.assert_domain_scope(selected_domain, selected_subdomain)
 

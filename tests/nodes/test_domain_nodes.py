@@ -69,6 +69,32 @@ def test_domain_confirmation_rejects_resume_outside_creator_profile_scope(monkey
         )
 
 
+def test_domain_confirmation_payload_limits_choices_to_creator_profile(monkeypatch):
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    context = resolve_domain(domain="beauty", focus_keyword="防晒")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"domain": "beauty", "subdomain": "makeup_basics"}
+
+    monkeypatch.setattr(
+        "src.nodes.node_a_00_domain_confirmation.interrupt", fake_interrupt
+    )
+
+    result = domain_confirmation_node(
+        {"domain_context": context, "creator_profile": COMMUTING_BEAUTY_WOMEN_V1}
+    )
+
+    assert captured["payload"]["allowed_domains"] == ("beauty",)
+    assert captured["payload"]["allowed_subdomains"] == (
+        "skincare",
+        "makeup_basics",
+    )
+    assert result["domain_context"].subdomain == "makeup_basics"
+
+
 def test_domain_confirmation_node_skips_interrupt_for_high_confidence_inferred_domain(
     monkeypatch,
 ):

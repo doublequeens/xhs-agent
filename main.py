@@ -173,6 +173,8 @@ def collect_human_review(interrupt_value: dict) -> dict:
 
 def collect_domain_confirmation(interrupt_value: dict) -> dict:
     context = interrupt_value["context"]
+    allowed_domains = tuple(interrupt_value.get("allowed_domains", SUPPORTED_DOMAINS))
+    profile_subdomains = interrupt_value.get("allowed_subdomains")
     print("\n===== Domain Confirmation Required =====")
     print(interrupt_value["message"])
     print(json.dumps(context, ensure_ascii=False, indent=2))
@@ -180,26 +182,36 @@ def collect_domain_confirmation(interrupt_value: dict) -> dict:
     while True:
         selected_domain = (
             input(
-                f"请输入 domain {SUPPORTED_DOMAINS}，直接回车使用当前值 {context['domain']}: "
+                f"请输入 domain {allowed_domains}，直接回车使用当前值 {context['domain']}: "
             ).strip()
             or context["domain"]
         )
-        if selected_domain not in SUPPORTED_DOMAINS:
+        if selected_domain not in allowed_domains:
             print("无效 domain，请重新输入。")
             continue
 
-        profile = get_domain_profile(selected_domain)
-        print(f"可选 subdomain: {', '.join(profile.allowed_subdomains)}")
-        default_subdomain = (
-            context["subdomain"]
-            if selected_domain == context["domain"]
-            else profile.default_subdomain
-        )
+        if profile_subdomains is not None:
+            allowed_subdomains = tuple(profile_subdomains)
+            default_subdomain = (
+                context["subdomain"]
+                if selected_domain == context["domain"]
+                and context["subdomain"] in allowed_subdomains
+                else allowed_subdomains[0]
+            )
+        else:
+            profile = get_domain_profile(selected_domain)
+            allowed_subdomains = profile.allowed_subdomains
+            default_subdomain = (
+                context["subdomain"]
+                if selected_domain == context["domain"]
+                else profile.default_subdomain
+            )
+        print(f"可选 subdomain: {', '.join(allowed_subdomains)}")
         selected_subdomain = (
             input(f"请输入 subdomain，直接回车使用 {default_subdomain}: ").strip()
             or default_subdomain
         )
-        if selected_subdomain not in profile.allowed_subdomains:
+        if selected_subdomain not in allowed_subdomains:
             print("无效 subdomain，请重新输入。")
             continue
 

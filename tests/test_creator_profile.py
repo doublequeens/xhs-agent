@@ -1,5 +1,7 @@
 import pytest
 
+from src.schemas import AgentState
+
 
 def test_commuting_beauty_profile_allows_only_two_beauty_subdomains():
     from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
@@ -18,3 +20,7 @@ def test_commuting_beauty_profile_is_frozen():
 
     with pytest.raises(ValidationError):
         COMMUTING_BEAUTY_WOMEN_V1.audience = "another audience"
+
+
+def test_profile_and_carousel_qa_are_optional_agent_state_keys():
+    assert {"creator_profile", "carousel_qa_result"} <= AgentState.__optional_keys__

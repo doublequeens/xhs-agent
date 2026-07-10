@@ -345,6 +345,34 @@ def test_main_rejects_subdomain_outside_domain(monkeypatch):
     assert exc_info.value.code == 2
 
 
+def test_collect_domain_confirmation_limits_cli_choices_to_profile_scope(monkeypatch, capsys):
+    main = _load_main(monkeypatch)
+    inputs = iter(["beauty", "makeup_basics"])
+    prompts = []
+
+    def fake_input(prompt):
+        prompts.append(prompt)
+        return next(inputs)
+
+    monkeypatch.setattr("builtins.input", fake_input)
+
+    selection = main.collect_domain_confirmation(
+        {
+            "kind": "domain_confirmation",
+            "message": "确认领域",
+            "context": {"domain": "beauty", "subdomain": "skincare"},
+            "allowed_domains": ("beauty",),
+            "allowed_subdomains": ("skincare", "makeup_basics"),
+        }
+    )
+
+    assert selection == {"domain": "beauty", "subdomain": "makeup_basics"}
+    assert "('beauty',)" in prompts[0]
+    output = capsys.readouterr().out
+    assert "skincare, makeup_basics" in output
+    assert "haircare" not in output
+
+
 def test_main_initial_state_defaults_to_interactive(monkeypatch):
     main = _load_main(monkeypatch)
     captured = {}
