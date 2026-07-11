@@ -1,119 +1,83 @@
-# Task 1 Report: Account-Level Creator Profile and Scope Enforcement
+# Task 1 Report: CLI and Domain/Subdomain Routing
 
-## Result
+## What you implemented
 
-- Status: DONE_WITH_CONCERNS
-- Commit: `a41af34 feat: constrain workflow to commuting beauty audience`
+- Extended `resolve_domain()` to accept `subdomain` and `interactive`, reject bare subdomains, validate explicit subdomains against the selected domain profile, and distinguish explicit domain defaults via `classification_source="explicit_domain_default_subdomain"`.
+- Extended `DomainContext` to allow the new `classification_source` value.
+- Added CLI `--subdomain` support in `main.py`, including parser validation for `--subdomain` requiring `--domain` and for subdomain/domain compatibility.
+- Added `subdomain` to `AgentState` and seeded it from CLI initial state.
+- Updated `domain_router_node()` to pass explicit subdomain state into routing.
+- Updated `domain_confirmation_node()` so explicit-domain default-subdomain routing still interrupts for confirmation, and so confirmed selections rebuild context through `resolve_domain()`.
+- Added router tests for explicit domain+subdomain behavior and CLI tests for invalid subdomain usage.
+- Updated the existing router expectation for explicit domain without explicit subdomain to match Task 1 behavior.
 
-## RED
+## Tests run and results
 
-Command:
+- `pytest tests/domain/test_router.py -q`
+  - RED verification: failed with 4 `TypeError` failures because `resolve_domain()` did not accept `subdomain`.
+- `pytest tests/domain/test_router.py tests/test_main.py -q`
+  - GREEN verification: passed, `26 passed`.
+- `pytest tests/nodes/test_domain_nodes.py -q`
+  - Related verification: `1 failed, 11 passed`.
+  - Failure is `test_domain_confirmation_node_skips_interrupt_for_high_confidence`, which still expects the pre-Task-1 behavior where explicit domain without explicit subdomain skips confirmation. Task 1 explicitly changes that behavior.
 
-```bash
-python -m pytest tests/test_creator_profile.py tests/nodes/test_domain_nodes.py tests/test_main.py -v
-```
+## TDD Evidence: RED and GREEN commands/output summary
 
-Observed output: `6 failed, 30 passed, 2 warnings in 5.11s`.
+- RED
+  - Command: `pytest tests/domain/test_router.py -q`
+  - Result: `4 failed, 7 passed`
+  - Failure summary: all four new tests failed with `TypeError: resolve_domain() got an unexpected keyword argument 'subdomain'`.
+- GREEN
+  - Command: `pytest tests/domain/test_router.py tests/test_main.py -q`
+  - Result: `26 passed, 2 warnings`
+  - Warning summary: unrelated pytest temp-directory cleanup warnings from the environment.
 
-The new profile and routing tests failed for the intended missing behavior:
+## Files changed
 
-- `ModuleNotFoundError: No module named 'src.creator_profile'`
-- `KeyError: 'creator_profile'` for the fresh `main.py` initial state.
-
-## GREEN
-
-Command:
-
-```bash
-python -m pytest tests/test_creator_profile.py tests/nodes/test_domain_nodes.py tests/test_main.py -v
-```
-
-Observed output: `36 passed, 2 warnings in 5.15s`.
-
-The focused suite verifies the frozen commuting-beauty profile, its allowed
-scope, default beauty/skincare routing when the profile is supplied, rejection
-of out-of-scope router and confirmation inputs, and production initial-state
-seeding.
-
-## Files Changed and Committed
-
-- `src/creator_profile.py`
-- `src/schemas/agent_state.py`
+- `main.py`
+- `src/domain/models.py`
+- `src/domain/router.py`
 - `src/nodes/node_a_00_domain_router.py`
 - `src/nodes/node_a_00_domain_confirmation.py`
-- `main.py`
-- `tests/test_creator_profile.py`
-- `tests/nodes/test_domain_nodes.py`
-- `tests/test_main.py`
-
-## Self-Review
-
-- Confirmed the account profile is frozen and uses the specified audience,
-  beauty-only domain scope, two allowed subdomains, situations, excluded
-  themes, and visual modes.
-- Confirmed generic multi-domain routing remains unchanged when no creator
-  profile is supplied.
-- Ran `git diff --check` before staging; no whitespace errors were reported.
-- The report itself is intentionally uncommitted because the task required the
-  commit to contain only the listed Task 1 files.
-
-## Concerns
-
-Pytest passed but emitted two environment cleanup warnings from pytest trying to
-remove temporary directories under `/private/var/folders/...`; they did not
-affect collection or test results.
-
-## Review Follow-up Fix
-
-### Commit
-
-`d2bbe5ebb9729ba0fa79c37b075e7b571253f3fe fix: scope creator profile confirmation choices`
-
-### RED
-
-Command:
-
-```bash
-python -m pytest tests/test_creator_profile.py tests/nodes/test_domain_nodes.py tests/test_main.py -v
-```
-
-Observed output: `3 failed, 36 passed, 2 warnings in 3.61s`.
-
-The regressions failed for the reviewed gaps: `AgentState` had neither key in
-`__optional_keys__`; the domain-confirmation interrupt omitted the profile's
-allowed choices; and the CLI accepted `wellness/sleep` even when the interrupt
-provided beauty-only choices.
-
-### GREEN
-
-Focused command:
-
-```bash
-python -m pytest tests/test_creator_profile.py tests/nodes/test_domain_nodes.py tests/test_main.py -v
-```
-
-Observed output: `39 passed, 2 warnings in 3.54s`.
-
-Full Task 1 coverage:
-
-```bash
-python -m pytest tests/test_creator_profile.py tests/nodes/test_domain_nodes.py tests/test_main.py tests/domain/test_router.py -v
-```
-
-Observed output: `50 passed, 2 warnings in 3.53s`.
-
-### Files Changed
-
-- `main.py`
-- `src/nodes/node_a_00_domain_confirmation.py`
 - `src/schemas/agent_state.py`
-- `tests/nodes/test_domain_nodes.py`
-- `tests/test_creator_profile.py`
+- `tests/domain/test_router.py`
 - `tests/test_main.py`
 
-### Concerns
+## Self-review findings
 
-The only test output was the existing pytest temporary-directory cleanup
-warning under `/private/var/folders/...`; it did not affect test collection or
-results. The report remains uncommitted, consistent with the prior Task 1
-report handling.
+- The implementation matches the briefed `resolve_domain()` interface and behavior, including the explicit-domain default-subdomain distinction.
+- CLI validation fails early with parser errors before graph or database setup.
+- Confirmation behavior now intentionally interrupts for explicit domain without explicit subdomain, even at high confidence, per Task 1.
+- I kept write scope to the files listed in the brief, plus this required report file.
+
+## Concerns if any
+
+- `tests/nodes/test_domain_nodes.py::test_domain_confirmation_node_skips_interrupt_for_high_confidence` now conflicts with Task 1’s required behavior. I did not modify that file because it is outside the allowed write scope from the brief.
+
+## Fix report
+
+- Updated `tests/nodes/test_domain_nodes.py` so the skip-path coverage now matches the new confirmation rule:
+  - inferred high-confidence routing still skips interrupt;
+  - explicit `domain + subdomain` routing still skips interrupt;
+  - explicit `domain` with default subdomain now interrupts and accepts a resumed subdomain selection.
+- Verified with `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q` after the test update.
+
+## Review follow-up fix: interactive state plumbing
+
+- Added `interactive` to `AgentState` and seeded `initial_state["interactive"] = True` in `main.py` so CLI behavior remains interactive by default.
+- Updated `domain_router_node()` to pass `interactive=state.get("interactive", True)` into `resolve_domain(...)` instead of hardcoding interactive mode.
+- Updated `domain_confirmation_node()` to skip the confirmation interrupt when `interactive` is explicitly `False`, allowing future non-interactive runs to keep the router-selected default subdomain.
+- Added node coverage proving:
+  - interactive default still interrupts for explicit domain without explicit subdomain;
+  - non-interactive state routes to `classification_source="explicit_domain_default_subdomain"` and does not force confirmation.
+- Added a `tests/test_main.py` assertion that fresh CLI state defaults `interactive` to `True`.
+
+### Earlier out-of-brief test update
+
+- Earlier in Task 1, `tests/nodes/test_domain_nodes.py` was updated even though the original brief listed different primary test files. That earlier update remains in place because the current review finding is specifically about node-level interactive vs non-interactive behavior, and this file is the narrowest place to prove it.
+
+### Verification
+
+- Command: `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q`
+- Result: `42 passed, 2 warnings`
+- Warning summary: unrelated pytest temp-directory cleanup warnings from the environment.
