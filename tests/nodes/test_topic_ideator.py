@@ -142,6 +142,28 @@ def test_topic_ideator_rejects_candidate_outside_creator_profile(monkeypatch):
         topic_ideator_node(profile_bound_state())
 
 
+def test_topic_ideator_normalizes_model_audience_to_creator_profile(monkeypatch):
+    class GenericAudienceModel:
+        def execute(self, messages):
+            item = FakeModel().execute(messages)[0]
+            item["target_group"] = "上班族"
+            item["content_contract"]["audience"] = "上班族"
+            return [item]
+
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.get_model", lambda: GenericAudienceModel()
+    )
+    monkeypatch.setattr(
+        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
+        lambda task, state: "system prompt",
+    )
+
+    candidate = topic_ideator_node(profile_bound_state())["topic_candidates"][0]
+
+    assert candidate.target_group == COMMUTING_BEAUTY_WOMEN_V1.audience
+    assert candidate.content_contract.audience == COMMUTING_BEAUTY_WOMEN_V1.audience
+
+
 def test_topic_ideator_requires_creator_profile(monkeypatch):
     monkeypatch.setattr(
         "src.nodes.node_a_04_topic_ideator.get_model", lambda: FakeModel()
@@ -161,18 +183,6 @@ def test_topic_ideator_requires_creator_profile(monkeypatch):
 @pytest.mark.parametrize(
     ("field", "value", "profile", "message"),
     [
-        (
-            "target_group",
-            "其他受众",
-            COMMUTING_BEAUTY_WOMEN_V1,
-            "candidate target_group must equal creator profile audience",
-        ),
-        (
-            "content_contract.audience",
-            "其他受众",
-            COMMUTING_BEAUTY_WOMEN_V1,
-            "content contract audience must equal creator profile audience",
-        ),
         (
             "content_contract.visual_mode",
             "comparison_table",

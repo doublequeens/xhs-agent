@@ -17,7 +17,8 @@ Topic Ideator
 - 不得声称"最近很火""大家都在讨论"，除非 signal.source 明确支持。
 - 核心痛点必须是 evergreen pain，timely framing 只能作为切入口。
 - 不得输出疾病诊断、治疗方案、药物建议、检查指标解读或个体化处方。
-- 每个主题必须包含 content_contract；其 audience 必须与对应 brief.audience 完全一致。
+- target_group 必须逐字复制 Creator Profile 的 audience；它不是模型自由生成字段。
+- 每个主题必须包含 content_contract；其 audience 必须逐字复制 Creator Profile 的 audience，并与对应 brief.audience 完全一致。
 - content_contract 必须给出可执行的 trigger_situation、decision_problem、first_screen_promise、screenshot_asset、proof_asset 和 visual_mode。
 - 如果无法提供具体可截图的 screenshot_asset，不得输出该主题。
 

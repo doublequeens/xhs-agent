@@ -7,6 +7,20 @@ from src.prompts.composer import compose_prompt_for_state, serialize_prompt_valu
 from src.schemas.topic import TopicItem
 
 
+def _bind_profile_controlled_fields(
+    item: dict[str, object], profile: CreatorProfile
+) -> dict[str, object]:
+    """Make account-owned audience fields deterministic, not model-authored."""
+    payload = dict(item)
+    content_contract = dict(payload.get("content_contract") or {})
+
+    payload["target_group"] = profile.audience
+    content_contract["audience"] = profile.audience
+    payload["content_contract"] = content_contract
+
+    return payload
+
+
 def _brief_seed_keys(creative_briefs: list[object]) -> set[tuple[str, str, str, str]]:
     keys: set[tuple[str, str, str, str]] = set()
     for brief in creative_briefs:
@@ -84,7 +98,10 @@ def topic_ideator_node(state: dict) -> dict:
     )
 
     try:
-        candidates = [TopicItem(**item) for item in topic_json]
+        candidates = [
+            TopicItem(**_bind_profile_controlled_fields(item, creator_profile))
+            for item in topic_json
+        ]
     except Exception as error:
         raise RuntimeError(
             f"Process terminated due to topic ideator schema error: {error}"
