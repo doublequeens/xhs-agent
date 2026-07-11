@@ -7,16 +7,19 @@ from src.prompts.composer import compose_prompt_for_state, serialize_prompt_valu
 from src.schemas.topic import TopicItem
 
 
-def _brief_seed_keys(creative_briefs: list[object]) -> set[tuple[str, str]]:
-    """Identity of a brief's signal. The topic_ideator prompt guarantees a topic's
-    creative_seed copies signal_type + signal_name verbatim (必须来自), while why_now
-    and domain_translation may be paraphrased (基于). Bind topics to briefs by
-    identity, not by verbatim prose."""
-    keys: set[tuple[str, str]] = set()
+def _brief_seed_keys(creative_briefs: list[object]) -> set[tuple[str, str, str, str]]:
+    keys: set[tuple[str, str, str, str]] = set()
     for brief in creative_briefs:
         signal = brief.signal if hasattr(brief, "signal") else brief["signal"]
         get_value = signal.get if isinstance(signal, dict) else lambda key: getattr(signal, key)
-        keys.add((get_value("signal_type"), get_value("signal_name")))
+        keys.add(
+            (
+                get_value("signal_type"),
+                get_value("signal_name"),
+                get_value("why_now"),
+                get_value("domain_translation"),
+            )
+        )
     return keys
 
 
@@ -26,20 +29,14 @@ def _validate_candidates_bound_to_briefs(
     allowed_seed_keys = _brief_seed_keys(creative_briefs)
     for candidate in candidates:
         seed = candidate.creative_seed
-        seed_key = (seed.signal_type, seed.signal_name)
+        seed_key = (
+            seed.signal_type,
+            seed.signal_name,
+            seed.why_now,
+            seed.domain_translation,
+        )
         if seed_key not in allowed_seed_keys:
             raise RuntimeError("creative_seed must match an input brief signal")
-
-
-def _bind_audience_to_profile(
-    candidates: list[TopicItem], profile: CreatorProfile
-) -> None:
-    """profile.audience is the single correct value for both target_group and
-    content_contract.audience. The LLM sometimes paraphrases it; coerce rather
-    than reject, so a faithful-but-reworded candidate isn't dropped."""
-    for candidate in candidates:
-        candidate.target_group = profile.audience
-        candidate.content_contract.audience = profile.audience
 
 
 def _validate_candidates_bound_to_profile(
@@ -47,6 +44,10 @@ def _validate_candidates_bound_to_profile(
 ) -> None:
     for candidate in candidates:
         profile.assert_domain_scope(candidate.domain, candidate.subdomain)
+        if candidate.target_group != profile.audience:
+            raise ValueError("candidate target_group must equal creator profile audience")
+        if candidate.content_contract.audience != profile.audience:
+            raise ValueError("content contract audience must equal creator profile audience")
         if candidate.content_contract.visual_mode not in profile.visual_modes:
             raise ValueError(
                 "content contract visual mode is not allowed by creator profile"
@@ -90,7 +91,6 @@ def topic_ideator_node(state: dict) -> dict:
         ) from error
 
     _validate_candidates_bound_to_briefs(candidates, creative_briefs)
-    _bind_audience_to_profile(candidates, creator_profile)
     _validate_candidates_bound_to_profile(candidates, creator_profile)
 
     return {"topic_candidates": candidates}

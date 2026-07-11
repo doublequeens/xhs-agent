@@ -123,41 +123,6 @@ def test_topic_ideator_rejects_creative_seed_not_bound_to_input_brief(monkeypatc
         topic_ideator_node(profile_bound_state())
 
 
-class ParaphrasedSeedModel:
-    """Model obeys the prompt's 基于 contract: signal identity copied verbatim,
-    but why_now/domain_translation faithfully elaborated (paraphrased)."""
-
-    def execute(self, messages):
-        item = FakeModel().execute(messages)[0]
-        item["creative_seed"] = {
-            "signal_type": "weather",
-            "signal_name": "上海高温天",
-            "why_now": "高温天让补水提醒更有时机感，出汗增多后饮水节奏更需提醒。",
-            "domain_translation": "转译为健康生活方式下的饮水习惯提醒：按时间段主动补水。",
-            "evergreen_pain": "忙起来容易忘记喝水。",
-            "timely_framing": "高温天更容易注意到补水问题。",
-        }
-        return [item]
-
-
-def test_topic_ideator_accepts_paraphrased_why_now_and_domain_translation(monkeypatch):
-    """The prompt permits why_now/domain_translation to be 基于 the brief signal
-    (paraphrased/elaborated). Only signal identity (type + name) must match."""
-    monkeypatch.setattr(
-        "src.nodes.node_a_04_topic_ideator.get_model", lambda: ParaphrasedSeedModel()
-    )
-    monkeypatch.setattr(
-        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
-        lambda task, state: "system prompt",
-    )
-
-    result = topic_ideator_node(profile_bound_state())
-
-    seed = result["topic_candidates"][0].creative_seed
-    assert seed.signal_type == "weather"
-    assert seed.signal_name == "上海高温天"
-
-
 def test_topic_ideator_rejects_candidate_outside_creator_profile(monkeypatch):
     class OutsideProfileModel:
         def execute(self, messages):
@@ -197,6 +162,18 @@ def test_topic_ideator_requires_creator_profile(monkeypatch):
     ("field", "value", "profile", "message"),
     [
         (
+            "target_group",
+            "其他受众",
+            COMMUTING_BEAUTY_WOMEN_V1,
+            "candidate target_group must equal creator profile audience",
+        ),
+        (
+            "content_contract.audience",
+            "其他受众",
+            COMMUTING_BEAUTY_WOMEN_V1,
+            "content contract audience must equal creator profile audience",
+        ),
+        (
             "content_contract.visual_mode",
             "comparison_table",
             COMMUTING_BEAUTY_WOMEN_V1.model_copy(
@@ -230,30 +207,3 @@ def test_topic_ideator_rejects_profile_contract_mismatch(
 
     with pytest.raises(ValueError, match=message):
         topic_ideator_node(profile_bound_state(profile))
-
-
-def test_topic_ideator_coerces_audience_fields_to_profile_audience(monkeypatch):
-    """profile.audience is a single fixed value. The LLM sometimes paraphrases it;
-    rather than die, coerce target_group and content_contract.audience to the
-    profile value (the only correct answer)."""
-
-    class ParaphrasedAudienceModel:
-        def execute(self, messages):
-            item = FakeModel().execute(messages)[0]
-            item["target_group"] = "通勤上班的姐妹们"
-            item["content_contract"]["audience"] = "通勤上班的姐妹们"
-            return [item]
-
-    monkeypatch.setattr(
-        "src.nodes.node_a_04_topic_ideator.get_model",
-        lambda: ParaphrasedAudienceModel(),
-    )
-    monkeypatch.setattr(
-        "src.nodes.node_a_04_topic_ideator.compose_prompt_for_state",
-        lambda task, state: "system prompt",
-    )
-
-    candidate = topic_ideator_node(profile_bound_state())["topic_candidates"][0]
-
-    assert candidate.target_group == COMMUTING_BEAUTY_WOMEN_V1.audience
-    assert candidate.content_contract.audience == COMMUTING_BEAUTY_WOMEN_V1.audience
