@@ -13,11 +13,13 @@ from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
+from src.nodes import node_p_text_card_renderer
 from src.rendering.text_cards import output_paths
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+LEGACY_IMAGE_PROMPT_FILENAME = "Storyboard_images_generator_prompt.txt"
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -94,7 +96,7 @@ def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list
     if not isinstance(raw_paths, list) or len(raw_paths) != len(expected_names):
         raise ValueError("publish_package requires exactly six rendered_image_paths")
 
-    publish_root = (Path.cwd() / "outputs" / "publish").resolve()
+    publish_root = node_p_text_card_renderer.PUBLISH_ROOT.resolve()
     package_dir: Path | None = None
     resolved_paths: list[Path] = []
     for index, (raw_path, expected_name) in enumerate(zip(raw_paths, expected_names), start=1):
@@ -145,6 +147,12 @@ def export_publish_package(publish_package: dict) -> None:
     audit_path = (package_dir / f"{title}.json").resolve()
     if not audit_path.is_relative_to(package_dir):
         raise ValueError("publish audit path must remain inside the package directory")
+
+    legacy_prompt_path = package_dir / LEGACY_IMAGE_PROMPT_FILENAME
+    try:
+        legacy_prompt_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ValueError("obsolete image prompt could not be removed from package") from exc
 
     audit_package = dict(publish_package)
     audit_package["rendered_image_paths"] = [

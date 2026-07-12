@@ -205,7 +205,10 @@ def _run_carousel_path(monkeypatch, state, storyboards, *, render_root=None):
     _install_controlled_models(monkeypatch, storyboards, captured)
     _install_controlled_upstream_nodes(monkeypatch, reached_nodes, captured)
     if render_root is not None:
-        from src.nodes import node_p_render_qa as render_qa_module
+        from src.nodes import (
+            node_p_render_qa as render_qa_module,
+            node_p_text_card_renderer as text_card_renderer_module,
+        )
         from src.rendering.text_cards import output_paths
 
         def render_six_local_cards(node_state):
@@ -220,6 +223,7 @@ def _run_carousel_path(monkeypatch, state, storyboards, *, render_root=None):
 
         monkeypatch.setattr(graph_module.nodes, "text_card_renderer_node", render_six_local_cards)
         monkeypatch.setattr(render_qa_module, "PUBLISH_ROOT", render_root)
+        monkeypatch.setattr(text_card_renderer_module, "PUBLISH_ROOT", render_root)
     graph = graph_module.create_graph(checkpointer=InMemorySaver())
 
     with pytest.raises(_ReachedWorkflowNode):
@@ -260,7 +264,7 @@ def test_beauty_workflow_exports_six_locally_rendered_cards_after_approval(
         monkeypatch,
         beauty_account_workflow,
         _schema_valid_storyboards(beauty_account_workflow["trends"][0].content_contract),
-        render_root=tmp_path / "outputs" / "publish",
+        render_root=tmp_path / "renderer-repository" / "outputs" / "publish",
     )
 
     package = captured["human_review_package"]
@@ -285,12 +289,15 @@ def test_beauty_workflow_exports_six_locally_rendered_cards_after_approval(
                 }
             }
 
-    monkeypatch.chdir(tmp_path)
+    different_cwd = tmp_path / "cli-working-directory"
+    different_cwd.mkdir()
+    monkeypatch.chdir(different_cwd)
     main_module.stream_graph_until_stop(ApprovedReviewGraph(), {}, {})
 
-    assert len(list((tmp_path / "outputs" / "publish").glob("*/images/*.png"))) == 6
-    assert len(list((tmp_path / "outputs" / "publish").glob("*/*.json"))) == 1
-    assert not list((tmp_path / "outputs" / "publish").glob("*/Storyboard_images_generator_prompt.txt"))
+    render_root = tmp_path / "renderer-repository" / "outputs" / "publish"
+    assert len(list(render_root.glob("*/images/*.png"))) == 6
+    assert len(list(render_root.glob("*/*.json"))) == 1
+    assert not list(render_root.glob("*/Storyboard_images_generator_prompt.txt"))
 
 
 def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(

@@ -34,6 +34,17 @@ def _load_main(monkeypatch):
     return importlib.import_module("main")
 
 
+@pytest.fixture(autouse=True)
+def renderer_publish_root(monkeypatch, tmp_path):
+    from src.nodes import node_p_text_card_renderer
+
+    monkeypatch.setattr(
+        node_p_text_card_renderer,
+        "PUBLISH_ROOT",
+        tmp_path / "outputs" / "publish",
+    )
+
+
 def test_build_thread_id_preserves_explicit_resume_id(monkeypatch):
     main = _load_main(monkeypatch)
 
@@ -240,8 +251,10 @@ def valid_publish_package_with_rendered_images(
     subdomain: str = "skincare",
     profile_version: str = "beauty-v1",
     title: str = "通勤底妆指南",
+    publish_root: Path | None = None,
 ) -> dict:
-    image_dir = tmp_path / "outputs" / "publish" / f"20260713-{domain}-{subdomain}-{title}" / "images"
+    root = publish_root or tmp_path / "outputs" / "publish"
+    image_dir = root / f"20260713-{domain}-{subdomain}-{title}" / "images"
     image_dir.mkdir(parents=True)
     paths = output_paths(image_dir)
     for path in paths:
@@ -268,6 +281,32 @@ def test_export_publish_package_preserves_rendered_cards_without_image_prompt(mo
     exported = sorted((tmp_path / "outputs" / "publish").glob("*/images/*.png"))[0]
     assert exported.name == "01-cover.png"
     assert not list((tmp_path / "outputs" / "publish").glob("*/Storyboard_images_generator_prompt.txt"))
+
+
+def test_export_publish_package_uses_renderer_root_from_another_cwd_and_removes_legacy_prompt(
+    monkeypatch,
+    tmp_path,
+):
+    main = _load_main(monkeypatch)
+    from src.nodes import node_p_text_card_renderer
+
+    renderer_root = tmp_path / "repository" / "outputs" / "publish"
+    monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", renderer_root)
+    package = valid_publish_package_with_rendered_images(
+        tmp_path,
+        publish_root=renderer_root,
+    )
+    package_dir = Path(package["rendered_image_paths"][0]).parent.parent
+    legacy_prompt = package_dir / "Storyboard_images_generator_prompt.txt"
+    legacy_prompt.write_text("obsolete image prompt", encoding="utf-8")
+    different_cwd = tmp_path / "other-working-directory"
+    different_cwd.mkdir()
+    monkeypatch.chdir(different_cwd)
+
+    main.export_publish_package(package)
+
+    assert not legacy_prompt.exists()
+    assert (package_dir / f"{package['title']}.json").is_file()
 
 
 def test_export_publish_package_preserves_metadata_with_package_relative_image_paths(monkeypatch, tmp_path):
