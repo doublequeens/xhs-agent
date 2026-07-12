@@ -60,7 +60,6 @@ class AgentState(TypedDict):
     final_images: FinalImages
     carousel_qa_result: NotRequired[Optional[CarouselQAResult]]
     render_qa_result: NotRequired[Optional[RenderQAResult]]
-    rendered_image_paths: NotRequired[list[str]]
     publish_package: dict
     review_status: Optional[str]
     review_feedback: Optional[str]

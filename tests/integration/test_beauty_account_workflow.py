@@ -235,3 +235,22 @@ def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
     assert reached_nodes == ["r1_reflector"]
     assert captured["assembler_calls"] == 1
     assert captured["storyboard_calls"] == 1
+
+
+def test_text_card_schema_error_reaches_r1_through_compiled_graph(
+    beauty_account_workflow,
+    monkeypatch,
+):
+    state = beauty_account_workflow
+    storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
+    storyboards[1]["wrong_items"] = ["只有一项"]
+
+    monkeypatch.setattr(
+        graph_module.nodes,
+        "carousel_qa_node",
+        lambda _state: {"carousel_qa_result": {"passed": True}},
+    )
+
+    reached_nodes, _captured = _run_carousel_path(monkeypatch, state, storyboards)
+
+    assert reached_nodes == ["r1_reflector"]

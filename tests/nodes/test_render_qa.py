@@ -31,10 +31,10 @@ def _png(width=1080, height=1440):
     return b"\x89PNG\r\n\x1a\n" + struct.pack(">I4sII", 13, b"IHDR", width, height) + b"\x08\x02\x00\x00\x00"
 
 
-def valid_state(tmp_path):
+def valid_state(publish_root):
     from src.rendering.text_cards import output_paths
 
-    image_dir = tmp_path / "images"
+    image_dir = publish_root / "20260713-beauty-skincare-test" / "images"
     paths = output_paths(image_dir)
     image_dir.mkdir(parents=True)
     for path in paths:
@@ -53,14 +53,15 @@ def valid_state(tmp_path):
     }
 
 
-def test_render_qa_routes_missing_or_wrong_size_pngs_to_r1(tmp_path):
-    from src.nodes.node_p_render_qa import render_qa_node
+def test_render_qa_routes_missing_or_wrong_size_pngs_to_r1(monkeypatch, tmp_path):
+    import src.nodes.node_p_render_qa as module
 
-    state = valid_state(tmp_path)
+    monkeypatch.setattr(module, "PUBLISH_ROOT", tmp_path / "outputs" / "publish")
+    state = valid_state(module.PUBLISH_ROOT)
     Path(state["publish_package"]["rendered_image_paths"][0]).write_bytes(_png(1080, 1081))
     Path(state["publish_package"]["rendered_image_paths"][1]).unlink()
 
-    result = render_qa_node(state)
+    result = module.render_qa_node(state)
 
     assert result["render_qa_result"].passed is False
     assert {issue.rule_id for issue in result["render_qa_result"].issues} >= {"png_dimensions_invalid", "png_missing"}
@@ -68,11 +69,28 @@ def test_render_qa_routes_missing_or_wrong_size_pngs_to_r1(tmp_path):
     assert {task.source for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory} == {"render_qa"}
 
 
-def test_render_qa_accepts_a_complete_ordered_png_set(tmp_path):
-    from src.nodes.node_p_render_qa import render_qa_node, route_after_render_qa
+def test_render_qa_accepts_a_complete_ordered_png_set(monkeypatch, tmp_path):
+    import src.nodes.node_p_render_qa as module
 
-    result = render_qa_node(valid_state(tmp_path))
+    monkeypatch.setattr(module, "PUBLISH_ROOT", tmp_path / "outputs" / "publish")
+    result = module.render_qa_node(valid_state(module.PUBLISH_ROOT))
 
     assert result["render_qa_result"].passed is True
     assert result.get("decision_output") is None
-    assert route_after_render_qa(result) == "human_review"
+    assert module.route_after_render_qa(result) == "human_review"
+
+
+def test_render_qa_rejects_each_resumed_path_outside_publish_root(monkeypatch, tmp_path):
+    import src.nodes.node_p_render_qa as module
+
+    monkeypatch.setattr(module, "PUBLISH_ROOT", tmp_path / "outputs" / "publish")
+    result = module.render_qa_node(valid_state(tmp_path / "tampered-images"))
+
+    outside_root_issues = [
+        issue
+        for issue in result["render_qa_result"].issues
+        if issue.rule_id == "png_outside_publish_root"
+    ]
+    assert result["render_qa_result"].passed is False
+    assert len(outside_root_issues) == 6
+    assert result["decision_output"].next_node == "R1_REFLECTOR"

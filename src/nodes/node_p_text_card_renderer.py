@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from src.domain import get_domain_profile
 from src.rendering.text_cards import TextCardRenderError, output_paths, render_text_cards
 from src.schemas.agent_state import AgentState
@@ -51,13 +53,16 @@ def text_card_renderer_node(state: AgentState) -> dict:
         raise ValueError("text_card_renderer_node requires publish_package as a dict.")
 
     package = dict(package)
-    payload = TextCardPayload.model_validate({"storyboards": package.get("storyboards")})
-    output_dir = render_output_directory(package)
     try:
+        payload = TextCardPayload.model_validate({"storyboards": package.get("storyboards")})
+        output_dir = render_output_directory(package)
         paths = render_text_cards(payload, output_dir)
-    except TextCardRenderError as exc:
+    except (ValidationError, ValueError, OSError, TextCardRenderError) as exc:
         package["rendered_image_paths"] = []
-        package["render_error"] = str(exc)
+        if isinstance(exc, ValidationError):
+            package["render_error"] = f"Text-card schema validation failed: {exc}"
+        else:
+            package["render_error"] = f"Local text-card rendering preparation failed: {exc}"
     else:
         package["rendered_image_paths"] = [str(path) for path in paths]
         package.pop("render_error", None)

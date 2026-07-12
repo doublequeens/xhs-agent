@@ -66,12 +66,37 @@ def test_renderer_node_adds_six_ordered_local_paths(monkeypatch, tmp_path):
 
 
 def test_renderer_node_rejects_titles_that_escape_local_publish_root(monkeypatch, tmp_path):
-    import pytest
     import src.nodes.node_p_text_card_renderer as module
 
     monkeypatch.setattr(module, "PUBLISH_ROOT", tmp_path / "outputs" / "publish")
     state = valid_state()
     state["publish_package"]["title"] = "x/../../../../outside"
 
-    with pytest.raises(ValueError, match="inside outputs/publish"):
-        module.text_card_renderer_node(state)
+    result = module.text_card_renderer_node(state)
+
+    assert result["publish_package"]["rendered_image_paths"] == []
+    assert "inside outputs/publish" in result["publish_package"]["render_error"]
+
+
+def test_renderer_node_preserves_text_card_schema_error_for_render_qa(monkeypatch, tmp_path):
+    import src.nodes.node_p_render_qa as render_qa_module
+    import src.nodes.node_p_text_card_renderer as renderer_module
+
+    monkeypatch.setattr(renderer_module, "PUBLISH_ROOT", tmp_path / "outputs" / "publish")
+    state = valid_state()
+    state["publish_package"]["storyboards"][1]["wrong_items"] = ["只有一项"]
+
+    renderer_result = renderer_module.text_card_renderer_node(state)
+    qa_result = render_qa_module.render_qa_node({**state, **renderer_result})
+
+    assert renderer_result["publish_package"]["rendered_image_paths"] == []
+    assert "schema validation failed" in renderer_result["publish_package"]["render_error"]
+    assert qa_result["render_qa_result"].passed is False
+    assert {issue.rule_id for issue in qa_result["render_qa_result"].issues} >= {
+        "text_card_schema_invalid",
+        "local_render_failed",
+    }
+    assert {
+        task.source
+        for task in qa_result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
+    } == {"render_qa"}

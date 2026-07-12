@@ -7,6 +7,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
+from src.nodes.node_p_text_card_renderer import PUBLISH_ROOT
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.rendering.text_cards import CANVAS, output_paths
 from src.schemas.agent_state import AgentState
@@ -113,6 +114,34 @@ def validate_rendered_images(package: dict, state: AgentState) -> list[RenderQAI
             )
         )
 
+    publish_root = PUBLISH_ROOT.resolve()
+    resolved_paths: list[Path | None] = []
+    for index, raw_path in enumerate(paths):
+        location_hint = f"publish_package.rendered_image_paths[{index}]"
+        try:
+            path = Path(raw_path).resolve()
+        except (OSError, TypeError, ValueError) as exc:
+            issues.append(
+                _issue(
+                    "png_path_invalid",
+                    f"Generated PNG path cannot be resolved: {exc}",
+                    location_hint,
+                )
+            )
+            resolved_paths.append(None)
+            continue
+        if not path.is_relative_to(publish_root):
+            issues.append(
+                _issue(
+                    "png_outside_publish_root",
+                    "Generated PNG must remain inside outputs/publish.",
+                    location_hint,
+                )
+            )
+            resolved_paths.append(None)
+            continue
+        resolved_paths.append(path)
+
     for index, expected_name in enumerate(EXPECTED_FILENAMES):
         if index >= len(paths):
             issues.append(
@@ -123,7 +152,9 @@ def validate_rendered_images(package: dict, state: AgentState) -> list[RenderQAI
                 )
             )
             continue
-        path = Path(paths[index])
+        path = resolved_paths[index]
+        if path is None:
+            continue
         if path.name != expected_name:
             issues.append(
                 _issue(

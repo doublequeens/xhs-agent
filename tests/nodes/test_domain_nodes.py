@@ -312,6 +312,8 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
             carousel_qa_node=fake_node,
+            text_card_renderer_node=fake_node,
+            render_qa_node=fake_node,
         ),
     )
 
@@ -329,6 +331,11 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("storyboard_generator", "human_review") not in added_edges
     assert (
         "carousel_qa",
+        (("r1_reflector", "r1_reflector"), ("text_card_renderer", "text_card_renderer")),
+    ) in added_edges
+    assert ("text_card_renderer", "render_qa") in added_edges
+    assert (
+        "render_qa",
         (("human_review", "human_review"), ("r1_reflector", "r1_reflector")),
     ) in added_edges
     assert ("human_review", "final_policy_guard") not in added_edges
@@ -399,6 +406,8 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
             carousel_qa_node=fake_node,
+            text_card_renderer_node=fake_node,
+            render_qa_node=fake_node,
         ),
     )
 
