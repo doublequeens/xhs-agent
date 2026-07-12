@@ -55,8 +55,10 @@ def valid_frames():
             "kicker": "选择规则",
             "headline": "搓泥时先减少叠加",
             "footer": "先减量再调整",
-            "condition": "底妆开始搓泥",
-            "recommendation": "减少用量并等待",
+            "conditions": [
+                {"situation": "底妆开始搓泥", "recommendation": "减少用量并等待"},
+                {"situation": "时间不足", "recommendation": "先缩减步骤"},
+            ],
         },
         {
             "frame_id": "frame_006",
@@ -116,3 +118,39 @@ def test_text_card_copy_limits_are_enforced(field, value):
 
     with pytest.raises(ValidationError):
         TextCardPayload.model_validate({"storyboards": [frame, *valid_frames()[1:]]})
+
+
+@pytest.mark.parametrize("count", [0, 1, 4])
+def test_decision_rule_requires_two_or_three_situation_recommendation_pairs(count):
+    frames = valid_frames()
+    frames[4]["conditions"] = (frames[4]["conditions"] * 2)[:count]
+
+    with pytest.raises(ValidationError):
+        TextCardPayload.model_validate({"storyboards": frames})
+
+
+@pytest.mark.parametrize(
+    "path,value",
+    [
+        (("headline",), "标题🙂"),
+        (("wrong_items", 0), "错误🙂"),
+        (("steps", 0, "hint"), "提示🙂"),
+        (("conditions", 0, "recommendation"), "建议🙂"),
+    ],
+)
+def test_text_card_visible_copy_rejects_emoji_including_nested_and_list_atoms(path, value):
+    frames = valid_frames()
+    target = frames[4] if path[0] == "conditions" else frames[0]
+    if path[0] == "wrong_items":
+        target = frames[1]
+    elif path[0] == "steps":
+        target = frames[2]
+    if len(path) == 1:
+        target[path[0]] = value
+    elif len(path) == 2:
+        target[path[0]][path[1]] = value
+    else:
+        target[path[0]][path[1]][path[2]] = value
+
+    with pytest.raises(ValidationError, match="emoji"):
+        TextCardPayload.model_validate({"storyboards": frames})

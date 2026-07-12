@@ -71,7 +71,7 @@ def _storyboard_frame(frame_number: int):
         {"template": "wrong_vs_right", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
         {"template": "step_timeline", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
         {"template": "saveable_checklist", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
-        {"template": "decision_rule", "condition": "底妆开始搓泥", "recommendation": "减少用量等待"},
+        {"template": "decision_rule", "conditions": [{"situation": "底妆开始搓泥", "recommendation": "减少用量等待"}, {"situation": "时间不足", "recommendation": "先缩减步骤"}]},
         {"template": "question_closer", "question": "你最常在哪步搓泥？"},
     ]
     return {

@@ -125,7 +125,7 @@ def test_text_card_copy_limits_are_enforced(field, value):
 
 - [ ] **Step 2: Run schema tests to verify they fail**
 
-Run: `python -m pytest tests/schemas/test_text_card.py -v`  
+Run: `python -m pytest tests/schemas/test_text_card.py -v`
 Expected: FAIL because `src.schemas.text_card` does not exist.
 
 - [ ] **Step 3: Implement discriminated template models and payload-level order validation**
@@ -229,7 +229,7 @@ def test_output_paths_follow_the_fixed_publish_sequence(tmp_path):
 
 - [ ] **Step 2: Run renderer unit tests to verify they fail**
 
-Run: `python -m pytest tests/rendering/test_text_cards.py -v`  
+Run: `python -m pytest tests/rendering/test_text_cards.py -v`
 Expected: FAIL because `src.rendering.text_cards` does not exist.
 
 - [ ] **Step 3: Implement design tokens, HTML escaping, and one template renderer per card type**
@@ -326,7 +326,7 @@ def test_render_qa_routes_missing_or_wrong_size_pngs_to_r1(tmp_path):
 
 - [ ] **Step 2: Run node tests to verify they fail**
 
-Run: `python -m pytest tests/nodes/test_text_card_renderer.py tests/nodes/test_render_qa.py -v`  
+Run: `python -m pytest tests/nodes/test_text_card_renderer.py tests/nodes/test_render_qa.py -v`
 Expected: FAIL because the new nodes and schema do not exist.
 
 - [ ] **Step 3: Implement `RenderQAResult` and renderer node**

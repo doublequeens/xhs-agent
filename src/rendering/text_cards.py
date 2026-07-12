@@ -21,6 +21,7 @@ THEMES = MappingProxyType(
     }
 )
 CANVAS = MappingProxyType({"width": 1080, "height": 1440, "padding": 84})
+COMPARISON_TOKENS = MappingProxyType({"wrong": "#B06A6A", "right": "#6F9275"})
 
 _OUTPUT_FILENAMES = (
     "01-cover.png",
@@ -47,35 +48,40 @@ body { font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-s
 }
 .card-header { display: grid; min-width: 0; gap: 18px; align-content: start; }
 .kicker { color: var(--accent); font-size: 30px; font-weight: 700; letter-spacing: 0.16em; }
-.headline { min-width: 0; margin: 0; padding-bottom: 1px; font-size: 70px; line-height: 96px; letter-spacing: -0.04em; font-weight: 800; }
+.headline { min-width: 0; height: 179.36px; margin: 0; overflow: hidden; font-size: 76px; line-height: 1.18; letter-spacing: -0.15em; font-weight: 600; }
+.headline-line { display: block; height: 89.68px; overflow: hidden; white-space: nowrap; }
 .card-content { min-height: 0; align-self: stretch; }
 [data-card-copy] { overflow-wrap: anywhere; word-break: break-word; }
-.footer { border-top: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); padding-top: 22px; font-size: 28px; font-weight: 600; }
+.footer { border-top: 2px solid color-mix(in srgb, var(--accent) 40%, transparent); padding-top: 22px; font-size: 28px; line-height: 1.35; font-weight: 400; }
 .cover-content { display: grid; place-items: center start; }
 .cover-rule { width: 144px; height: 14px; background: var(--accent); }
 .cover-message { display: grid; gap: 34px; font-size: 44px; line-height: 64px; font-weight: 700; }
 .comparison-grid { height: 100%; display: grid; grid-template-columns: 1fr 1fr; gap: 28px; }
-.comparison-column { min-width: 0; border: 3px solid var(--accent); padding: 32px; display: grid; align-content: start; gap: 26px; }
-.comparison-label { font-size: 34px; font-weight: 800; color: var(--accent); }
+.comparison-column { min-width: 0; padding: 32px; display: grid; align-content: start; gap: 26px; }
+.comparison-wrong { border: 3px solid var(--wrong); }
+.comparison-right { border: 3px solid var(--right); }
+.comparison-wrong .comparison-label { color: var(--wrong); }
+.comparison-right .comparison-label { color: var(--right); }
+.comparison-label { font-size: 34px; font-weight: 800; }
 .comparison-list { display: grid; gap: 22px; }
-.comparison-item { min-width: 0; font-size: 35px; line-height: 48px; font-weight: 650; }
+.comparison-item { min-width: 0; font-size: 36px; line-height: 1.45; font-weight: 400; }
 .timeline { height: 100%; display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; align-items: center; }
 .timeline-step { min-width: 0; min-height: 310px; border-top: 12px solid var(--accent); padding: 28px 10px 0; display: grid; align-content: start; gap: 24px; }
 .step-number { font-size: 28px; color: var(--accent); font-weight: 800; }
-.step-name { padding-bottom: 1px; font-size: 48px; line-height: 64px; font-weight: 800; }
-.step-hint { font-size: 30px; line-height: 41px; font-weight: 600; }
+.step-name { padding-bottom: 1px; font-size: 36px; line-height: 1.45; font-weight: 400; }
+.step-hint { font-size: 36px; line-height: 1.45; font-weight: 400; }
 .checklist { height: 100%; display: grid; grid-template-columns: repeat(2, 1fr); gap: 22px; align-content: center; }
 .checklist-row { min-width: 0; min-height: 154px; border: 2px solid var(--accent); padding: 28px; display: grid; grid-template-columns: 42px 1fr; gap: 16px; align-items: center; }
 .checkmark { color: var(--accent); font-size: 38px; font-weight: 900; }
-.checklist-copy { padding-bottom: 1px; font-size: 36px; line-height: 48px; font-weight: 700; }
-.decision { height: 100%; display: grid; grid-template-rows: 1fr auto 1fr; gap: 28px; align-items: center; }
-.decision-row { min-width: 0; min-height: 240px; padding: 38px; border-left: 12px solid var(--accent); display: grid; align-content: center; gap: 18px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.checklist-copy { padding-bottom: 1px; font-size: 36px; line-height: 1.45; font-weight: 400; }
+.decision { height: 100%; display: grid; gap: 20px; align-content: center; }
+.decision-row { min-width: 0; min-height: 180px; padding: 30px 38px; border-left: 12px solid var(--accent); display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-content: center; background: color-mix(in srgb, var(--accent) 8%, transparent); }
 .decision-label { font-size: 30px; font-weight: 800; color: var(--accent); letter-spacing: 0.1em; }
-.decision-copy { padding-bottom: 1px; font-size: 46px; line-height: 64px; font-weight: 800; }
+.decision-copy { padding-bottom: 1px; font-size: 36px; line-height: 1.45; font-weight: 400; }
 .decision-arrow { color: var(--accent); font-size: 62px; text-align: center; font-weight: 800; }
 .question { height: 100%; display: grid; align-content: center; gap: 38px; }
-.question-copy { font-size: 58px; line-height: 76px; font-weight: 800; border-bottom: 10px solid var(--accent); padding-bottom: 32px; }
-.question-note { font-size: 36px; line-height: 51px; font-weight: 650; }
+.question-copy { font-size: 36px; line-height: 1.45; font-weight: 400; border-bottom: 10px solid var(--accent); padding-bottom: 32px; }
+.question-note { font-size: 36px; line-height: 1.45; font-weight: 400; }
 """
 
 
@@ -91,15 +97,20 @@ def _copy(role: str, value: str, class_name: str, tag: str = "div") -> str:
     )
 
 
+def _headline_copy(value: str) -> str:
+    """Render a fixed two-line, 14-codepoint-per-line title safely."""
+    lines = [value[index:index + 14] for index in range(0, len(value), 14)]
+    line_html = "".join(f'<span class="headline-line">{escape(line, quote=True)}</span>' for line in lines)
+    return f'<h1 class="headline" data-card-copy data-copy-role="headline">{line_html}</h1>'
+
+
 def _shared_header(frame: TextCardFrame) -> str:
-    return "".join(
-        (
-            '<header class="card-header">',
-            _copy("kicker", frame.kicker, "kicker"),
-            _copy("headline", frame.headline, "headline", "h1"),
-            "</header>",
-        )
-    )
+    elements = ['<header class="card-header">']
+    if frame.kicker:
+        elements.append(_copy("kicker", frame.kicker, "kicker"))
+    elements.append(_headline_copy(frame.headline))
+    elements.append("</header>")
+    return "".join(elements)
 
 
 def _template_content(frame: TextCardFrame) -> str:
@@ -109,7 +120,6 @@ def _template_content(frame: TextCardFrame) -> str:
                 '<section class="card-content cover-content">',
                 '<div class="cover-message">',
                 '<div class="cover-rule" aria-hidden="true"></div>',
-                _copy("headline", frame.headline, "cover-headline"),
                 "</div></section>",
             )
         )
@@ -124,8 +134,8 @@ def _template_content(frame: TextCardFrame) -> str:
         )
         return f"""
 <section class="card-content comparison-grid template-wrong-vs-right">
-  <div class="comparison-column"><div class="comparison-label">错误顺序</div><div class="comparison-list">{wrong_items}</div></div>
-  <div class="comparison-column"><div class="comparison-label">正确顺序</div><div class="comparison-list">{right_items}</div></div>
+  <div class="comparison-column comparison-wrong"><div class="comparison-label">错误顺序</div><div class="comparison-list">{wrong_items}</div></div>
+  <div class="comparison-column comparison-right"><div class="comparison-label">正确顺序</div><div class="comparison-list">{right_items}</div></div>
 </section>"""
     if frame.template == "step_timeline":
         steps = "".join(
@@ -155,17 +165,18 @@ def _template_content(frame: TextCardFrame) -> str:
         )
         return f'<section class="card-content checklist">{rows}</section>'
     if frame.template == "decision_rule":
-        return "".join(
-            (
-                '<section class="card-content decision">',
-                '<div class="decision-row"><div class="decision-label">当</div>',
-                _copy("condition", frame.condition, "decision-copy"),
-                "</div><div class=\"decision-arrow\" aria-hidden=\"true\">↓</div>",
-                '<div class="decision-row"><div class="decision-label">就</div>',
-                _copy("recommendation", frame.recommendation, "decision-copy"),
-                "</div></section>",
-            )
+        rows = "".join(
+            "".join((
+                '<div class="decision-row">',
+                '<div><div class="decision-label">情况</div>',
+                _copy(f"conditions[{index}].situation", condition.situation, "decision-copy"),
+                "</div><div><div class=\"decision-label\">建议</div>",
+                _copy(f"conditions[{index}].recommendation", condition.recommendation, "decision-copy"),
+                "</div></div>",
+            ))
+            for index, condition in enumerate(frame.conditions)
         )
+        return f'<section class="card-content decision">{rows}</section>'
     if frame.template == "question_closer":
         return "".join(
             (
@@ -190,10 +201,10 @@ def render_card_html(frame: TextCardFrame) -> str:
             "<meta name=\"viewport\" content=\"width=1080, initial-scale=1\">",
             f"<style>{_CSS}</style></head><body>",
             f'<main class="card template-{frame.template.replace("_", "-")}" '
-            f'style="--background: {theme["background"]}; --ink: {theme["ink"]}; --accent: {theme["accent"]};">',
+            f'style="--background: {theme["background"]}; --ink: {theme["ink"]}; --accent: {theme["accent"]}; --wrong: {COMPARISON_TOKENS["wrong"]}; --right: {COMPARISON_TOKENS["right"]};">',
             _shared_header(frame),
             _template_content(frame),
-            _copy("footer", frame.footer, "footer", "footer"),
+            _copy("footer", frame.footer, "footer", "footer") if frame.footer else "",
             "</main></body></html>",
         )
     )

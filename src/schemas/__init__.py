@@ -18,6 +18,7 @@ from .hashtag import HashTagOutput
 from .image_qa import FinalImages, FinalImageItem 
 from .text_card import (
     CoverStatementFrame,
+    DecisionCondition,
     DecisionRuleFrame,
     QuestionCloserFrame,
     REQUIRED_TEXT_CARD_TEMPLATES,
@@ -55,7 +56,7 @@ __all__ = [
     "StoryboardFrame", "StoryboardPayload",
     "TextCardFrame", "TextCardPayload", "TimelineStep",
     "REQUIRED_TEXT_CARD_TEMPLATES",
-    "CoverStatementFrame", "WrongVsRightFrame", "StepTimelineFrame",
+    "CoverStatementFrame", "WrongVsRightFrame", "StepTimelineFrame", "DecisionCondition",
     "SaveableChecklistFrame", "DecisionRuleFrame", "QuestionCloserFrame",
     "RenderQAIssue", "RenderQAResult",
 ]

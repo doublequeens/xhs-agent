@@ -42,7 +42,7 @@ def _structured_storyboards(contract):
         {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["立刻执行", "一次太多"], "right_items": ["逐步记录", "按需调整"]},
         {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步执行", "steps": [{"name": "记录", "hint": "观察现状"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
         {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "执行清单", "checklist_items": ["记录现状", "每次一项", "每周复盘"]},
-        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "遇到阻碍时", "condition": "执行受阻", "recommendation": "缩小调整范围"},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "遇到阻碍时", "conditions": [{"situation": "执行受阻", "recommendation": "缩小调整范围"}, {"situation": "时间紧张", "recommendation": "先做关键步骤"}]},
         {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的选择", "question": "你会先调整哪一步？"},
     ]
 

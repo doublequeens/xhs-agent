@@ -1,6 +1,7 @@
+import re
 from typing import Annotated, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 
 REQUIRED_TEXT_CARD_TEMPLATES = (
@@ -14,22 +15,42 @@ REQUIRED_TEXT_CARD_TEMPLATES = (
 
 TextCardTheme = Literal["warm_neutral", "cool_sage"]
 
+# Emoji are prohibited in every atom the renderer can place on a card.  This
+# deliberately lives at the leaf-string boundary so nested/list atoms cannot
+# bypass the rule.
+_EMOJI_RE = re.compile("[\U0001F000-\U0001FAFF\U0001FC00-\U0001FFFD\u2600-\u27BF]")
+
+
+def _reject_emoji(value: str) -> str:
+    if _EMOJI_RE.search(value):
+        raise ValueError("visible card copy must not contain emoji")
+    return value
+
+
+VisibleCopy = Annotated[str, AfterValidator(_reject_emoji)]
+ShortItem = Annotated[VisibleCopy, Field(min_length=1, max_length=16)]
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
 class TimelineStep(_StrictModel):
-    name: str = Field(min_length=1, max_length=12)
-    hint: str = Field(min_length=1, max_length=16)
+    name: VisibleCopy = Field(min_length=1, max_length=12)
+    hint: ShortItem
+
+
+class DecisionCondition(_StrictModel):
+    situation: ShortItem
+    recommendation: ShortItem
 
 
 class _TextCardFrame(_StrictModel):
     frame_id: str = Field(min_length=1, max_length=64)
     theme: TextCardTheme
-    kicker: str = Field(min_length=1, max_length=10)
-    headline: str = Field(min_length=1, max_length=28)
-    footer: str = Field(min_length=1, max_length=18)
+    kicker: VisibleCopy | None = Field(default=None, max_length=10)
+    headline: VisibleCopy = Field(min_length=1, max_length=28)
+    footer: VisibleCopy | None = Field(default=None, max_length=18)
 
 
 class CoverStatementFrame(_TextCardFrame):
@@ -38,14 +59,8 @@ class CoverStatementFrame(_TextCardFrame):
 
 class WrongVsRightFrame(_TextCardFrame):
     template: Literal["wrong_vs_right"]
-    wrong_items: list[str] = Field(min_length=2, max_length=3)
-    right_items: list[str] = Field(min_length=2, max_length=4)
-
-    @model_validator(mode="after")
-    def require_short_items(self):
-        if any(not item or len(item) > 16 for item in self.wrong_items + self.right_items):
-            raise ValueError("wrong_items and right_items entries must be 1-16 characters")
-        return self
+    wrong_items: list[ShortItem] = Field(min_length=2, max_length=3)
+    right_items: list[ShortItem] = Field(min_length=2, max_length=4)
 
 
 class StepTimelineFrame(_TextCardFrame):
@@ -55,24 +70,17 @@ class StepTimelineFrame(_TextCardFrame):
 
 class SaveableChecklistFrame(_TextCardFrame):
     template: Literal["saveable_checklist"]
-    checklist_items: list[str] = Field(min_length=3, max_length=5)
-
-    @model_validator(mode="after")
-    def require_short_items(self):
-        if any(not item or len(item) > 16 for item in self.checklist_items):
-            raise ValueError("checklist_items entries must be 1-16 characters")
-        return self
+    checklist_items: list[ShortItem] = Field(min_length=3, max_length=5)
 
 
 class DecisionRuleFrame(_TextCardFrame):
     template: Literal["decision_rule"]
-    condition: str = Field(min_length=1, max_length=16)
-    recommendation: str = Field(min_length=1, max_length=16)
+    conditions: list[DecisionCondition] = Field(min_length=2, max_length=3)
 
 
 class QuestionCloserFrame(_TextCardFrame):
     template: Literal["question_closer"]
-    question: str = Field(min_length=1, max_length=22)
+    question: VisibleCopy = Field(min_length=1, max_length=22)
 
 
 TextCardFrame = Annotated[

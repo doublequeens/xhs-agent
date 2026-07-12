@@ -28,7 +28,7 @@ def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:
         {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免搓泥", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
         {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步上妆", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
         {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "上妆清单", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
-        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "出现搓泥时", "condition": "底妆开始搓泥", "recommendation": "减少用量等待"},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "出现搓泥时", "conditions": [{"situation": "底妆开始搓泥", "recommendation": "减少用量等待"}, {"situation": "时间不足", "recommendation": "先缩减步骤"}]},
         {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的习惯", "question": "你最常在哪步搓泥？"},
     ]
 
@@ -255,7 +255,7 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert contract.first_screen_promise in captured["storyboard_prompt"]
 
 
-def test_beauty_workflow_exports_six_locally_rendered_cards_after_approval(
+def test_beauty_workflow_exports_six_locally_rendered_cards_after_completed_checkpoint(
     beauty_account_workflow,
     monkeypatch,
     tmp_path,
@@ -280,24 +280,59 @@ def test_beauty_workflow_exports_six_locally_rendered_cards_after_approval(
 
     import main as main_module
 
-    class ApprovedReviewGraph:
+    class CompletedGraph:
         def stream(self, _run_input, config):
             yield {
-                "human_review": {
-                    "review_status": "approved",
-                    "publish_package": package,
+                "content_writer": {
+                    "data_writed": True,
                 }
             }
+
+        def get_state(self, _config):
+            return SimpleNamespace(
+                next=(),
+                values={"review_status": "approved", "final_policy_issues": [], "publish_package": package},
+            )
 
     different_cwd = tmp_path / "cli-working-directory"
     different_cwd.mkdir()
     monkeypatch.chdir(different_cwd)
-    main_module.stream_graph_until_stop(ApprovedReviewGraph(), {}, {})
+    main_module.stream_graph_until_stop(CompletedGraph(), {}, {})
 
     render_root = tmp_path / "renderer-repository" / "outputs" / "publish"
     assert len(list(render_root.glob("*/images/*.png"))) == 6
     assert len(list(render_root.glob("*/*.json"))) == 1
     assert not list(render_root.glob("*/Storyboard_images_generator_prompt.txt"))
+
+
+def test_final_guard_failure_never_writes_audit_or_export_after_human_approval(monkeypatch, tmp_path):
+    import main as main_module
+    from src.nodes import node_p_text_card_renderer
+    from src.rendering.text_cards import output_paths
+
+    publish_root = tmp_path / "outputs" / "publish"
+    monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", publish_root)
+    image_dir = publish_root / "20260713-beauty-skincare-守门失败" / "images"
+    image_dir.mkdir(parents=True)
+    image_paths = output_paths(image_dir)
+    for path in image_paths:
+        path.write_bytes(_png())
+    package = {
+        "title": "守门失败",
+        "domain": "beauty",
+        "profile_version": "beauty-v1",
+        "rendered_image_paths": [str(path) for path in image_paths],
+    }
+
+    class FailedGuardGraph:
+        def stream(self, _run_input, config):
+            yield {"human_review": {"review_status": "approved", "publish_package": package}}
+            yield {"final_policy_guard": {"final_policy_issues": [{"rule_id": "blocked"}]}}
+
+    main_module.stream_graph_until_stop(FailedGuardGraph(), {}, {})
+
+    assert not list(publish_root.rglob("*.json"))
+    assert sorted(image_dir.glob("*.png")) == image_paths
 
 
 def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(

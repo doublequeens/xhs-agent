@@ -69,7 +69,7 @@ def _structured_storyboards():
         {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["熬夜硬扛", "随意加量"], "right_items": ["记录诱因", "逐步调整"]},
         {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "逐步调整", "steps": [{"name": "记录", "hint": "观察诱因"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
         {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "睡前检查", "checklist_items": ["记录睡眠", "每天250毫克", "减少屏幕"]},
-        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "先小步调整", "condition": "连续疲惫", "recommendation": "优先规律作息"},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "先小步调整", "conditions": [{"situation": "连续疲惫", "recommendation": "优先规律作息"}, {"situation": "难以坚持", "recommendation": "缩小调整范围"}]},
         {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你会怎么做", "question": "你最想调整哪一步？"},
     ]
 
@@ -726,6 +726,23 @@ def test_checklist_policy_task_uses_precise_location_and_patch_updates_card():
         [{"frame_id": "frame_004", "template": "saveable_checklist", "text_blocks": {"checklist_items[1]": "咨询专业人士"}}],
     )
     assert patched[3]["checklist_items"][1] == "咨询专业人士"
+
+
+def test_decision_condition_visible_atoms_are_extracted_and_reapplied_by_frame_id():
+    storyboards = _structured_storyboards()
+    visible = extract_storyboard_visible_text(storyboards)
+
+    assert visible[4]["text_blocks"]["conditions[1].situation"] == "难以坚持"
+    assert visible[4]["text_blocks"]["conditions[1].recommendation"] == "缩小调整范围"
+
+    patched = storyboard_module.apply_storyboard_visible_text_patch(
+        storyboards,
+        [{"frame_id": "frame_005", "template": "decision_rule", "text_blocks": {
+            "conditions[1].recommendation": "改成更小目标"
+        }}],
+    )
+
+    assert patched[4]["conditions"][1]["recommendation"] == "改成更小目标"
 
 
 def test_visible_text_patch_rejects_unknown_nonempty_frame_id():

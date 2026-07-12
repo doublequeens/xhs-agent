@@ -272,6 +272,25 @@ def collect_interrupt_response(interrupt_value: dict) -> dict:
     raise ValueError(f"Unsupported interrupt kind: {kind}")
 
 
+def export_completed_publish_package(graph, config) -> bool:
+    """Export only from a completed, final-policy-clean graph checkpoint."""
+    if not hasattr(graph, "get_state"):
+        return False
+    completed_state = graph.get_state(config)
+    values = getattr(completed_state, "values", None) or {}
+    if getattr(completed_state, "next", ()):
+        return False
+    if values.get("review_status") != "approved" or values.get("final_policy_issues"):
+        return False
+    publish_package = values.get("publish_package")
+    if not publish_package:
+        return False
+    print("The final publish package title is:")
+    print(publish_package["title"])
+    export_publish_package(publish_package)
+    return True
+
+
 def stream_graph_until_stop(graph, run_input, config):
     next_input = run_input
 
@@ -289,19 +308,11 @@ def stream_graph_until_stop(graph, run_input, config):
                     break
 
                 print(f"Finished processing node: {key}")
-                if (
-                    key == "human_review"
-                    and value.get("review_status") == "approved"
-                    and value.get("publish_package")
-                ):
-                    print("The final publish package title is:")
-                    print(value["publish_package"]["title"])
-                    export_publish_package(value["publish_package"])
-
             if interrupted:
                 break
 
         if not interrupted:
+            export_completed_publish_package(graph, config)
             return
 
 def main():
@@ -430,9 +441,7 @@ def main():
         if not currentState.next:
             if currentState.values["publish_package"]:
                 print("该任务已经全部执行完毕，直接从历史状态导出 publish_package.json...")
-                print("The final publish package title is:")
-                print(currentState.values["publish_package"]["title"])
-                export_publish_package(currentState.values["publish_package"])
+                export_completed_publish_package(graph, config)
                 return # 直接退出，不需要再跑 stream
             
     else:

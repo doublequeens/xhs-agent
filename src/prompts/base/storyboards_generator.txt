@@ -8,7 +8,7 @@ Structured Text Card Generator
     {"frame_id":"string","template":"wrong_vs_right","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","wrong_items":["<=16字", "<=16字"],"right_items":["<=16字", "<=16字"]},
     {"frame_id":"string","template":"step_timeline","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","steps":[{"name":"<=12字","hint":"<=16字"}]},
     {"frame_id":"string","template":"saveable_checklist","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","checklist_items":["<=16字", "<=16字", "<=16字"]},
-    {"frame_id":"string","template":"decision_rule","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","condition":"<=16字","recommendation":"<=16字"},
+    {"frame_id":"string","template":"decision_rule","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","conditions":[{"situation":"<=16字","recommendation":"<=16字"},{"situation":"<=16字","recommendation":"<=16字"}]},
     {"frame_id":"string","template":"question_closer","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","question":"<=22字"}
   ]
 }
@@ -17,6 +17,7 @@ Structured Text Card Generator
 - 必须恰好输出六张卡，template 顺序固定为 cover_statement、wrong_vs_right、step_timeline、saveable_checklist、decision_rule、question_closer；全部使用同一个 theme，且 theme 只能是 warm_neutral 或 cool_sage。
 - 不得输出 image_prompt_cn、image_prompt_en、narration、composition、scene_background、visual_description、text_area 或 negative_prompt。
 - 第一张 template 必须为 cover_statement，headline 必须逐字等于 content_contract.first_screen_promise。
+- decision_rule 必须使用 conditions，且只能有 2–3 个情况/建议对象；不得输出 condition 或 recommendation 顶层字段。
 - 第四张必须为 saveable_checklist，清单内容必须把 screenshot_asset 改写为 3–5 条可执行短项。
 - 每个 headline 最多 28 个汉字；禁止把免责声明、正文段落或互动引导拼入 headline。
 - 只生成卡片数据；不得改写或输出 publish_package 的其他元数据。

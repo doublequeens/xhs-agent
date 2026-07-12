@@ -8,6 +8,16 @@ import pytest
 from src.schemas.text_card import TextCardPayload
 
 
+def _local_chromium_available() -> bool:
+    try:
+        from playwright.sync_api import sync_playwright
+
+        with sync_playwright() as playwright:
+            return Path(playwright.chromium.executable_path).is_file()
+    except Exception:
+        return False
+
+
 def valid_payload() -> TextCardPayload:
     return TextCardPayload.model_validate(
         {
@@ -59,8 +69,10 @@ def valid_payload() -> TextCardPayload:
                     "kicker": "选择规则",
                     "headline": "搓泥时先减少叠加",
                     "footer": "先减量再调整",
-                    "condition": "底妆开始搓泥",
-                    "recommendation": "减少用量并等待",
+                    "conditions": [
+                        {"situation": "底妆开始搓泥", "recommendation": "减少用量并等待"},
+                        {"situation": "时间不足", "recommendation": "先缩减步骤"},
+                    ],
                 },
                 {
                     "frame_id": "frame_006",
@@ -95,7 +107,7 @@ def test_render_card_html_escapes_content_strings():
 
     html = render_card_html(frame)
 
-    assert "&lt;strong&gt;安全&lt;/strong&gt;" in html
+    assert "&lt;strong&gt;" in html
     assert "<strong>安全</strong>" not in html
 
 
@@ -107,6 +119,67 @@ def test_question_closer_renders_its_footer_exactly_once():
 
     assert html.count('data-copy-role="footer"') == 1
     assert html.count(frame.footer) == 1
+
+
+def test_render_card_html_omits_empty_optional_kicker_and_footer():
+    from src.rendering.text_cards import render_card_html
+
+    frame = valid_payload().storyboards[0].model_copy(update={"kicker": None, "footer": None})
+    html = render_card_html(frame)
+
+    assert 'data-copy-role="kicker"' not in html
+    assert 'data-copy-role="footer"' not in html
+
+
+def test_cover_renders_the_headline_once_and_uses_the_approved_type_scale():
+    from src.rendering.text_cards import render_card_html
+
+    frame = valid_payload().storyboards[0]
+    html = render_card_html(frame)
+
+    assert html.count('data-copy-role="headline"') == 1
+    assert "font-size: 76px" in html
+    assert "line-height: 1.18" in html
+
+
+def test_html_uses_the_approved_body_and_footer_typography_tokens():
+    from src.rendering.text_cards import render_card_html
+
+    html = render_card_html(valid_payload().storyboards[1])
+
+    assert "font-size: 36px; line-height: 1.45" in html
+    assert "font-size: 28px; line-height: 1.35" in html
+
+
+def test_comparison_html_uses_distinct_fixed_wrong_and_right_tokens():
+    from src.rendering.text_cards import render_card_html
+
+    html = render_card_html(valid_payload().storyboards[1])
+
+    assert "--wrong: #B06A6A" in html
+    assert "--right: #6F9275" in html
+    assert 'comparison-column comparison-wrong' in html
+    assert 'comparison-column comparison-right' in html
+
+
+@pytest.mark.skipif(not _local_chromium_available(), reason="local Playwright Chromium is unavailable")
+def test_boundary_length_chinese_headline_stays_within_two_lines_in_real_browser(tmp_path):
+    from playwright.sync_api import sync_playwright
+    from src.rendering.text_cards import render_card_html
+
+    frame = valid_payload().storyboards[0].model_copy(update={"headline": "甲乙丙丁戊己庚辛壬癸子丑寅卯甲乙丙丁戊己庚辛壬癸子丑寅卯"})
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(viewport={"width": 1080, "height": 1440})
+            page.set_content(render_card_html(frame), wait_until="load")
+            metrics = page.locator(".headline").evaluate("element => ({height: element.clientHeight, lineHeight: parseFloat(getComputedStyle(element).lineHeight)})")
+            lines = page.locator(".headline-line").all_inner_texts()
+        finally:
+            browser.close()
+
+    assert metrics["height"] <= metrics["lineHeight"] * 2
+    assert [len(line) for line in lines] == [14, 14]
 
 
 def test_output_paths_follow_the_fixed_publish_sequence(tmp_path):
@@ -243,16 +316,6 @@ def test_render_text_cards_surfaces_cleanup_failure_with_render_error_as_cause(t
     assert isinstance(error.value.__cause__, TextCardRenderError)
     assert "screenshot failed" in str(error.value.__cause__)
     assert (tmp_path / "01-cover.png").is_file()
-
-
-def _local_chromium_available() -> bool:
-    try:
-        from playwright.sync_api import sync_playwright
-
-        with sync_playwright() as playwright:
-            return Path(playwright.chromium.executable_path).is_file()
-    except Exception:
-        return False
 
 
 @pytest.mark.skipif(not _local_chromium_available(), reason="local Playwright Chromium is unavailable")
