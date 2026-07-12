@@ -9,6 +9,7 @@ from src.schemas.agent_state import AgentState
 from src.schemas.carousel_qa import CarouselQAIssue, CarouselQAResult
 from src.schemas.content_contract import ContentContract
 from src.schemas.storyboard import StoryboardPayload
+from src.schemas.text_card import REQUIRED_TEXT_CARD_TEMPLATES
 from src.schemas.decision import (
     ContentCandidate,
     DecisionOutput,
@@ -18,16 +19,6 @@ from src.schemas.decision import (
     R1Input,
     RevisionMeta,
     SingleTask,
-)
-
-
-REQUIRED_TEMPLATES = (
-    "cover_statement",
-    "wrong_vs_right",
-    "step_timeline",
-    "saveable_checklist",
-    "decision_rule",
-    "question_closer",
 )
 
 
@@ -118,7 +109,7 @@ def validate_carousel(
     issues = _schema_issues(raw_frames)
     frames = raw_frames if isinstance(raw_frames, list) else []
 
-    if len(frames) != len(REQUIRED_TEMPLATES):
+    if len(frames) != len(REQUIRED_TEXT_CARD_TEMPLATES):
         issues.append(
             _issue(
                 "card_count_out_of_range",
@@ -130,7 +121,7 @@ def validate_carousel(
         )
 
     templates = [_get_value(frame, "template") for frame in frames]
-    if templates != list(REQUIRED_TEMPLATES):
+    if templates != list(REQUIRED_TEXT_CARD_TEMPLATES):
         issues.append(
             _issue(
                 "template_order_mismatch",
@@ -138,7 +129,7 @@ def validate_carousel(
                 _location(0, "template"),
                 frame=frames[0] if frames else None,
                 before=", ".join(str(template or "") for template in templates),
-                after_hint=", ".join(REQUIRED_TEMPLATES),
+                after_hint=", ".join(REQUIRED_TEXT_CARD_TEMPLATES),
             )
         )
 

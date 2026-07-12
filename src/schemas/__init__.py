@@ -20,6 +20,7 @@ from .text_card import (
     CoverStatementFrame,
     DecisionRuleFrame,
     QuestionCloserFrame,
+    REQUIRED_TEXT_CARD_TEMPLATES,
     SaveableChecklistFrame,
     StepTimelineFrame,
     TextCardFrame,
@@ -52,6 +53,7 @@ __all__ = [
     "FinalImages", "FinalImageItem",
     "StoryboardFrame", "StoryboardPayload",
     "TextCardFrame", "TextCardPayload", "TimelineStep",
+    "REQUIRED_TEXT_CARD_TEMPLATES",
     "CoverStatementFrame", "WrongVsRightFrame", "StepTimelineFrame",
     "SaveableChecklistFrame", "DecisionRuleFrame", "QuestionCloserFrame",
 ]

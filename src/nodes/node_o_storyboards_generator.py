@@ -99,13 +99,14 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
             replace_storyboards=bool(state.get("pending_human_replace_storyboards")),
         )
 
-        r2_output = state.get("r2_output")
-        content_snapshot = getattr(r2_output, "content_snapshot", None)
-        if content_snapshot is None and isinstance(r2_output, dict):
-            content_snapshot = r2_output.get("content_snapshot")
-        visible_text = getattr(content_snapshot, "storyboard_visible_text", None)
-        if visible_text is None and isinstance(content_snapshot, dict):
-            visible_text = content_snapshot.get("storyboard_visible_text")
+    r2_output = state.get("r2_output")
+    content_snapshot = getattr(r2_output, "content_snapshot", None)
+    if content_snapshot is None and isinstance(r2_output, dict):
+        content_snapshot = r2_output.get("content_snapshot")
+    visible_text = getattr(content_snapshot, "storyboard_visible_text", None)
+    if visible_text is None and isinstance(content_snapshot, dict):
+        visible_text = content_snapshot.get("storyboard_visible_text")
+    if visible_text is not None:
         visible_patch = merge_storyboard_visible_text(
             extract_storyboard_visible_text(publish_package.get("storyboards")),
             visible_text,

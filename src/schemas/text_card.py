@@ -3,6 +3,16 @@ from typing import Annotated, Literal, Union
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
+REQUIRED_TEXT_CARD_TEMPLATES = (
+    "cover_statement",
+    "wrong_vs_right",
+    "step_timeline",
+    "saveable_checklist",
+    "decision_rule",
+    "question_closer",
+)
+
+
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -81,15 +91,7 @@ class TextCardPayload(_StrictModel):
 
     @model_validator(mode="after")
     def require_template_order(self):
-        expected = [
-            "cover_statement",
-            "wrong_vs_right",
-            "step_timeline",
-            "saveable_checklist",
-            "decision_rule",
-            "question_closer",
-        ]
-        if [frame.template for frame in self.storyboards] != expected:
+        if [frame.template for frame in self.storyboards] != list(REQUIRED_TEXT_CARD_TEMPLATES):
             raise ValueError("storyboards must use the six required templates in order")
         if len({frame.theme for frame in self.storyboards}) != 1:
             raise ValueError("all storyboards must use one theme")

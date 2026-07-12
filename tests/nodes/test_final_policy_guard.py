@@ -915,6 +915,61 @@ def test_regenerated_storyboards_reapply_visible_text_patch(monkeypatch):
     ]
 
 
+def test_regenerated_storyboards_apply_complete_r2_visible_text_without_human_patch(monkeypatch):
+    generated_frames = _structured_storyboards()
+    generated_frames[0]["headline"] = "生成器的新标题"
+    generated_frames[3]["checklist_items"][1] = "生成器的新清单"
+    r2_visible_text = extract_storyboard_visible_text(_structured_storyboards())
+    r2_visible_text[0]["text_blocks"]["headline"] = "R2修订标题"
+    r2_visible_text[3]["text_blocks"]["checklist_items[1]"] = "咨询专业人士"
+
+    class FakeStoryboardModel:
+        def execute(self, _messages):
+            return {"storyboards": generated_frames}
+
+    monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
+    regenerated = storyboard_module.storyboards_generator_node(
+        {
+            "publish_package": _publish_package(storyboards=_structured_storyboards()),
+            "r2_output": SimpleNamespace(
+                content_snapshot=SimpleNamespace(storyboard_visible_text=r2_visible_text)
+            ),
+            "trends": [
+                SimpleNamespace(
+                    topic_id="tp_001",
+                    content_contract=_publish_package()["content_contract"],
+                )
+            ],
+        }
+    )
+
+    assert (
+        extract_storyboard_visible_text(regenerated["publish_package"]["storyboards"])
+        == r2_visible_text
+    )
+
+
+def test_visible_text_merge_rejects_unknown_frame_id_and_ignores_empty_frame_id():
+    prior_visible_text = extract_storyboard_visible_text(_structured_storyboards())
+
+    with pytest.raises(ValueError, match="unknown frame_id"):
+        storyboard_module.merge_storyboard_visible_text(
+            prior_visible_text,
+            [
+                {
+                    "frame_id": "stale_frame",
+                    "template": "cover_statement",
+                    "text_blocks": {"headline": "错误目标"},
+                }
+            ],
+        )
+
+    assert storyboard_module.merge_storyboard_visible_text(
+        prior_visible_text,
+        [{"frame_id": "", "text_blocks": {"headline": "忽略"}}],
+    ) == prior_visible_text
+
+
 def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkeypatch):
     class FakeModel:
         def execute(self, _messages):

@@ -141,19 +141,16 @@ def storyboard_patch_without_visible_text(publish_patch: dict) -> dict:
 
 
 def merge_storyboard_visible_text(prior_visible_text, revised_visible_text) -> list[dict]:
-    """Keep every prior displayed atom while applying frame-ID-addressed revisions."""
+    """Keep prior atoms while applying only known frame-ID-addressed revisions.
+
+    Empty frame IDs are ignored because they cannot be safely bound to a card;
+    non-empty IDs must exist in the prior snapshot and otherwise fail loudly.
+    """
     prior = [
         frame.model_dump() if hasattr(frame, "model_dump") else dict(frame)
         for frame in list(prior_visible_text or [])
         if isinstance(frame, dict) or hasattr(frame, "model_dump")
     ]
-    if not prior:
-        return [
-            frame.model_dump() if hasattr(frame, "model_dump") else dict(frame)
-            for frame in list(revised_visible_text or [])
-            if isinstance(frame, dict) or hasattr(frame, "model_dump")
-        ]
-
     merged = [
         {
             **frame,
@@ -171,9 +168,14 @@ def merge_storyboard_visible_text(prior_visible_text, revised_visible_text) -> l
             revised_frame = revised_frame.model_dump()
         if not isinstance(revised_frame, dict):
             continue
-        target_index = index_by_frame_id.get(revised_frame.get("frame_id"))
-        if target_index is None:
+        frame_id = revised_frame.get("frame_id")
+        if not frame_id:
             continue
+        target_index = index_by_frame_id.get(frame_id)
+        if target_index is None:
+            raise ValueError(
+                f"unknown frame_id in storyboard visible-text merge: {frame_id}"
+            )
         target = merged[target_index]
         if revised_frame.get("template"):
             target["template"] = revised_frame["template"]

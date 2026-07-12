@@ -51,3 +51,17 @@ The 12 failures are outside Task 1: legacy carousel QA and integration tests sti
 ## Review follow-up warnings
 
 - The remaining warnings are pre-existing test-environment cleanup warnings plus the generator's intentional legacy-checkpoint fallback warning; no test failed.
+
+## Re-review follow-up fixes
+
+- Applied R2's complete frame-ID-addressed visible-text snapshot to regenerated storyboards even when there is no pending human publish patch. The human metadata patch remains conditional, but R2 text restoration is now part of every R2-backed regeneration.
+- Made `merge_storyboard_visible_text` reject every non-empty frame ID that is absent from the prior snapshot. Empty IDs are explicitly ignored because they cannot be safely bound to a card and never fall back to list position.
+- Exported `REQUIRED_TEXT_CARD_TEMPLATES` from the text-card schema and made carousel QA consume that single schema-owned sequence.
+- Added regressions for the normal no-human-patch R2 regeneration route, unknown-ID merge rejection, and empty-ID no-op behavior.
+
+## Re-review follow-up verification
+
+- RED: `python -m pytest tests/nodes/test_final_policy_guard.py -v -k 'apply_complete_r2_visible_text_without_human_patch or visible_text_merge_rejects_unknown_frame_id'` produced `2 failed, 32 deselected, 1 warning`. It demonstrated that normal regeneration retained generator text and that the merge silently accepted an unknown ID.
+- GREEN regression check: the same focused command passed `2 passed, 32 deselected, 1 warning`.
+- Task 1 focused suite: `python -m pytest tests/schemas/test_text_card.py tests/nodes/test_metadata_flow.py tests/nodes/test_final_policy_guard.py tests/nodes/test_carousel_qa.py -v` passed `54 passed, 2 warnings`.
+- Full suite: `python -m pytest -q` passed `684 passed, 4 warnings`.
