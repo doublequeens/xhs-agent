@@ -9,37 +9,19 @@ from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.schemas.content_contract import ContentContract
 from src.schemas.decision import DecisionOutput, HashTagInput, NormalizedInput
 from src.schemas.hashtag import HashTagOutput
-from src.schemas.storyboard import StoryboardFrame
 from src.schemas.topic import TopicItem
 from src.schemas.topic_signal import CreativeSeed, TopicSignal
 
 
 def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:
+    common = {"theme": "soft_blue", "footer": "按需微调"}
     return [
-        StoryboardFrame(
-            frame_id=f"frame_{index:03d}",
-            narrative_role="封面钩子" if index == 1 else "步骤展开",
-            frame_title=f"第 {index} 张",
-            image_orientation="vertical",
-            aspect_ratio="3:4",
-            recommended_size="1080x1440",
-            visual_description="高对比文字信息卡",
-            scene_background="干净浅色背景",
-            composition="清晰分区",
-            text_area="顶部标题区",
-            on_image_copy=(
-                contract.first_screen_promise if index == 1 else f"第 {index} 个要点"
-            ),
-            narration=f"第 {index} 步说明",
-            image_prompt_cn="手机端可读的文字卡",
-            image_prompt_en="readable mobile text card",
-            negative_prompt="cartoon, mascot",
-            card_role="cover" if index == 1 else "step",
-            is_screenshot_asset=index == 4,
-            visual_mode=contract.visual_mode,
-            proof_asset_usage="none",
-        ).model_dump()
-        for index in range(1, 7)
+        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract.first_screen_promise},
+        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免搓泥", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
+        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步上妆", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
+        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "上妆清单", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "出现搓泥时", "condition": "底妆开始搓泥", "recommendation": "减少用量等待"},
+        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的习惯", "question": "你最常在哪步搓泥？"},
     ]
 
 
@@ -227,7 +209,7 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert state["creator_profile"].profile_id == "commuting_beauty_women_v1"
     assert state["topic_signals"][0].domain == "beauty"
     assert state["topic_signals"][0].subdomain == "skincare"
-    assert 6 <= len(_schema_valid_storyboards(contract)) <= 8
+    assert len(_schema_valid_storyboards(contract)) == 6
 
     reached_nodes, captured = _run_carousel_path(
         monkeypatch, state, _schema_valid_storyboards(contract)
@@ -246,7 +228,7 @@ def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
 ):
     state = beauty_account_workflow
     storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
-    storyboards[0]["on_image_copy"] = "泛泛的护肤建议"
+    storyboards[0]["headline"] = "泛泛的护肤建议"
 
     reached_nodes, captured = _run_carousel_path(monkeypatch, state, storyboards)
 

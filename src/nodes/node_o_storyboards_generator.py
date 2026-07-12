@@ -4,6 +4,8 @@ from src.models import get_model
 from src.schemas import AgentState
 from src.nodes.publish_patch import (
     apply_storyboard_visible_text_patch,
+    extract_storyboard_visible_text,
+    merge_storyboard_visible_text,
     merge_publish_package,
     storyboard_patch_without_visible_text,
 )
@@ -104,10 +106,10 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
         visible_text = getattr(content_snapshot, "storyboard_visible_text", None)
         if visible_text is None and isinstance(content_snapshot, dict):
             visible_text = content_snapshot.get("storyboard_visible_text")
-        visible_patch = [
-            frame.model_dump() if hasattr(frame, "model_dump") else dict(frame)
-            for frame in list(visible_text or [])
-        ]
+        visible_patch = merge_storyboard_visible_text(
+            extract_storyboard_visible_text(publish_package.get("storyboards")),
+            visible_text,
+        )
         if visible_patch:
             merged_publish_package["storyboards"] = apply_storyboard_visible_text_patch(
                 merged_publish_package.get("storyboards"), visible_patch

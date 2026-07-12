@@ -1,83 +1,53 @@
-# Task 1 Report: CLI and Domain/Subdomain Routing
+# Task 1 report: structured text-card contract
 
-## What you implemented
+## Delivered
 
-- Extended `resolve_domain()` to accept `subdomain` and `interactive`, reject bare subdomains, validate explicit subdomains against the selected domain profile, and distinguish explicit domain defaults via `classification_source="explicit_domain_default_subdomain"`.
-- Extended `DomainContext` to allow the new `classification_source` value.
-- Added CLI `--subdomain` support in `main.py`, including parser validation for `--subdomain` requiring `--domain` and for subdomain/domain compatibility.
-- Added `subdomain` to `AgentState` and seeded it from CLI initial state.
-- Updated `domain_router_node()` to pass explicit subdomain state into routing.
-- Updated `domain_confirmation_node()` so explicit-domain default-subdomain routing still interrupts for confirmation, and so confirmed selections rebuild context through `resolve_domain()`.
-- Added router tests for explicit domain+subdomain behavior and CLI tests for invalid subdomain usage.
-- Updated the existing router expectation for explicit domain without explicit subdomain to match Task 1 behavior.
+- Added a strict Pydantic text-card schema with six discriminated templates, fixed order, one-theme validation, and card-copy limits.
+- Re-exported the new payload from the storyboard schema module and package exports.
+- Replaced legacy three-field storyboard review text with `frame_id`, `template`, and precise `text_blocks` locations.
+- Added extraction and nested reapplication of visible text, including list entries such as `checklist_items[1]` and timeline fields such as `steps[1].hint`.
+- Updated R1/R2, human review, decision routing, policy scanning, and prompts to preserve and review every displayed text atom.
+- Replaced the storyboard generation prompt with the JSON-only six-card contract; the generator intentionally continues to pass model output through for deterministic QA.
 
-## Tests run and results
+## Verification
 
-- `pytest tests/domain/test_router.py -q`
-  - RED verification: failed with 4 `TypeError` failures because `resolve_domain()` did not accept `subdomain`.
-- `pytest tests/domain/test_router.py tests/test_main.py -q`
-  - GREEN verification: passed, `26 passed`.
-- `pytest tests/nodes/test_domain_nodes.py -q`
-  - Related verification: `1 failed, 11 passed`.
-  - Failure is `test_domain_confirmation_node_skips_interrupt_for_high_confidence`, which still expects the pre-Task-1 behavior where explicit domain without explicit subdomain skips confirmation. Task 1 explicitly changes that behavior.
+Focused required suite passed:
 
-## TDD Evidence: RED and GREEN commands/output summary
+```text
+python -m pytest tests/schemas/test_text_card.py tests/nodes/test_metadata_flow.py tests/nodes/test_final_policy_guard.py -v
+47 passed, 1 warning
+```
 
-- RED
-  - Command: `pytest tests/domain/test_router.py -q`
-  - Result: `4 failed, 7 passed`
-  - Failure summary: all four new tests failed with `TypeError: resolve_domain() got an unexpected keyword argument 'subdomain'`.
-- GREEN
-  - Command: `pytest tests/domain/test_router.py tests/test_main.py -q`
-  - Result: `26 passed, 2 warnings`
-  - Warning summary: unrelated pytest temp-directory cleanup warnings from the environment.
+Additional regression check:
 
-## Files changed
+```text
+python -m pytest -q
+671 passed, 12 failed, 3 warnings
+```
 
-- `main.py`
-- `src/domain/models.py`
-- `src/domain/router.py`
-- `src/nodes/node_a_00_domain_router.py`
-- `src/nodes/node_a_00_domain_confirmation.py`
-- `src/schemas/agent_state.py`
-- `tests/domain/test_router.py`
-- `tests/test_main.py`
+The 12 failures are outside Task 1: legacy carousel QA and integration tests still instantiate and assert the retired image-prompt/card-role schema. They are the follow-on deterministic carousel QA migration; no production workaround was added because Task 1 requires the old schema to be replaced.
 
-## Self-review findings
+## Notes
 
-- The implementation matches the briefed `resolve_domain()` interface and behavior, including the explicit-domain default-subdomain distinction.
-- CLI validation fails early with parser errors before graph or database setup.
-- Confirmation behavior now intentionally interrupts for explicit domain without explicit subdomain, even at high confidence, per Task 1.
-- I kept write scope to the files listed in the brief, plus this required report file.
+- The sample headline/footer strings in the task brief were shorter than their stated limits, so the new schema tests use genuinely over-limit fixtures.
+- The focused generator test confirms malformed LLM output remains unvalidated at generation time, as required.
 
-## Concerns if any
+## Review follow-up fixes
 
-- `tests/nodes/test_domain_nodes.py::test_domain_confirmation_node_skips_interrupt_for_high_confidence` now conflicts with Task 1’s required behavior. I did not modify that file because it is outside the allowed write scope from the brief.
+- Migrated deterministic carousel QA to the structured six-card contract. It now accepts a schema-valid `TextCardPayload` and produces distinct actionable tasks for invalid schema, exact six-card count, fixed template order, one-theme enforcement, cover-headline/first-screen-promise equality, and the required `saveable_checklist` template. Retired `card_role`, `on_image_copy`, `is_screenshot_asset`, per-card `visual_mode`, and image-prompt/decorative checks were removed.
+- Made visible-text reapplication frame-ID-only. A non-empty unknown `frame_id` now raises `ValueError` instead of falling back to the same list position; empty IDs are ignored rather than positionally applied.
+- Added `merge_storyboard_visible_text` and used it before R2 deterministic policy scanning, after R2 output parsing, and before regenerated storyboards consume an R2 patch. The merge starts from the complete visible-text snapshot, overlays only matching frame IDs and supplied block changes, and retains every prior display atom.
+- Replaced stale legacy carousel and integration fixtures with the real six-template payload. Added regression coverage for: valid structured carousel QA routing to human review; precise structured QA failures; unknown frame-ID rejection; regeneration retaining omitted checklist text; and a partial R2 payload retaining all six cards before scanning the dosage-bearing checklist atom.
 
-## Fix report
+## Review follow-up verification
 
-- Updated `tests/nodes/test_domain_nodes.py` so the skip-path coverage now matches the new confirmation rule:
-  - inferred high-confidence routing still skips interrupt;
-  - explicit `domain + subdomain` routing still skips interrupt;
-  - explicit `domain` with default subdomain now interrupts and accepts a resumed subdomain selection.
-- Verified with `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q` after the test update.
+- RED: `python -m pytest tests/nodes/test_carousel_qa.py -v` initially produced `2 failed, 1 passed`; the valid six-card payload was rejected for retired `card_role`, `on_image_copy`, `is_screenshot_asset`, and `visual_mode` fields.
+- RED: `python -m pytest tests/nodes/test_final_policy_guard.py -v -k 'unknown_nonempty_frame_id or regenerated_storyboards_reapply_visible_text_patch or r2_merges_partial_visible_text'` initially produced `3 failed`; it demonstrated positional unknown-ID mutation and missing-card/atom retention.
+- GREEN regression check: the same focused final-policy command passed `3 passed, 1 warning`.
+- Required focused suite: `python -m pytest tests/schemas/test_text_card.py tests/nodes/test_metadata_flow.py tests/nodes/test_final_policy_guard.py tests/nodes/test_carousel_qa.py -v` passed `52 passed, 1 warning`.
+- Directly affected integration suites: `python -m pytest tests/integration/test_beauty_account_workflow.py tests/integration/test_domain_workflow.py -q` passed `10 passed, 2 warnings`.
+- Full suite: `python -m pytest -q` passed `682 passed, 3 warnings`.
 
-## Review follow-up fix: interactive state plumbing
+## Review follow-up warnings
 
-- Added `interactive` to `AgentState` and seeded `initial_state["interactive"] = True` in `main.py` so CLI behavior remains interactive by default.
-- Updated `domain_router_node()` to pass `interactive=state.get("interactive", True)` into `resolve_domain(...)` instead of hardcoding interactive mode.
-- Updated `domain_confirmation_node()` to skip the confirmation interrupt when `interactive` is explicitly `False`, allowing future non-interactive runs to keep the router-selected default subdomain.
-- Added node coverage proving:
-  - interactive default still interrupts for explicit domain without explicit subdomain;
-  - non-interactive state routes to `classification_source="explicit_domain_default_subdomain"` and does not force confirmation.
-- Added a `tests/test_main.py` assertion that fresh CLI state defaults `interactive` to `True`.
-
-### Earlier out-of-brief test update
-
-- Earlier in Task 1, `tests/nodes/test_domain_nodes.py` was updated even though the original brief listed different primary test files. That earlier update remains in place because the current review finding is specifically about node-level interactive vs non-interactive behavior, and this file is the narrowest place to prove it.
-
-### Verification
-
-- Command: `pytest tests/nodes/test_domain_nodes.py tests/domain/test_router.py tests/test_main.py -q`
-- Result: `42 passed, 2 warnings`
-- Warning summary: unrelated pytest temp-directory cleanup warnings from the environment.
+- The remaining warnings are pre-existing test-environment cleanup warnings plus the generator's intentional legacy-checkpoint fallback warning; no test failed.

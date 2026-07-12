@@ -22,7 +22,6 @@ from src.schemas import (
 from src.schemas.r2_output import R2ComplianceAudit, R2Output
 from src.schemas.decision import RevisionMeta
 from src.schemas.topic import TopicItem
-from src.schemas.storyboard import StoryboardFrame
 
 
 def _creative_seed():
@@ -34,6 +33,18 @@ def _creative_seed():
         "evergreen_pain": "测试核心痛点。",
         "timely_framing": "测试时机包装。",
     }
+
+
+def _structured_storyboards(contract):
+    common = {"theme": "soft_blue", "footer": "按需微调"}
+    return [
+        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract.first_screen_promise},
+        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["立刻执行", "一次太多"], "right_items": ["逐步记录", "按需调整"]},
+        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步执行", "steps": [{"name": "记录", "hint": "观察现状"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
+        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "执行清单", "checklist_items": ["记录现状", "每次一项", "每周复盘"]},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "遇到阻碍时", "condition": "执行受阻", "recommendation": "缩小调整范围"},
+        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的选择", "question": "你会先调整哪一步？"},
+    ]
 
 
 class _EvidenceProvider:
@@ -313,32 +324,7 @@ def _install_graph_doubles(
 
     def storyboard_generator_node(state):
         contract = state["trends"][0].content_contract
-        storyboards = [
-            StoryboardFrame(
-                frame_id=f"frame_{index:03d}",
-                narrative_role="封面钩子" if index == 1 else "步骤展开",
-                frame_title=f"第 {index} 张",
-                image_orientation="vertical",
-                aspect_ratio="3:4",
-                recommended_size="1080x1440",
-                visual_description="高对比文字信息卡",
-                scene_background="干净浅色背景",
-                composition="清晰分区",
-                text_area="顶部标题区",
-                on_image_copy=(
-                    contract.first_screen_promise if index == 1 else f"第 {index} 个要点"
-                ),
-                narration=f"第 {index} 步说明",
-                image_prompt_cn="手机端可读的文字卡",
-                image_prompt_en="readable mobile text card",
-                negative_prompt="cartoon, mascot",
-                card_role="cover" if index == 1 else "step",
-                is_screenshot_asset=index == 3,
-                visual_mode=contract.visual_mode,
-                proof_asset_usage="none",
-            ).model_dump()
-            for index in range(1, 7)
-        ]
+        storyboards = _structured_storyboards(contract)
         return {
             "publish_package": {
                 **state["publish_package"],

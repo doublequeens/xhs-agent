@@ -52,27 +52,26 @@ def _publish_package(**overrides):
 def _storyboard_frame(frame_id, **overrides):
     frame = {
         "frame_id": frame_id,
-        "narrative_role": "opening",
-        "frame_title": f"标题 {frame_id}",
-        "image_orientation": "vertical",
-        "aspect_ratio": "3:4",
-        "recommended_size": "1080x1440",
-        "visual_description": f"场景 {frame_id}",
-        "scene_background": "卧室",
-        "composition": "居中构图",
-        "text_area": "顶部留白",
-        "on_image_copy": f"画面文字 {frame_id}",
-        "narration": f"旁白 {frame_id}",
-        "image_prompt_cn": f"原始提示词 {frame_id}",
-        "image_prompt_en": f"prompt {frame_id}",
-        "negative_prompt": "horror",
-        "card_role": "cover" if frame_id == "frame_001" else "step",
-        "is_screenshot_asset": frame_id == "frame_003",
-        "visual_mode": "text_card",
-        "proof_asset_usage": "none",
+        "template": "cover_statement",
+        "theme": "soft_blue",
+        "kicker": "封面",
+        "headline": f"标题 {frame_id}",
+        "footer": "按需调整",
     }
     frame.update(overrides)
     return frame
+
+
+def _structured_storyboards():
+    common = {"theme": "soft_blue", "footer": "按需调整"}
+    return [
+        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": "作息调整"},
+        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["熬夜硬扛", "随意加量"], "right_items": ["记录诱因", "逐步调整"]},
+        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "逐步调整", "steps": [{"name": "记录", "hint": "观察诱因"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
+        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "睡前检查", "checklist_items": ["记录睡眠", "每天250毫克", "减少屏幕"]},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "先小步调整", "condition": "连续疲惫", "recommendation": "优先规律作息"},
+        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你会怎么做", "question": "你最想调整哪一步？"},
+    ]
 
 
 def _r2_input(title="经验分享", body="分享我的作息调整记录。"):
@@ -624,7 +623,7 @@ def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypa
         lambda _payload: {
             "approved": True,
             "edited_publish_package": {
-                "storyboards": [{"image_prompt_cn": "更新后的提示词"}],
+                "storyboards": [{"theme": "warm_orange"}],
             },
         },
     )
@@ -641,7 +640,7 @@ def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypa
     merged_frames = result["publish_package"]["storyboards"]
     assert merged_frames[0] == {
         **original_frames[0],
-        "image_prompt_cn": "更新后的提示词",
+        "theme": "warm_orange",
     }
     assert merged_frames[1] == original_frames[1]
 
@@ -653,7 +652,7 @@ def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(
             "approved": True,
             "edited_publish_package": {
                 "storyboards": [
-                    {"frame_id": "frame_002", "image_prompt_cn": "第二帧新提示"},
+                    {"frame_id": "frame_002", "theme": "warm_orange"},
                     _storyboard_frame("frame_003"),
                 ],
             },
@@ -677,7 +676,7 @@ def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(
     ]
     assert merged_frames[1] == {
         **original_frames[1],
-        "image_prompt_cn": "第二帧新提示",
+        "theme": "warm_orange",
     }
 
 
@@ -706,14 +705,7 @@ def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
 
 
 def test_checklist_policy_task_uses_precise_location_and_patch_updates_card():
-    storyboards = [
-        {"frame_id": "frame_001", "template": "cover_statement", "theme": "soft_blue", "kicker": "封面", "headline": "作息调整", "footer": "记录变化"},
-        {"frame_id": "frame_002", "template": "wrong_vs_right", "theme": "soft_blue", "kicker": "对照", "headline": "避免误区", "footer": "按需调整", "wrong_items": ["熬夜硬扛", "随意加量"], "right_items": ["记录诱因", "逐步调整"]},
-        {"frame_id": "frame_003", "template": "step_timeline", "theme": "soft_blue", "kicker": "步骤", "headline": "逐步调整", "footer": "留出余量", "steps": [{"name": "记录", "hint": "观察诱因"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
-        {"frame_id": "frame_004", "template": "saveable_checklist", "theme": "soft_blue", "kicker": "保存", "headline": "睡前检查", "footer": "循序渐进", "checklist_items": ["记录睡眠", "每天250毫克", "减少屏幕"]},
-        {"frame_id": "frame_005", "template": "decision_rule", "theme": "soft_blue", "kicker": "判断", "headline": "先小步调整", "footer": "观察一周", "condition": "连续疲惫", "recommendation": "优先规律作息"},
-        {"frame_id": "frame_006", "template": "question_closer", "theme": "soft_blue", "kicker": "讨论", "headline": "你会怎么做", "footer": "欢迎交流", "question": "你最想调整哪一步？"},
-    ]
+    storyboards = _structured_storyboards()
     snapshot = SimpleNamespace(
         revised_title="作息记录",
         revised_md="分享个人体验",
@@ -736,13 +728,20 @@ def test_checklist_policy_task_uses_precise_location_and_patch_updates_card():
     assert patched[3]["checklist_items"][1] == "咨询专业人士"
 
 
+def test_visible_text_patch_rejects_unknown_nonempty_frame_id():
+    with pytest.raises(ValueError, match="unknown frame_id"):
+        storyboard_module.apply_storyboard_visible_text_patch(
+            _structured_storyboards(),
+            [{"frame_id": "stale_frame", "template": "cover_statement", "text_blocks": {"headline": "错误目标"}}],
+        )
+
+
 def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "frame_title": "保证立即见效",
-            "on_image_copy": "停药就好",
-            "narration": "每天250毫克",
+            "template": "cover_statement",
+            "text_blocks": {"headline": "保证立即见效"},
         }
     ]
     r2_output = SimpleNamespace(
@@ -838,9 +837,8 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "frame_title": "作息调整记录",
-            "on_image_copy": "逐步调整",
-            "narration": "分享个人体验",
+            "template": "cover_statement",
+            "text_blocks": {"headline": "作息调整记录"},
         }
     ]
     decision_json = {
@@ -888,9 +886,8 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
 
 
 def test_regenerated_storyboards_reapply_visible_text_patch(monkeypatch):
-    frames = [
-        {"frame_id": "frame_001", "template": "cover_statement", "theme": "soft_blue", "kicker": "封面", "headline": "旧标题", "footer": "旧页脚"}
-    ]
+    frames = _structured_storyboards()
+    frames[3]["checklist_items"][0] = "生成器的新清单"
 
     class FakeStoryboardModel:
         def execute(self, _messages):
@@ -899,21 +896,59 @@ def test_regenerated_storyboards_reapply_visible_text_patch(monkeypatch):
     monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
     regenerated = storyboard_module.storyboards_generator_node(
         {
-            "publish_package": _publish_package(),
+            "publish_package": _publish_package(storyboards=_structured_storyboards()),
             "pending_human_publish_patch": {"storyboards": [{"frame_id": "frame_001", "theme": "warm_orange", "headline": "stale"}]},
             "pending_human_replace_storyboards": False,
             "r2_output": SimpleNamespace(content_snapshot=SimpleNamespace(storyboard_visible_text=[
-                {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2修订标题", "footer": "R2修订页脚"}}
+                {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2修订标题"}}
             ])),
             "trends": [SimpleNamespace(topic_id="tp_001", content_contract=_publish_package()["content_contract"])],
         }
     )
 
     first_frame = regenerated["publish_package"]["storyboards"][0]
-    assert first_frame == {
-        "frame_id": "frame_001", "template": "cover_statement", "theme": "warm_orange",
-        "kicker": "封面", "headline": "R2修订标题", "footer": "R2修订页脚",
-    }
+    assert first_frame["theme"] == "warm_orange"
+    assert first_frame["headline"] == "R2修订标题"
+    assert first_frame["footer"] == "按需调整"
+    assert regenerated["publish_package"]["storyboards"][3]["checklist_items"] == [
+        "记录睡眠", "每天250毫克", "减少屏幕"
+    ]
+
+
+def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkeypatch):
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "content_snapshot": {
+                    "draft_id": "draft_001",
+                    "revised_title": "经验分享",
+                    "revised_md": "分享我的作息调整记录。",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "作息调整",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                    "storyboard_visible_text": [
+                        {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2标题"}}
+                    ],
+                },
+                "compliance_audit": {"compliance_status": "fully_compliant"},
+                "revision_meta": {"revision_id": "rev_001", "round": 1, "diff_summary": [], "next_actions": []},
+            }
+
+    monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
+    state = _r2_state()
+    state["publish_package"] = _publish_package(storyboards=_structured_storyboards())
+
+    result = r2_module.r2_compliance_node(state)
+
+    visible_text = result["r2_output"].content_snapshot.storyboard_visible_text
+    assert len(visible_text) == 6
+    assert visible_text[0].text_blocks["headline"] == "R2标题"
+    assert visible_text[3].text_blocks["checklist_items[1]"] == "每天250毫克"
+    assert "supplement_dosage" in result["r2_output"].compliance_audit.matched_policy_rules
 
 
 def test_human_review_unchanged_approval_routes_to_final_guard(monkeypatch):

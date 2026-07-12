@@ -21,25 +21,13 @@ from src.schemas.decision import (
 )
 
 
-DECORATIVE_TEXT_FIELDS = (
-    "visual_description",
-    "scene_background",
-    "composition",
-    "text_area",
-    "image_prompt_cn",
-    "image_prompt_en",
-)
-BANNED_DECORATIVE_TERMS = (
-    "卡通",
-    "动漫",
-    "吉祥物",
-    "虚构角色",
-    "小蝾螈",
-    "装饰插画",
-    "ai插画",
-    "decorative ai illustration",
-    "cartoon",
-    "mascot",
+REQUIRED_TEMPLATES = (
+    "cover_statement",
+    "wrong_vs_right",
+    "step_timeline",
+    "saveable_checklist",
+    "decision_rule",
+    "question_closer",
 )
 
 
@@ -70,10 +58,6 @@ def _issue(
         before=before,
         after_hint=after_hint,
     )
-
-
-def _normalized_copy(value: Any) -> str:
-    return " ".join(str(value or "").split()).casefold()
 
 
 def _schema_location(location: tuple[Any, ...]) -> str:
@@ -134,115 +118,70 @@ def validate_carousel(
     issues = _schema_issues(raw_frames)
     frames = raw_frames if isinstance(raw_frames, list) else []
 
-    allowed_visual_modes = _get_value(creator_profile, "visual_modes")
-    if allowed_visual_modes is not None and contract.visual_mode not in allowed_visual_modes:
-        issues.append(
-            _issue(
-                "creator_profile_visual_mode_mismatch",
-                "The content contract visual mode is not allowed by the active creator profile.",
-                _location(0, "visual_mode"),
-                before=contract.visual_mode,
-                after_hint="Use a visual mode allowed by the active creator profile.",
-            )
-        )
-
-    if not 6 <= len(frames) <= 8:
+    if len(frames) != len(REQUIRED_TEMPLATES):
         issues.append(
             _issue(
                 "card_count_out_of_range",
-                "A carousel must contain six to eight cards.",
+                "A structured text-card carousel must contain exactly six cards.",
                 _location(0, "frame_id"),
                 before=str(len(frames)),
-                after_hint="Provide between 6 and 8 cards.",
+                after_hint="Provide exactly the six required text-card templates.",
+            )
+        )
+
+    templates = [_get_value(frame, "template") for frame in frames]
+    if templates != list(REQUIRED_TEMPLATES):
+        issues.append(
+            _issue(
+                "template_order_mismatch",
+                "Storyboards must use the six required templates in their fixed order.",
+                _location(0, "template"),
+                frame=frames[0] if frames else None,
+                before=", ".join(str(template or "") for template in templates),
+                after_hint=", ".join(REQUIRED_TEMPLATES),
+            )
+        )
+
+    themes = [str(_get_value(frame, "theme") or "") for frame in frames]
+    if len(set(themes)) > 1:
+        mismatch_index = next(
+            index for index, theme in enumerate(themes) if theme != themes[0]
+        )
+        issues.append(
+            _issue(
+                "mixed_theme",
+                "All six structured text cards must use the same theme.",
+                _location(mismatch_index, "theme"),
+                frame=frames[mismatch_index],
+                before=themes[mismatch_index],
+                after_hint=themes[0],
             )
         )
 
     cover = frames[0] if frames else None
-    if _get_value(cover, "card_role") != "cover":
-        issues.append(
-            _issue(
-                "cover_role_missing",
-                "The first carousel card must have card_role == 'cover'.",
-                _location(0, "card_role"),
-                frame=cover,
-                before=str(_get_value(cover, "card_role") or ""),
-                after_hint="Set the first card role to cover.",
-            )
-        )
-    cover_copy = str(_get_value(cover, "on_image_copy") or "")
-    if cover_copy != contract.first_screen_promise:
+    cover_headline = str(_get_value(cover, "headline") or "")
+    if cover_headline != contract.first_screen_promise:
         issues.append(
             _issue(
                 "first_screen_promise_mismatch",
-                "The first card on-image copy must exactly equal the first-screen promise.",
-                _location(0, "on_image_copy"),
+                "The cover headline must exactly equal the first-screen promise.",
+                _location(0, "headline"),
                 frame=cover,
-                before=cover_copy,
+                before=cover_headline,
                 after_hint=contract.first_screen_promise,
             )
         )
 
-    if not any(bool(_get_value(frame, "is_screenshot_asset")) for frame in frames):
+    if "saveable_checklist" not in templates:
         issues.append(
             _issue(
-                "missing_screenshot_asset",
-                "At least one card must be marked as a screenshot asset.",
-                _location(0, "is_screenshot_asset"),
-                after_hint="Mark the card that presents the contract screenshot asset.",
+                "missing_saveable_checklist",
+                "The fourth card must be the saveable_checklist template.",
+                _location(3, "template"),
+                frame=frames[3] if len(frames) > 3 else None,
+                after_hint="Use saveable_checklist with three to five actionable checklist items.",
             )
         )
-
-    seen_copies: dict[str, int] = {}
-    for index, frame in enumerate(frames):
-        frame_visual_mode = _get_value(frame, "visual_mode")
-        if frame_visual_mode != contract.visual_mode:
-            issues.append(
-                _issue(
-                    "visual_mode_mismatch",
-                    "Every card visual mode must match the content contract.",
-                    _location(index, "visual_mode"),
-                    frame=frame,
-                    before=str(frame_visual_mode or ""),
-                    after_hint=contract.visual_mode,
-                )
-            )
-
-        for field_name in DECORATIVE_TEXT_FIELDS:
-            field_value = str(_get_value(frame, field_name) or "")
-            normalized_field_value = field_value.casefold()
-            matched_term = next(
-                (term for term in BANNED_DECORATIVE_TERMS if term in normalized_field_value),
-                None,
-            )
-            if matched_term:
-                issues.append(
-                    _issue(
-                        "banned_decorative_term",
-                        f"Banned decorative term `{matched_term}` appears in carousel output.",
-                        _location(index, field_name),
-                        frame=frame,
-                        before=field_value,
-                        after_hint="Use a text-led information card or a real proof asset instead.",
-                    )
-                )
-
-        copy = str(_get_value(frame, "on_image_copy") or "")
-        normalized_copy = _normalized_copy(copy)
-        if normalized_copy:
-            first_index = seen_copies.get(normalized_copy)
-            if first_index is not None:
-                issues.append(
-                    _issue(
-                        "duplicate_on_image_copy",
-                        f"On-image copy duplicates card {first_index + 1}.",
-                        _location(index, "on_image_copy"),
-                        frame=frame,
-                        before=copy,
-                        after_hint="Replace with distinct on-image copy.",
-                    )
-                )
-            else:
-                seen_copies[normalized_copy] = index
 
     return issues
 

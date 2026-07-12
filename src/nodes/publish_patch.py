@@ -140,6 +140,49 @@ def storyboard_patch_without_visible_text(publish_patch: dict) -> dict:
     return {"storyboards": stripped_storyboards}
 
 
+def merge_storyboard_visible_text(prior_visible_text, revised_visible_text) -> list[dict]:
+    """Keep every prior displayed atom while applying frame-ID-addressed revisions."""
+    prior = [
+        frame.model_dump() if hasattr(frame, "model_dump") else dict(frame)
+        for frame in list(prior_visible_text or [])
+        if isinstance(frame, dict) or hasattr(frame, "model_dump")
+    ]
+    if not prior:
+        return [
+            frame.model_dump() if hasattr(frame, "model_dump") else dict(frame)
+            for frame in list(revised_visible_text or [])
+            if isinstance(frame, dict) or hasattr(frame, "model_dump")
+        ]
+
+    merged = [
+        {
+            **frame,
+            "text_blocks": dict(frame.get("text_blocks") or {}),
+        }
+        for frame in prior
+    ]
+    index_by_frame_id = {
+        frame.get("frame_id"): index
+        for index, frame in enumerate(merged)
+        if frame.get("frame_id")
+    }
+    for revised_frame in list(revised_visible_text or []):
+        if hasattr(revised_frame, "model_dump"):
+            revised_frame = revised_frame.model_dump()
+        if not isinstance(revised_frame, dict):
+            continue
+        target_index = index_by_frame_id.get(revised_frame.get("frame_id"))
+        if target_index is None:
+            continue
+        target = merged[target_index]
+        if revised_frame.get("template"):
+            target["template"] = revised_frame["template"]
+        target["text_blocks"].update(
+            dict(revised_frame.get("text_blocks") or {})
+        )
+    return merged
+
+
 def apply_storyboard_visible_text_patch(storyboards, visible_text) -> list:
     patched = [dict(frame) if isinstance(frame, dict) else frame for frame in list(storyboards or [])]
     index_by_frame_id = {
@@ -147,14 +190,18 @@ def apply_storyboard_visible_text_patch(storyboards, visible_text) -> list:
         for index, frame in enumerate(patched)
         if isinstance(frame, dict) and frame.get("frame_id")
     }
-    for visible_index, visible_frame in enumerate(list(visible_text or [])):
+    for visible_frame in list(visible_text or []):
         if hasattr(visible_frame, "model_dump"):
             visible_frame = visible_frame.model_dump()
         if not isinstance(visible_frame, dict):
             continue
         frame_id = visible_frame.get("frame_id")
-        target_index = index_by_frame_id.get(frame_id, visible_index)
-        if target_index >= len(patched) or not isinstance(patched[target_index], dict):
+        if not frame_id:
+            continue
+        target_index = index_by_frame_id.get(frame_id)
+        if target_index is None:
+            raise ValueError(f"unknown frame_id in storyboard visible-text patch: {frame_id}")
+        if not isinstance(patched[target_index], dict):
             continue
         frame = patched[target_index]
         for location, value in dict(visible_frame.get("text_blocks") or {}).items():

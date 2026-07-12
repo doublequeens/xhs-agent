@@ -15,35 +15,24 @@ def _contract(**overrides):
     return contract
 
 
-def _frame(index, **overrides):
-    frame = {
-        "frame_id": f"frame_{index:03d}",
-        "narrative_role": "封面钩子" if index == 1 else "步骤展开",
-        "frame_title": f"第 {index} 张",
-        "image_orientation": "vertical",
-        "aspect_ratio": "3:4",
-        "recommended_size": "1080x1440",
-        "visual_description": "高对比文字信息卡",
-        "scene_background": "干净浅色背景",
-        "composition": "清晰分区",
-        "text_area": "顶部标题区",
-        "on_image_copy": f"第 {index} 个要点",
-        "narration": f"第 {index} 步说明",
-        "image_prompt_cn": "手机端可读的文字卡",
-        "image_prompt_en": "readable mobile text card",
-        "negative_prompt": "realistic, horror",
-        "card_role": "cover" if index == 1 else "step",
-        "is_screenshot_asset": index == 3,
-        "visual_mode": "text_card",
+def _frames(contract=None):
+    contract = contract or _contract()
+    common = {
+        "theme": "soft_blue",
+        "footer": "按需微调",
     }
-    frame.update(overrides)
-    return frame
+    return [
+        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract["first_screen_promise"]},
+        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免搓泥", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
+        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步上妆", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
+        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "上妆清单", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "出现搓泥时", "condition": "底妆开始搓泥", "recommendation": "减少用量等待"},
+        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的习惯", "question": "你最常在哪步搓泥？"},
+    ]
 
 
 def _state(**package_overrides):
     contract = _contract()
-    frames = [_frame(index) for index in range(1, 7)]
-    frames[0]["on_image_copy"] = contract["first_screen_promise"]
     package = {
         "draft_id": "draft_001",
         "topic_id": "tp_001",
@@ -55,7 +44,7 @@ def _state(**package_overrides):
         "title": "通勤底妆不搓泥",
         "content": "先给防晒成膜时间，再上底妆。",
         "cover_copy": "通勤底妆不搓泥",
-        "storyboards": frames,
+        "storyboards": _frames(contract),
     }
     package.update(package_overrides)
     return {
@@ -77,25 +66,7 @@ def _route_after_qa():
     return route_after_carousel_qa
 
 
-def test_carousel_qa_rejects_missing_screenshot_asset():
-    state = _state()
-    for frame in state["publish_package"]["storyboards"]:
-        frame["is_screenshot_asset"] = False
-
-    result = _qa_node()(state)
-
-    assert result["carousel_qa_result"].passed is False
-    assert result["decision_output"].next_node == "R1_REFLECTOR"
-    assert result["carousel_qa_result"].issues[0].rule_id == "missing_screenshot_asset"
-    task = result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory[0]
-    assert (task.source, task.severity, task.location_hint) == (
-        "carousel_qa",
-        "high",
-        "storyboards[0].is_screenshot_asset",
-    )
-
-
-def test_carousel_qa_accepts_contract_compliant_cards():
+def test_carousel_qa_accepts_schema_valid_structured_text_cards():
     result = _qa_node()(_state())
 
     assert result["carousel_qa_result"].passed is True
@@ -103,66 +74,33 @@ def test_carousel_qa_accepts_contract_compliant_cards():
     assert _route_after_qa()(result) == "human_review"
 
 
-def test_carousel_qa_reports_each_deterministic_contract_failure():
+def test_carousel_qa_reports_actionable_structured_contract_failures():
     state = _state()
     frames = state["publish_package"]["storyboards"]
+    frames[0]["headline"] = "不符合首屏承诺"
+    frames[1]["theme"] = "warm_orange"
+    frames[3]["template"] = "question_closer"
+    frames[3].pop("checklist_items")
+    frames[3]["question"] = "你会怎么做？"
     state["publish_package"]["storyboards"] = frames[:5]
-    frames[0].update({"card_role": "step", "on_image_copy": "不符合首屏承诺"})
-    frames[1]["visual_mode"] = "comparison_table"
-    frames[2]["visual_description"] = "卡通 IP 装饰插画"
-    frames[3]["on_image_copy"] = frames[4]["on_image_copy"]
 
     result = _qa_node()(state)
 
-    assert {issue.rule_id for issue in result["carousel_qa_result"].issues} == {
-        "card_count_out_of_range",
-        "cover_role_missing",
-        "first_screen_promise_mismatch",
-        "visual_mode_mismatch",
-        "banned_decorative_term",
-        "duplicate_on_image_copy",
-    }
-    assert {
+    issues = {
         issue.rule_id: issue.location_hint
         for issue in result["carousel_qa_result"].issues
-    } == {
-        "card_count_out_of_range": "storyboards[0].frame_id",
-        "cover_role_missing": "storyboards[0].card_role",
-        "first_screen_promise_mismatch": "storyboards[0].on_image_copy",
-        "visual_mode_mismatch": "storyboards[1].visual_mode",
-        "banned_decorative_term": "storyboards[2].visual_description",
-        "duplicate_on_image_copy": "storyboards[4].on_image_copy",
     }
-    assert all(
-        task.location_hint.startswith("storyboards[")
-        for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
-    )
+    assert issues["card_count_out_of_range"] == "storyboards[0].frame_id"
+    assert issues["template_order_mismatch"] == "storyboards[0].template"
+    assert issues["mixed_theme"] == "storyboards[1].theme"
+    assert issues["first_screen_promise_mismatch"] == "storyboards[0].headline"
+    assert issues["missing_saveable_checklist"] == "storyboards[3].template"
     assert _route_after_qa()(result) == "r1_reflector"
 
 
-def test_carousel_qa_empty_storyboards_reports_independent_first_card_failures():
-    result = _qa_node()(_state(storyboards=[]))
-
-    issues_by_rule = {
-        issue.rule_id: issue.location_hint
-        for issue in result["carousel_qa_result"].issues
-    }
-    assert issues_by_rule == {
-        "card_count_out_of_range": "storyboards[0].frame_id",
-        "cover_role_missing": "storyboards[0].card_role",
-        "first_screen_promise_mismatch": "storyboards[0].on_image_copy",
-        "missing_screenshot_asset": "storyboards[0].is_screenshot_asset",
-    }
-    tasks_by_rule = {
-        task.task_id.removeprefix("carousel_qa_").rsplit("_", 1)[0]: task.location_hint
-        for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
-    }
-    assert tasks_by_rule == issues_by_rule
-
-
-def test_carousel_qa_turns_schema_failures_into_atomic_r1_tasks():
+def test_carousel_qa_turns_invalid_structured_schema_into_atomic_r1_task():
     state = _state()
-    del state["publish_package"]["storyboards"][0]["negative_prompt"]
+    state["publish_package"]["storyboards"][0]["card_role"] = "cover"
 
     result = _qa_node()(state)
 
@@ -176,21 +114,6 @@ def test_carousel_qa_turns_schema_failures_into_atomic_r1_tasks():
         for task in result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
         if task.location_hint == schema_issue.location_hint
     )
-    assert schema_issue.location_hint == "storyboards[0].negative_prompt"
+    assert schema_issue.location_hint == "storyboards[0].cover_statement.card_role"
     assert task.source == "carousel_qa"
     assert task.severity == "high"
-
-
-def test_carousel_qa_rejects_contract_visual_mode_outside_active_creator_profile():
-    state = _state()
-    state["creator_profile"] = COMMUTING_BEAUTY_WOMEN_V1.model_copy(
-        update={"visual_modes": ("comparison_table",)}
-    )
-
-    result = _qa_node()(state)
-
-    issue = result["carousel_qa_result"].issues[0]
-    assert (issue.rule_id, issue.location_hint) == (
-        "creator_profile_visual_mode_mismatch",
-        "storyboards[0].visual_mode",
-    )

@@ -1,9 +1,14 @@
+from copy import copy
+
 from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.domain import find_policy_violations
 from src.models import get_model
 from src.schemas import AgentState, R2Output
-from src.nodes.publish_patch import extract_storyboard_visible_text
+from src.nodes.publish_patch import (
+    extract_storyboard_visible_text,
+    merge_storyboard_visible_text,
+)
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 
 
@@ -11,6 +16,19 @@ def _get_value(payload, key, default=None):
     if isinstance(payload, dict):
         return payload.get(key, default)
     return getattr(payload, key, default)
+
+
+def _with_storyboard_visible_text(content_snapshot, storyboard_visible_text):
+    if hasattr(content_snapshot, "model_dump"):
+        return type(content_snapshot).model_validate(
+            {
+                **content_snapshot.model_dump(),
+                "storyboard_visible_text": storyboard_visible_text,
+            }
+        )
+    updated_snapshot = copy(content_snapshot)
+    updated_snapshot.storyboard_visible_text = storyboard_visible_text
+    return updated_snapshot
 
 
 def _dedupe_strings(values):
@@ -84,18 +102,23 @@ def r2_compliance_node(state: AgentState) -> AgentState:
 
     decision_output = state["decision_output"]
     r2_input = decision_output.normalized_input.r2_input
-    pending_patch = state.get("pending_human_publish_patch")
     content_snapshot = _get_value(r2_input, "content_snapshot")
-    if pending_patch and not _get_value(content_snapshot, "storyboard_visible_text", []):
-        storyboard_visible_text = extract_storyboard_visible_text(
-            (state.get("publish_package") or {}).get("storyboards")
+    prior_visible_text = extract_storyboard_visible_text(
+        (state.get("publish_package") or {}).get("storyboards")
+    )
+    storyboard_visible_text = merge_storyboard_visible_text(
+        prior_visible_text,
+        _get_value(content_snapshot, "storyboard_visible_text", []),
+    )
+    if storyboard_visible_text != _get_value(content_snapshot, "storyboard_visible_text", []):
+        content_snapshot = _with_storyboard_visible_text(
+            content_snapshot, storyboard_visible_text
         )
-        content_snapshot = content_snapshot.model_copy(
-            update={"storyboard_visible_text": storyboard_visible_text}
-        )
-        r2_input = r2_input.model_copy(
-            update={"content_snapshot": content_snapshot}
-        )
+        if hasattr(r2_input, "model_copy"):
+            r2_input = r2_input.model_copy(update={"content_snapshot": content_snapshot})
+        else:
+            r2_input = copy(r2_input)
+            r2_input.content_snapshot = content_snapshot
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", {})
@@ -150,18 +173,13 @@ def r2_compliance_node(state: AgentState) -> AgentState:
         raise RuntimeError(f"Process terminated due to error: {e}")
 
     audit = r2_output.compliance_audit
-    if (
-        not r2_output.content_snapshot.storyboard_visible_text
-        and _get_value(content_snapshot, "storyboard_visible_text", [])
-    ):
-        r2_output.content_snapshot = r2_output.content_snapshot.model_copy(
-            update={
-                "storyboard_visible_text": _get_value(
-                    content_snapshot,
-                    "storyboard_visible_text",
-                    [],
-                )
-            }
+    complete_visible_text = merge_storyboard_visible_text(
+        _get_value(content_snapshot, "storyboard_visible_text", []),
+        r2_output.content_snapshot.storyboard_visible_text,
+    )
+    if complete_visible_text != r2_output.content_snapshot.storyboard_visible_text:
+        r2_output.content_snapshot = _with_storyboard_visible_text(
+            r2_output.content_snapshot, complete_visible_text
         )
     deterministic_policy_rule_ids = [issue.rule_id for issue in deterministic_policy_issues]
     matched_policy_rules = _dedupe_strings(
