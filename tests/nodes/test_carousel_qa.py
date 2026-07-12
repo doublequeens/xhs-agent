@@ -71,7 +71,7 @@ def test_carousel_qa_accepts_schema_valid_structured_text_cards():
 
     assert result["carousel_qa_result"].passed is True
     assert result.get("decision_output") is None
-    assert _route_after_qa()(result) == "human_review"
+    assert _route_after_qa()(result) == "text_card_renderer"
 
 
 def test_carousel_qa_reports_actionable_structured_contract_failures():

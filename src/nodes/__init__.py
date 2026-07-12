@@ -23,6 +23,8 @@ _EXPORTS = {
     "assembler_node": "src.nodes.node_o_assembler",
     "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
     "carousel_qa_node": "src.nodes.node_p_carousel_qa",
+    "text_card_renderer_node": "src.nodes.node_p_text_card_renderer",
+    "render_qa_node": "src.nodes.node_p_render_qa",
     "content_writer_node": "src.nodes.node_p_content_writer",
     "human_review_node": "src.nodes.node_q_human_review",
     "final_policy_guard_node": "src.nodes.node_q_01_final_policy_guard",

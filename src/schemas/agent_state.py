@@ -21,6 +21,7 @@ from .visual_director import ImageScriptList
 from .image_sourcing import ImageCandidates
 from .image_qa import FinalImages
 from .carousel_qa import CarouselQAResult
+from .render_qa import RenderQAResult
 from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
 
 class AgentState(TypedDict):
@@ -58,6 +59,8 @@ class AgentState(TypedDict):
     image_candidates: ImageCandidates
     final_images: FinalImages
     carousel_qa_result: NotRequired[Optional[CarouselQAResult]]
+    render_qa_result: NotRequired[Optional[RenderQAResult]]
+    rendered_image_paths: NotRequired[list[str]]
     publish_package: dict
     review_status: Optional[str]
     review_feedback: Optional[str]

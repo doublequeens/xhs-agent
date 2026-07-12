@@ -15,6 +15,7 @@ import src.nodes as nodes
 from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
 from src.nodes.node_q_human_review import route_after_human_review
 from src.nodes.node_p_carousel_qa import route_after_carousel_qa
+from src.nodes.node_p_render_qa import route_after_render_qa
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
@@ -98,6 +99,8 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("hashtag", nodes.hashtag_node)
     builder.add_node("storyboard_generator", nodes.storyboards_generator_node)
     builder.add_node("carousel_qa", nodes.carousel_qa_node)
+    builder.add_node("text_card_renderer", nodes.text_card_renderer_node)
+    builder.add_node("render_qa", nodes.render_qa_node)
     # builder.add_node("visual_director", visual_director_node)
     # builder.add_node("image_sourcing", image_sourcing_node)
     # builder.add_node("image_qa", image_qa_node)
@@ -136,6 +139,12 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_conditional_edges(
         "carousel_qa",
         route_after_carousel_qa,
+        {"r1_reflector": "r1_reflector", "text_card_renderer": "text_card_renderer"},
+    )
+    builder.add_edge("text_card_renderer", "render_qa")
+    builder.add_conditional_edges(
+        "render_qa",
+        route_after_render_qa,
         {"r1_reflector": "r1_reflector", "human_review": "human_review"},
     )
     builder.add_conditional_edges(

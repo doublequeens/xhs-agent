@@ -272,7 +272,7 @@ def route_after_carousel_qa(state: AgentState) -> str:
     result = state.get("carousel_qa_result")
     passed = _get_value(result, "passed")
     if passed is True:
-        return "human_review"
+        return "text_card_renderer"
     if passed is False:
         return "r1_reflector"
     raise ValueError("route_after_carousel_qa requires carousel_qa_result.")

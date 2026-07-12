@@ -29,6 +29,7 @@ from .text_card import (
     WrongVsRightFrame,
 )
 from .storyboard import StoryboardFrame, StoryboardPayload
+from .render_qa import RenderQAIssue, RenderQAResult
 
 
 __all__ = [
@@ -56,4 +57,5 @@ __all__ = [
     "REQUIRED_TEXT_CARD_TEMPLATES",
     "CoverStatementFrame", "WrongVsRightFrame", "StepTimelineFrame",
     "SaveableChecklistFrame", "DecisionRuleFrame", "QuestionCloserFrame",
+    "RenderQAIssue", "RenderQAResult",
 ]
