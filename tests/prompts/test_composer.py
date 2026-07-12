@@ -93,6 +93,13 @@ def test_compose_prompt_rejects_unknown_task():
         compose_prompt("missing_task", get_domain_profile("beauty"))
 
 
+def test_compose_prompt_rejects_removed_storyboard_image_generator_task():
+    from src.prompts.composer import compose_prompt
+
+    with pytest.raises(ValueError, match="Unknown prompt task"):
+        compose_prompt("storyboards_images_generator", get_domain_profile("beauty"))
+
+
 def test_compose_prompt_surfaces_missing_fragment_path(monkeypatch, tmp_path):
     import src.prompts.composer as composer
 

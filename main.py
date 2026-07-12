@@ -1,9 +1,9 @@
 import argparse
-import os
 import sys
 import json
 import warnings
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import get_args
 from uuid import uuid4
 
@@ -13,10 +13,11 @@ from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
-from src.prompts.composer import compose_prompt
+from src.rendering.text_cards import output_paths
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -86,37 +87,71 @@ def _resolve_publish_package_profile(publish_package: dict):
         ) from exc
 
 
+def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list[Path]]:
+    """Validate the renderer's six-file output before writing the audit JSON."""
+    raw_paths = publish_package.get("rendered_image_paths")
+    expected_names = [path.name for path in output_paths(Path("images"))]
+    if not isinstance(raw_paths, list) or len(raw_paths) != len(expected_names):
+        raise ValueError("publish_package requires exactly six rendered_image_paths")
+
+    publish_root = (Path.cwd() / "outputs" / "publish").resolve()
+    package_dir: Path | None = None
+    resolved_paths: list[Path] = []
+    for index, (raw_path, expected_name) in enumerate(zip(raw_paths, expected_names), start=1):
+        try:
+            image_path = Path(raw_path).resolve()
+        except (OSError, TypeError, ValueError) as exc:
+            raise ValueError(f"rendered image path {index} cannot be resolved: {exc}") from exc
+
+        if not image_path.is_relative_to(publish_root):
+            raise ValueError("rendered image paths must remain inside outputs/publish")
+        if image_path.suffix.lower() != ".png":
+            raise ValueError("rendered image paths must be PNG files")
+        if image_path.name != expected_name:
+            raise ValueError("rendered image paths must use the required sequence")
+        if not image_path.is_file():
+            raise ValueError(f"rendered image path is missing: {image_path.name}")
+        try:
+            png_signature = image_path.read_bytes()[: len(PNG_SIGNATURE)]
+        except OSError as exc:
+            raise ValueError(f"rendered image path cannot be read: {image_path.name}") from exc
+        if png_signature != PNG_SIGNATURE:
+            raise ValueError("rendered image paths must contain PNG files")
+        if image_path.parent.name != "images":
+            raise ValueError("rendered image paths must be inside the package images directory")
+
+        current_package_dir = image_path.parent.parent
+        if package_dir is None:
+            package_dir = current_package_dir
+        elif current_package_dir != package_dir:
+            raise ValueError("rendered image paths must belong to one publish package")
+        resolved_paths.append(image_path)
+
+    assert package_dir is not None
+    actual_pngs = sorted(path.resolve() for path in package_dir.joinpath("images").glob("*.png"))
+    if actual_pngs != sorted(resolved_paths):
+        raise ValueError("package images directory must contain exactly the rendered PNG sequence")
+    return package_dir, resolved_paths
+
+
 def export_publish_package(publish_package: dict) -> None:
-    date_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
-    title = publish_package["title"]
-    profile = _resolve_publish_package_profile(publish_package)
-    domain = publish_package["domain"]
-    subdomain = publish_package.get("subdomain") or profile.default_subdomain
-    post_dir = f"{date_str}-{domain}-{subdomain}-{title}"
-    dir_path = "outputs/publish/{post_dir}".format(post_dir=post_dir)
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+    """Write an audit record alongside the locally rendered final card set."""
+    _resolve_publish_package_profile(publish_package)
+    package_dir, rendered_image_paths = _rendered_image_package_directory(publish_package)
+    title = publish_package.get("title")
+    if not isinstance(title, str) or not title:
+        raise ValueError("publish_package requires a non-empty title for export")
 
-    with open(dir_path + "/" + str(title) + ".json", "w") as f:
-        json.dump(publish_package, f, ensure_ascii=False, indent=4)
+    audit_path = (package_dir / f"{title}.json").resolve()
+    if not audit_path.is_relative_to(package_dir):
+        raise ValueError("publish audit path must remain inside the package directory")
 
-    # 生成供图像生成节点使用的 prompt
-    storyboards_image_gen_prompt = compose_prompt("storyboards_images_generator", profile)
-    storyboards_image_gen_json = {
-        "title": publish_package.get("title", ""),
-        "content": publish_package.get("content", ""),
-        "cover_copy": publish_package.get("cover_copy", ""),
-        "content_contract": publish_package.get("content_contract", {}),
-        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1.model_dump(mode="json"),
-        "storyboards": publish_package.get("storyboards", []),
-        }
-    image_prompt = (
-        f"{storyboards_image_gen_prompt}\n\n"
-        "下面是 storyboards JSON：\n```json\n"
-        f"{json.dumps(storyboards_image_gen_json, ensure_ascii=False, indent=4)}\n```"
-    )
-    with open(dir_path + "/" + "Storyboard_images_generator_prompt.txt", "w") as f:
-        f.write(image_prompt)
+    audit_package = dict(publish_package)
+    audit_package["rendered_image_paths"] = [
+        path.relative_to(package_dir).as_posix() for path in rendered_image_paths
+    ]
+    with audit_path.open("w", encoding="utf-8") as audit_file:
+        json.dump(audit_package, audit_file, ensure_ascii=False, indent=4)
 
 
 def read_multiline_json() -> dict:
@@ -246,7 +281,11 @@ def stream_graph_until_stop(graph, run_input, config):
                     break
 
                 print(f"Finished processing node: {key}")
-                if key in {"storyboard_generator", "human_review"} and value.get("publish_package"):
+                if (
+                    key == "human_review"
+                    and value.get("review_status") == "approved"
+                    and value.get("publish_package")
+                ):
                     print("The final publish package title is:")
                     print(value["publish_package"]["title"])
                     export_publish_package(value["publish_package"])

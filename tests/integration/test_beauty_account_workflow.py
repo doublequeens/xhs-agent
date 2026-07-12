@@ -1,4 +1,6 @@
 from datetime import date, datetime
+import struct
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -11,6 +13,12 @@ from src.schemas.decision import DecisionOutput, HashTagInput, NormalizedInput
 from src.schemas.hashtag import HashTagOutput
 from src.schemas.topic import TopicItem
 from src.schemas.topic_signal import CreativeSeed, TopicSignal
+
+
+def _png(width=1080, height=1440):
+    return b"\x89PNG\r\n\x1a\n" + struct.pack(
+        ">I4sII", 13, b"IHDR", width, height
+    ) + b"\x08\x02\x00\x00\x00"
 
 
 def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:
@@ -134,7 +142,7 @@ def _install_controlled_models(monkeypatch, storyboards, captured):
     monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
 
 
-def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
+def _install_controlled_upstream_nodes(monkeypatch, reached_nodes, captured):
     def passthrough(_state):
         return {}
 
@@ -147,7 +155,12 @@ def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
         }
 
     def record_reached(node_name):
-        def node(_state):
+        def node(state):
+            if node_name == "human_review":
+                paths = [Path(path) for path in state["publish_package"]["rendered_image_paths"]]
+                assert len(paths) == 6
+                assert all(path.is_file() for path in paths)
+                captured["human_review_package"] = state["publish_package"]
             reached_nodes.append(node_name)
             raise _ReachedWorkflowNode(node_name)
 
@@ -186,11 +199,27 @@ def _install_controlled_upstream_nodes(monkeypatch, reached_nodes):
     )
 
 
-def _run_carousel_path(monkeypatch, state, storyboards):
+def _run_carousel_path(monkeypatch, state, storyboards, *, render_root=None):
     reached_nodes = []
     captured = {}
     _install_controlled_models(monkeypatch, storyboards, captured)
-    _install_controlled_upstream_nodes(monkeypatch, reached_nodes)
+    _install_controlled_upstream_nodes(monkeypatch, reached_nodes, captured)
+    if render_root is not None:
+        from src.nodes import node_p_render_qa as render_qa_module
+        from src.rendering.text_cards import output_paths
+
+        def render_six_local_cards(node_state):
+            package = dict(node_state["publish_package"])
+            image_dir = render_root / "20260713-beauty-skincare-integration" / "images"
+            image_dir.mkdir(parents=True, exist_ok=True)
+            paths = output_paths(image_dir)
+            for path in paths:
+                path.write_bytes(_png())
+            package["rendered_image_paths"] = [str(path) for path in paths]
+            return {"publish_package": package, "current_node": "TEXT_CARD_RENDERER"}
+
+        monkeypatch.setattr(graph_module.nodes, "text_card_renderer_node", render_six_local_cards)
+        monkeypatch.setattr(render_qa_module, "PUBLISH_ROOT", render_root)
     graph = graph_module.create_graph(checkpointer=InMemorySaver())
 
     with pytest.raises(_ReachedWorkflowNode):
@@ -220,6 +249,48 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert captured["storyboard_calls"] == 1
     assert '"content_contract"' in captured["storyboard_prompt"]
     assert contract.first_screen_promise in captured["storyboard_prompt"]
+
+
+def test_beauty_workflow_exports_six_locally_rendered_cards_after_approval(
+    beauty_account_workflow,
+    monkeypatch,
+    tmp_path,
+):
+    reached_nodes, captured = _run_carousel_path(
+        monkeypatch,
+        beauty_account_workflow,
+        _schema_valid_storyboards(beauty_account_workflow["trends"][0].content_contract),
+        render_root=tmp_path / "outputs" / "publish",
+    )
+
+    package = captured["human_review_package"]
+    assert reached_nodes == ["human_review"]
+    assert [Path(path).name for path in package["rendered_image_paths"]] == [
+        "01-cover.png",
+        "02-wrong-vs-right.png",
+        "03-timeline.png",
+        "04-checklist.png",
+        "05-decision.png",
+        "06-question.png",
+    ]
+
+    import main as main_module
+
+    class ApprovedReviewGraph:
+        def stream(self, _run_input, config):
+            yield {
+                "human_review": {
+                    "review_status": "approved",
+                    "publish_package": package,
+                }
+            }
+
+    monkeypatch.chdir(tmp_path)
+    main_module.stream_graph_until_stop(ApprovedReviewGraph(), {}, {})
+
+    assert len(list((tmp_path / "outputs" / "publish").glob("*/images/*.png"))) == 6
+    assert len(list((tmp_path / "outputs" / "publish").glob("*/*.json"))) == 1
+    assert not list((tmp_path / "outputs" / "publish").glob("*/Storyboard_images_generator_prompt.txt"))
 
 
 def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(

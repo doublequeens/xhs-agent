@@ -25,7 +25,6 @@ TASK_FILES = {
     "hashtag_seo": "hashtag_seo.txt",
     "assembler": "assembler.txt",
     "storyboards_generator": "storyboards_generator.txt",
-    "storyboards_images_generator": "storyboards_images_generator.txt",
     "topic_ideator": "topic_ideator.txt",
 }
 
