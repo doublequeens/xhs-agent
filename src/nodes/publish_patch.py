@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 
-STORYBOARD_VISIBLE_FIELDS = ("frame_title", "on_image_copy", "narration")
+STORYBOARD_VISIBLE_FIELDS = ("kicker", "headline", "footer")
+STORYBOARD_VISIBLE_LIST_FIELDS = ("wrong_items", "right_items", "checklist_items")
+STORYBOARD_VISIBLE_NESTED_LIST_FIELDS = ("steps",)
+STORYBOARD_VISIBLE_SCALAR_FIELDS = ("condition", "recommendation", "question")
 TITLE_MAX_LENGTH = 20
 ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "title",
@@ -87,15 +90,28 @@ def extract_storyboard_visible_text(storyboards) -> list[dict]:
     for frame in list(storyboards or []):
         if not isinstance(frame, dict):
             continue
-        visible_text.append(
-            {
-                "frame_id": frame.get("frame_id"),
-                **{
-                    field_name: str(frame.get(field_name) or "")
-                    for field_name in STORYBOARD_VISIBLE_FIELDS
-                },
-            }
-        )
+        text_blocks = {
+            field_name: str(frame.get(field_name) or "")
+            for field_name in STORYBOARD_VISIBLE_FIELDS
+            if field_name in frame
+        }
+        for field_name in STORYBOARD_VISIBLE_LIST_FIELDS:
+            for index, value in enumerate(frame.get(field_name) or []):
+                text_blocks[f"{field_name}[{index}]"] = str(value or "")
+        for index, step in enumerate(frame.get("steps") or []):
+            if not isinstance(step, dict):
+                continue
+            for field_name in ("name", "hint"):
+                if field_name in step:
+                    text_blocks[f"steps[{index}].{field_name}"] = str(step.get(field_name) or "")
+        for field_name in STORYBOARD_VISIBLE_SCALAR_FIELDS:
+            if field_name in frame:
+                text_blocks[field_name] = str(frame.get(field_name) or "")
+        visible_text.append({
+            "frame_id": str(frame.get("frame_id") or ""),
+            "template": str(frame.get("template") or ""),
+            "text_blocks": text_blocks,
+        })
     return visible_text
 
 
@@ -113,10 +129,56 @@ def storyboard_patch_without_visible_text(publish_patch: dict) -> dict:
             {
                 key: value
                 for key, value in frame.items()
-                if key not in STORYBOARD_VISIBLE_FIELDS
+                if key not in (
+                    *STORYBOARD_VISIBLE_FIELDS,
+                    *STORYBOARD_VISIBLE_LIST_FIELDS,
+                    *STORYBOARD_VISIBLE_NESTED_LIST_FIELDS,
+                    *STORYBOARD_VISIBLE_SCALAR_FIELDS,
+                )
             }
         )
     return {"storyboards": stripped_storyboards}
+
+
+def apply_storyboard_visible_text_patch(storyboards, visible_text) -> list:
+    patched = [dict(frame) if isinstance(frame, dict) else frame for frame in list(storyboards or [])]
+    index_by_frame_id = {
+        frame.get("frame_id"): index
+        for index, frame in enumerate(patched)
+        if isinstance(frame, dict) and frame.get("frame_id")
+    }
+    for visible_index, visible_frame in enumerate(list(visible_text or [])):
+        if hasattr(visible_frame, "model_dump"):
+            visible_frame = visible_frame.model_dump()
+        if not isinstance(visible_frame, dict):
+            continue
+        frame_id = visible_frame.get("frame_id")
+        target_index = index_by_frame_id.get(frame_id, visible_index)
+        if target_index >= len(patched) or not isinstance(patched[target_index], dict):
+            continue
+        frame = patched[target_index]
+        for location, value in dict(visible_frame.get("text_blocks") or {}).items():
+            if location in STORYBOARD_VISIBLE_FIELDS or location in STORYBOARD_VISIBLE_SCALAR_FIELDS:
+                frame[location] = value
+                continue
+            if "[" not in location:
+                continue
+            root, remainder = location.split("[", 1)
+            index_text, _, child_field = remainder.partition("]")
+            if not index_text.isdigit():
+                continue
+            item_index = int(index_text)
+            if root in STORYBOARD_VISIBLE_LIST_FIELDS:
+                items = list(frame.get(root) or [])
+                if item_index < len(items):
+                    items[item_index] = value
+                    frame[root] = items
+            elif root == "steps" and child_field.startswith("."):
+                steps = [dict(step) if isinstance(step, dict) else step for step in list(frame.get("steps") or [])]
+                if item_index < len(steps) and isinstance(steps[item_index], dict):
+                    steps[item_index][child_field[1:]] = value
+                    frame["steps"] = steps
+    return patched
 
 
 def publish_patch_for_assembler(publish_patch: dict) -> dict:

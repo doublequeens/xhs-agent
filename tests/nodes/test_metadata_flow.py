@@ -66,26 +66,21 @@ def _content_policy():
 
 
 def _storyboard_frame(frame_number: int):
+    frames = [
+        {"template": "cover_statement"},
+        {"template": "wrong_vs_right", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
+        {"template": "step_timeline", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
+        {"template": "saveable_checklist", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
+        {"template": "decision_rule", "condition": "底妆开始搓泥", "recommendation": "减少用量等待"},
+        {"template": "question_closer", "question": "你最常在哪步搓泥？"},
+    ]
     return {
         "frame_id": f"frame_{frame_number:03d}",
-        "narrative_role": "封面钩子" if frame_number == 1 else "步骤展开",
-        "frame_title": f"画面 {frame_number}",
-        "image_orientation": "vertical",
-        "aspect_ratio": "3:4",
-        "recommended_size": "1080x1440",
-        "visual_description": f"高对比文字卡片 {frame_number}",
-        "scene_background": "办公桌边",
-        "composition": "竖版 3:4 高对比文字卡片构图",
-        "text_area": "主体文字区",
-        "on_image_copy": f"提示 {frame_number}",
-        "narration": f"第 {frame_number} 张图的说明内容。",
-        "image_prompt_cn": "中文提示词",
-        "image_prompt_en": "English prompt",
-        "negative_prompt": "realistic, horror",
-        "card_role": "cover" if frame_number == 1 else "step",
-        "is_screenshot_asset": frame_number == 3,
-        "visual_mode": "text_card",
-        "proof_asset_usage": "none",
+        "theme": "soft_blue",
+        "kicker": f"第{frame_number}张",
+        "headline": _content_contract()["first_screen_promise"] if frame_number == 1 else f"第{frame_number}张要点",
+        "footer": "按需微调",
+        **frames[frame_number - 1],
     }
 
 
@@ -569,35 +564,12 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
     assert "storyboards" not in publish_package
 
 
-def test_storyboards_generator_preserves_full_publish_package_and_frame_contract(monkeypatch):
+def test_storyboards_generator_preserves_full_publish_package_and_text_card_contract(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
-
-    required_frame_keys = {
-        "frame_id",
-        "narrative_role",
-        "frame_title",
-        "image_orientation",
-        "aspect_ratio",
-        "recommended_size",
-        "visual_description",
-        "scene_background",
-        "composition",
-        "text_area",
-        "on_image_copy",
-        "narration",
-        "image_prompt_cn",
-        "image_prompt_en",
-        "negative_prompt",
-        "card_role",
-        "is_screenshot_asset",
-        "visual_mode",
-        "proof_asset_usage",
-    }
 
     class FakeModel:
         def execute(self, messages):
             frames = [_storyboard_frame(index) for index in range(1, 7)]
-            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
             return {
                 "title": "wrong title",
                 "content": "wrong content",
@@ -657,10 +629,17 @@ def test_storyboards_generator_preserves_full_publish_package_and_frame_contract
     assert merged_package["content_intent"] == publish_package["content_intent"]
     assert merged_package["risk_level"] == publish_package["risk_level"]
     assert merged_package["risk_flags"] == publish_package["risk_flags"]
-    assert set(merged_package["storyboards"][0]) == required_frame_keys
+    frames = merged_package["storyboards"]
+    assert [frame["template"] for frame in frames] == [
+        "cover_statement", "wrong_vs_right", "step_timeline",
+        "saveable_checklist", "decision_rule", "question_closer",
+    ]
+    assert {frame["theme"] for frame in frames} == {"soft_blue"}
+    assert frames[0]["headline"] == _content_contract()["first_screen_promise"]
+    assert frames[3]["checklist_items"] == ["薄涂防晒", "等待成膜", "少量点涂"]
 
 
-def test_storyboard_payload_requires_six_to_eight_cards():
+def test_storyboard_payload_requires_exactly_six_cards():
     with pytest.raises(ValidationError):
         StoryboardPayload.model_validate(
             {"storyboards": [_storyboard_frame(index) for index in range(1, 6)]}
@@ -672,160 +651,13 @@ def test_storyboard_payload_requires_six_to_eight_cards():
     assert len(payload.storyboards) == 6
 
 
-def test_storyboard_first_card_and_screenshot_asset_follow_contract(monkeypatch):
-    from src.nodes import node_o_storyboards_generator as module
-
-    class FakeModel:
-        def execute(self, _messages):
-            frames = [_storyboard_frame(index) for index in range(1, 7)]
-            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
-            frames[2]["is_screenshot_asset"] = True
-            return {"storyboards": frames}
-
-    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
-    package = {
-        "title": "久坐间隙活动指南",
-        "content": "body",
-        "topic_id": "tp_001",
-        "content_contract": _content_contract(),
-    }
-
-    result = module.storyboards_generator_node(
-        {
-            "publish_package": package,
-            "trends": [_topic()],
-            "domain_context": _domain_context(),
-            "content_policy": _content_policy(),
-        }
-    )
-
-    frames = result["publish_package"]["storyboards"]
-    assert frames[0]["on_image_copy"] == package["content_contract"]["first_screen_promise"]
-    assert any(frame["is_screenshot_asset"] for frame in frames)
-    assert all("小蝾螈" not in frame["image_prompt_cn"] for frame in frames)
-
-
-def test_storyboard_generator_leaves_cover_role_rejection_to_carousel_qa(monkeypatch):
+def test_storyboard_generator_leaves_schema_rejection_to_carousel_qa(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
     from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
         def execute(self, _messages):
-            frames = [_storyboard_frame(index) for index in range(1, 7)]
-            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
-            frames[0]["card_role"] = "step"
-            return {"storyboards": frames}
-
-    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
-
-    state = {
-        "publish_package": {"topic_id": "tp_001"},
-        "trends": [_topic()],
-        "domain_context": _domain_context(),
-        "content_policy": _content_policy(),
-    }
-
-    generated = module.storyboards_generator_node(state)
-    qa_result = carousel_qa_node({**state, **generated})
-
-    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
-    assert {
-        issue.rule_id for issue in qa_result["carousel_qa_result"].issues
-    } == {"cover_role_missing"}
-
-
-def test_storyboard_generator_leaves_patched_cover_role_rejection_to_carousel_qa(monkeypatch):
-    from src.nodes import node_o_storyboards_generator as module
-    from src.nodes.node_p_carousel_qa import carousel_qa_node
-
-    class FakeModel:
-        def execute(self, _messages):
-            frames = [_storyboard_frame(index) for index in range(1, 7)]
-            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
-            return {"storyboards": frames}
-
-    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
-
-    state = {
-        "publish_package": {"topic_id": "tp_001"},
-        "trends": [_topic()],
-        "domain_context": _domain_context(),
-        "content_policy": _content_policy(),
-        "pending_human_publish_patch": {
-            "storyboards": [{"frame_id": "frame_001", "card_role": "step"}]
-        },
-    }
-
-    generated = module.storyboards_generator_node(state)
-    qa_result = carousel_qa_node({**state, **generated})
-
-    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
-    assert {
-        issue.rule_id for issue in qa_result["carousel_qa_result"].issues
-    } == {"cover_role_missing"}
-
-
-def test_storyboard_generator_leaves_patched_cover_copy_rejection_to_carousel_qa(monkeypatch):
-    from src.nodes import node_o_storyboards_generator as module
-    from src.nodes.node_p_carousel_qa import carousel_qa_node
-
-    class FakeModel:
-        def execute(self, _messages):
-            frames = [_storyboard_frame(index) for index in range(1, 7)]
-            frames[0]["on_image_copy"] = _content_contract()["first_screen_promise"]
-            return {"storyboards": frames}
-
-    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
-
-    state = {
-        "publish_package": {"topic_id": "tp_001"},
-        "trends": [_topic()],
-        "domain_context": _domain_context(),
-        "content_policy": _content_policy(),
-        "pending_human_publish_patch": {
-            "storyboards": [{"frame_id": "frame_001", "image_prompt_cn": "reviewed"}]
-        },
-        "r2_output": SimpleNamespace(
-            content_snapshot=SimpleNamespace(
-                storyboard_visible_text=[
-                    {
-                        "frame_id": "frame_001",
-                        "frame_title": "R2 revised",
-                        "on_image_copy": "contract-bypassing cover copy",
-                        "narration": "R2 narration",
-                    }
-                ]
-            )
-        ),
-    }
-
-    generated = module.storyboards_generator_node(state)
-    qa_result = carousel_qa_node({**state, **generated})
-
-    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
-    assert {
-        issue.rule_id for issue in qa_result["carousel_qa_result"].issues
-    } == {"first_screen_promise_mismatch"}
-
-
-@pytest.mark.parametrize(
-    ("storyboards", "error_match"),
-    [
-        ([_storyboard_frame(index) for index in range(1, 6)], "storyboards"),
-        ([_storyboard_frame(index) for index in range(1, 10)], "storyboards"),
-        ([{key: value for key, value in _storyboard_frame(1).items() if key != "negative_prompt"}] + [_storyboard_frame(index) for index in range(2, 7)], "negative_prompt"),
-        ("not-a-list", "storyboards"),
-    ],
-)
-def test_storyboard_generator_routes_schema_invalid_payload_to_carousel_qa(
-    monkeypatch, storyboards, error_match
-):
-    from src.nodes import node_o_storyboards_generator as module
-    from src.nodes.node_p_carousel_qa import carousel_qa_node
-
-    class FakeModel:
-        def execute(self, messages):
-            return {"storyboards": storyboards}
+            return {"storyboards": [{"template": "not_a_real_card"}]}
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
@@ -857,14 +689,4 @@ def test_storyboard_generator_routes_schema_invalid_payload_to_carousel_qa(
     }
 
     generated = module.storyboards_generator_node(state)
-    qa_result = carousel_qa_node({**state, **generated})
-
-    assert qa_result["decision_output"].next_node == "R1_REFLECTOR"
-    assert any(
-        error_match in issue.location_hint or error_match in issue.message
-        for issue in qa_result["carousel_qa_result"].issues
-    )
-    assert all(
-        task.source == "carousel_qa"
-        for task in qa_result["decision_output"].normalized_input.r1_input.editorial_tasks.mandatory
-    )
+    assert generated["publish_package"]["storyboards"] == [{"template": "not_a_real_card"}]

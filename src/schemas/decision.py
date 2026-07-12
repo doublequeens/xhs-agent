@@ -47,10 +47,9 @@ class DecisionTrace(BaseModel):
 
 
 class StoryboardVisibleText(BaseModel):
-    frame_id: Optional[str] = None
-    frame_title: str = ""
-    on_image_copy: str = ""
-    narration: str = ""
+    frame_id: str
+    template: str
+    text_blocks: dict[str, str] = Field(default_factory=dict)
 
 
 class R1Input(BaseModel):

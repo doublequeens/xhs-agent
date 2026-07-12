@@ -3,6 +3,7 @@ from langchain_core.prompts import PromptTemplate
 from src.models import get_model
 from src.schemas import AgentState
 from src.nodes.publish_patch import (
+    apply_storyboard_visible_text_patch,
     merge_publish_package,
     storyboard_patch_without_visible_text,
 )
@@ -108,9 +109,8 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
             for frame in list(visible_text or [])
         ]
         if visible_patch:
-            merged_publish_package = merge_publish_package(
-                merged_publish_package,
-                {"storyboards": visible_patch},
+            merged_publish_package["storyboards"] = apply_storyboard_visible_text_patch(
+                merged_publish_package.get("storyboards"), visible_patch
             )
 
     return {

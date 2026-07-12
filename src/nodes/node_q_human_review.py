@@ -46,20 +46,8 @@ def _serialized_evidence_items(state: AgentState) -> list[dict]:
     return serialized
 
 
-def _storyboard_signature(storyboards) -> list[tuple[str, str, str]]:
-    signature = []
-    for frame in list(storyboards or []):
-        if not isinstance(frame, dict):
-            signature.append((str(frame), "", ""))
-            continue
-        signature.append(
-            (
-                str(frame.get("frame_title") or ""),
-                str(frame.get("on_image_copy") or ""),
-                str(frame.get("narration") or ""),
-            )
-        )
-    return signature
+def _storyboard_signature(storyboards) -> list[dict]:
+    return extract_storyboard_visible_text(storyboards)
 
 
 def _visible_text_signature(publish_package: dict) -> dict:

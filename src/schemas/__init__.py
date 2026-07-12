@@ -16,6 +16,17 @@ from .visual_director import ImageScriptList
 from .decision import DecisionTrace, NormalizedInput, HashTagInput, DecisionOutput, DecisionOutput, RevisionMeta, R2Input
 from .hashtag import HashTagOutput
 from .image_qa import FinalImages, FinalImageItem 
+from .text_card import (
+    CoverStatementFrame,
+    DecisionRuleFrame,
+    QuestionCloserFrame,
+    SaveableChecklistFrame,
+    StepTimelineFrame,
+    TextCardFrame,
+    TextCardPayload,
+    TimelineStep,
+    WrongVsRightFrame,
+)
 from .storyboard import StoryboardFrame, StoryboardPayload
 
 
@@ -40,4 +51,7 @@ __all__ = [
     "HashTagOutput",
     "FinalImages", "FinalImageItem",
     "StoryboardFrame", "StoryboardPayload",
+    "TextCardFrame", "TextCardPayload", "TimelineStep",
+    "CoverStatementFrame", "WrongVsRightFrame", "StepTimelineFrame",
+    "SaveableChecklistFrame", "DecisionRuleFrame", "QuestionCloserFrame",
 ]

@@ -31,11 +31,11 @@ def _find_deterministic_policy_issues(content_snapshot):
     for index, frame in enumerate(
         _get_value(content_snapshot, "storyboard_visible_text", []) or []
     ):
-        for field_name in ("frame_title", "on_image_copy", "narration"):
+        for field_name, text in dict(_get_value(frame, "text_blocks", {}) or {}).items():
             text_sources.append(
                 (
-                    f"storyboard_visible_text[{index}].{field_name}",
-                    _get_value(frame, field_name, "") or "",
+                    f"storyboard_visible_text[{index}].text_blocks.{field_name}",
+                    text or "",
                 )
             )
 
@@ -57,10 +57,7 @@ def _find_unresolved_claims(evidence_briefs, content_snapshot):
         _get_value(content_snapshot, "revised_md", "") or "",
     ]
     for frame in _get_value(content_snapshot, "storyboard_visible_text", []) or []:
-        text_fragments.extend(
-            _get_value(frame, field_name, "") or ""
-            for field_name in ("frame_title", "on_image_copy", "narration")
-        )
+        text_fragments.extend(dict(_get_value(frame, "text_blocks", {}) or {}).values())
     combined_text = "\n".join(text_fragments)
     if not combined_text.strip():
         return []
