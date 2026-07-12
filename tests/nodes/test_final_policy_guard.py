@@ -53,7 +53,7 @@ def _storyboard_frame(frame_id, **overrides):
     frame = {
         "frame_id": frame_id,
         "template": "cover_statement",
-        "theme": "soft_blue",
+        "theme": "warm_neutral",
         "kicker": "封面",
         "headline": f"标题 {frame_id}",
         "footer": "按需调整",
@@ -63,7 +63,7 @@ def _storyboard_frame(frame_id, **overrides):
 
 
 def _structured_storyboards():
-    common = {"theme": "soft_blue", "footer": "按需调整"}
+    common = {"theme": "warm_neutral", "footer": "按需调整"}
     return [
         {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": "作息调整"},
         {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["熬夜硬扛", "随意加量"], "right_items": ["记录诱因", "逐步调整"]},
@@ -523,7 +523,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
                     {
                         "frame_id": "frame_001",
                         "template": "cover_statement",
-                        "theme": "soft_blue",
+                        "theme": "warm_neutral",
                         "kicker": "旧标签",
                         "headline": "旧标题",
                         "footer": "旧页脚",
@@ -623,7 +623,7 @@ def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypa
         lambda _payload: {
             "approved": True,
             "edited_publish_package": {
-                "storyboards": [{"theme": "warm_orange"}],
+                "storyboards": [{"theme": "cool_sage"}],
             },
         },
     )
@@ -640,7 +640,7 @@ def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypa
     merged_frames = result["publish_package"]["storyboards"]
     assert merged_frames[0] == {
         **original_frames[0],
-        "theme": "warm_orange",
+        "theme": "cool_sage",
     }
     assert merged_frames[1] == original_frames[1]
 
@@ -652,7 +652,7 @@ def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(
             "approved": True,
             "edited_publish_package": {
                 "storyboards": [
-                    {"frame_id": "frame_002", "theme": "warm_orange"},
+                    {"frame_id": "frame_002", "theme": "cool_sage"},
                     _storyboard_frame("frame_003"),
                 ],
             },
@@ -676,7 +676,7 @@ def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(
     ]
     assert merged_frames[1] == {
         **original_frames[1],
-        "theme": "warm_orange",
+        "theme": "cool_sage",
     }
 
 
@@ -897,7 +897,7 @@ def test_regenerated_storyboards_reapply_visible_text_patch(monkeypatch):
     regenerated = storyboard_module.storyboards_generator_node(
         {
             "publish_package": _publish_package(storyboards=_structured_storyboards()),
-            "pending_human_publish_patch": {"storyboards": [{"frame_id": "frame_001", "theme": "warm_orange", "headline": "stale"}]},
+            "pending_human_publish_patch": {"storyboards": [{"frame_id": "frame_001", "theme": "cool_sage", "headline": "stale"}]},
             "pending_human_replace_storyboards": False,
             "r2_output": SimpleNamespace(content_snapshot=SimpleNamespace(storyboard_visible_text=[
                 {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2修订标题"}}
@@ -907,7 +907,7 @@ def test_regenerated_storyboards_reapply_visible_text_patch(monkeypatch):
     )
 
     first_frame = regenerated["publish_package"]["storyboards"][0]
-    assert first_frame["theme"] == "warm_orange"
+    assert first_frame["theme"] == "cool_sage"
     assert first_frame["headline"] == "R2修订标题"
     assert first_frame["footer"] == "按需调整"
     assert regenerated["publish_package"]["storyboards"][3]["checklist_items"] == [
@@ -1159,7 +1159,7 @@ def test_final_policy_guard_scans_storyboard_visible_text():
                     {
                         "frame_id": "frame_004",
                         "template": "saveable_checklist",
-                        "theme": "soft_blue",
+                        "theme": "warm_neutral",
                         "kicker": "保存",
                         "headline": "治·疗误区",
                         "footer": "按需调整",

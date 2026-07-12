@@ -99,6 +99,16 @@ def test_render_card_html_escapes_content_strings():
     assert "<strong>安全</strong>" not in html
 
 
+def test_question_closer_renders_its_footer_exactly_once():
+    from src.rendering.text_cards import render_card_html
+
+    frame = valid_payload().storyboards[-1]
+    html = render_card_html(frame)
+
+    assert html.count('data-copy-role="footer"') == 1
+    assert html.count(frame.footer) == 1
+
+
 def test_output_paths_follow_the_fixed_publish_sequence(tmp_path):
     from src.rendering.text_cards import output_paths
 
@@ -166,6 +176,73 @@ def test_render_text_cards_removes_partial_pngs_when_a_later_screenshot_fails(tm
         render_text_cards(valid_payload(), tmp_path, playwright_factory=Playwright)
 
     assert not list(tmp_path.glob("*.png"))
+
+
+def test_render_text_cards_surfaces_cleanup_failure_with_render_error_as_cause(tmp_path, monkeypatch):
+    from src.rendering.text_cards import TextCardRenderError, render_text_cards
+
+    class CopyLocator:
+        def evaluate_all(self, _script):
+            return []
+
+    class CardLocator:
+        def __init__(self):
+            self.calls = 0
+
+        def screenshot(self, *, path):
+            self.calls += 1
+            Path(path).write_bytes(b"partial")
+            if self.calls == 2:
+                raise RuntimeError("screenshot failed")
+
+    class Page:
+        def __init__(self):
+            self.card = CardLocator()
+
+        def set_viewport_size(self, _size):
+            pass
+
+        def set_content(self, _html, *, wait_until):
+            assert wait_until == "load"
+
+        def locator(self, selector):
+            return CopyLocator() if selector == "[data-card-copy]" else self.card
+
+    class Browser:
+        def new_page(self):
+            return Page()
+
+        def close(self):
+            pass
+
+    class Playwright:
+        class Chromium:
+            def launch(self):
+                return Browser()
+
+        chromium = Chromium()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+    original_unlink = Path.unlink
+
+    def fail_first_cleanup(path, *args, **kwargs):
+        if path.name == "01-cover.png":
+            raise OSError("permission denied")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fail_first_cleanup)
+
+    with pytest.raises(TextCardRenderError, match="remove partial") as error:
+        render_text_cards(valid_payload(), tmp_path, playwright_factory=Playwright)
+
+    assert isinstance(error.value.__cause__, TextCardRenderError)
+    assert "screenshot failed" in str(error.value.__cause__)
+    assert (tmp_path / "01-cover.png").is_file()
 
 
 def _local_chromium_available() -> bool:

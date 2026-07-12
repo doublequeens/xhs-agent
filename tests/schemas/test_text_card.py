@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -9,7 +11,7 @@ def valid_frames():
         {
             "frame_id": "frame_001",
             "template": "cover_statement",
-            "theme": "soft_blue",
+            "theme": "warm_neutral",
             "kicker": "通勤底妆",
             "headline": "通勤前3步避开防晒搓泥",
             "footer": "先防晒再上妆",
@@ -17,7 +19,7 @@ def valid_frames():
         {
             "frame_id": "frame_002",
             "template": "wrong_vs_right",
-            "theme": "soft_blue",
+            "theme": "warm_neutral",
             "kicker": "避坑对照",
             "headline": "别让底妆越补越糟",
             "footer": "对照后再执行",
@@ -27,7 +29,7 @@ def valid_frames():
         {
             "frame_id": "frame_003",
             "template": "step_timeline",
-            "theme": "soft_blue",
+            "theme": "warm_neutral",
             "kicker": "三步顺序",
             "headline": "按顺序留出成膜时间",
             "footer": "每步都别赶",
@@ -40,7 +42,7 @@ def valid_frames():
         {
             "frame_id": "frame_004",
             "template": "saveable_checklist",
-            "theme": "soft_blue",
+            "theme": "warm_neutral",
             "kicker": "截图保存",
             "headline": "上妆前快速检查",
             "footer": "照着清单做",
@@ -49,7 +51,7 @@ def valid_frames():
         {
             "frame_id": "frame_005",
             "template": "decision_rule",
-            "theme": "soft_blue",
+            "theme": "warm_neutral",
             "kicker": "选择规则",
             "headline": "搓泥时先减少叠加",
             "footer": "先减量再调整",
@@ -59,7 +61,7 @@ def valid_frames():
         {
             "frame_id": "frame_006",
             "template": "question_closer",
-            "theme": "soft_blue",
+            "theme": "warm_neutral",
             "kicker": "留言聊聊",
             "headline": "你的防晒会搓泥吗",
             "footer": "按肤质再微调",
@@ -79,6 +81,25 @@ def test_text_card_payload_requires_six_cards_in_the_fixed_template_order():
         "decision_rule",
         "question_closer",
     ]
+
+
+@pytest.mark.parametrize("theme", ["soft_blue", "warm_orange", "custom_theme"])
+def test_text_card_payload_rejects_themes_without_renderer_tokens(theme):
+    frames = valid_frames()
+    for frame in frames:
+        frame["theme"] = theme
+
+    with pytest.raises(ValidationError, match="warm_neutral|cool_sage"):
+        TextCardPayload.model_validate({"storyboards": frames})
+
+
+def test_storyboard_generator_prompt_only_allows_renderer_themes():
+    prompt_path = Path(__file__).parents[2] / "src/prompts/base/storyboards_generator.txt"
+    prompt = prompt_path.read_text(encoding="utf-8")
+
+    assert '\"theme\":\"string\"' not in prompt
+    assert "warm_neutral" in prompt
+    assert "cool_sage" in prompt
 
 
 @pytest.mark.parametrize(

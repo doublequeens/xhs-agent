@@ -76,7 +76,7 @@ def _storyboard_frame(frame_number: int):
     ]
     return {
         "frame_id": f"frame_{frame_number:03d}",
-        "theme": "soft_blue",
+        "theme": "warm_neutral",
         "kicker": f"第{frame_number}张",
         "headline": _content_contract()["first_screen_promise"] if frame_number == 1 else f"第{frame_number}张要点",
         "footer": "按需微调",
@@ -634,7 +634,7 @@ def test_storyboards_generator_preserves_full_publish_package_and_text_card_cont
         "cover_statement", "wrong_vs_right", "step_timeline",
         "saveable_checklist", "decision_rule", "question_closer",
     ]
-    assert {frame["theme"] for frame in frames} == {"soft_blue"}
+    assert {frame["theme"] for frame in frames} == {"warm_neutral"}
     assert frames[0]["headline"] == _content_contract()["first_screen_promise"]
     assert frames[3]["checklist_items"] == ["薄涂防晒", "等待成膜", "少量点涂"]
 

@@ -18,7 +18,7 @@ def _contract(**overrides):
 def _frames(contract=None):
     contract = contract or _contract()
     common = {
-        "theme": "soft_blue",
+        "theme": "warm_neutral",
         "footer": "按需微调",
     }
     return [
@@ -78,7 +78,7 @@ def test_carousel_qa_reports_actionable_structured_contract_failures():
     state = _state()
     frames = state["publish_package"]["storyboards"]
     frames[0]["headline"] = "不符合首屏承诺"
-    frames[1]["theme"] = "warm_orange"
+    frames[1]["theme"] = "cool_sage"
     frames[3]["template"] = "question_closer"
     frames[3].pop("checklist_items")
     frames[3]["question"] = "你会怎么做？"

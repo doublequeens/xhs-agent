@@ -12,6 +12,8 @@ REQUIRED_TEXT_CARD_TEMPLATES = (
     "question_closer",
 )
 
+TextCardTheme = Literal["warm_neutral", "cool_sage"]
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -24,7 +26,7 @@ class TimelineStep(_StrictModel):
 
 class _TextCardFrame(_StrictModel):
     frame_id: str = Field(min_length=1, max_length=64)
-    theme: str = Field(min_length=1, max_length=32)
+    theme: TextCardTheme
     kicker: str = Field(min_length=1, max_length=10)
     headline: str = Field(min_length=1, max_length=28)
     footer: str = Field(min_length=1, max_length=18)

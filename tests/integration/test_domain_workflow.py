@@ -36,7 +36,7 @@ def _creative_seed():
 
 
 def _structured_storyboards(contract):
-    common = {"theme": "soft_blue", "footer": "按需微调"}
+    common = {"theme": "warm_neutral", "footer": "按需微调"}
     return [
         {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract.first_screen_promise},
         {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["立刻执行", "一次太多"], "right_items": ["逐步记录", "按需调整"]},

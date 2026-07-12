@@ -1,174 +1,110 @@
-# Task 2 Report: Topic Signal and Creative Metadata Schemas
+# Task 2: Local text-card renderer report
 
-## Scope
+## Delivered scope
 
-Implemented Task 2 exactly as scoped in `.superpowers/sdd/task-2-brief.md`:
+- Added `src.rendering.text_cards` with immutable approved theme and canvas tokens.
+- Added standalone, asset-free HTML/CSS templates for all six structured text-card frame types.
+- Added `render_text_cards`, which uses one local Playwright Chromium session, captures the fixed six-file sequence, checks every `data-card-copy` element for overflow before capture, and wraps renderer failures as `TextCardRenderError`.
+- Added cleanup that removes files already attempted when a later capture fails.
+- Added focused tests for tokenized HTML, escaping, filename order, partial-output cleanup, and a real local Chromium smoke render with PNG IHDR dimensions.
 
-- Added `src/schemas/topic_signal.py`
-- Added `CreativeSeed` and required `TopicItem.creative_seed`
-- Added AgentState fields for topic signal / creative brief / generation trace contracts
-- Updated existing tests/fixtures that now require `creative_seed`
+## TDD evidence
 
-Not implemented:
+The initial focused test run failed as expected with `ModuleNotFoundError: No module named 'src.rendering'`. The implementation was then added and the same test target was rerun until green.
 
-- persistence
-- graph node behavior for topic signals
-- topic signal collection logic
-- later-task runtime wiring
+The first local-browser smoke run exposed actual fixed-layout overflow on the supplied Chinese copy. CSS line boxes and wrapping were adjusted without changing font sizes dynamically; the renderer's required overflow check now passes for the valid payload fixture.
 
-## Implementation Details
+## Verification
 
-### New schema module
+Command run:
 
-Created `src/schemas/topic_signal.py` with:
-
-- `SignalType`
-- `SignalRiskLevel`
-- `TopicSignal`
-- `CreativeSeed`
-- `CreativeBrief`
-- `TopicGenerationTrace`
-
-The interfaces follow the brief exactly, including:
-
-- `confidence: float = Field(ge=0, le=1)`
-- `trends_num: int = Field(gt=0)`
-- `generated_candidates_count` / `filtered_candidates_count` with `Field(ge=0)`
-
-### TopicItem contract
-
-Updated `src/schemas/topic.py` so `TopicItem` now requires:
-
-- `creative_seed: CreativeSeed`
-
-### AgentState contract
-
-Updated `src/schemas/agent_state.py` to include:
-
-- `topic_signals: List[TopicSignal]`
-- `creative_briefs: List[CreativeBrief]`
-- `topic_generation_trace: Optional[TopicGenerationTrace]`
-
-`subdomain: Optional[str]` was already present and did not need to be added.
-
-### Test fixture updates
-
-Updated existing fixtures that construct `TopicItem` or feed normalized trend payloads into `TopicItem(**...)` so they now include the exact default `creative_seed` from the brief:
-
-```python
-{
-    "signal_type": "evergreen_context",
-    "signal_name": "测试默认信号",
-    "why_now": "测试中使用稳定 evergreen 信号。",
-    "domain_translation": "测试中保持原 domain/subdomain。",
-    "evergreen_pain": "测试核心痛点。",
-    "timely_framing": "测试时机包装。",
-}
+```bash
+python -m pytest tests/rendering/test_text_cards.py -v
 ```
 
-## RED / GREEN Evidence
+Result: `5 passed` (including real local Chromium rendering of six `1080 x 1440` PNGs).
 
-### RED
+The environment emitted two unrelated pytest temporary-directory cleanup warnings from an existing macOS temp path; the command exited successfully.
 
-Added `tests/schemas/test_topic_signal.py` first, before production edits.
+## Dependencies and constraints
+
+- Local Playwright Chromium is installed and was used by the smoke test.
+- No network, image API, external font, or external image asset is used.
+- The requested implementation commit stages only the three Task 2 source/test paths; this report remains uncommitted task documentation unless a later task explicitly includes it.
+
+## Review-fix follow-up
+
+### Findings resolved
+
+- Constrained `TextCardTheme` in the Pydantic schema to exactly `warm_neutral` and `cool_sage`, and changed the storyboard-generator prompt to advertise only those two values. All schema-valid payloads are now renderer-valid with respect to theme tokens. Existing structured-card fixtures and patch expectations were migrated from retired free-form theme names to the approved values.
+- Changed partial-output cleanup to collect unlink failures and raise `TextCardRenderError` with the original rendering error as its direct cause. A failed cleanup is therefore observable instead of being silently suppressed.
+- Removed the question-card-local footer; the shared card footer is the single rendered footer for every template, including `question_closer`.
+
+### Regression coverage
+
+- Schema rejects `soft_blue`, `warm_orange`, and other unsupported themes.
+- Generator prompt no longer declares `theme` as an arbitrary string and names both approved values.
+- Question closer HTML has exactly one footer copy role and one footer value.
+- A later screenshot failure combined with an unlink failure raises a cleanup `TextCardRenderError` whose cause retains the original screenshot error.
+
+### Exact verification output
 
 Command:
 
 ```bash
-pytest tests/schemas/test_topic_signal.py -q
+python -m pytest tests/schemas/test_text_card.py tests/rendering/test_text_cards.py -q
 ```
 
-Result:
+```text
+...............                                                          [100%]
+=============================== warnings summary ===============================
+../../../../../../opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95
+  /opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95: PytestWarning: (rm_rf) error removing /private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-f339fd16-f6b1-4beb-aa7f-173d0a0b78e8/test_plist_mode_is_0600_under_0
+  <class 'OSError'>: [Errno 66] Directory not empty: '/private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-f339fd16-f6b1-4beb-aa7f-173d0a0b78e8/test_plist_mode_is_0600_under_0'
+    warnings.warn(
 
-- Failed during collection with `ModuleNotFoundError: No module named 'src.schemas.topic_signal'`
+../../../../../../opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95
+  /opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95: PytestWarning: (rm_rf) error removing /private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-f339fd16-f6b1-4beb-aa7f-173d0a0b78e8
+  <class 'OSError'>: [Errno 66] Directory not empty: '/private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-f339fd16-f6b1-4beb-aa7f-173d0a0b78e8'
+    warnings.warn(
 
-This confirmed the new contract did not exist yet.
-
-### GREEN
-
-After implementing the schemas and required fixture updates:
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+15 passed, 2 warnings in 0.85s
+```
 
 Command:
 
 ```bash
-pytest tests/schemas/test_topic_signal.py -q
+python -m pytest -q
 ```
 
-Result:
+```text
+........................................................................ [ 10%]
+........................................................................ [ 20%]
+........................................................................ [ 31%]
+........................................................................ [ 41%]
+........................................................................ [ 51%]
+........................................................................ [ 62%]
+........................................................................ [ 72%]
+........................................................................ [ 82%]
+........................................................................ [ 93%]
+...............................................                          [100%]
+=============================== warnings summary ===============================
+tests/nodes/test_final_policy_guard.py::test_regenerated_storyboards_reapply_visible_text_patch
+tests/nodes/test_final_policy_guard.py::test_regenerated_storyboards_apply_complete_r2_visible_text_without_human_patch
+  /Users/qinqiang/Documents/Workspace/Projects/xhs-agent/src/nodes/node_o_storyboards_generator.py:58: UserWarning: storyboards_generator is falling back to beauty-v1 for a legacy checkpoint without domain_context.
+    system_prompt = compose_prompt_for_state("storyboards_generator", state)
 
-- `4 passed in 0.03s`
+../../../../../../opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95
+  /opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95: PytestWarning: (rm_rf) error removing /private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-eaf14fac-d6e4-49d1-b1c6-8d66b4df55f3/test_plist_mode_is_0600_under_0
+  <class 'OSError'>: [Errno 66] Directory not empty: '/private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-eaf14fac-d6e4-49d1-b1c6-8d66b4df55f3/test_plist_mode_is_0600_under_0'
+    warnings.warn(
 
-## Test Commands and Results
+../../../../../../opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95
+  /opt/anaconda3/envs/daily/lib/python3.12/site-packages/_pytest/pathlib.py:95: PytestWarning: (rm_rf) error removing /private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-eaf14fac-d6e4-49d1-b1c6-8d66b4df55f3
+  <class 'OSError'>: [Errno 66] Directory not empty: '/private/var/folders/nr/cxbz58_577dfp3053flt_t4r0000gn/T/pytest-of-qinqiang/garbage-eaf14fac-d6e4-49d1-b1c6-8d66b4df55f3'
+    warnings.warn(
 
-### Required focused schema test
-
-Command:
-
-```bash
-pytest tests/schemas/test_topic_signal.py -q
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+695 passed, 4 warnings in 15.01s
 ```
-
-Result:
-
-- `4 passed in 0.03s`
-
-### Required related schema/node suite
-
-Command:
-
-```bash
-pytest tests/nodes tests/schemas -q
-```
-
-Result:
-
-- `86 passed, 2 warnings in 4.55s`
-
-Warnings were unrelated pytest temp-directory cleanup warnings from the environment.
-
-### Additional verification on directly modified non-node tests
-
-Command:
-
-```bash
-pytest tests/domain/test_topic_metadata.py tests/integration/test_domain_workflow.py -q
-```
-
-Result:
-
-- `5 failed, 10 passed, 2 warnings in 3.60s`
-
-These failures appear unrelated to Task 2 schema scope:
-
-1. `tests/domain/test_topic_metadata.py::test_main_initial_state_includes_metadata_briefs`
-   - failure: `ModuleNotFoundError: No module named 'src.prompts.composer'; 'src.prompts' is not a package`
-   - cause appears to be the test's local import stubbing, not the schema changes
-2. `tests/integration/test_domain_workflow.py::*`
-   - failures involve domain confirmation interrupt/review routing and missing `publish_package`
-   - no failure referenced `creative_seed`, `TopicSignal`, `CreativeBrief`, or `TopicGenerationTrace`
-
-I did not change runtime graph/review behavior because that is outside Task 2 scope.
-
-## Files Changed
-
-- `src/schemas/topic_signal.py`
-- `src/schemas/topic.py`
-- `src/schemas/agent_state.py`
-- `tests/schemas/test_topic_signal.py`
-- `tests/domain/test_topic_metadata.py`
-- `tests/integration/test_domain_workflow.py`
-- `tests/nodes/test_metadata_flow.py`
-- `tests/nodes/test_evidence_brief.py`
-
-## Self-Review
-
-- The new schema interfaces match the brief exactly.
-- `TopicItem.creative_seed` is required, not optional, per brief.
-- Legacy fixtures were updated with the prescribed default seed rather than weakening validation.
-- No persistence, collector logic, or later-task graph behavior was added.
-- Write scope stayed within the brief-listed schema files plus tests that needed fixture updates.
-
-## Concerns
-
-- Additional domain/integration tests currently fail for reasons that appear pre-existing or outside Task 2 scope.
-- I am committing the Task 2 schema/data-contract work with the required schema/node suite green, while documenting those unrelated failures explicitly.

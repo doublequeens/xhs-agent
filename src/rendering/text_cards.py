@@ -171,7 +171,6 @@ def _template_content(frame: TextCardFrame) -> str:
             (
                 '<section class="card-content question">',
                 _copy("question", frame.question, "question-copy"),
-                _copy("footer", frame.footer, "question-note"),
                 "</section>",
             )
         )
@@ -209,13 +208,25 @@ def _assert_no_overflow(page, frame_id: str) -> None:
 
 
 def _remove_partial_outputs(paths: list[Path]) -> None:
+    cleanup_failures: list[str] = []
     for path in paths:
         try:
             path.unlink()
         except FileNotFoundError:
             continue
-        except OSError:
-            continue
+        except OSError as exc:
+            cleanup_failures.append(f"{path}: {exc}")
+    if cleanup_failures:
+        raise TextCardRenderError(
+            "could not remove partial text-card outputs: " + "; ".join(cleanup_failures)
+        )
+
+
+def _cleanup_after_render_failure(paths: list[Path], render_error: TextCardRenderError) -> None:
+    try:
+        _remove_partial_outputs(paths)
+    except TextCardRenderError as cleanup_error:
+        raise cleanup_error from render_error
 
 
 def render_text_cards(
@@ -264,11 +275,12 @@ def render_text_cards(
             finally:
                 if browser is not None:
                     browser.close()
-    except TextCardRenderError:
-        _remove_partial_outputs(attempted_paths)
+    except TextCardRenderError as render_error:
+        _cleanup_after_render_failure(attempted_paths, render_error)
         raise
     except Exception as exc:
-        _remove_partial_outputs(attempted_paths)
-        raise TextCardRenderError(f"local text-card rendering failed: {exc}") from exc
+        render_error = TextCardRenderError(f"local text-card rendering failed: {exc}")
+        _cleanup_after_render_failure(attempted_paths, render_error)
+        raise render_error from exc
 
     return written_paths
