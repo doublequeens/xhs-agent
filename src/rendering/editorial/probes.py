@@ -61,6 +61,46 @@ LAYOUT_PROBE_SCRIPT = r"""
     if (element.scrollWidth > element.clientWidth + 2) {
       issues.push({kind: "overflow", role});
     }
+    const range = document.createRange();
+    range.selectNodeContents(element);
+    const inkRects = [...range.getClientRects()].filter(rect => rect.width > 0 && rect.height > 0);
+    if (element.matches(".block-body, .item-copy")) {
+      const style = getComputedStyle(element);
+      const fontSize = parseFloat(style.fontSize);
+      const lineHeight = parseFloat(style.lineHeight);
+      const ratio = lineHeight / fontSize;
+      if (!Number.isFinite(ratio) || ratio < 1.4 - 0.005 || ratio > 1.5 + 0.005) {
+        issues.push({kind: "body_line_height", role, ratio});
+      }
+    }
+    if (element.matches(".headline")) {
+      const lineTops = new Set(inkRects.map(rect => Math.round(rect.top * 2) / 2));
+      if (lineTops.size > 2) {
+        issues.push({kind: "headline_lines", role, lines: lineTops.size});
+      }
+    }
+    let ancestor = element;
+    let inkClipped = false;
+    while (ancestor && ancestor !== card.parentElement && !inkClipped) {
+      const style = getComputedStyle(ancestor);
+      const clipsX = ["hidden", "clip", "auto", "scroll"].includes(style.overflowX);
+      const clipsY = ["hidden", "clip", "auto", "scroll"].includes(style.overflowY);
+      if (clipsX || clipsY) {
+        const ancestorRect = ancestor.getBoundingClientRect();
+        const clipLeft = ancestorRect.left + ancestor.clientLeft;
+        const clipTop = ancestorRect.top + ancestor.clientTop;
+        const clipRight = clipLeft + ancestor.clientWidth;
+        const clipBottom = clipTop + ancestor.clientHeight;
+        inkClipped = inkRects.some(rect =>
+          (clipsX && (rect.left < clipLeft - 0.75 || rect.right > clipRight + 0.75)) ||
+          (clipsY && (rect.top < clipTop - 0.75 || rect.bottom > clipBottom + 0.75))
+        );
+      }
+      ancestor = ancestor.parentElement;
+    }
+    if (inkClipped) {
+      issues.push({kind: "ink_clip", role});
+    }
     const body = element.closest(".layout-body");
     if (body) {
       const bodyRect = body.getBoundingClientRect();

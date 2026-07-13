@@ -152,8 +152,10 @@ class FakeLocator:
 
     def screenshot(self, *, path: str) -> None:
         self.page.events.append(f"screenshot:{self.selector}:{Path(path).name}")
-        Path(path).write_bytes(b"fake png")
         self.page.screenshot_calls += 1
+        if self.page.fail_before_write_at == self.page.screenshot_calls:
+            raise RuntimeError("screenshot failed before write")
+        Path(path).write_bytes(b"fake png")
         if self.page.fail_screenshot_at == self.page.screenshot_calls:
             raise RuntimeError("screenshot failed")
 
@@ -165,6 +167,7 @@ class FakePage:
         font_report: dict | None = None,
         probe_issues: list[dict] | None = None,
         fail_screenshot_at: int | None = None,
+        fail_before_write_at: int | None = None,
     ) -> None:
         self.font_report = font_report or {
             "all_loaded": True,
@@ -176,6 +179,7 @@ class FakePage:
         }
         self.probe_issues = probe_issues or []
         self.fail_screenshot_at = fail_screenshot_at
+        self.fail_before_write_at = fail_before_write_at
         self.screenshot_calls = 0
         self.events: list[str] = []
         self.loaded_html: list[str] = []
@@ -202,21 +206,26 @@ class FakePage:
 
 
 class FakeBrowser:
-    def __init__(self, page: FakePage) -> None:
+    def __init__(self, page: FakePage, *, close_error: Exception | None = None) -> None:
         self.page = page
         self.closed = False
+        self.close_error = close_error
 
     def new_page(self, **_kwargs) -> FakePage:
         return self.page
 
     def close(self) -> None:
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
 
 
 class FakePlaywrightContext:
-    def __init__(self, page: FakePage) -> None:
+    def __init__(
+        self, page: FakePage, *, close_error: Exception | None = None
+    ) -> None:
         self.page = page
-        self.browser = FakeBrowser(page)
+        self.browser = FakeBrowser(page, close_error=close_error)
 
         class Chromium:
             def __init__(self, browser: FakeBrowser) -> None:
@@ -234,6 +243,8 @@ class FakePlaywrightContext:
         return False
 
 
-def fake_playwright(page: FakePage | None = None):
+def fake_playwright(
+    page: FakePage | None = None, *, close_error: Exception | None = None
+):
     actual_page = page or FakePage()
-    return lambda: FakePlaywrightContext(actual_page)
+    return lambda: FakePlaywrightContext(actual_page, close_error=close_error)

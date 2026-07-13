@@ -20,16 +20,24 @@ failure cleanup.
   fonts. There is no system-font fallback or remote resource URL.
 - Browser probes explicitly load all three font families, await
   `document.fonts.ready`, verify exact computed families, check canvas semantics,
-  detect hidden/clipped/overflowing copy, and verify local image decode before each
-  page screenshot.
+  detect hidden/clipped/overflowing copy using DOM Range bounds against real clipping
+  ancestors, enforce the two-line headline and 1.4–1.5 body line-height rules, and
+  verify local image decode before each page screenshot.
 - Output names are deterministic: `01-cover.png`, followed by
   `NN-<sanitized-frame-role>.png`. `RenderManifest` records exact page dimensions,
   source hashes keyed by asset slot, the font report, and the contact-sheet path.
 - The contact sheet is a local HTML grid captured by Chromium. Pillow is not used by
   the renderer or the tests to build a contact sheet.
-- Every PNG and invocation-owned temporary HTML file is removed if font loading,
-  layout probing, card capture, contact-sheet capture, browser lifecycle, or final
-  temporary-file cleanup fails. Unrelated files in the output directory are kept.
+- Every PNG and temporary HTML file is first created in an invocation-scoped sibling
+  staging directory. Only after screenshots, probes, contact sheet, browser close,
+  HTML cleanup, and manifest validation succeed is the complete directory published.
+  Any pre-existing complete output set is preserved on failure; publication errors
+  restore it rather than leaving a mixed set.
+- Every storyboard `VisualSlot` binds to exactly one manifest item with the same slot
+  ID and frame layout. The renderer verifies current local bytes against sha256 and
+  records only assets actually passed to a layout. It deliberately does not compare
+  the semantic storyboard role to the adapted concrete catalog role; that domain seam
+  belongs to Task 7 Carousel QA.
 - The renderer rejects frame-order/layout drift between `VisualPlan` and
   `CarouselPayload` before launching Chromium.
 
@@ -89,6 +97,117 @@ Related regression GREEN:
 through its Chromium contact sheet; `file` reported every page as `1080 × 1440` and
 the contact sheet as `1320 × 1145`.
 
+## Review-correction RED/GREEN evidence
+
+The first review rejected four Important behaviors. Each correction used its own
+RED/GREEN cycle.
+
+### Atomic output-set publication
+
+RED:
+
+```text
+python -m pytest tests/rendering/editorial/test_renderer.py -q \
+  -k "existing_complete or failed_screenshot"
+
+4 failed
+```
+
+The failures proved that after-write and before-write screenshot errors deleted old
+page files, browser-close failure removed the complete old set, and temporary-HTML
+cleanup failure left newly overwritten finals. After moving the entire render into a
+sibling staging directory and publishing/restoring at directory granularity:
+
+```text
+4 passed, 7 deselected
+```
+
+### Strict actual-asset consumption
+
+The accepted RED cases were wrong frame layout, missing declared slot, changed source
+bytes, and an unused manifest item incorrectly included in the rendered hash map:
+
+```text
+python -m pytest tests/rendering/editorial/test_renderer.py -q \
+  -k "declared_frame_slot or missing_declared or tampered_bytes or unused_manifest"
+
+5 failed (4 accepted contract failures; 1 role-equality case later discarded)
+```
+
+The fifth role-equality case was discarded after checking the domain contracts:
+Storyboard roles are semantic (`beauty_subject`) while AssetManifest roles are adapted
+catalog roles (`background_token`). Renderer binding therefore uses unique slot ID,
+frame layout, local path, and current sha256; Task 7 owns semantic-role QA.
+
+GREEN:
+
+```text
+4 passed, 11 deselected
+```
+
+### Vertical glyph/range clipping
+
+The deterministic real-browser RED showed that a text Range extending beyond an
+intermediate `overflow:hidden` ancestor produced no issue, while the Source Han
+characterization case demonstrated legitimate `scrollHeight > clientHeight` overhang.
+After comparing every Range rect with each actual clipping ancestor's client box:
+
+```text
+python -m pytest tests/rendering/editorial/test_probes.py -q \
+  -k "clipped or overhang"
+
+2 passed
+```
+
+The clipped case now emits `ink_clip`; normal Source Han overhang does not.
+
+### Typography hard rules
+
+RED:
+
+```text
+python -m pytest tests/rendering/editorial/test_probes.py -q \
+  -k "line_height or headline"
+
+3 failed
+```
+
+The probe did not reject a 1.6 body line height, production body copy computed to
+1.55, and an 80-character-schema-valid headline could exceed two lines. Production
+body copy now uses 1.45, the probe checks computed ratios, and unique Range line tops
+enforce the two-line limit.
+
+GREEN:
+
+```text
+3 passed, 2 deselected
+```
+
+Integrated focused GREEN after all corrections:
+
+```text
+python -m pytest tests/rendering/editorial/test_layouts.py \
+  tests/rendering/editorial/test_renderer.py \
+  tests/rendering/editorial/test_probes.py -q
+
+43 passed in 2.62s
+```
+
+Final review-correction verification:
+
+```text
+python -m pytest tests/rendering/editorial -q
+44 passed in 5.08s
+
+python -m pytest tests/schemas/test_editorial_carousel.py \
+  tests/rendering/test_text_cards.py \
+  tests/editorial_carousel/test_strategy.py -q
+54 passed in 1.24s
+```
+
+The first command includes the real Chromium smoke and deterministic probe tests.
+`compileall` and `git diff --check` also exited successfully after the corrections.
+
 ## Self-review
 
 - Scope is limited to `src/rendering/editorial`, `tests/rendering/editorial`, and
@@ -98,8 +217,9 @@ the contact sheet as `1320 × 1145`.
 - The eleven renderer functions share escaped primitives without collapsing back to
   one fixed visual template: each layout has a distinct semantic structure and CSS
   composition while the shell owns tokens, dimensions, and typography.
-- Cleanup tracks only files created or overwritten by the invocation, so unrelated
-  output-directory PNGs survive a failed render.
+- Failure cleanup removes the isolated staging tree and does not mutate the existing
+  output directory. Existing complete-set tests cover failures before and after bytes
+  are written, during browser close, and during temporary-HTML cleanup.
 - The browser session is reused for all pages and the contact sheet, and fonts are
   re-probed after every local document navigation.
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 import re
+import shutil
 import uuid
 from html import escape
 from pathlib import Path
@@ -85,7 +87,7 @@ body { background: var(--ivory); color: var(--ink); font-family: "Source Han San
 .layout-body { min-width: 0; min-height: 0; overflow: hidden; }
 .content-block { min-width: 0; display: grid; gap: 11px; align-content: start; }
 .block-heading { margin: 0; color: var(--mauve); font-size: 27px; line-height: 1.3; font-weight: 500; }
-.block-body { margin: 0; font-size: 29px; line-height: 1.55; }
+.block-body { margin: 0; font-size: 29px; line-height: 1.45; }
 .block-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
 .block-item { min-width: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 11px; align-items: baseline; }
 .item-marker { color: var(--coral); font-size: 20px; line-height: 1; }
@@ -190,11 +192,48 @@ def _output_paths(frames: Sequence[CarouselFrame], output_dir: Path) -> list[Pat
 def _frame_assets(
     frame: CarouselFrame, items: Sequence[AssetManifestItem]
 ) -> list[AssetManifestItem]:
-    slot_ids = {slot.slot_id for slot in frame.visual_slots}
-    exact = [item for item in items if item.slot_id in slot_ids]
-    if exact:
-        return exact
-    return [item for item in items if item.layout == frame.layout]
+    resolved: list[AssetManifestItem] = []
+    for slot in frame.visual_slots:
+        matches = [item for item in items if item.slot_id == slot.slot_id]
+        if not matches:
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} asset slot {slot.slot_id} is missing"
+            )
+        if len(matches) != 1:
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} asset slot {slot.slot_id} is ambiguous"
+            )
+        item = matches[0]
+        if item.layout != frame.layout:
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} asset slot {slot.slot_id} does not match "
+                "the declared frame layout"
+            )
+        path = Path(item.path)
+        if "://" in item.path or not path.is_absolute() or not path.is_file():
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} asset slot {slot.slot_id} is not a resolved local file"
+            )
+        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if actual_sha256 != item.sha256:
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} asset slot {slot.slot_id} sha256 does not match file bytes"
+            )
+        resolved.append(item)
+    return resolved
+
+
+def _resolve_storyboard_assets(
+    storyboard: CarouselPayload, assets: AssetManifest
+) -> tuple[dict[str, list[AssetManifestItem]], dict[str, str]]:
+    by_frame: dict[str, list[AssetManifestItem]] = {}
+    used_hashes: dict[str, str] = {}
+    for frame in storyboard.storyboards:
+        frame_items = _frame_assets(frame, assets.items)
+        by_frame[frame.frame_id] = frame_items
+        for item in frame_items:
+            used_hashes[item.slot_id] = item.sha256
+    return by_frame, used_hashes
 
 
 def _assert_plan_matches_storyboard(
@@ -248,15 +287,56 @@ def _remove_paths(paths: Iterable[Path]) -> None:
         )
 
 
-def _cleanup_failure(
-    png_paths: Sequence[Path],
-    html_paths: Sequence[Path],
-    render_error: EditorialCarouselRenderError,
+def _discard_staging(
+    staging_dir: Path, render_error: EditorialCarouselRenderError
 ) -> None:
     try:
-        _remove_paths([*png_paths, *html_paths])
-    except EditorialCarouselRenderError as cleanup_error:
-        raise cleanup_error from render_error
+        shutil.rmtree(staging_dir)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise EditorialCarouselRenderError(
+            f"could not remove editorial render staging directory: {exc}"
+        ) from render_error
+
+
+def _publish_staging(staging_dir: Path, output_dir: Path, invocation: str) -> None:
+    backup_dir = output_dir.parent / (
+        f".{output_dir.name}.editorial-{invocation}.backup"
+    )
+    previous_moved = False
+    try:
+        if output_dir.exists():
+            output_dir.replace(backup_dir)
+            previous_moved = True
+        staging_dir.replace(output_dir)
+    except OSError as exc:
+        if previous_moved and not output_dir.exists() and backup_dir.exists():
+            backup_dir.replace(output_dir)
+        raise EditorialCarouselRenderError(
+            f"could not atomically publish editorial render: {exc}"
+        ) from exc
+
+    if not previous_moved:
+        return
+    try:
+        shutil.rmtree(backup_dir)
+    except OSError as exc:
+        rollback_error: OSError | None = None
+        try:
+            output_dir.replace(staging_dir)
+            backup_dir.replace(output_dir)
+            shutil.rmtree(staging_dir)
+        except OSError as rollback_exc:
+            rollback_error = rollback_exc
+        if rollback_error is not None:
+            raise EditorialCarouselRenderError(
+                "could not retire the previous editorial set or roll publication back: "
+                f"{exc}; rollback failed: {rollback_error}"
+            ) from exc
+        raise EditorialCarouselRenderError(
+            f"could not retire the previous editorial set; publication rolled back: {exc}"
+        ) from exc
 
 
 def _contact_sheet_html(page_paths: Sequence[Path]) -> str:
@@ -302,21 +382,27 @@ def render_carousel(
         raise EditorialCarouselRenderError(
             f"unsupported design system: {visual_plan.design_system}"
         )
+    frame_assets, used_asset_hashes = _resolve_storyboard_assets(storyboard, assets)
 
-    output_dir = Path(output_dir)
+    output_dir = Path(output_dir).resolve()
+    invocation = uuid.uuid4().hex
+    staging_dir = output_dir.parent / (
+        f".{output_dir.name}.editorial-{invocation}.staging"
+    )
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir.parent.mkdir(parents=True, exist_ok=True)
+        staging_dir.mkdir()
     except OSError as exc:
         raise EditorialCarouselRenderError(
-            f"could not create editorial output directory: {exc}"
+            f"could not create editorial staging directory: {exc}"
         ) from exc
 
     frames = storyboard.storyboards
-    page_paths = _output_paths(frames, output_dir)
-    contact_sheet_path = output_dir / "contact-sheet.png"
-    invocation = uuid.uuid4().hex
+    final_page_paths = _output_paths(frames, output_dir)
+    staged_page_paths = _output_paths(frames, staging_dir)
+    final_contact_sheet_path = output_dir / "contact-sheet.png"
+    staged_contact_sheet_path = staging_dir / "contact-sheet.png"
     temporary_html: list[Path] = []
-    created_pngs: list[Path] = []
     rendered_pages: list[RenderedPage] = []
     font_report: FontLoadReport | None = None
     browser = None
@@ -338,14 +424,15 @@ def render_carousel(
                 ) from exc
 
             try:
-                for index, (frame, page_path) in enumerate(
-                    zip(frames, page_paths, strict=True), start=1
+                for index, (frame, staged_path, final_path) in enumerate(
+                    zip(frames, staged_page_paths, final_page_paths, strict=True),
+                    start=1,
                 ):
-                    html_path = output_dir / f".editorial-{invocation}-{index:02d}.html"
+                    html_path = staging_dir / f"page-{index:02d}.html"
                     temporary_html.append(html_path)
                     try:
                         renderer = LAYOUT_RENDERERS[frame.layout]
-                        card = renderer(frame, _frame_assets(frame, assets.items))
+                        card = renderer(frame, frame_assets[frame.frame_id])
                         document = _document_html(card)
                         _write_html(html_path, document)
                         page.goto(html_path.resolve().as_uri(), wait_until="load")
@@ -380,9 +467,8 @@ def render_carousel(
                             f"{frame.frame_id} layout probe failed: {issues}"
                         )
 
-                    created_pngs.append(page_path)
                     try:
-                        page.locator(".card").screenshot(path=str(page_path))
+                        page.locator(".card").screenshot(path=str(staged_path))
                     except Exception as exc:
                         raise EditorialCarouselRenderError(
                             f"{frame.frame_id} screenshot failed: {exc}"
@@ -392,26 +478,27 @@ def render_carousel(
                             frame_id=frame.frame_id,
                             role=frame.role,
                             layout=frame.layout,
-                            path=str(page_path),
+                            path=str(final_path),
                             width=1080,
                             height=1440,
                         )
                     )
 
                 contact_html_path = (
-                    output_dir / f".editorial-{invocation}-contact-sheet.html"
+                    staging_dir / "contact-sheet.html"
                 )
                 temporary_html.append(contact_html_path)
                 try:
-                    _write_html(contact_html_path, _contact_sheet_html(page_paths))
+                    _write_html(
+                        contact_html_path, _contact_sheet_html(staged_page_paths)
+                    )
                     page.set_viewport_size({"width": 1404, "height": 3200})
                     page.goto(
                         contact_html_path.resolve().as_uri(), wait_until="load"
                     )
                     _validate_font_report(probe_fonts(page), "contact-sheet")
-                    created_pngs.append(contact_sheet_path)
                     page.locator(".contact-sheet").screenshot(
-                        path=str(contact_sheet_path)
+                        path=str(staged_contact_sheet_path)
                     )
                 except EditorialCarouselRenderError:
                     raise
@@ -421,28 +508,31 @@ def render_carousel(
                     ) from exc
             finally:
                 if browser is not None:
-                    browser.close()
+                    try:
+                        browser.close()
+                    except Exception as exc:
+                        raise EditorialCarouselRenderError(
+                            f"browser close failed: {exc}"
+                        ) from exc
 
-        try:
-            _remove_paths(temporary_html)
-        except EditorialCarouselRenderError as cleanup_error:
-            _cleanup_failure(created_pngs, temporary_html, cleanup_error)
-            raise
+        _remove_paths(temporary_html)
+
+        if font_report is None:
+            raise EditorialCarouselRenderError("font probe did not run")
+        manifest = RenderManifest(
+            pages=rendered_pages,
+            fonts=font_report,
+            contact_sheet_path=str(final_contact_sheet_path),
+            source_asset_sha256=used_asset_hashes,
+        )
+        _publish_staging(staging_dir, output_dir, invocation)
+        return manifest
     except EditorialCarouselRenderError as render_error:
-        _cleanup_failure(created_pngs, temporary_html, render_error)
+        _discard_staging(staging_dir, render_error)
         raise
     except Exception as exc:
         render_error = EditorialCarouselRenderError(
             f"editorial carousel rendering failed: {exc}"
         )
-        _cleanup_failure(created_pngs, temporary_html, render_error)
+        _discard_staging(staging_dir, render_error)
         raise render_error from exc
-
-    if font_report is None:
-        raise EditorialCarouselRenderError("font probe did not run")
-    return RenderManifest(
-        pages=rendered_pages,
-        fonts=font_report,
-        contact_sheet_path=str(contact_sheet_path),
-        source_asset_sha256={item.slot_id: item.sha256 for item in assets.items},
-    )
