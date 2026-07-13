@@ -539,11 +539,7 @@ def _asset_issues(
                     f"asset_manifest.items[{index}].slot_id",
                 )
             )
-    auditable_items = [
-        values[0]
-        for slot_id, values in item_occurrences.items()
-        if slot_id not in duplicate_item_slot_ids
-    ]
+    auditable_items = list(enumerate(items))
     item_by_slot = {
         slot_id: values[0][1]
         for slot_id, values in item_occurrences.items()
@@ -593,12 +589,49 @@ def _asset_issues(
                             frame_id=frame_id,
                         )
                     )
+            if _get_value(item, "review_status") != "approved":
+                issues.append(
+                    _issue(
+                        "asset_publishing_review_not_approved",
+                        "External assets need an approved publishing-safety review.",
+                        f"{location}.review_status",
+                        frame_id=frame_id,
+                    )
+                )
+            if _get_value(item, "review_disposition") != "approved_for_publishing":
+                issues.append(
+                    _issue(
+                        "asset_publishing_disposition_not_approved",
+                        "External assets must be explicitly approved for publishing.",
+                        f"{location}.review_disposition",
+                        frame_id=frame_id,
+                    )
+                )
+        if _as_list(item, "unresolved_safety_checks"):
+            issues.append(
+                _issue(
+                    "asset_safety_checks_unresolved",
+                    "Rendered assets cannot retain unresolved publishing-safety checks.",
+                    f"{location}.unresolved_safety_checks",
+                    frame_id=frame_id,
+                )
+            )
 
         raw_path = _get_value(item, "path")
         try:
             path = Path(raw_path)
         except TypeError:
             path = Path("")
+        if raw_path and ("://" in str(raw_path) or not path.is_absolute()):
+            issues.append(
+                _issue(
+                    "asset_path_not_local",
+                    "Rendered asset sources must use absolute local file paths.",
+                    f"{location}.path",
+                    frame_id=frame_id,
+                )
+            )
+            continue
         if not raw_path or not path.is_file():
             issues.append(
                 _issue(
@@ -632,7 +665,10 @@ def _asset_issues(
                     frame_id=frame_id,
                 )
             )
-        if rendered_hashes.get(slot_id) != actual_hash:
+        if (
+            slot_id not in duplicate_item_slot_ids
+            and rendered_hashes.get(slot_id) != actual_hash
+        ):
             issues.append(
                 _issue(
                     "rendered_asset_hash_mismatch",
@@ -683,7 +719,11 @@ def _asset_issues(
             else None
         )
         pages = _as_list(render_manifest, "pages")
-        if frame_index is not None and frame_index < len(pages):
+        if (
+            slot_id not in duplicate_item_slot_ids
+            and frame_index is not None
+            and frame_index < len(pages)
+        ):
             probe = _get_value(pages[frame_index], "probe")
             probe_assets = [
                 (result_index, result)

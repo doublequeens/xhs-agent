@@ -43,8 +43,10 @@ package-selected contracts, or a broad missing-artifact legacy fallback.
 - Identity audits group occurrences before constructing maps. Conflicted groups skip
   only their own dependent checks; unrelated frames/items and independently provable
   global composition rules continue to be audited.
-- Duplicate AssetManifest groups no longer return early. QA reports the duplicate
-  occurrence and continues auditing every unconflicted item.
+- Duplicate AssetManifest groups no longer suppress item-local evidence. QA reports
+  duplicate occurrences and still audits every indexed item for provenance,
+  publishing safety, local-file validity, decoded bytes/hash, intrinsic dimensions,
+  and VisualPlan minimums. Only ambiguous slot-level correspondence is skipped.
 - Asset requirement role and layout drift have separate rules/locations. Every
   missing semantic slot location includes its planned index and semantic role, so
   multiple missing-slot R1 tasks have unique stable IDs.
@@ -64,6 +66,8 @@ package-selected contracts, or a broad missing-artifact legacy fallback.
 - Every page rechecks exact 1080x1440 canvas, exact 84px safe margin, role-specific
   repository font family, headline line count, body line-height ratio, and text bounds.
 - Local and external provenance fields are audited atomically.
+- External publishing approval/disposition and unresolved safety checks are audited
+  per manifest occurrence, including occurrences in duplicate slot groups.
 
 ### Trust boundaries and migration isolation
 
@@ -158,6 +162,29 @@ Fresh full repository verification after the final re-review fixes:
 
 ```text
 1038 passed, 2 skipped, 4 warnings in 30.08s
+```
+
+The duplicate-group follow-up established one focused RED: the duplicate identity
+issue was present, but both conflicting occurrences lost all item-local audits.
+After the fix, the regression passes with index-qualified provenance, safety, and
+source-hash issues plus globally unique deterministic R1 task IDs.
+
+Final follow-up GREEN:
+
+```text
+1 passed, 40 deselected, 2 warnings in 0.16s
+```
+
+Focused Task 7 plus renderer/schema/probe verification:
+
+```text
+122 passed, 2 warnings in 6.92s
+```
+
+Fresh full repository verification after the duplicate-group follow-up:
+
+```text
+1039 passed, 2 skipped, 4 warnings in 32.06s
 ```
 
 ## Self-review

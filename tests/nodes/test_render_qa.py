@@ -1158,6 +1158,71 @@ def test_duplicate_asset_group_does_not_hide_unconflicted_item_audit(tmp_path):
     )
 
 
+def test_duplicate_asset_occurrences_each_keep_item_local_audits_and_unique_tasks(
+    tmp_path,
+):
+    from src.nodes.node_p_render_qa import _build_r1_decision, validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    first = assets.items[0].model_copy(
+        update={
+            "source_type": "stock_photo",
+            "license": "",
+            "provider": None,
+            "source_url": None,
+            "author": None,
+        }
+    )
+    second = assets.items[0].model_copy(
+        update={
+            "sha256": "f" * 64,
+            "unresolved_safety_checks": ["has_logo"],
+        }
+    )
+    duplicate_index = len(assets.items)
+    assets = assets.model_copy(
+        update={"items": [first, *assets.items[1:], second]}
+    )
+
+    issues = validate_render(package, assets, manifest, _plan())
+    findings = {(issue.rule_id, issue.location_hint) for issue in issues}
+
+    assert (
+        "duplicate_asset_manifest_slot_id",
+        f"asset_manifest.items[{duplicate_index}].slot_id",
+    ) in findings
+    assert (
+        "asset_license_provenance_missing",
+        "asset_manifest.items[0].license",
+    ) in findings
+    assert (
+        "asset_provider_provenance_missing",
+        "asset_manifest.items[0].provider",
+    ) in findings
+    assert (
+        "asset_source_url_provenance_missing",
+        "asset_manifest.items[0].source_url",
+    ) in findings
+    assert (
+        "asset_author_provenance_missing",
+        "asset_manifest.items[0].author",
+    ) in findings
+    assert (
+        "asset_safety_checks_unresolved",
+        f"asset_manifest.items[{duplicate_index}].unresolved_safety_checks",
+    ) in findings
+    assert (
+        "asset_source_hash_mismatch",
+        f"asset_manifest.items[{duplicate_index}].sha256",
+    ) in findings
+
+    tasks = _build_r1_decision(
+        package, issues
+    ).normalized_input.r1_input.editorial_tasks.mandatory
+    task_ids = [task.task_id for task in tasks]
+    assert len(task_ids) == len(set(task_ids))
+
+
 def test_failed_render_qa_does_not_publish_proxy_metrics(tmp_path):
     package, assets, manifest = _fixtures(tmp_path)
     broken = manifest.pages[0].model_copy(update={"sha256": "f" * 64})
