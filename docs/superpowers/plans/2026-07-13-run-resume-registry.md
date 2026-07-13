@@ -440,8 +440,7 @@ def backfill_legacy_run(registry: RunRegistry, thread_id: str, current_state) ->
     values = getattr(current_state, "values", None) or {}
     if not values or registry.get_by_thread_id(thread_id) is not None:
         return
-    status = "completed" if not getattr(current_state, "next", ()) else "running"
-    registry.upsert_run(thread_id, status=status, **extract_run_updates(values))
+    registry.upsert_run(thread_id, status="running", **extract_run_updates(values))
 ~~~
 
 --resume with no argument must use the same interactive list as the default command. --runs must initialize the registry, print list_recent(20) through format_run(run, verbose=args.verbose), and return before creating XHSMemoryManager or graph. An explicit --thread-id checkpoint with no values continues the existing new-task behavior and gets a running row later; backfill_legacy_run must not create any row for it.
@@ -572,7 +571,7 @@ def test_legacy_thread_id_backfills_only_real_checkpoints(monkeypatch, tmp_path)
 
     assert registry.get_by_thread_id("active-legacy").status == "running"
     assert registry.get_by_thread_id("active-legacy").topic_summary == "防晒后底妆卡粉"
-    assert registry.get_by_thread_id("terminal-legacy").status == "completed"
+    assert registry.get_by_thread_id("terminal-legacy").status == "running"
     assert registry.get_by_thread_id("empty-legacy") is None
 ~~~
 
@@ -760,7 +759,7 @@ Expected: a listed interrupted run displays its business fields, selection retur
 | stream timeout/Exception | status interrupted; error starts with exception class and retains no more than 240 message characters |
 | human review interrupted before response | status awaiting_review |
 | final-policy-clean terminal export | this and only this path writes completed |
-| old --thread-id with checkpoint/no registry row | backfills running or completed from real checkpoint values; an empty checkpoint produces no fake completed record |
+| old --thread-id with checkpoint/no registry row | backfills running from real checkpoint values; only a subsequent safe export may write completed; an empty checkpoint produces no fake completed record |
 
 - [ ] **Step 3: Run final verification and inspect the diff**
 

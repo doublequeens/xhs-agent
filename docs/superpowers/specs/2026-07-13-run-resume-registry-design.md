@@ -97,7 +97,7 @@ running + terminal final-policy-clean export -> completed
 ## 旧任务兼容
 
 - `--thread-id <id>` 继续直接读取现有 checkpoint。
-- 若该 `thread_id` 不在注册表，CLI 从 checkpoint 当前状态提取摘要并 upsert 一条 `running` 或 `completed` 记录。
+- 若该 `thread_id` 不在注册表，CLI 从 checkpoint 当前状态提取摘要并 upsert 一条 `running` 记录；仅当后续 `export_completed_publish_package()` 成功时才更新为 `completed`。
 - 找不到 checkpoint 时保留当前“新任务”行为；不得创建一条虚假的 completed 记录。
 - registry 缺失、损坏或无法打开时，CLI 失败并说明是本地运行注册表错误；不得悄悄创建随机 thread ID 继续运行。
 
