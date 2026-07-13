@@ -216,8 +216,7 @@ def backfill_legacy_run(registry: RunRegistry, thread_id: str, current_state) ->
     values = getattr(current_state, "values", None) or {}
     if not values or registry.get_by_thread_id(thread_id) is not None:
         return
-    status = "completed" if not getattr(current_state, "next", ()) else "running"
-    registry.upsert_run(thread_id, status=status, **extract_run_updates(values))
+    registry.upsert_run(thread_id, status="running", **extract_run_updates(values))
 
 
 def _resolve_publish_package_profile(publish_package: dict):

@@ -616,7 +616,7 @@ def test_backfill_legacy_run_uses_checkpoint_summary_only_when_values_exist(monk
     assert registry.get_by_thread_id("empty-thread") is None
     run = registry.get_by_thread_id("legacy-thread")
     assert run is not None
-    assert run.status == "completed"
+    assert run.status == "running"
     assert run.domain == "beauty"
     assert run.topic_summary == "通勤防晒"
 
@@ -755,5 +755,32 @@ def test_legacy_thread_id_backfills_only_real_checkpoints(monkeypatch, tmp_path)
 
     assert registry.get_by_thread_id("active-legacy").status == "running"
     assert registry.get_by_thread_id("active-legacy").topic_summary == "防晒后底妆卡粉"
-    assert registry.get_by_thread_id("terminal-legacy").status == "completed"
+    assert registry.get_by_thread_id("terminal-legacy").status == "running"
     assert registry.get_by_thread_id("empty-legacy") is None
+
+
+def test_terminal_legacy_checkpoint_awaits_review_when_safe_export_fails(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    terminal_state = SimpleNamespace(
+        values={
+            "domain_context": {"domain": "beauty"},
+            "publish_package": {"title": "通勤底妆指南"},
+        },
+        next=(),
+    )
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(
+        main,
+        "create_graph",
+        lambda: SimpleNamespace(get_state=lambda _config: terminal_state),
+    )
+    monkeypatch.setattr(main, "export_completed_publish_package", lambda *_args: False)
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", "terminal-legacy"])
+
+    main.main()
+
+    registry = RunRegistry(path)
+    assert registry.get_by_thread_id("terminal-legacy").status == "awaiting_review"
+    registry.close()
