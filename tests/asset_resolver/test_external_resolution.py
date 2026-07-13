@@ -622,6 +622,67 @@ def test_concurrent_same_requirement_resolves_resume_one_pending_candidate(
     assert len(provider.search_calls) == 1
 
 
+def test_resolution_lock_rejects_in_root_symlink_alias_without_deadlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import os
+
+    from src.asset_resolver.resolver import (
+        AssetResolutionError,
+        requirement_fingerprint,
+        resolve_assets,
+    )
+
+    plan = texture_plan()
+    first_requirement = plan.required_assets[0].model_copy(
+        update={"slot_id": "serum-a"}
+    )
+    second_requirement = plan.required_assets[0].model_copy(
+        update={"slot_id": "serum-b"}
+    )
+    plan.required_assets = [first_requirement, second_requirement]
+    lock_root = (
+        tmp_path
+        / "incoming"
+        / "external"
+        / "run-42"
+        / ".resolution-locks"
+    )
+    lock_root.mkdir(parents=True)
+
+    def lock_path(requirement: AssetRequirement) -> Path:
+        fingerprint = requirement_fingerprint(requirement)
+        identity = f"{requirement.slot_id}\0{fingerprint}"
+        return lock_root / f"{hashlib.sha256(identity.encode()).hexdigest()}.lock"
+
+    first_lock = lock_path(first_requirement)
+    second_lock = lock_path(second_requirement)
+    first_lock.touch()
+    second_lock.symlink_to(first_lock.name)
+    original_flock = __import__("fcntl").flock
+    held_inodes: set[tuple[int, int]] = set()
+
+    def nonblocking_deadlock_guard(descriptor: int, operation: int) -> None:
+        identity = (os.fstat(descriptor).st_dev, os.fstat(descriptor).st_ino)
+        if operation & __import__("fcntl").LOCK_UN:
+            held_inodes.discard(identity)
+            original_flock(descriptor, operation)
+            return
+        if identity in held_inodes:
+            raise RuntimeError("resolution lock alias would self-deadlock")
+        original_flock(descriptor, operation)
+        held_inodes.add(identity)
+
+    monkeypatch.setattr(
+        "src.asset_resolver.resolver.fcntl.flock",
+        nonblocking_deadlock_guard,
+    )
+    provider = FakeProvider("pexels", [candidate("pexels", "p1")])
+
+    with pytest.raises(AssetResolutionError, match="resolution lock.*symlink"):
+        resolve_assets(plan, empty_catalog(tmp_path, [provider]))
+
+
 def test_resolver_rejects_non_allowlisted_candidate_urls_before_download(
     tmp_path: Path,
 ) -> None:

@@ -56,10 +56,10 @@ Final focused GREEN:
 
 ```text
 python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-117 passed, 2 skipped
+118 passed, 2 skipped
 ```
 
-Final full-suite GREEN after all review corrections:
+Most recent full-suite GREEN before the final lock-file-only correction:
 
 ```text
 python -m pytest -q
@@ -165,6 +165,23 @@ The closing re-review identified and corrected two remaining concurrency/path ga
 Both closing tests failed before implementation: the ledger symlink accepted an outside
 write, and a peer resolver exhausted by the owner's reservations raised a terminal error.
 The targeted GREEN passed both, followed by the focused and full-suite counts above.
+
+The final lock-file review found that two lexical resolution-lock names could still alias
+one inode through an in-directory symlink. Because one `resolve_assets` call acquires
+multiple sorted requirement locks, following that alias could self-deadlock on its second
+`flock`. The regression replaces blocking `flock` with an inode guard and first failed with
+`resolution lock alias would self-deadlock` instead of hanging. Resolution locks now:
+
+- reject symlinks and any lexical/resolved path mismatch before opening;
+- open with `O_NOFOLLOW` when the platform provides it; and
+- compare `lstat` and `fstat` device/inode identity to detect fallback-platform and
+  check/open replacement races before taking `flock`.
+
+The final targeted test passed, `test_external_resolution.py` passed 29 tests, and the
+asset-resolver-focused suite passed 113 tests with 2 live-provider skips. The combined
+focused count above includes the design-system tests. The full-suite result shown above is
+the immediately preceding run; the requested final verification scope was focused on the
+external resolver and asset resolver.
 
 Remaining risks:
 

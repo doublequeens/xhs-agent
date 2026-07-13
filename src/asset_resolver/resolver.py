@@ -5,6 +5,7 @@ import fcntl
 import json
 import os
 import re
+import stat
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -481,7 +482,32 @@ def _resolution_lock(
     lock_path = lock_root / f"{lock_name}.lock"
     if not lock_path.resolve().is_relative_to(lock_root):
         raise AssetResolutionError("resolution lock path escapes incoming root")
-    with lock_path.open("a+b") as lock_handle:
+    if lock_path.is_symlink() or lock_path.resolve() != lock_path:
+        raise AssetResolutionError("resolution lock symlink is not allowed")
+    flags = os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(lock_path, flags, 0o600)
+        descriptor_stat = os.fstat(descriptor)
+        path_stat = os.lstat(lock_path)
+        if (
+            stat.S_ISLNK(path_stat.st_mode)
+            or (descriptor_stat.st_dev, descriptor_stat.st_ino)
+            != (path_stat.st_dev, path_stat.st_ino)
+        ):
+            raise AssetResolutionError(
+                "resolution lock symlink is not allowed"
+            )
+        lock_handle = os.fdopen(descriptor, "a+b")
+        descriptor = None
+    except OSError as error:
+        raise AssetResolutionError(
+            "resolution lock symlink or unsafe path is not allowed"
+        ) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    with lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         try:
             yield
