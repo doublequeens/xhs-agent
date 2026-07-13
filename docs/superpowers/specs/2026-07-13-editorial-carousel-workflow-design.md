@@ -107,9 +107,14 @@ Planner 不根据关键词随机选择，也不能为了变化硬塞脸图或流
 - 必须以 `saveable_checklist` 或 `saveable_reference` 中至少一种提供独立保存资产。
 - 除封面和保存页外，不得与上一篇拥有完全相同的 frame plan。
 
-## “精华按 1 泵还是 2 泵”Golden Case
+## 测试专用验收样例
 
-该内容分类为：
+下面的分区用量样例只用于验证已经确认的视觉决策链路。它不是生产选题、推荐主题、
+模板默认文案或运行时 few-shot 示例，也不得进入 topic prompt、memory、选题历史或发布
+候选。运行时必须根据当前 `ContentContract` 重新完成分类和版式选择，不得识别特定
+标题后走硬编码分支。
+
+该测试样例分类为：
 
 ```json
 {
@@ -134,8 +139,8 @@ feedback_diagnosis -> three_state_diagnostic
 save               -> saveable_reference
 ```
 
-Golden test 只固定语义角色、layout、Design System 和关键可见文字，不对纹理的每个
-像素做快照，以免合理的素材版本升级造成脆弱测试。
+Golden test 只固定语义角色、layout、Design System 和测试输入中的关键可见文字，
+不固定生产标题，也不对纹理的每个像素做快照，以免合理的素材版本升级造成脆弱测试。
 
 ## 数据模型
 
@@ -425,17 +430,19 @@ Renderer/Render QA，不无条件重跑正文和标题节点。
 - Render QA 对 fallback 字体、错误尺寸、缺失 provenance 和文字不一致的拦截。
 - Human Review payload 包含 contact sheet 和质量报告。
 
-### Golden 与回归
+### 测试专用 Golden 与回归
 
-至少维护四个 golden fixtures：
+至少维护四个按“内容任务”命名的合成 golden fixtures：
 
-1. 精华用量：`face_zone_map`。
-2. 早 C 晚 A：`step_flow`。
-3. 乳液还是面霜：`comparison_decision`。
-4. 敏感肌选品：`saveable_reference`。
+1. `zone_diagnosis_fixture`：验证 `face_zone_map`。
+2. `ordered_routine_fixture`：验证 `step_flow`。
+3. `multi_option_decision_fixture`：验证 `comparison_decision`。
+4. `reference_checklist_fixture`：验证 `saveable_reference`。
 
-测试不同 fixture 产生不同 frame plan，同时共享同一 Design System。现有内容、合规、
-checkpoint 恢复和发布导出测试继续通过。
+这些 fixture 是测试目录中的合成输入，不是日后的创作主题。测试必须证明它们不会被
+序列化进生产 prompt、memory、选题信号或发布候选。不同 fixture 应产生不同 frame
+plan，同时共享同一 Design System。现有内容、合规、checkpoint 恢复和发布导出测试
+继续通过。
 
 ## 迁移与清理
 
@@ -452,8 +459,9 @@ checkpoint 恢复和发布导出测试继续通过。
 ## 验收标准
 
 - Agent 离线完成视觉规划、素材解析和本地渲染，不调用图像生成 API。
-- 四类 golden 内容自动选择不同主视觉家族和不同 frame plan。
-- “精华按 1 泵还是 2 泵”生成约定的六页语义结构。
+- 四类合成 golden fixture 自动选择不同主视觉家族和不同 frame plan。
+- 分区用量测试 fixture 生成约定的六页语义结构，但生产代码不包含特定标题判断。
+- 测试 fixture 不进入生产 prompt、memory、选题信号或发布候选。
 - 所有页面使用项目内字体，无系统 fallback。
 - 每套至少三种 layout、一个保存页、一个有意义的视觉主体。
 - 完整测试套件通过，真实 Chromium smoke test 通过。
