@@ -9,6 +9,7 @@ import pytest
 
 from src.domain import DomainName
 from src.rendering.text_cards import output_paths
+from src.run_registry import RunRegistry
 
 
 def _load_main(monkeypatch):
@@ -461,7 +462,7 @@ def test_collect_domain_confirmation_limits_cli_choices_to_profile_scope(monkeyp
     assert "haircare" not in output
 
 
-def test_main_initial_state_defaults_to_interactive(monkeypatch):
+def test_main_initial_state_defaults_to_interactive(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     captured = {}
 
@@ -481,6 +482,7 @@ def test_main_initial_state_defaults_to_interactive(monkeypatch):
 
     monkeypatch.setattr(main, "XHSMemoryManager", FakeMemoryManager)
     monkeypatch.setattr(main, "create_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", tmp_path / "agent_runs.sqlite")
 
     def fake_load_run_state(graph, config, initial_state):
         captured["initial_state"] = initial_state
@@ -496,3 +498,289 @@ def test_main_initial_state_defaults_to_interactive(monkeypatch):
         captured["initial_state"]["creator_profile"].profile_id
         == "commuting_beauty_women_v1"
     )
+
+
+def test_parse_cli_args_makes_new_resume_and_thread_id_mutually_exclusive(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.parse_cli_args(["--new", "--thread-id", "old-thread"])
+
+    assert exc_info.value.code == 2
+
+
+def test_default_selection_shows_business_summary_and_reuses_chosen_thread(monkeypatch, tmp_path, capsys):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    older = registry.create_run("thread-older", "旧关键词")
+    chosen = registry.create_run("thread-newer", "通勤防晒")
+    registry.update_run(chosen.thread_id, status="interrupted", title="防晒后底妆卡粉怎么办")
+    args = main.parse_cli_args([])
+
+    selection = main.select_run(registry, args, input_fn=lambda _prompt: str(chosen.run_id))
+
+    assert selection == (chosen.thread_id, False)
+    assert registry.get_by_thread_id(chosen.thread_id).status == "running"
+    assert older.focus_keyword in capsys.readouterr().out
+
+
+def test_default_selection_accepts_n_and_q(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    registry.create_run("thread-existing", "通勤防晒")
+    args = main.parse_cli_args([])
+
+    new_selection = main.select_run(registry, args, input_fn=lambda _prompt: "n")
+    quit_selection = main.select_run(registry, args, input_fn=lambda _prompt: "q")
+
+    assert new_selection is not None and new_selection[1] is True
+    assert registry.get_by_thread_id(new_selection[0]).status == "running"
+    assert quit_selection is None
+
+
+def test_resume_accepts_run_id_or_full_thread_id(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("full-thread-id", "通勤防晒")
+    registry.update_run(run.thread_id, status="interrupted")
+
+    assert main.select_run(registry, main.parse_cli_args(["--resume", str(run.run_id)])) == (run.thread_id, False)
+    registry.update_run(run.thread_id, status="interrupted")
+    assert main.select_run(registry, main.parse_cli_args(["--resume", run.thread_id])) == (run.thread_id, False)
+
+
+def test_resume_prefers_exact_numeric_thread_id_over_run_id_collision(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    unrelated = registry.create_run("thread-unrelated", "旧任务")
+    numeric_thread = registry.create_run("1", "数字线程")
+    registry.update_run(unrelated.thread_id, status="interrupted")
+    registry.update_run(numeric_thread.thread_id, status="interrupted")
+
+    selection = main.select_run(registry, main.parse_cli_args(["--resume", "1"]))
+
+    assert selection == (numeric_thread.thread_id, False)
+    assert registry.get_by_thread_id(numeric_thread.thread_id).status == "running"
+    assert registry.get_by_thread_id(unrelated.thread_id).status == "interrupted"
+
+
+def test_bare_resume_uses_interactive_recovery_list(monkeypatch, tmp_path, capsys):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("thread-resume", "通勤防晒")
+
+    selection = main.select_run(
+        registry,
+        main.parse_cli_args(["--resume"]),
+        input_fn=lambda _prompt: str(run.run_id),
+    )
+
+    assert selection == (run.thread_id, False)
+    assert "可恢复的任务" in capsys.readouterr().out
+
+
+def test_extract_run_updates_prefers_publish_package_then_first_trend(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    assert main.extract_run_updates(
+        {"trends": [{"topic": "防晒后底妆卡粉"}]}, "trend_scout"
+    ) == {"topic_summary": "防晒后底妆卡粉", "last_node": "trend_scout"}
+
+    assert main.extract_run_updates(
+        {
+            "domain_context": {"domain": "beauty", "subdomain": "skincare"},
+            "publish_package": {"title": "通勤底妆指南", "topic": "防晒后底妆卡粉"},
+            "trends": [{"topic": "不应覆盖"}],
+        },
+        "TEXT_CARD_RENDERER",
+    ) == {
+        "domain": "beauty", "subdomain": "skincare", "title": "通勤底妆指南",
+        "topic_summary": "防晒后底妆卡粉", "last_node": "TEXT_CARD_RENDERER",
+    }
+
+
+def test_backfill_legacy_run_uses_checkpoint_summary_only_when_values_exist(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+
+    main.backfill_legacy_run(registry, "empty-thread", SimpleNamespace(values={}, next=("trend_scout",)))
+    main.backfill_legacy_run(
+        registry,
+        "legacy-thread",
+        SimpleNamespace(
+            values={"domain": "beauty", "trends": [{"topic": "通勤防晒"}]},
+            next=(),
+        ),
+    )
+
+    assert registry.get_by_thread_id("empty-thread") is None
+    run = registry.get_by_thread_id("legacy-thread")
+    assert run is not None
+    assert run.status == "running"
+    assert run.domain == "beauty"
+    assert run.topic_summary == "通勤防晒"
+
+
+def test_runs_exits_before_memory_manager_or_graph(monkeypatch, tmp_path, capsys):
+    main = _load_main(monkeypatch)
+    registry_path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(registry_path)
+    registry.create_run("thread-existing", "通勤防晒")
+    registry.close()
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(main, "XHSMemoryManager", lambda *_args: pytest.fail("memory should not be constructed"))
+    monkeypatch.setattr(main, "create_graph", lambda: pytest.fail("graph should not be constructed"))
+    monkeypatch.setattr("sys.argv", ["main.py", "--runs"])
+
+    main.main()
+
+    assert "通勤防晒" in capsys.readouterr().out
+
+
+def test_runs_verbose_prints_full_ids_and_limits_output_to_twenty(monkeypatch, tmp_path, capsys):
+    main = _load_main(monkeypatch)
+    registry_path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(registry_path)
+    thread_ids = [f"thread-{index}-{'x' * 40}" for index in range(21)]
+    for thread_id in thread_ids:
+        registry.create_run(thread_id, "通勤防晒")
+    registry.close()
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(main, "XHSMemoryManager", lambda *_args: pytest.fail("memory should not be constructed"))
+    monkeypatch.setattr(main, "create_graph", lambda: pytest.fail("graph should not be constructed"))
+    monkeypatch.setattr("sys.argv", ["main.py", "--runs", "--verbose"])
+
+    main.main()
+
+    output = capsys.readouterr().out
+    assert output.count("ID：") == 20
+    assert thread_ids[0] not in output
+    assert thread_ids[-1] in output
+
+
+def test_stream_syncs_last_node_and_summary_before_clean_export(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("stream-thread", "通勤防晒")
+
+    class FakeGraph:
+        def stream(self, _run_input, config):
+            assert config["configurable"]["thread_id"] == run.thread_id
+            yield {"title_ranker": {}}
+
+        def get_state(self, _config):
+            return SimpleNamespace(
+                values={"current_node": "TITLE_RANKER", "trends": [{"topic": "防晒后底妆卡粉"}]},
+                next=(),
+            )
+
+    monkeypatch.setattr(main, "export_completed_publish_package", lambda *_args: True)
+    assert main.stream_graph_until_stop(
+        FakeGraph(), {}, main.build_run_config(run.thread_id), registry=registry, thread_id=run.thread_id
+    ) is True
+
+    updated = registry.get_by_thread_id(run.thread_id)
+    assert updated.status == "running"
+    assert updated.last_node == "TITLE_RANKER"
+    assert updated.topic_summary == "防晒后底妆卡粉"
+
+
+def test_main_marks_timeout_interrupted_with_truncated_reason(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run("timeout-thread", "通勤防晒")
+    registry.close()
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(main, "select_run", lambda *_args, **_kwargs: (run.thread_id, False))
+    monkeypatch.setattr(main, "XHSMemoryManager", lambda *_args: SimpleNamespace(init_db=lambda *_: None))
+    monkeypatch.setattr(main, "create_graph", lambda: SimpleNamespace(
+        get_state=lambda _config: SimpleNamespace(
+            values={"domain_context": {"domain": "beauty"}, "trends": []},
+            next=("node",),
+        )
+    ))
+    monkeypatch.setattr(
+        main, "stream_graph_until_stop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("request timed out")),
+    )
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 1
+    check = RunRegistry(path)
+    assert check.get_by_thread_id(run.thread_id).status == "interrupted"
+    assert check.get_by_thread_id(run.thread_id).error_summary == "TimeoutError: request timed out"
+    check.close()
+
+
+def test_review_interrupt_remains_awaiting_review_when_input_stops(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("review-thread", "通勤防晒")
+
+    class Interrupt:
+        value = {"kind": "publish_review", "message": "请审核", "publish_package": {"title": "标题"}}
+
+    class FakeGraph:
+        def stream(self, *_args, **_kwargs):
+            yield {"__interrupt__": [Interrupt()]}
+
+        def get_state(self, _config):
+            return SimpleNamespace(values={"review_status": None}, next=("human_review",))
+
+    monkeypatch.setattr(
+        main, "collect_interrupt_response",
+        lambda _payload: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        main.stream_graph_until_stop(
+            FakeGraph(), {}, main.build_run_config(run.thread_id), registry=registry, thread_id=run.thread_id
+        )
+    assert registry.get_by_thread_id(run.thread_id).status == "awaiting_review"
+
+
+def test_legacy_thread_id_backfills_only_real_checkpoints(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    active = SimpleNamespace(values={"trends": [{"topic": "防晒后底妆卡粉"}]}, next=("title_ranker",))
+    terminal = SimpleNamespace(values={"publish_package": {"title": "通勤底妆指南"}}, next=())
+    empty = SimpleNamespace(values={}, next=())
+
+    main.backfill_legacy_run(registry, "active-legacy", active)
+    main.backfill_legacy_run(registry, "terminal-legacy", terminal)
+    main.backfill_legacy_run(registry, "empty-legacy", empty)
+
+    assert registry.get_by_thread_id("active-legacy").status == "running"
+    assert registry.get_by_thread_id("active-legacy").topic_summary == "防晒后底妆卡粉"
+    assert registry.get_by_thread_id("terminal-legacy").status == "running"
+    assert registry.get_by_thread_id("empty-legacy") is None
+
+
+def test_terminal_legacy_checkpoint_awaits_review_when_safe_export_fails(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    terminal_state = SimpleNamespace(
+        values={
+            "domain_context": {"domain": "beauty"},
+            "publish_package": {"title": "通勤底妆指南"},
+        },
+        next=(),
+    )
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(
+        main,
+        "create_graph",
+        lambda: SimpleNamespace(get_state=lambda _config: terminal_state),
+    )
+    monkeypatch.setattr(main, "export_completed_publish_package", lambda *_args: False)
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", "terminal-legacy"])
+
+    main.main()
+
+    registry = RunRegistry(path)
+    assert registry.get_by_thread_id("terminal-legacy").status == "awaiting_review"
+    registry.close()

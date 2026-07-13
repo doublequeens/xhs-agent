@@ -15,8 +15,10 @@ from src.graph import create_graph
 from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
 from src.rendering.text_cards import output_paths
+from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
 
 SUPPORTED_DOMAINS = get_args(DomainName)
+RUN_REGISTRY_PATH = Path("data/agent_runs.sqlite")
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 LEGACY_IMAGE_PROMPT_FILENAME = "Storyboard_images_generator_prompt.txt"
@@ -73,6 +75,148 @@ def load_run_state(graph, config: dict, initial_state: dict):
             current_state = graph.get_state(config)
     run_input = None if current_state.values else initial_state
     return current_state, run_input
+
+
+def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Xiaohongshu Agent CLI")
+    parser.add_argument("--domain", type=str, choices=SUPPORTED_DOMAINS, help="Explicit domain for routing")
+    parser.add_argument("--subdomain", type=str, help="Explicit subdomain for the selected domain")
+    run_group = parser.add_mutually_exclusive_group()
+    run_group.add_argument("--new", action="store_true", help="Force a new agent run")
+    run_group.add_argument("--resume", nargs="?", const="", metavar="RUN", help="Resume by run ID or thread ID")
+    run_group.add_argument("--thread-id", type=str, help="Existing conversation thread ID to resume")
+    parser.add_argument("--runs", action="store_true", help="List the latest 20 runs and exit")
+    parser.add_argument("--verbose", action="store_true", help="Show full IDs in --runs output")
+    parser.add_argument("--focus_keyword", type=str, help="Focus keyword for the post")
+    parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
+    parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
+    args = parser.parse_args() if argv is None else parser.parse_args(argv)
+    if args.runs and (args.new or args.resume is not None or args.thread_id):
+        parser.error("--runs cannot be combined with --new, --resume, or --thread-id")
+    if args.subdomain and not args.domain:
+        parser.error("--subdomain requires --domain")
+    if args.domain and args.subdomain:
+        profile = get_domain_profile(args.domain)
+        if args.subdomain not in profile.allowed_subdomains:
+            parser.error(
+                "--subdomain must be one of "
+                + ", ".join(profile.allowed_subdomains)
+                + f" for domain {args.domain}"
+            )
+    return args
+
+
+def create_initial_state(args: argparse.Namespace) -> dict:
+    return {
+        "interactive": True,
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+        "domain": args.domain,
+        "subdomain": args.subdomain,
+        "domain_context": None,
+        "content_policy": None,
+        "memory_context": None,
+        "evidence_briefs": {},
+        "final_policy_issues": [],
+        "trends_num": args.topic_num,
+        "focus_keyword": args.focus_keyword if args.focus_keyword else "",
+        "topic_signals": [],
+        "creative_briefs": [],
+        "topic_candidates": [],
+        "topic_generation_trace": None,
+        "topic_generation_degraded_reason": None,
+        "trends": [],
+        "angles": [],
+        "novelty_check_results": None,
+        "scores": [],
+        "outlines": [],
+        "drafts": [],
+        "title_options": [],
+        "title_winner": None,
+        "current_node": None,
+        "decision_output": None,
+        "r1_output": None,
+        "r2_output": None,
+        "final_content": None,
+        "hashtags": None,
+        "image_scripts": None,
+        "image_candidates": None,
+        "final_images": None,
+        "publish_package": None,
+        "review_status": None,
+        "review_feedback": None,
+        "review_round": 0,
+        "data_writed": None,
+    }
+
+
+def _value(item, name: str):
+    return item.get(name) if isinstance(item, dict) else getattr(item, name, None)
+
+
+def extract_run_updates(values: dict, last_node: str | None = None) -> dict[str, str]:
+    context = values.get("domain_context")
+    package = values.get("publish_package") or {}
+    trends = values.get("trends") or []
+    candidate = _value(trends[0], "topic") if trends else None
+    fields = {
+        "domain": _value(context, "domain") or values.get("domain"),
+        "subdomain": _value(context, "subdomain") or values.get("subdomain"),
+        "title": _value(package, "title"),
+        "topic_summary": _value(package, "topic") or candidate,
+        "last_node": values.get("current_node") or last_node,
+    }
+    return {name: value for name, value in fields.items() if isinstance(value, str) and value}
+
+
+def _print_run_choices(runs: list[AgentRun], output_fn=print) -> None:
+    output_fn("\n可恢复的任务：")
+    for run in runs:
+        output_fn(format_run(run))
+    output_fn("输入任务编号恢复；输入 n 新建任务；输入 q 退出。")
+
+
+def select_run(registry: RunRegistry, args: argparse.Namespace, input_fn=input, output_fn=print):
+    if args.new:
+        thread_id = build_thread_id(None)
+        registry.create_run(thread_id, args.focus_keyword)
+        return thread_id, True
+    if args.thread_id:
+        return args.thread_id, False
+    if args.resume not in (None, ""):
+        run = registry.get_by_thread_id(args.resume)
+        if run is None and args.resume.isdigit():
+            run = registry.get_by_run_id(int(args.resume))
+        if run is None:
+            raise RunRegistryError(f"找不到要恢复的任务：{args.resume}")
+        registry.update_run(run.thread_id, status="running", error_summary=None)
+        return run.thread_id, False
+    runs = registry.list_resumable()
+    if not runs:
+        thread_id = build_thread_id(None)
+        registry.create_run(thread_id, args.focus_keyword)
+        return thread_id, True
+    _print_run_choices(runs, output_fn)
+    while True:
+        choice = input_fn("请选择：").strip().lower()
+        if choice == "n":
+            thread_id = build_thread_id(None)
+            registry.create_run(thread_id, args.focus_keyword)
+            return thread_id, True
+        if choice == "q":
+            return None
+        if choice.isdigit():
+            run = registry.get_by_run_id(int(choice))
+            if run in runs:
+                registry.update_run(run.thread_id, status="running", error_summary=None)
+                return run.thread_id, False
+        output_fn("无效选择，请输入列表中的任务编号、n 或 q。")
+
+
+def backfill_legacy_run(registry: RunRegistry, thread_id: str, current_state) -> None:
+    values = getattr(current_state, "values", None) or {}
+    if not values or registry.get_by_thread_id(thread_id) is not None:
+        return
+    registry.upsert_run(thread_id, status="running", **extract_run_updates(values))
 
 
 def _resolve_publish_package_profile(publish_package: dict):
@@ -291,7 +435,31 @@ def export_completed_publish_package(graph, config) -> bool:
     return True
 
 
-def stream_graph_until_stop(graph, run_input, config):
+def sync_run_from_graph(
+    registry: RunRegistry,
+    graph,
+    config: dict,
+    thread_id: str,
+    last_node: str | None,
+) -> None:
+    state = graph.get_state(config)
+    values = getattr(state, "values", None) or {}
+    registry.update_run(
+        thread_id,
+        status="running",
+        error_summary=None,
+        **extract_run_updates(values, last_node),
+    )
+
+
+def stream_graph_until_stop(
+    graph,
+    run_input,
+    config,
+    *,
+    registry: RunRegistry | None = None,
+    thread_id: str | None = None,
+) -> bool:
     next_input = run_input
 
     while True:
@@ -304,156 +472,116 @@ def stream_graph_until_stop(graph, run_input, config):
                     payload = interrupt_event.value
                     if not isinstance(payload, dict):
                         raise ValueError("Interrupt payload must be a dict.")
+                    if registry is not None and thread_id is not None:
+                        registry.update_run(thread_id, status="awaiting_review")
                     next_input = Command(resume=collect_interrupt_response(payload))
+                    if registry is not None and thread_id is not None:
+                        registry.update_run(thread_id, status="running", error_summary=None)
                     break
 
                 print(f"Finished processing node: {key}")
+                if registry is not None and thread_id is not None:
+                    sync_run_from_graph(registry, graph, config, thread_id, key)
             if interrupted:
                 break
 
         if not interrupted:
-            export_completed_publish_package(graph, config)
-            return
+            return export_completed_publish_package(graph, config)
+
 
 def main():
-    parser = argparse.ArgumentParser(description="Xiaohongshu Agent CLI")
-    parser.add_argument(
-        "--domain",
-        type=str,
-        choices=SUPPORTED_DOMAINS,
-        help="Explicit domain for routing",
-    )
-    parser.add_argument(
-        "--subdomain",
-        type=str,
-        help="Explicit subdomain for the selected domain",
-    )
-    parser.add_argument(
-        "--thread-id",
-        type=str,
-        help="Existing conversation thread ID to resume",
-    )
-    parser.add_argument("--focus_keyword", type=str,help="Focus keyword for the post")
-    parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
-    parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
-    # parser.add_argument("--requirements", type=str, default="", help="Additional requirements")
-    # parser.add_argument("--mode", type=str, default="manual", choices=["auto", "manual"], help="Publishing mode")
-    
-    args = parser.parse_args()
-    if args.subdomain and not args.domain:
-        parser.error("--subdomain requires --domain")
-    if args.domain and args.subdomain:
-        profile = get_domain_profile(args.domain)
-        if args.subdomain not in profile.allowed_subdomains:
-            parser.error(
-                "--subdomain must be one of "
-                f"{', '.join(profile.allowed_subdomains)} for domain {args.domain}"
-            )
-    
-    init_message = f"Starting Xiaohongshu Agent"
-    if args.provider:
-        init_message += f" with default model: {args.provider},"
-    if args.focus_keyword:
-        init_message += f" with topic focus keyword: {args.focus_keyword},"
-    if args.domain:
-        init_message += f" with domain: {args.domain},"
-    if args.subdomain:
-        init_message += f" with subdomain: {args.subdomain},"
-    if args.topic_num:
-        init_message += f" with topic number: {args.topic_num}."
-    print(init_message)
-    
-    # 如果用户在启动时指定了 provider，才去修改全局配置，否则保持 __init__.py 里的默认值
-    if args.provider:
-        set_default_provider(args.provider)
-
-    # # Initialize State
-    # initial_state = {
-    #     "topic": args.topic,
-    #     "requirements": args.requirements,
-    #     "revision_count": 0,
-    #     "publish_mode": args.mode,
-    #     "draft": None,
-    #     "critique": None,
-    #     "images": [],
-    #     "selected_image": None
-    # }
-    database = XHSMemoryManager("data/xhs_memory.db")
-    database.init_db("memory/schema.sql")
-
-    graph = create_graph()
-
-    initial_state = {
-        "interactive": True,
-        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
-        "domain": args.domain,
-        "subdomain": args.subdomain,
-        "domain_context": None,
-        "content_policy": None,
-        "memory_context": None,
-        "evidence_briefs": {},
-        "final_policy_issues": [],
-        "trends_num": args.topic_num,
-        "focus_keyword": args.focus_keyword if args.focus_keyword else "",
-        "topic_signals": [],
-        "creative_briefs": [],
-        "topic_candidates": [],
-        "topic_generation_trace": None,
-        "topic_generation_degraded_reason": None,
-        "trends": [],
-        "angles": [],
-        "novelty_check_results": None,
-        "scores": [],
-        "outlines": [],
-        "drafts": [],
-        "title_options": [],
-        "title_winner": None,
-        "current_node": None,
-        "decision_output": None,
-        "r1_output": None,
-        "r2_output": None,
-        "final_content": None,
-        "hashtags": None,
-        "image_scripts": None,
-        "image_candidates": None,
-        "final_images": None,
-        "publish_package": None,
-        "review_status": None,
-        "review_feedback": None,
-        "review_round": 0,
-        "data_writed": None
-    }
-
-    config = build_run_config(args.thread_id)
-    currentState, run_input = load_run_state(graph, config, initial_state)
-    # print(currentState.value
-    
-    # 判断是否已有历史状态，如果有则传入 None 恢复执行，否则传入 initial_state 全新启动
-    if currentState.values:
-        print("Found existing state, resuming from the latest checkpoint...")
-        # history = list(graph.get_state_history(config, limit=2))
-        # if len(history) >= 2:
-        #     print("The last executed node was:", history[1].values.get("current_node", "Unknown"))
-        # else:
-        #     print("No previous nodes found in history.")
-        
-        # 如果历史状态已经没有任何需要执行的下一个节点（即已经运行到 END）
-        if not currentState.next:
-            if currentState.values["publish_package"]:
-                print("该任务已经全部执行完毕，直接从历史状态导出 publish_package.json...")
-                export_completed_publish_package(graph, config)
-                return # 直接退出，不需要再跑 stream
-            
-    else:
-        print("No existing state found, starting a new run...")
-
-    # Run the graph
+    args = parse_cli_args()
     try:
-        stream_graph_until_stop(graph, run_input, config)
-
-    except Exception as e:
-        print(f"Error running agent: {e}")
+        registry = RunRegistry(RUN_REGISTRY_PATH)
+    except RunRegistryError as exc:
+        print(f"本地运行注册表错误：{exc}", file=sys.stderr)
         sys.exit(1)
+
+    thread_id = None
+    try:
+        if args.runs:
+            for run in registry.list_recent(20):
+                print(format_run(run, verbose=args.verbose))
+            return
+
+        selection = select_run(registry, args)
+        if selection is None:
+            return
+        thread_id, is_new = selection
+
+        init_message = "Starting Xiaohongshu Agent"
+        if args.provider:
+            init_message += f" with default model: {args.provider},"
+        if args.focus_keyword:
+            init_message += f" with topic focus keyword: {args.focus_keyword},"
+        if args.domain:
+            init_message += f" with domain: {args.domain},"
+        if args.subdomain:
+            init_message += f" with subdomain: {args.subdomain},"
+        if args.topic_num:
+            init_message += f" with topic number: {args.topic_num}."
+        print(init_message)
+
+        if args.provider:
+            set_default_provider(args.provider)
+
+        database = XHSMemoryManager("data/xhs_memory.db")
+        database.init_db("memory/schema.sql")
+        graph = create_graph()
+        initial_state = create_initial_state(args)
+        config = build_run_config(thread_id)
+        current_state, run_input = load_run_state(graph, config, initial_state)
+
+        if args.thread_id:
+            backfill_legacy_run(registry, thread_id, current_state)
+        if not current_state.values:
+            if not is_new and args.resume is not None:
+                raise RunRegistryError("所选任务的 LangGraph checkpoint 不存在，请使用 --new 创建新任务")
+            if registry.get_by_thread_id(thread_id) is None:
+                registry.create_run(thread_id, args.focus_keyword)
+            print("No existing state found, starting a new run...")
+        else:
+            registry.update_run(
+                thread_id,
+                status="running",
+                error_summary=None,
+                **extract_run_updates(current_state.values),
+            )
+            print("Found existing state, resuming from the latest checkpoint...")
+
+        if current_state.values and not current_state.next:
+            if export_completed_publish_package(graph, config):
+                registry.update_run(thread_id, status="completed", error_summary=None)
+            else:
+                registry.update_run(thread_id, status="awaiting_review")
+            return
+
+        exported = stream_graph_until_stop(
+            graph,
+            run_input,
+            config,
+            registry=registry,
+            thread_id=thread_id,
+        )
+        if exported:
+            registry.update_run(thread_id, status="completed", error_summary=None)
+        else:
+            registry.update_run(thread_id, status="awaiting_review")
+    except Exception as exc:
+        if thread_id is not None:
+            try:
+                if registry.get_by_thread_id(thread_id) is not None:
+                    registry.update_run(
+                        thread_id,
+                        status="interrupted",
+                        error_summary=exception_summary(exc),
+                    )
+            except RunRegistryError as registry_exc:
+                print(f"本地运行注册表错误：{registry_exc}", file=sys.stderr)
+        print(f"Error running agent: {exc}")
+        sys.exit(1)
+    finally:
+        registry.close()
 
 if __name__ == "__main__":
     main()
