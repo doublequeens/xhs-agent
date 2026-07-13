@@ -63,7 +63,7 @@ def test_strategy_maps_content_job_to_family(job, family):
     ]
 
 
-def test_zone_strategy_produces_the_six_spec_semantic_roles():
+def test_zone_strategy_produces_six_concrete_catalog_roles():
     from src.editorial_carousel.strategy import build_visual_plan
 
     plan = build_visual_plan(
@@ -74,13 +74,79 @@ def test_zone_strategy_produces_the_six_spec_semantic_roles():
         (frame.role, frame.layout, frame.asset_roles)
         for frame in plan.frame_plan
     ] == [
-        ("cover", "editorial_cover", ["beauty_subject"]),
-        ("baseline", "texture_baseline", ["product_texture"]),
-        ("applicable_case", "front_face_zone", ["face_map"]),
-        ("zone_adjustment", "three_quarter_face_zone", ["face_map"]),
-        ("feedback_diagnosis", "three_state_diagnostic", ["comparison"]),
-        ("save", "saveable_reference", ["reference"]),
+        ("cover", "editorial_cover", ["background_token"]),
+        ("baseline", "texture_baseline", ["serum_texture"]),
+        ("applicable_case", "front_face_zone", ["face_angle"]),
+        ("zone_adjustment", "three_quarter_face_zone", ["face_zone_mask"]),
+        ("feedback_diagnosis", "three_state_diagnostic", ["skin_detail"]),
+        ("save", "saveable_reference", ["background_token"]),
     ]
+
+
+@pytest.mark.parametrize("job", FAMILY_BY_JOB)
+def test_strategy_uses_asset_specific_profiles_and_explicit_valid_fallbacks(job):
+    from src.editorial_carousel.strategy import build_visual_plan
+
+    plan = build_visual_plan(contract_for(job), recent_signatures=[])
+    profiles = {
+        requirement.layout: (
+            requirement.role,
+            requirement.min_width,
+            requirement.min_height,
+            requirement.orientation,
+            requirement.fallback_asset_ids,
+        )
+        for requirement in plan.required_assets
+    }
+
+    expected_by_layout = {
+        "editorial_cover": ("background_token", 1080, 1440, "portrait", []),
+        "texture_baseline": (
+            "serum_texture",
+            512,
+            512,
+            "square",
+            ["liquid_drips"],
+        ),
+        "front_face_zone": (
+            "face_angle",
+            512,
+            512,
+            "square",
+            ["mask_chin"],
+        ),
+        "three_quarter_face_zone": (
+            "face_zone_mask",
+            512,
+            512,
+            "square",
+            ["face_front"],
+        ),
+        "step_timeline": ("line_token", 1080, 300, "landscape", []),
+        "morning_evening_flow": ("pump_shape", 512, 512, "square", []),
+        "left_right_comparison": ("skin_detail", 512, 512, "square", []),
+        "three_state_diagnostic": ("skin_detail", 512, 512, "square", []),
+        "decision_tree": ("container_shape", 512, 512, "square", []),
+        "saveable_checklist": (
+            "background_token",
+            1080,
+            1440,
+            "portrait",
+            [],
+        ),
+        "saveable_reference": (
+            "background_token",
+            1080,
+            1440,
+            "portrait",
+            [],
+        ),
+    }
+
+    assert profiles == {
+        layout: expected_by_layout[layout]
+        for layout in profiles
+    }
 
 
 @pytest.mark.parametrize(
@@ -115,7 +181,7 @@ def test_recent_identical_signature_never_changes_diagnostic_recipe():
     assert repeated.frame_plan[4].layout == "three_state_diagnostic"
 
 
-def test_recent_identical_non_diagnostic_signature_selects_deterministic_auxiliary_layout():
+def test_recent_signature_selects_deterministic_auxiliary_layout():
     from src.editorial_carousel.strategy import build_visual_plan
 
     contract = contract_for("follow_steps")

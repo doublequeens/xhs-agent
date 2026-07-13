@@ -25,6 +25,7 @@ class AssetEntry:
     allowed_layouts: tuple[str, ...]
     tags: tuple[str, ...]
     disabled_contexts: tuple[str, ...]
+    fallback_roles: tuple[str, ...]
     ownership: str
     license: str
     sha256: str
@@ -72,6 +73,7 @@ def load_catalog(path: str | Path) -> AssetCatalog:
             allowed_layouts=entry.allowed_layouts,
             tags=entry.tags,
             disabled_contexts=entry.disabled_contexts,
+            fallback_roles=entry.fallback_roles,
             ownership=entry.ownership,
             license=entry.license,
             sha256=entry.sha256,

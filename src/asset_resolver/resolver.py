@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from datetime import datetime
 from typing import Literal
@@ -56,6 +57,16 @@ def eligible(entry: AssetEntry, requirement: AssetRequirement) -> bool:
     return entry.role == requirement.role and _base_eligible(entry, requirement)
 
 
+def _has_catalog_integrity(entry: AssetEntry, catalog: AssetCatalog) -> bool:
+    try:
+        path = entry.path.resolve()
+        active_root = catalog.active_root.resolve()
+        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return False
+    return path.is_relative_to(active_root) and actual_hash == entry.sha256
+
+
 def _last_used_timestamp(catalog: AssetCatalog, asset_id: str) -> float:
     value = catalog.last_used_at.get(asset_id)
     if value is None:
@@ -95,6 +106,7 @@ def _select_exact(
         for entry in catalog.entries
         if entry.asset_id not in catalog.recent_asset_ids
         and eligible(entry, requirement)
+        and _has_catalog_integrity(entry, catalog)
     ]
     if not candidates:
         return None
@@ -108,10 +120,18 @@ def _select_explicit_fallback(
     entries_by_id = {entry.asset_id: entry for entry in catalog.entries}
     for asset_id in requirement.fallback_asset_ids:
         entry = entries_by_id.get(asset_id)
+        fallback_role_is_declared = entry is not None and any(
+            candidate.usage == "production"
+            and candidate.role == requirement.role
+            and entry.role in candidate.fallback_roles
+            for candidate in catalog.entries
+        )
         if (
             entry is not None
+            and fallback_role_is_declared
             and entry.asset_id not in catalog.recent_asset_ids
             and _base_eligible(entry, requirement)
+            and _has_catalog_integrity(entry, catalog)
         ):
             return entry
     return None

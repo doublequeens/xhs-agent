@@ -51,6 +51,7 @@ def test_load_catalog_returns_repo_local_production_entries(tmp_path: Path) -> N
     assert catalog.entries[0].asset_id == "face_front"
     assert catalog.entries[0].path == tmp_path / "active/faces/front.svg"
     assert catalog.entries[0].usage == "production"
+    assert catalog.entries[0].fallback_roles == ("face_zone_mask",)
 
 
 def test_load_catalog_rejects_reference_only_entry(tmp_path: Path) -> None:

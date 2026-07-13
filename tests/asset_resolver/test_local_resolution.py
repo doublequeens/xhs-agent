@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -89,13 +90,18 @@ def _entry(
     layouts: tuple[str, ...] = ("front_face_zone",),
     tags: tuple[str, ...] = ("face", "zone", "mauve"),
     disabled_contexts: tuple[str, ...] = (),
+    fallback_roles: tuple[str, ...] = (),
     ownership: str = "project_original",
     license: str = "project_internal",
     usage: str = "production",
+    under_active: bool = True,
+    sha256: str | None = None,
 ):
     from src.asset_resolver.catalog import AssetEntry
 
-    path = tmp_path / f"{asset_id}.svg"
+    parent = tmp_path / "active" if under_active else tmp_path
+    parent.mkdir(exist_ok=True)
+    path = parent / f"{asset_id}.svg"
     path.write_text("<svg/>", encoding="utf-8")
     return AssetEntry(
         asset_id=asset_id,
@@ -106,9 +112,10 @@ def _entry(
         allowed_layouts=layouts,
         tags=tags,
         disabled_contexts=disabled_contexts,
+        fallback_roles=fallback_roles,
         ownership=ownership,
         license=license,
-        sha256="a" * 64,
+        sha256=sha256 or hashlib.sha256(path.read_bytes()).hexdigest(),
         usage=usage,
     )
 
@@ -183,7 +190,14 @@ def test_explicit_fallback_is_used_only_when_named_by_requirement(
         role="face_zone_mask",
         layouts=("front_face_zone",),
     )
-    catalog = _catalog(tmp_path, [fallback])
+    primary = _entry(
+        tmp_path,
+        asset_id="primary-too-small",
+        width=512,
+        height=512,
+        fallback_roles=("face_zone_mask",),
+    )
+    catalog = _catalog(tmp_path, [primary, fallback])
 
     manifest = resolve_assets(
         _plan(_requirement(fallback_asset_ids=["fallback-mask"])), catalog
@@ -191,6 +205,57 @@ def test_explicit_fallback_is_used_only_when_named_by_requirement(
 
     assert manifest.items[0].status == "fallback"
     assert manifest.items[0].asset_id == "fallback-mask"
+
+
+def test_explicit_fallback_id_must_also_have_manifest_declared_role(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    primary = _entry(
+        tmp_path,
+        asset_id="primary-too-small",
+        width=512,
+        height=512,
+        fallback_roles=(),
+    )
+    fallback = _entry(
+        tmp_path,
+        asset_id="fallback-mask",
+        role="face_zone_mask",
+    )
+    catalog = _catalog(tmp_path, [primary, fallback])
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(
+            _plan(_requirement(fallback_asset_ids=["fallback-mask"])), catalog
+        )
+
+
+def test_reference_entry_cannot_declare_a_production_fallback(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    reference_declaration = _entry(
+        tmp_path,
+        asset_id="reference-declaration",
+        width=512,
+        height=512,
+        usage="reference_only",
+        fallback_roles=("face_zone_mask",),
+    )
+    fallback = _entry(
+        tmp_path,
+        asset_id="fallback-mask",
+        role="face_zone_mask",
+    )
+    catalog = _catalog(tmp_path, [reference_declaration, fallback])
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(
+            _plan(_requirement(fallback_asset_ids=["fallback-mask"])), catalog
+        )
 
 
 def test_unrelated_local_asset_is_not_an_implicit_fallback(tmp_path: Path) -> None:
@@ -222,6 +287,28 @@ def test_hard_filters_reject_ineligible_local_assets(
 
     with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
         resolve_assets(_plan(_requirement()), catalog)
+
+
+def test_hard_filters_reject_asset_outside_catalog_active_root(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    outside = _entry(tmp_path, under_active=False)
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(_plan(_requirement()), _catalog(tmp_path, [outside]))
+
+
+def test_hard_filters_reject_asset_whose_bytes_do_not_match_sha256(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    mismatched = _entry(tmp_path, sha256="a" * 64)
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(_plan(_requirement()), _catalog(tmp_path, [mismatched]))
 
 
 def test_ranking_prefers_tag_and_palette_overlap_before_asset_id(
