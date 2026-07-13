@@ -5,14 +5,22 @@ import re
 import shutil
 import uuid
 import warnings
+from io import BytesIO
 from html import escape
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
+from PIL import Image
+from pydantic import ValidationError
 from playwright.sync_api import sync_playwright
 
 from src.schemas.assets import AssetManifest, AssetManifestItem
-from src.schemas.render_manifest import FontLoadReport, RenderedPage, RenderManifest
+from src.schemas.render_manifest import (
+    FontLoadReport,
+    PageProbeAttestation,
+    RenderedPage,
+    RenderManifest,
+)
 from src.schemas.storyboard import CarouselFrame, CarouselPayload
 from src.schemas.visual_plan import VisualPlan
 
@@ -297,6 +305,113 @@ def _validate_font_report(report: dict, frame_id: str) -> FontLoadReport:
     return FontLoadReport(all_loaded=True, computed_families=families)
 
 
+def _expected_copy(frame: CarouselFrame) -> list[tuple[str, str]]:
+    expected: list[tuple[str, str]] = []
+    if frame.kicker:
+        expected.append(("kicker", frame.kicker))
+    expected.append(("headline", frame.headline))
+    for block_index, block in enumerate(frame.content_blocks):
+        if block.heading:
+            expected.append(
+                (f"content_blocks[{block_index}].heading", block.heading)
+            )
+        if block.body:
+            expected.append((f"content_blocks[{block_index}].body", block.body))
+        expected.extend(
+            (f"content_blocks[{block_index}].items[{item_index}]", item)
+            for item_index, item in enumerate(block.items)
+        )
+    if frame.footer:
+        expected.append(("footer", frame.footer))
+    return expected
+
+
+def _probe_issue_label(issue: object) -> str:
+    if not isinstance(issue, dict):
+        return str(issue)
+    kind = str(issue.get("kind", "unknown"))
+    identity = issue.get("role", issue.get("slot_id"))
+    return f"{kind}:{identity}" if identity else kind
+
+
+def _validate_layout_report(
+    report: dict, frame: CarouselFrame
+) -> PageProbeAttestation:
+    try:
+        attestation = PageProbeAttestation.model_validate(
+            {
+                "canvas_width": report.get("canvas", {}).get("width"),
+                "canvas_height": report.get("canvas", {}).get("height"),
+                "safe_margin": report.get("safe_margin"),
+                "text_results": report.get("texts"),
+                "asset_results": report.get("assets"),
+                "issues": [
+                    _probe_issue_label(issue) for issue in report.get("issues", [])
+                ],
+            }
+        )
+    except (AttributeError, TypeError, ValidationError) as exc:
+        raise EditorialCarouselRenderError(
+            f"{frame.frame_id} layout probe returned invalid evidence: {exc}"
+        ) from exc
+
+    actual_copy = [(item.role, item.text) for item in attestation.text_results]
+    if actual_copy != _expected_copy(frame):
+        raise EditorialCarouselRenderError(
+            f"{frame.frame_id} layout probe visible text does not match storyboard"
+        )
+    if attestation.issues or any(
+        not item.visible
+        or item.overflow
+        or item.ink_clipped
+        or item.layout_clipped
+        for item in attestation.text_results
+    ):
+        raise EditorialCarouselRenderError(
+            f"{frame.frame_id} layout probe failed: {attestation.issues}"
+        )
+    for item in attestation.text_results:
+        expected_family = (
+            "Source Han Serif SC"
+            if item.role == "headline"
+            else "Source Han Sans SC"
+        )
+        if item.font_family != expected_family:
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} layout probe used an unexpected font for {item.role}"
+            )
+    expected_slots = [slot.slot_id for slot in frame.visual_slots]
+    actual_slots = [asset.slot_id for asset in attestation.asset_results]
+    if actual_slots != expected_slots:
+        raise EditorialCarouselRenderError(
+            f"{frame.frame_id} layout probe asset slots do not match storyboard"
+        )
+    return attestation
+
+
+def _png_snapshot(
+    path: Path, *, expected_size: tuple[int, int] | None = None
+) -> tuple[str, tuple[int, int]]:
+    try:
+        data = path.read_bytes()
+        with Image.open(BytesIO(data)) as image:
+            if image.format != "PNG":
+                raise ValueError(f"unexpected image format {image.format}")
+            image.verify()
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+            size = image.size
+    except (OSError, ValueError) as exc:
+        raise EditorialCarouselRenderError(
+            f"rendered PNG is corrupt at {path}: {exc}"
+        ) from exc
+    if expected_size is not None and size != expected_size:
+        raise EditorialCarouselRenderError(
+            f"rendered PNG at {path} has size {size}, expected {expected_size}"
+        )
+    return hashlib.sha256(data).hexdigest(), size
+
+
 def _remove_paths(paths: Iterable[Path]) -> None:
     failures: list[str] = []
     for path in paths:
@@ -530,15 +645,15 @@ def render_carousel(
                         font_report = current_font_report
 
                     try:
-                        issues = probe_layout(page)
+                        layout_report = _validate_layout_report(
+                            probe_layout(page), frame
+                        )
                     except Exception as exc:
+                        if isinstance(exc, EditorialCarouselRenderError):
+                            raise
                         raise EditorialCarouselRenderError(
                             f"{frame.frame_id} layout probe failed: {exc}"
                         ) from exc
-                    if issues:
-                        raise EditorialCarouselRenderError(
-                            f"{frame.frame_id} layout probe failed: {issues}"
-                        )
 
                     try:
                         page.locator(".card").screenshot(path=str(staged_path))
@@ -546,6 +661,9 @@ def render_carousel(
                         raise EditorialCarouselRenderError(
                             f"{frame.frame_id} screenshot failed: {exc}"
                         ) from exc
+                    page_sha256, _ = _png_snapshot(
+                        staged_path, expected_size=BEAUTY_EDITORIAL_V1.canvas
+                    )
                     rendered_pages.append(
                         RenderedPage(
                             frame_id=frame.frame_id,
@@ -554,6 +672,8 @@ def render_carousel(
                             path=str(final_path),
                             width=1080,
                             height=1440,
+                            sha256=page_sha256,
+                            probe=layout_report,
                         )
                     )
 
@@ -572,6 +692,9 @@ def render_carousel(
                     _validate_font_report(probe_fonts(page), "contact-sheet")
                     page.locator(".contact-sheet").screenshot(
                         path=str(staged_contact_sheet_path)
+                    )
+                    contact_sheet_sha256, _ = _png_snapshot(
+                        staged_contact_sheet_path
                     )
                 except EditorialCarouselRenderError:
                     raise
@@ -596,6 +719,8 @@ def render_carousel(
             pages=rendered_pages,
             fonts=font_report,
             contact_sheet_path=str(final_contact_sheet_path),
+            contact_sheet_sha256=contact_sheet_sha256,
+            contact_sheet_page_sha256=[page.sha256 for page in rendered_pages],
             source_asset_sha256=used_asset_hashes,
         )
         _preserve_unrelated_entries(output_dir, staging_dir)

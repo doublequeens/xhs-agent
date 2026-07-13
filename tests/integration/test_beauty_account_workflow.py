@@ -1,10 +1,11 @@
 from datetime import date, datetime
-import struct
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
+from PIL import Image
 
 import src.graph as graph_module
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
@@ -16,9 +17,9 @@ from src.schemas.topic_signal import CreativeSeed, TopicSignal
 
 
 def _png(width=1080, height=1440):
-    return b"\x89PNG\r\n\x1a\n" + struct.pack(
-        ">I4sII", 13, b"IHDR", width, height
-    ) + b"\x08\x02\x00\x00\x00"
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), "white").save(buffer, format="PNG")
+    return buffer.getvalue()
 
 
 def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:

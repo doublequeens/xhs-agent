@@ -37,7 +37,14 @@ from .assets import (
     ProviderSearchReport,
 )
 from .content_lock import ContentLock
-from .render_manifest import FontLoadReport, RenderedPage, RenderManifest
+from .render_manifest import (
+    AssetProbeResult,
+    FontLoadReport,
+    PageProbeAttestation,
+    RenderedPage,
+    RenderManifest,
+    TextProbeResult,
+)
 from .storyboard import (
     CarouselFrame,
     CarouselPayload,
@@ -75,6 +82,7 @@ __all__ = [
     "ContentJob", "VisualFamily", "LayoutName", "FramePlanItem", "VisualPlan",
     "AssetRequirement", "AssetManifestItem", "AssetManifest",
     "ProviderSearchReport", "AssetSearchReport",
+    "TextProbeResult", "AssetProbeResult", "PageProbeAttestation",
     "RenderedPage", "FontLoadReport", "RenderManifest", "ContentLock",
     "TextCardFrame", "TextCardPayload", "TimelineStep",
     "REQUIRED_TEXT_CARD_TEMPLATES",

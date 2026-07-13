@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 
 import pytest
 
@@ -100,6 +101,33 @@ def test_renderer_emits_ordered_manifest_contact_sheet_and_source_hashes(
     assert 'class="contact-sheet"' in page.loaded_html[-1]
     assert page.events.count("fonts-ready") == 6
     assert page.events.count("layout-probe") == 5
+
+
+def test_renderer_persists_page_probe_artifact_hashes_and_contact_binding(
+    tmp_path, visual_plan, storyboard, asset_manifest
+):
+    from src.rendering.editorial.renderer import render_carousel
+
+    manifest = render_carousel(
+        visual_plan,
+        storyboard,
+        asset_manifest,
+        tmp_path,
+        playwright_factory=fake_playwright(FakePage()),
+    )
+
+    assert all(page.probe.text_results for page in manifest.pages)
+    assert all(page.probe.issues == [] for page in manifest.pages)
+    assert all(
+        page.sha256 == hashlib.sha256(Path(page.path).read_bytes()).hexdigest()
+        for page in manifest.pages
+    )
+    assert manifest.contact_sheet_sha256 == hashlib.sha256(
+        Path(manifest.contact_sheet_path).read_bytes()
+    ).hexdigest()
+    assert manifest.contact_sheet_page_sha256 == [
+        page.sha256 for page in manifest.pages
+    ]
 
 
 def test_renderer_waits_for_fonts_and_probes_before_each_card_screenshot(
@@ -366,8 +394,13 @@ def test_partial_backup_retirement_keeps_new_committed_set_and_quarantines_resid
             playwright_factory=fake_playwright(FakePage()),
         )
 
-    assert all(Path(page.path).read_bytes() == b"fake png" for page in manifest.pages)
-    assert (output_dir / "contact-sheet.png").read_bytes() == b"fake png"
+    assert all(
+        hashlib.sha256(Path(page.path).read_bytes()).hexdigest() == page.sha256
+        for page in manifest.pages
+    )
+    assert hashlib.sha256(
+        (output_dir / "contact-sheet.png").read_bytes()
+    ).hexdigest() == manifest.contact_sheet_sha256
     _assert_unrelated_entries_preserved(output_dir)
     quarantines = list(
         output_dir.parent.glob(f".{output_dir.name}.editorial-*.quarantine")

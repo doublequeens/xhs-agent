@@ -152,6 +152,32 @@ def _render_pages(count=5):
             "path": f"{index:02d}-frame.png",
             "width": 1080,
             "height": 1440,
+            "sha256": f"{index:064x}",
+            "probe": {
+                "canvas_width": 1080,
+                "canvas_height": 1440,
+                "safe_margin": 84,
+                "text_results": [
+                    {
+                        "role": "headline",
+                        "text": "标题",
+                        "visible": True,
+                        "overflow": False,
+                        "ink_clipped": False,
+                        "layout_clipped": False,
+                        "font_family": "Source Han Serif SC",
+                        "font_size": 64,
+                        "line_height": 74.88,
+                        "line_count": 1,
+                        "x": 84,
+                        "y": 84,
+                        "width": 400,
+                        "height": 75,
+                    }
+                ],
+                "asset_results": [],
+                "issues": [],
+            },
         }
         for index, layout in enumerate(layouts[:count], start=1)
     ]
@@ -269,6 +295,10 @@ def test_manifest_contracts_are_strict():
             "pages": _render_pages(),
             "fonts": {"all_loaded": True, "computed_families": []},
             "contact_sheet_path": "contact-sheet.png",
+            "contact_sheet_sha256": "f" * 64,
+            "contact_sheet_page_sha256": [
+                page["sha256"] for page in _render_pages()
+            ],
             "source_asset_sha256": {},
         }
     )
@@ -276,14 +306,33 @@ def test_manifest_contracts_are_strict():
     assert render_manifest.contact_sheet_path == "contact-sheet.png"
 
 
-@pytest.mark.parametrize("count", [0, 4, 8])
-def test_render_manifest_requires_five_to_seven_pages(count):
+def test_render_manifest_requires_durable_page_probe_and_artifact_evidence():
+    pages = _render_pages()
+    for page in pages:
+        page.pop("sha256")
+        page.pop("probe")
     with pytest.raises(ValidationError):
         RenderManifest.model_validate(
             {
-                "pages": _render_pages(count),
+                "pages": pages,
                 "fonts": {"all_loaded": True, "computed_families": []},
                 "contact_sheet_path": "contact-sheet.png",
+                "source_asset_sha256": {},
+            }
+        )
+
+
+@pytest.mark.parametrize("count", [0, 4, 8])
+def test_render_manifest_requires_five_to_seven_pages(count):
+    pages = _render_pages(count)
+    with pytest.raises(ValidationError):
+        RenderManifest.model_validate(
+            {
+                "pages": pages,
+                "fonts": {"all_loaded": True, "computed_families": []},
+                "contact_sheet_path": "contact-sheet.png",
+                "contact_sheet_sha256": "f" * 64,
+                "contact_sheet_page_sha256": [page["sha256"] for page in pages],
                 "source_asset_sha256": {},
             }
         )
@@ -299,6 +348,8 @@ def test_rendered_pages_require_exact_canvas_dimensions(field, value):
                 "pages": pages,
                 "fonts": {"all_loaded": True, "computed_families": []},
                 "contact_sheet_path": "contact-sheet.png",
+                "contact_sheet_sha256": "f" * 64,
+                "contact_sheet_page_sha256": [page["sha256"] for page in pages],
                 "source_asset_sha256": {},
             }
         )

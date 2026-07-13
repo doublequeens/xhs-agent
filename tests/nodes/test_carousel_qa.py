@@ -213,7 +213,7 @@ def test_carousel_qa_rejects_frame_that_changes_its_single_planned_task():
 
     issues = validate_carousel(package, _contract(), _plan())
 
-    issue = next(item for item in issues if item.rule_id == "frame_task_mismatch")
+    issue = next(item for item in issues if item.rule_id == "frame_role_mismatch")
     assert issue.frame_id == "applicable-case"
     assert issue.location_hint == "storyboards[2].role"
 
@@ -290,3 +290,153 @@ def test_carousel_qa_node_preserves_success_and_failure_routes():
     failed = carousel_qa_node(_state(package=broken))
     assert failed["carousel_qa_result"].passed is False
     assert route_after_carousel_qa(failed) == "r1_reflector"
+
+
+def test_carousel_qa_rejects_plan_storyboard_length_mismatch_before_traversal():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    extra = deepcopy(package["storyboards"][1])
+    extra.update(
+        frame_id="extra-frame",
+        role="extra-task",
+        layout="step_timeline",
+        visual_slots=[],
+    )
+    package["storyboards"].append(extra)
+
+    issues = validate_carousel(package, _contract(), _plan())
+
+    assert [(issue.rule_id, issue.location_hint) for issue in issues] == [
+        ("frame_plan_count_mismatch", "visual_plan.frame_plan")
+    ]
+
+
+@pytest.mark.parametrize(
+    ("target", "rule_id", "location"),
+    [
+        ("plan_frame", "duplicate_plan_frame_id", "visual_plan.frame_plan[1].frame_id"),
+        ("storyboard_frame", "duplicate_storyboard_frame_id", "storyboards[1].frame_id"),
+        (
+            "storyboard_slot",
+            "duplicate_storyboard_slot_id",
+            "storyboards[0].visual_slots[1].slot_id",
+        ),
+        (
+            "requirement_slot",
+            "duplicate_asset_requirement_slot_id",
+            "visual_plan.required_assets[1].slot_id",
+        ),
+    ],
+)
+def test_carousel_qa_rejects_duplicate_identity_before_mapping(
+    target, rule_id, location
+):
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    plan = _plan().model_dump(mode="python")
+    package = _package()
+    if target == "plan_frame":
+        plan["frame_plan"][1]["frame_id"] = plan["frame_plan"][0]["frame_id"]
+    elif target == "storyboard_frame":
+        package["storyboards"][1]["frame_id"] = package["storyboards"][0]["frame_id"]
+    elif target == "storyboard_slot":
+        package["storyboards"][0]["visual_slots"].append(
+            deepcopy(package["storyboards"][0]["visual_slots"][0])
+        )
+    else:
+        plan["required_assets"][1]["slot_id"] = plan["required_assets"][0]["slot_id"]
+
+    issues = validate_carousel(package, _contract(), plan)
+
+    issue = next(item for item in issues if item.rule_id == rule_id)
+    assert issue.location_hint == location
+
+
+def test_schema_invalid_frame_does_not_cascade_into_dependent_rules():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    package["storyboards"][2]["free_css"] = "position:absolute"
+    package["storyboards"][2]["role"] = "also-wrong"
+    package["storyboards"][2]["layout"] = "decision_tree"
+
+    issues = validate_carousel(package, _contract(), _plan())
+    frame_issues = [issue for issue in issues if issue.frame_id == "applicable-case"]
+
+    assert [issue.rule_id for issue in frame_issues] == ["storyboard_schema_invalid"]
+
+
+def test_role_and_layout_drift_are_separate_atomic_issues():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    package["storyboards"][2]["role"] = "wrong-role"
+    package["storyboards"][2]["layout"] = "decision_tree"
+
+    issues = validate_carousel(package, _contract(), _plan())
+    drift = [
+        (issue.rule_id, issue.location_hint)
+        for issue in issues
+        if issue.frame_id == "applicable-case"
+        and issue.rule_id in {"frame_role_mismatch", "frame_layout_mismatch"}
+    ]
+
+    assert drift == [
+        ("frame_role_mismatch", "storyboards[2].role"),
+        ("frame_layout_mismatch", "storyboards[2].layout"),
+    ]
+
+
+def test_r1_task_identity_does_not_depend_on_issue_order():
+    from src.nodes.node_p_carousel_qa import _build_r1_tasks
+
+    cover = CarouselQAIssue(
+        rule_id="first_screen_promise_mismatch",
+        message="cover mismatch",
+        location_hint="storyboards[0].headline",
+        frame_id="cover",
+    )
+    unrelated = CarouselQAIssue(
+        rule_id="missing_saveable_frame",
+        message="saveable missing",
+        location_hint="storyboards",
+    )
+
+    alone = _build_r1_tasks([cover]).mandatory[0].task_id
+    reordered = _build_r1_tasks([unrelated, cover]).mandatory[1].task_id
+
+    assert alone == reordered
+
+
+def test_semantic_state_missing_visual_plan_is_not_legacy_fixed_six():
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
+
+    state = _state()
+    state.pop("visual_plan")
+
+    result = carousel_qa_node(state)
+
+    assert [issue.rule_id for issue in result["carousel_qa_result"].issues] == [
+        "visual_plan_missing"
+    ]
+
+
+def test_authoritative_topic_contract_cannot_be_overridden_by_package_contract():
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
+
+    authoritative = _contract()
+    tampered = authoritative.model_copy(
+        update={"first_screen_promise": "这是被篡改后的另一句首屏承诺"}
+    )
+    package = _package()
+    package["content_contract"] = tampered.model_dump(mode="json")
+    package["storyboards"][0]["headline"] = tampered.first_screen_promise
+    state = _state(package=package)
+
+    result = carousel_qa_node(state)
+
+    assert [issue.rule_id for issue in result["carousel_qa_result"].issues[:2]] == [
+        "content_contract_mismatch",
+        "first_screen_promise_mismatch",
+    ]

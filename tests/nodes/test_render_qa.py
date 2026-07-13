@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+from copy import deepcopy
 import hashlib
+from io import BytesIO
 import struct
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from src.editorial_carousel.strategy import ASSET_ADAPTER, build_visual_plan
 from src.schemas.assets import AssetManifest, AssetManifestItem, AssetSearchReport
@@ -75,22 +78,6 @@ def _storyboards():
     return frames
 
 
-def _visible_text(frame):
-    values = []
-    if frame.get("kicker"):
-        values.append(frame["kicker"])
-    values.append(frame["headline"])
-    for block in frame["content_blocks"]:
-        if block.get("heading"):
-            values.append(block["heading"])
-        if block.get("body"):
-            values.append(block["body"])
-        values.extend(block.get("items") or [])
-    if frame.get("footer"):
-        values.append(frame["footer"])
-    return values
-
-
 def _png(width=1080, height=1440):
     return (
         b"\x89PNG\r\n\x1a\n"
@@ -106,31 +93,17 @@ def _asset_file(path: Path, width: int, height: int):
     )
 
 
+def _valid_png(width=1080, height=1440, color=(247, 242, 234)) -> bytes:
+    buffer = BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _fixtures(root: Path):
     plan = _plan()
     frames = _storyboards()
     image_dir = root / "20260714-beauty-skincare-test" / "images"
     image_dir.mkdir(parents=True)
-
-    pages = []
-    for index, frame in enumerate(frames, start=1):
-        filename = (
-            "01-cover.png"
-            if index == 1
-            else f"{index:02d}-{frame['role'].replace('_', '-')}.png"
-        )
-        path = image_dir / filename
-        path.write_bytes(_png())
-        pages.append(
-            RenderedPage(
-                frame_id=frame["frame_id"],
-                role=frame["role"],
-                layout=frame["layout"],
-                path=str(path),
-                width=1080,
-                height=1440,
-            )
-        )
 
     items = []
     for index, requirement in enumerate(plan.required_assets):
@@ -152,8 +125,42 @@ def _fixtures(root: Path):
             )
         )
 
+    requirements_by_slot = {item.slot_id: item for item in plan.required_assets}
+    pages = []
+    for index, frame in enumerate(frames, start=1):
+        filename = (
+            "01-cover.png"
+            if index == 1
+            else f"{index:02d}-{frame['role'].replace('_', '-')}.png"
+        )
+        path = image_dir / filename
+        page_bytes = _valid_png()
+        path.write_bytes(page_bytes)
+        probe = _probe_for_frame(frame)
+        for geometry in probe["asset_results"]:
+            requirement = requirements_by_slot[geometry["slot_id"]]
+            geometry.update(
+                natural_width=requirement.min_width,
+                natural_height=requirement.min_height,
+                rendered_width=requirement.min_width / 3,
+                rendered_height=requirement.min_height / 3,
+            )
+        pages.append(
+            RenderedPage(
+                frame_id=frame["frame_id"],
+                role=frame["role"],
+                layout=frame["layout"],
+                path=str(path),
+                width=1080,
+                height=1440,
+                sha256=hashlib.sha256(page_bytes).hexdigest(),
+                probe=probe,
+            )
+        )
+
     contact_sheet = image_dir / "contact-sheet.png"
-    contact_sheet.write_bytes(_png(1320, 1145))
+    contact_bytes = _valid_png(1320, 1145)
+    contact_sheet.write_bytes(contact_bytes)
     asset_manifest = AssetManifest(
         items=items,
         search_report=AssetSearchReport(
@@ -170,6 +177,8 @@ def _fixtures(root: Path):
             computed_families=EXPECTED_FONTS,
         ),
         contact_sheet_path=str(contact_sheet),
+        contact_sheet_sha256=hashlib.sha256(contact_bytes).hexdigest(),
+        contact_sheet_page_sha256=[page.sha256 for page in pages],
         source_asset_sha256={item.slot_id: item.sha256 for item in items},
     )
     package = {
@@ -179,10 +188,6 @@ def _fixtures(root: Path):
         "content": "先给防晒成膜时间，再上底妆。",
         "cover_copy": "通勤底妆不搓泥",
         "storyboards": frames,
-        "rendered_visible_text": {
-            frame["frame_id"]: _visible_text(frame) for frame in frames
-        },
-        "render_diagnostics": [],
     }
     return package, asset_manifest, render_manifest
 
@@ -217,6 +222,7 @@ def test_render_qa_accepts_complete_editorial_manifests_and_labels_proxy_metrics
     result = render_qa_node(
         {
             "publish_package": package,
+            "visual_plan": _plan(),
             "asset_manifest": assets,
             "render_manifest": manifest,
         }
@@ -259,7 +265,11 @@ def test_render_qa_rejects_visible_text_mismatch(tmp_path):
     from src.nodes.node_p_render_qa import validate_render
 
     package, assets, manifest = _fixtures(tmp_path)
-    package["rendered_visible_text"]["baseline"][-1] = "被改写的页脚"
+    pages = list(manifest.pages)
+    probe = pages[1].probe.model_copy(deep=True)
+    probe.text_results[-1].text = "被改写的页脚"
+    pages[1] = pages[1].model_copy(update={"probe": probe})
+    manifest = manifest.model_copy(update={"pages": pages})
 
     issues = validate_render(package, assets, manifest)
 
@@ -267,19 +277,25 @@ def test_render_qa_rejects_visible_text_mismatch(tmp_path):
         item for item in issues if item.rule_id == "rendered_visible_text_mismatch"
     )
     assert issue.frame_id == "baseline"
-    assert issue.location_hint == "publish_package.rendered_visible_text.baseline"
+    assert issue.location_hint == "render_manifest.pages[1].probe.text_results"
 
 
 def test_render_qa_rejects_font_fallback_dimensions_and_overflow(tmp_path):
     from src.nodes.node_p_render_qa import validate_render
 
     package, assets, manifest = _fixtures(tmp_path)
-    Path(manifest.pages[1].path).write_bytes(_png(1080, 1080))
-    package["render_diagnostics"] = [
-        {"frame_id": "applicable-case", "kind": "overflow", "role": "headline"}
-    ]
+    wrong_size = _valid_png(1080, 1080)
+    Path(manifest.pages[1].path).write_bytes(wrong_size)
+    pages = list(manifest.pages)
+    pages[1] = pages[1].model_copy(
+        update={"sha256": hashlib.sha256(wrong_size).hexdigest()}
+    )
+    probe = pages[2].probe.model_copy(deep=True)
+    probe.text_results[1].overflow = True
+    pages[2] = pages[2].model_copy(update={"probe": probe})
     manifest = manifest.model_copy(
         update={
+            "pages": pages,
             "fonts": manifest.fonts.model_copy(
                 update={
                     "all_loaded": False,
@@ -322,7 +338,8 @@ def test_render_qa_rejects_missing_provenance_and_asset_stretching(tmp_path):
 
     issues = validate_render(package, assets, manifest)
 
-    assert "asset_provenance_missing" in _rule_ids(issues)
+    assert "asset_source_type_provenance_missing" in _rule_ids(issues)
+    assert "asset_license_provenance_missing" in _rule_ids(issues)
     stretching = next(
         item for item in issues if item.rule_id == "asset_stretching_detected"
     )
@@ -338,7 +355,7 @@ def test_render_qa_rejects_missing_contact_sheet_and_partial_output(tmp_path):
 
     issues = validate_render(package, assets, manifest)
 
-    assert "partial_render_output" in _rule_ids(issues)
+    assert "partial_render_output" not in _rule_ids(issues)
     missing = next(item for item in issues if item.rule_id == "rendered_page_missing")
     assert missing.frame_id == "applicable-case"
     assert "contact_sheet_missing" in _rule_ids(issues)
@@ -354,7 +371,9 @@ def test_render_qa_rejects_manifest_page_order_drift(tmp_path):
 
     issues = validate_render(package, assets, manifest)
 
-    drift = [item for item in issues if item.rule_id == "rendered_page_order_mismatch"]
+    drift = [
+        item for item in issues if item.rule_id == "rendered_page_frame_id_mismatch"
+    ]
     assert [item.frame_id for item in drift] == ["baseline", "applicable-case"]
 
 
@@ -362,13 +381,16 @@ def test_render_qa_routes_each_atomic_failure_to_r1(tmp_path):
     import src.nodes.node_p_render_qa as module
 
     package, assets, manifest = _fixtures(tmp_path)
-    package["render_diagnostics"] = [
-        {"frame_id": "baseline", "kind": "overflow", "role": "headline"}
-    ]
+    pages = list(manifest.pages)
+    probe = pages[1].probe.model_copy(deep=True)
+    probe.text_results[1].overflow = True
+    pages[1] = pages[1].model_copy(update={"probe": probe})
+    manifest = manifest.model_copy(update={"pages": pages})
 
     result = module.render_qa_node(
         {
             "publish_package": package,
+            "visual_plan": _plan(),
             "asset_manifest": assets,
             "render_manifest": manifest,
         }
@@ -398,6 +420,7 @@ def test_quality_proxy_metrics_are_deterministic_measured_facts(tmp_path, metric
     package, assets, manifest = _fixtures(tmp_path)
     state = {
         "publish_package": package,
+        "visual_plan": _plan(),
         "asset_manifest": assets,
         "render_manifest": manifest,
     }
@@ -408,12 +431,13 @@ def test_quality_proxy_metrics_are_deterministic_measured_facts(tmp_path, metric
     assert getattr(first, metric) == getattr(second, metric)
 
 
-def test_quality_proxy_hierarchy_drops_for_measured_page_dimension_failure(tmp_path):
+def test_quality_proxy_hierarchy_is_not_a_relabelled_hard_failure_count(tmp_path):
     from src.nodes.node_p_render_qa import render_qa_node
 
     package, assets, manifest = _fixtures(tmp_path)
     state = {
         "publish_package": package,
+        "visual_plan": _plan(),
         "asset_manifest": assets,
         "render_manifest": manifest,
     }
@@ -422,5 +446,520 @@ def test_quality_proxy_hierarchy_drops_for_measured_page_dimension_failure(tmp_p
     Path(manifest.pages[1].path).write_bytes(_png(1080, 1080))
     degraded = render_qa_node(state)["render_qa_result"]
 
-    assert degraded.visual_hierarchy < baseline.visual_hierarchy
-    assert degraded.editorial_quality < baseline.editorial_quality
+    assert degraded.passed is False
+    assert degraded.visual_hierarchy == baseline.visual_hierarchy
+
+
+def test_render_qa_rejects_truncated_png_with_valid_ihdr_prefix(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    Path(manifest.pages[0].path).write_bytes(_png())
+
+    issues = validate_render(package, assets, manifest)
+
+    assert any(issue.rule_id == "rendered_page_corrupt" for issue in issues)
+
+
+def test_render_qa_rejects_decodable_same_size_page_tamper_by_hash(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    path = Path(manifest.pages[0].path)
+    original = _valid_png(color=(247, 242, 234))
+    path.write_bytes(original)
+    page = manifest.pages[0].model_copy(
+        update={"sha256": hashlib.sha256(original).hexdigest()}
+    )
+    manifest = manifest.model_copy(update={"pages": [page, *manifest.pages[1:]]})
+    path.write_bytes(_valid_png(color=(41, 38, 37)))
+
+    issues = validate_render(package, assets, manifest)
+
+    assert any(issue.rule_id == "rendered_page_hash_mismatch" for issue in issues)
+
+
+def test_render_qa_rejects_missing_persisted_probe_attestation(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    page = manifest.pages[0].model_copy(update={"probe": None})
+    manifest = manifest.model_copy(update={"pages": [page, *manifest.pages[1:]]})
+
+    issues = validate_render(package, assets, manifest)
+
+    assert any(issue.rule_id == "page_probe_missing" for issue in issues)
+
+
+def test_render_qa_reports_corrupt_contact_sheet_atomically(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    Path(manifest.contact_sheet_path).write_bytes(_png(1320, 1145))
+
+    issues = validate_render(package, assets, manifest)
+    contact_issues = [
+        issue for issue in issues if issue.location_hint == "render_manifest.contact_sheet_path"
+    ]
+
+    assert [issue.rule_id for issue in contact_issues] == ["contact_sheet_corrupt"]
+
+
+def test_render_qa_rejects_duplicate_asset_manifest_slot_before_mapping(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    duplicate = assets.items[0].model_copy()
+    assets = assets.model_copy(update={"items": [*assets.items, duplicate]})
+
+    issues = validate_render(package, assets, manifest)
+
+    issue = next(item for item in issues if item.rule_id == "duplicate_asset_manifest_slot_id")
+    assert issue.location_hint == f"asset_manifest.items[{len(assets.items) - 1}].slot_id"
+
+
+def test_missing_page_produces_one_atomic_issue_not_count_and_partial(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    manifest = manifest.model_copy(update={"pages": manifest.pages[:-1]})
+
+    issues = validate_render(package, assets, manifest)
+    missing = [
+        issue.rule_id
+        for issue in issues
+        if issue.frame_id == package["storyboards"][-1]["frame_id"]
+    ]
+
+    assert missing == ["rendered_page_missing"]
+    assert "rendered_page_count_mismatch" not in _rule_ids(issues)
+    assert "partial_render_output" not in _rule_ids(issues)
+
+
+def test_external_provenance_fields_are_atomic_and_nonduplicated(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    external = assets.items[0].model_copy(
+        update={
+            "source_type": "stock_photo",
+            "provider": None,
+            "source_url": None,
+            "author": None,
+        }
+    )
+    assets = assets.model_copy(update={"items": [external, *assets.items[1:]]})
+
+    issues = validate_render(package, assets, manifest)
+    provenance = [
+        (issue.rule_id, issue.location_hint)
+        for issue in issues
+        if issue.frame_id == "cover" and "provenance" in issue.rule_id
+    ]
+
+    assert provenance == [
+        ("asset_provider_provenance_missing", "asset_manifest.items[0].provider"),
+        ("asset_source_url_provenance_missing", "asset_manifest.items[0].source_url"),
+        ("asset_author_provenance_missing", "asset_manifest.items[0].author"),
+    ]
+
+
+def test_editorial_state_missing_render_manifest_never_falls_back_to_legacy(tmp_path):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    package, assets, _manifest = _fixtures(tmp_path)
+    state = {
+        "publish_package": package,
+        "visual_plan": _plan(),
+        "asset_manifest": assets,
+        "render_manifest": None,
+        "trends": [{"topic_id": "tp_001", "content_contract": _contract()}],
+    }
+
+    result = render_qa_node(state)
+
+    assert [issue.rule_id for issue in result["render_qa_result"].issues] == [
+        "render_manifest_missing"
+    ]
+
+
+def test_editorial_state_missing_visual_plan_never_falls_back_to_legacy(tmp_path):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    package, assets, manifest = _fixtures(tmp_path)
+    result = render_qa_node(
+        {
+            "publish_package": package,
+            "asset_manifest": assets,
+            "render_manifest": manifest,
+        }
+    )
+
+    assert [issue.rule_id for issue in result["render_qa_result"].issues] == [
+        "visual_plan_missing"
+    ]
+
+
+def test_render_r1_task_identity_does_not_depend_on_issue_order():
+    from src.nodes.node_p_render_qa import _build_r1_decision
+
+    cover = RenderQAIssue(
+        rule_id="rendered_page_hash_mismatch",
+        message="page mismatch",
+        location_hint="render_manifest.pages[0].sha256",
+        frame_id="cover",
+    )
+    unrelated = RenderQAIssue(
+        rule_id="contact_sheet_missing",
+        message="contact missing",
+        location_hint="render_manifest.contact_sheet_path",
+    )
+    package = {"draft_id": "draft", "storyboards": []}
+
+    alone = _build_r1_decision(package, [cover]).normalized_input.r1_input.editorial_tasks.mandatory[0].task_id
+    reordered = _build_r1_decision(package, [unrelated, cover]).normalized_input.r1_input.editorial_tasks.mandatory[1].task_id
+
+    assert alone == reordered
+
+
+def _probe_for_frame(
+    frame,
+    *,
+    headline_size=64.0,
+    body_size=29.0,
+    asset_dimensions=None,
+):
+    texts = []
+    for role, text in [
+        ("kicker", frame.get("kicker")),
+        ("headline", frame.get("headline")),
+    ]:
+        if text:
+            texts.append(
+                {
+                    "role": role,
+                    "text": text,
+                    "visible": True,
+                    "overflow": False,
+                    "ink_clipped": False,
+                    "layout_clipped": False,
+                    "font_family": (
+                        "Source Han Serif SC" if role == "headline" else "Source Han Sans SC"
+                    ),
+                    "font_size": headline_size if role == "headline" else 25.0,
+                    "line_height": (headline_size * 1.17 if role == "headline" else 32.5),
+                    "line_count": 1,
+                    "x": 84.0,
+                    "y": 84.0,
+                    "width": 600.0,
+                    "height": 80.0,
+                }
+            )
+    for block_index, block in enumerate(frame["content_blocks"]):
+        for field in ("heading", "body"):
+            text = block.get(field)
+            if text:
+                texts.append(
+                    {
+                        "role": f"content_blocks[{block_index}].{field}",
+                        "text": text,
+                        "visible": True,
+                        "overflow": False,
+                        "ink_clipped": False,
+                        "layout_clipped": False,
+                        "font_family": "Source Han Sans SC",
+                        "font_size": body_size,
+                        "line_height": body_size * 1.45,
+                        "line_count": 1,
+                        "x": 84.0,
+                        "y": 300.0,
+                        "width": 500.0,
+                        "height": 50.0,
+                    }
+                )
+        for item_index, text in enumerate(block.get("items") or []):
+            texts.append(
+                {
+                    "role": f"content_blocks[{block_index}].items[{item_index}]",
+                    "text": text,
+                    "visible": True,
+                    "overflow": False,
+                    "ink_clipped": False,
+                    "layout_clipped": False,
+                    "font_family": "Source Han Sans SC",
+                    "font_size": body_size,
+                    "line_height": body_size * 1.45,
+                    "line_count": 1,
+                    "x": 84.0,
+                    "y": 300.0,
+                    "width": 500.0,
+                    "height": 50.0,
+                }
+            )
+    if frame.get("footer"):
+        texts.append(
+            {
+                "role": "footer",
+                "text": frame["footer"],
+                "visible": True,
+                "overflow": False,
+                "ink_clipped": False,
+                "layout_clipped": False,
+                "font_family": "Source Han Sans SC",
+                "font_size": 22.0,
+                "line_height": 29.7,
+                "line_count": 1,
+                "x": 84.0,
+                "y": 1300.0,
+                "width": 500.0,
+                "height": 40.0,
+            }
+        )
+    requirements = {item.slot_id: item for item in _plan().required_assets}
+    asset_dimensions = asset_dimensions or {}
+    return {
+        "canvas_width": 1080,
+        "canvas_height": 1440,
+        "safe_margin": 84.0,
+        "text_results": texts,
+        "asset_results": [
+            {
+                "slot_id": slot["slot_id"],
+                "natural_width": asset_dimensions.get(
+                    slot["slot_id"],
+                    (
+                        requirements[slot["slot_id"]].min_width,
+                        requirements[slot["slot_id"]].min_height,
+                    ),
+                )[0],
+                "natural_height": asset_dimensions.get(
+                    slot["slot_id"],
+                    (
+                        requirements[slot["slot_id"]].min_width,
+                        requirements[slot["slot_id"]].min_height,
+                    ),
+                )[1],
+                "rendered_width": asset_dimensions.get(
+                    slot["slot_id"],
+                    (
+                        requirements[slot["slot_id"]].min_width,
+                        requirements[slot["slot_id"]].min_height,
+                    ),
+                )[0] / 3,
+                "rendered_height": asset_dimensions.get(
+                    slot["slot_id"],
+                    (
+                        requirements[slot["slot_id"]].min_width,
+                        requirements[slot["slot_id"]].min_height,
+                    ),
+                )[1] / 3,
+                "object_fit": "contain",
+                "cropped": False,
+                "aspect_ratio_error": 0.0,
+            }
+            for slot in frame.get("visual_slots") or []
+        ],
+        "issues": [],
+    }
+
+
+def _manifest_with_probes(manifest, package, assets=None, **probe_overrides):
+    asset_dimensions = {
+        item.slot_id: (item.width, item.height) for item in (assets.items if assets else [])
+    }
+    return manifest.model_copy(
+        update={
+            "pages": [
+                page.model_copy(
+                    update={
+                        "probe": _probe_for_frame(
+                            frame,
+                            asset_dimensions=asset_dimensions,
+                            **probe_overrides,
+                        )
+                    }
+                )
+                for page, frame in zip(
+                    manifest.pages, package["storyboards"], strict=True
+                )
+            ]
+        }
+    )
+
+
+def _metric_result(package, assets, manifest, plan=None):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    return render_qa_node(
+        {
+            "publish_package": package,
+            "visual_plan": plan or _plan(),
+            "asset_manifest": assets,
+            "render_manifest": manifest,
+        }
+    )["render_qa_result"]
+
+
+def test_proxy_editorial_quality_rewards_lower_measured_text_density(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    manifest = _manifest_with_probes(manifest, package)
+    concise = _metric_result(package, assets, manifest)
+
+    dense_package = deepcopy(package)
+    dense_package["storyboards"][1]["content_blocks"][0]["body"] *= 6
+    dense_manifest = _manifest_with_probes(manifest, dense_package)
+    dense = _metric_result(dense_package, assets, dense_manifest)
+
+    assert concise.editorial_quality > dense.editorial_quality
+
+
+def test_proxy_beauty_category_fit_rewards_asset_dimension_headroom(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    baseline = _metric_result(package, assets, _manifest_with_probes(manifest, package))
+    first = assets.items[0]
+    _asset_file(Path(first.path), first.width * 2, first.height * 2)
+    larger = first.model_copy(
+        update={
+            "width": first.width * 2,
+            "height": first.height * 2,
+            "sha256": hashlib.sha256(Path(first.path).read_bytes()).hexdigest(),
+        }
+    )
+    assets = assets.model_copy(update={"items": [larger, *assets.items[1:]]})
+    manifest = manifest.model_copy(
+        update={
+            "source_asset_sha256": {
+                **manifest.source_asset_sha256,
+                larger.slot_id: larger.sha256,
+            }
+        }
+    )
+
+    headroom = _metric_result(
+        package, assets, _manifest_with_probes(manifest, package, assets=assets)
+    )
+
+    assert headroom.beauty_category_fit > baseline.beauty_category_fit
+
+
+def test_proxy_visual_hierarchy_rewards_headline_body_scale_separation(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    flat = _metric_result(
+        package,
+        assets,
+        _manifest_with_probes(manifest, package, headline_size=40.0, body_size=34.0),
+    )
+    hierarchical = _metric_result(
+        package,
+        assets,
+        _manifest_with_probes(manifest, package, headline_size=64.0, body_size=29.0),
+    )
+
+    assert hierarchical.visual_hierarchy > flat.visual_hierarchy
+
+
+def test_proxy_saveability_rewards_more_actionable_checklist_items(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    sparse_package = deepcopy(package)
+    sparse_package["storyboards"][-1]["content_blocks"] = [
+        {"block_type": "checklist", "items": ["只做一项"]}
+    ]
+    rich_package = deepcopy(package)
+    rich_package["storyboards"][-1]["content_blocks"] = [
+        {"block_type": "checklist", "items": ["第一项", "第二项", "第三项", "第四项"]}
+    ]
+
+    sparse = _metric_result(
+        sparse_package, assets, _manifest_with_probes(manifest, sparse_package)
+    )
+    rich = _metric_result(
+        rich_package, assets, _manifest_with_probes(manifest, rich_package)
+    )
+
+    assert rich.saveability > sparse.saveability
+
+
+def test_proxy_cross_page_consistency_penalizes_measured_type_scale_variance(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    consistent_manifest = _manifest_with_probes(manifest, package, headline_size=64.0)
+    varied_pages = list(consistent_manifest.pages)
+    varied_pages[2] = varied_pages[2].model_copy(
+        update={"probe": _probe_for_frame(package["storyboards"][2], headline_size=44.0)}
+    )
+    varied_manifest = consistent_manifest.model_copy(update={"pages": varied_pages})
+
+    consistent = _metric_result(package, assets, consistent_manifest)
+    varied = _metric_result(package, assets, varied_manifest)
+
+    assert consistent.cross_page_consistency > varied.cross_page_consistency
+
+
+def test_proxy_template_stiffness_penalizes_nonadjacent_layout_reuse(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    diverse = _metric_result(package, assets, _manifest_with_probes(manifest, package))
+    repeated_package = deepcopy(package)
+    repeated_package["storyboards"][4]["layout"] = repeated_package["storyboards"][1]["layout"]
+
+    repeated = _metric_result(
+        repeated_package, assets, _manifest_with_probes(manifest, repeated_package)
+    )
+
+    assert repeated.template_stiffness > diverse.template_stiffness
+
+
+def test_render_qa_checks_source_snapshot_against_requirement_minimums(tmp_path):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    package, assets, manifest = _fixtures(tmp_path)
+    first = assets.items[0]
+    _asset_file(Path(first.path), 100, 100)
+    undersized = first.model_copy(
+        update={
+            "width": 100,
+            "height": 100,
+            "sha256": hashlib.sha256(Path(first.path).read_bytes()).hexdigest(),
+        }
+    )
+    assets = assets.model_copy(update={"items": [undersized, *assets.items[1:]]})
+    manifest = manifest.model_copy(
+        update={
+            "source_asset_sha256": {
+                **manifest.source_asset_sha256,
+                undersized.slot_id: undersized.sha256,
+            }
+        }
+    )
+
+    result = render_qa_node(
+        {
+            "publish_package": package,
+            "visual_plan": _plan(),
+            "asset_manifest": assets,
+            "render_manifest": _manifest_with_probes(manifest, package),
+        }
+    )
+
+    assert any(
+        issue.rule_id == "asset_min_dimensions_unmet"
+        for issue in result["render_qa_result"].issues
+    )
+
+
+def test_render_qa_uses_persisted_dom_geometry_for_stretch_detection(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    manifest = _manifest_with_probes(manifest, package)
+    first_page = manifest.pages[0]
+    probe = deepcopy(first_page.probe)
+    probe["asset_results"][0].update(
+        rendered_width=500.0,
+        rendered_height=500.0,
+        aspect_ratio_error=0.25,
+    )
+    first_page = first_page.model_copy(update={"probe": probe})
+    manifest = manifest.model_copy(update={"pages": [first_page, *manifest.pages[1:]]})
+
+    result = _metric_result(package, assets, manifest)
+
+    assert any(
+        issue.rule_id == "asset_render_stretched" for issue in result.issues
+    )

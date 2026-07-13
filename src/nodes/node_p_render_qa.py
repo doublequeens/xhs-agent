@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import hashlib
-import struct
+import statistics
 import xml.etree.ElementTree as ET
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -30,7 +31,6 @@ from src.schemas.render_qa import RenderQAIssue, RenderQAResult
 from src.schemas.text_card import TextCardPayload
 
 
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 EXPECTED_FILENAMES = tuple(path.name for path in output_paths(Path(".")))
 SAVEABLE_LAYOUTS = frozenset({"saveable_checklist", "saveable_reference"})
 
@@ -55,63 +55,68 @@ def _issue(
     )
 
 
+def _png_snapshot(path: Path) -> tuple[str, tuple[int, int]] | None:
+    try:
+        data = path.read_bytes()
+        with Image.open(BytesIO(data)) as image:
+            if image.format != "PNG":
+                return None
+            image.verify()
+        with Image.open(BytesIO(data)) as image:
+            image.load()
+            dimensions = image.size
+    except (OSError, ValueError):
+        return None
+    return hashlib.sha256(data).hexdigest(), dimensions
+
+
 def _png_dimensions(path: Path) -> tuple[int, int] | None:
-    try:
-        header = path.read_bytes()[:24]
-    except OSError:
-        return None
-    if len(header) < 24 or header[:8] != PNG_SIGNATURE:
-        return None
-    length, chunk_type, width, height = struct.unpack(">I4sII", header[8:24])
-    if length != 13 or chunk_type != b"IHDR":
-        return None
-    return width, height
+    snapshot = _png_snapshot(path)
+    return snapshot[1] if snapshot is not None else None
 
 
-def _asset_dimensions(path: Path) -> tuple[int, int] | None:
+def _asset_snapshot(path: Path) -> tuple[str, tuple[int, int]] | None:
     try:
+        data = path.read_bytes()
         if path.suffix.lower() == ".svg":
-            root = ET.parse(path).getroot()
-            return int(float(root.attrib["width"])), int(float(root.attrib["height"]))
-        with Image.open(path) as image:
-            return image.size
+            root = ET.fromstring(data)
+            dimensions = (
+                int(float(root.attrib["width"])),
+                int(float(root.attrib["height"])),
+            )
+        else:
+            with Image.open(BytesIO(data)) as image:
+                image.verify()
+            with Image.open(BytesIO(data)) as image:
+                image.load()
+                dimensions = image.size
+        return hashlib.sha256(data).hexdigest(), dimensions
     except (ET.ParseError, KeyError, OSError, ValueError):
         return None
 
 
-def _page_has_exact_dimensions(page: Any) -> bool:
-    raw_path = _get_value(page, "path")
-    try:
-        path = Path(raw_path)
-    except TypeError:
-        return False
-    return (
-        bool(raw_path)
-        and _png_dimensions(path) == (1080, 1440)
-        and _get_value(page, "width") == 1080
-        and _get_value(page, "height") == 1440
-    )
-
-
-def _visible_text(frame: Any) -> list[str]:
-    values: list[str] = []
+def _expected_probe_text(frame: Any) -> list[tuple[str, str]]:
+    values: list[tuple[str, str]] = []
     kicker = _get_value(frame, "kicker")
     if kicker:
-        values.append(str(kicker))
+        values.append(("kicker", str(kicker)))
     headline = _get_value(frame, "headline")
     if headline:
-        values.append(str(headline))
-    for block in _as_list(frame, "content_blocks"):
+        values.append(("headline", str(headline)))
+    for block_index, block in enumerate(_as_list(frame, "content_blocks")):
         heading = _get_value(block, "heading")
         body = _get_value(block, "body")
         if heading:
-            values.append(str(heading))
+            values.append((f"content_blocks[{block_index}].heading", str(heading)))
         if body:
-            values.append(str(body))
-        values.extend(str(item) for item in _as_list(block, "items"))
+            values.append((f"content_blocks[{block_index}].body", str(body)))
+        values.extend(
+            (f"content_blocks[{block_index}].items[{item_index}]", str(item))
+            for item_index, item in enumerate(_as_list(block, "items"))
+        )
     footer = _get_value(frame, "footer")
     if footer:
-        values.append(str(footer))
+        values.append(("footer", str(footer)))
     return values
 
 
@@ -130,20 +135,9 @@ def _manifest_page_issues(
 ) -> list[RenderQAIssue]:
     issues: list[RenderQAIssue] = []
     pages = _as_list(render_manifest, "pages")
-    if len(pages) != len(frames):
-        issues.append(
-            _issue(
-                "rendered_page_count_mismatch",
-                "Render manifest page count must match the storyboard frame count.",
-                "render_manifest.pages",
-            )
-        )
-
-    missing_page = False
     for index, frame in enumerate(frames):
         frame_id = str(_get_value(frame, "frame_id") or "") or None
         if index >= len(pages):
-            missing_page = True
             issues.append(
                 _issue(
                     "rendered_page_missing",
@@ -155,25 +149,20 @@ def _manifest_page_issues(
             continue
 
         page = pages[index]
-        expected = (
-            _get_value(frame, "frame_id"),
-            _get_value(frame, "role"),
-            _get_value(frame, "layout"),
-        )
-        actual = (
-            _get_value(page, "frame_id"),
-            _get_value(page, "role"),
-            _get_value(page, "layout"),
-        )
-        if actual != expected:
-            issues.append(
-                _issue(
-                    "rendered_page_order_mismatch",
-                    "Rendered page identity, role, and layout must match storyboard order.",
-                    f"render_manifest.pages[{index}]",
-                    frame_id=frame_id,
+        for field, rule_id in (
+            ("frame_id", "rendered_page_frame_id_mismatch"),
+            ("role", "rendered_page_role_mismatch"),
+            ("layout", "rendered_page_layout_mismatch"),
+        ):
+            if _get_value(page, field) != _get_value(frame, field):
+                issues.append(
+                    _issue(
+                        rule_id,
+                        f"Rendered page {field} must match storyboard order.",
+                        f"render_manifest.pages[{index}].{field}",
+                        frame_id=frame_id,
+                    )
                 )
-            )
 
         raw_path = _get_value(page, "path")
         try:
@@ -181,7 +170,6 @@ def _manifest_page_issues(
         except TypeError:
             path = Path("")
         if not raw_path or not path.is_file():
-            missing_page = True
             issues.append(
                 _issue(
                     "rendered_page_missing",
@@ -192,22 +180,85 @@ def _manifest_page_issues(
             )
             continue
 
-        dimensions = _png_dimensions(path)
-        if dimensions is None:
+        snapshot = _png_snapshot(path)
+        if snapshot is None:
             issues.append(
                 _issue(
-                    "png_signature_invalid",
-                    "Rendered page must be a PNG with a valid IHDR header.",
+                    "rendered_page_corrupt",
+                    "Rendered page must be a completely decodable PNG.",
                     f"render_manifest.pages[{index}].path",
                     frame_id=frame_id,
                 )
             )
-        elif not _page_has_exact_dimensions(page):
+        else:
+            actual_sha256, dimensions = snapshot
+            if dimensions != (1080, 1440) or (
+                _get_value(page, "width"), _get_value(page, "height")
+            ) != (1080, 1440):
+                issues.append(
+                    _issue(
+                        "png_dimensions_invalid",
+                        f"Rendered page must be 1080x1440; got {dimensions[0]}x{dimensions[1]}.",
+                        f"render_manifest.pages[{index}].path",
+                        frame_id=frame_id,
+                    )
+                )
+            if actual_sha256 != _get_value(page, "sha256"):
+                issues.append(
+                    _issue(
+                        "rendered_page_hash_mismatch",
+                        "Rendered page hash does not match its current PNG bytes.",
+                        f"render_manifest.pages[{index}].sha256",
+                        frame_id=frame_id,
+                    )
+                )
+
+        probe = _get_value(page, "probe")
+        if probe is None:
             issues.append(
                 _issue(
-                    "png_dimensions_invalid",
-                    f"Rendered page must be 1080x1440; got {dimensions[0]}x{dimensions[1]}.",
-                    f"render_manifest.pages[{index}].path",
+                    "page_probe_missing",
+                    "Every rendered page requires persisted probe attestation.",
+                    f"render_manifest.pages[{index}].probe",
+                    frame_id=frame_id,
+                )
+            )
+            continue
+        texts = _as_list(probe, "text_results")
+        actual_text = [
+            (str(_get_value(text, "role") or ""), str(_get_value(text, "text") or ""))
+            for text in texts
+        ]
+        if actual_text != _expected_probe_text(frame):
+            issues.append(
+                _issue(
+                    "rendered_visible_text_mismatch",
+                    "Persisted rendered visible text must exactly equal storyboard strings.",
+                    f"render_manifest.pages[{index}].probe.text_results",
+                    frame_id=frame_id,
+                )
+            )
+        for text_index, text in enumerate(texts):
+            if (
+                _get_value(text, "visible") is not True
+                or _get_value(text, "overflow") is True
+                or _get_value(text, "ink_clipped") is True
+                or _get_value(text, "layout_clipped") is True
+            ):
+                issues.append(
+                    _issue(
+                        "text_overflow",
+                        "Persisted probe found hidden, overflowing, or clipped copy.",
+                        f"render_manifest.pages[{index}].probe.text_results[{text_index}]",
+                        frame_id=frame_id,
+                    )
+                )
+        for issue_index, finding in enumerate(_as_list(probe, "issues")):
+            issues.append(
+                _issue(
+                    "render_token_violation",
+                    f"Persisted page probe failed: {finding}.",
+                    f"render_manifest.pages[{index}].probe.issues[{issue_index}]",
                     frame_id=frame_id,
                 )
             )
@@ -222,14 +273,6 @@ def _manifest_page_issues(
                     frame_id=str(_get_value(pages[index], "frame_id") or "") or None,
                 )
             )
-    if missing_page:
-        issues.append(
-            _issue(
-                "partial_render_output",
-                "The renderer left a partial output set; rerender the complete carousel.",
-                "render_manifest.pages",
-            )
-        )
     return issues
 
 
@@ -247,88 +290,30 @@ def _font_issues(render_manifest: Any) -> list[RenderQAIssue]:
     ]
 
 
-def _diagnostic_issues(package: dict) -> list[RenderQAIssue]:
-    issues: list[RenderQAIssue] = []
-    diagnostics = package.get("render_diagnostics")
-    if diagnostics is None:
-        return issues
-    if not isinstance(diagnostics, list):
-        return [
-            _issue(
-                "render_diagnostics_invalid",
-                "Render diagnostics must be a list of deterministic probe findings.",
-                "publish_package.render_diagnostics",
-            )
-        ]
-    overflow_kinds = {
-        "overflow",
-        "ink_clip",
-        "layout_clip",
-        "hidden_copy",
-        "headline_lines",
-    }
-    for index, diagnostic in enumerate(diagnostics):
-        kind = str(_get_value(diagnostic, "kind") or "")
-        frame_id = str(_get_value(diagnostic, "frame_id") or "") or None
-        role = str(_get_value(diagnostic, "role") or "unknown")
-        if kind in overflow_kinds:
-            issues.append(
-                _issue(
-                    "text_overflow",
-                    f"Rendered copy failed the {kind} probe at {role}.",
-                    f"publish_package.render_diagnostics[{index}]",
-                    frame_id=frame_id,
-                )
-            )
-        elif kind:
-            issues.append(
-                _issue(
-                    "render_token_violation",
-                    f"Rendered page failed deterministic {kind} token validation.",
-                    f"publish_package.render_diagnostics[{index}]",
-                    frame_id=frame_id,
-                )
-            )
-    return issues
-
-
-def _visible_text_issues(package: dict, frames: list[Any]) -> list[RenderQAIssue]:
-    rendered = package.get("rendered_visible_text")
-    if rendered is None:
-        # The Task 6 renderer creates pages directly from the storyboard and only
-        # returns a manifest after its copy probes pass. Task 8 may additionally
-        # persist the explicit audit mapping handled below.
-        return []
-    if not isinstance(rendered, dict):
-        return [
-            _issue(
-                "rendered_visible_text_invalid",
-                "Rendered visible-text audit must be keyed by frame_id.",
-                "publish_package.rendered_visible_text",
-            )
-        ]
-    issues: list[RenderQAIssue] = []
-    for frame in frames:
-        frame_id = str(_get_value(frame, "frame_id") or "")
-        actual = rendered.get(frame_id)
-        expected = _visible_text(frame)
-        if actual != expected:
-            issues.append(
-                _issue(
-                    "rendered_visible_text_mismatch",
-                    "Rendered visible text must exactly equal the storyboard strings.",
-                    f"publish_package.rendered_visible_text.{frame_id}",
-                    frame_id=frame_id or None,
-                )
-            )
-    return issues
-
-
 def _asset_issues(
-    frames: list[Any], asset_manifest: Any, render_manifest: Any
+    frames: list[Any],
+    asset_manifest: Any,
+    render_manifest: Any,
+    visual_plan: Any = None,
 ) -> list[RenderQAIssue]:
     issues: list[RenderQAIssue] = []
     items = _as_list(asset_manifest, "items")
+    seen_slots: set[Any] = set()
+    for index, item in enumerate(items):
+        slot_id = _get_value(item, "slot_id")
+        if slot_id in seen_slots:
+            issues.append(
+                _issue(
+                    "duplicate_asset_manifest_slot_id",
+                    "AssetManifest slot IDs must be unique before asset mapping.",
+                    f"asset_manifest.items[{index}].slot_id",
+                )
+            )
+        else:
+            seen_slots.add(slot_id)
+    if issues:
+        return issues
+
     item_by_slot = {_get_value(item, "slot_id"): item for item in items}
     frame_by_slot = _frame_by_slot(frames)
     rendered_hashes = _get_value(render_manifest, "source_asset_sha256", {})
@@ -340,27 +325,36 @@ def _asset_issues(
         frame = frame_by_slot.get(slot_id)
         frame_id = str(_get_value(frame, "frame_id") or "") or None
         location = f"asset_manifest.items[{index}]"
-        if not _get_value(item, "source_type") or not _get_value(item, "license"):
+        for field, rule_id in (
+            ("source_type", "asset_source_type_provenance_missing"),
+            ("license", "asset_license_provenance_missing"),
+        ):
+            if _get_value(item, field):
+                continue
             issues.append(
                 _issue(
-                    "asset_provenance_missing",
-                    "Every rendered asset needs explicit source type and license provenance.",
-                    location,
+                    rule_id,
+                    f"Every rendered asset needs explicit {field} provenance.",
+                    f"{location}.{field}",
                     frame_id=frame_id,
                 )
             )
         source_type = str(_get_value(item, "source_type") or "")
-        if source_type not in {"local", "local_catalog"} and not all(
-            _get_value(item, field) for field in ("provider", "source_url", "author")
-        ):
-            issues.append(
-                _issue(
-                    "asset_provenance_missing",
-                    "External assets need provider, source URL, and author provenance.",
-                    location,
-                    frame_id=frame_id,
-                )
-            )
+        if source_type and source_type not in {"local", "local_catalog"}:
+            for field, rule_id in (
+                ("provider", "asset_provider_provenance_missing"),
+                ("source_url", "asset_source_url_provenance_missing"),
+                ("author", "asset_author_provenance_missing"),
+            ):
+                if not _get_value(item, field):
+                    issues.append(
+                        _issue(
+                            rule_id,
+                            f"External assets need {field} provenance.",
+                            f"{location}.{field}",
+                            frame_id=frame_id,
+                        )
+                    )
 
         raw_path = _get_value(item, "path")
         try:
@@ -378,7 +372,18 @@ def _asset_issues(
             )
             continue
 
-        actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+        snapshot = _asset_snapshot(path)
+        if snapshot is None:
+            issues.append(
+                _issue(
+                    "asset_file_corrupt",
+                    "Rendered asset source must be completely decodable.",
+                    f"{location}.path",
+                    frame_id=frame_id,
+                )
+            )
+            continue
+        actual_hash, intrinsic = snapshot
         declared_hash = str(_get_value(item, "sha256") or "")
         if actual_hash != declared_hash:
             issues.append(
@@ -389,7 +394,7 @@ def _asset_issues(
                     frame_id=frame_id,
                 )
             )
-        if rendered_hashes.get(slot_id) != declared_hash:
+        if rendered_hashes.get(slot_id) != actual_hash:
             issues.append(
                 _issue(
                     "rendered_asset_hash_mismatch",
@@ -399,7 +404,6 @@ def _asset_issues(
                 )
             )
 
-        intrinsic = _asset_dimensions(path)
         declared_dimensions = (
             _get_value(item, "width"),
             _get_value(item, "height"),
@@ -413,6 +417,63 @@ def _asset_issues(
                     frame_id=frame_id,
                 )
             )
+
+        if visual_plan is not None:
+            matching_requirements = [
+                requirement
+                for requirement in _as_list(visual_plan, "required_assets")
+                if _get_value(requirement, "slot_id") == slot_id
+            ]
+            if len(matching_requirements) == 1:
+                requirement = matching_requirements[0]
+                if intrinsic[0] < int(_get_value(requirement, "min_width") or 0) or intrinsic[
+                    1
+                ] < int(_get_value(requirement, "min_height") or 0):
+                    issues.append(
+                        _issue(
+                            "asset_min_dimensions_unmet",
+                            "Asset source snapshot does not meet VisualPlan minimum dimensions.",
+                            f"{location}.width",
+                            frame_id=frame_id,
+                        )
+                    )
+
+        frame_index = next(
+            (
+                candidate_index
+                for candidate_index, candidate in enumerate(frames)
+                if candidate is frame
+            ),
+            None,
+        )
+        pages = _as_list(render_manifest, "pages")
+        if frame_index is not None and frame_index < len(pages):
+            probe = _get_value(pages[frame_index], "probe")
+            probe_assets = [
+                result
+                for result in _as_list(probe, "asset_results")
+                if _get_value(result, "slot_id") == slot_id
+            ]
+            if len(probe_assets) == 1:
+                result = probe_assets[0]
+                natural = (
+                    _get_value(result, "natural_width"),
+                    _get_value(result, "natural_height"),
+                )
+                if (
+                    natural != intrinsic
+                    or _get_value(result, "object_fit") != "contain"
+                    or _get_value(result, "cropped") is not False
+                    or float(_get_value(result, "aspect_ratio_error") or 0) > 0.01
+                ):
+                    issues.append(
+                        _issue(
+                            "asset_render_stretched",
+                            "Persisted DOM asset geometry indicates crop or aspect-ratio distortion.",
+                            f"render_manifest.pages[{frame_index}].probe.asset_results",
+                            frame_id=frame_id,
+                        )
+                    )
 
     for slot_id, frame in frame_by_slot.items():
         frame_id = str(_get_value(frame, "frame_id") or "") or None
@@ -453,21 +514,53 @@ def _contact_sheet_issues(render_manifest: Any) -> list[RenderQAIssue]:
         path = Path(raw_path)
     except TypeError:
         path = Path("")
-    if raw_path and path.is_file() and _png_dimensions(path) is not None:
-        return []
-    return [
-        _issue(
-            "contact_sheet_missing",
-            "Render QA requires a generated PNG contact sheet.",
-            "render_manifest.contact_sheet_path",
+    location = "render_manifest.contact_sheet_path"
+    if not raw_path or not path.is_file():
+        return [
+            _issue(
+                "contact_sheet_missing",
+                "Render QA requires a generated PNG contact sheet.",
+                location,
+            )
+        ]
+    snapshot = _png_snapshot(path)
+    if snapshot is None:
+        return [
+            _issue(
+                "contact_sheet_corrupt",
+                "Contact sheet must be a completely decodable PNG.",
+                location,
+            )
+        ]
+    issues: list[RenderQAIssue] = []
+    actual_sha256, _ = snapshot
+    if actual_sha256 != _get_value(render_manifest, "contact_sheet_sha256"):
+        issues.append(
+            _issue(
+                "contact_sheet_hash_mismatch",
+                "Contact-sheet hash does not match its current PNG bytes.",
+                "render_manifest.contact_sheet_sha256",
+            )
         )
+    ordered_page_hashes = [
+        _get_value(page, "sha256") for page in _as_list(render_manifest, "pages")
     ]
+    if _as_list(render_manifest, "contact_sheet_page_sha256") != ordered_page_hashes:
+        issues.append(
+            _issue(
+                "contact_sheet_page_binding_mismatch",
+                "Contact sheet must bind the ordered rendered-page hashes.",
+                "render_manifest.contact_sheet_page_sha256",
+            )
+        )
+    return issues
 
 
 def validate_render(
     package: dict,
     asset_manifest: Any,
     render_manifest: Any,
+    visual_plan: Any = None,
 ) -> list[RenderQAIssue]:
     """Return atomic deterministic editorial render violations."""
 
@@ -476,9 +569,7 @@ def validate_render(
     issues: list[RenderQAIssue] = []
     issues.extend(_manifest_page_issues(frames, render_manifest))
     issues.extend(_font_issues(render_manifest))
-    issues.extend(_diagnostic_issues(package))
-    issues.extend(_visible_text_issues(package, frames))
-    issues.extend(_asset_issues(frames, asset_manifest, render_manifest))
+    issues.extend(_asset_issues(frames, asset_manifest, render_manifest, visual_plan))
     issues.extend(_contact_sheet_issues(render_manifest))
     render_error = package.get("render_error")
     if render_error:
@@ -497,7 +588,10 @@ def _score(values: list[bool]) -> int:
 
 
 def _quality_proxy_metrics(
-    package: dict, asset_manifest: Any, render_manifest: Any
+    package: dict,
+    asset_manifest: Any,
+    render_manifest: Any,
+    visual_plan: Any = None,
 ) -> dict[str, int]:
     frames = package.get("storyboards")
     frames = frames if isinstance(frames, list) else []
@@ -511,19 +605,40 @@ def _quality_proxy_metrics(
         == EXPECTED_FONT_FAMILIES
     )
 
-    category_facts: list[bool] = []
+    requirements = {
+        _get_value(requirement, "slot_id"): requirement
+        for requirement in _as_list(visual_plan, "required_assets")
+    }
+    probe_assets = {
+        _get_value(result, "slot_id"): result
+        for page in pages
+        for result in _as_list(_get_value(page, "probe"), "asset_results")
+    }
+    category_scores: list[float] = []
     for frame in frames:
         for slot in _as_list(frame, "visual_slots"):
             adapter = ASSET_ADAPTER.get(
                 (_get_value(frame, "layout"), _get_value(slot, "role"))
             )
             item = item_by_slot.get(_get_value(slot, "slot_id"))
-            category_facts.append(
+            role_fit = (
                 adapter is not None
                 and item is not None
                 and _get_value(item, "role") == adapter[0]
             )
-    beauty_category_fit = _score(category_facts)
+            requirement = requirements.get(_get_value(slot, "slot_id"))
+            measured = probe_assets.get(_get_value(slot, "slot_id"))
+            headroom = 0.0
+            if requirement is not None and measured is not None:
+                width_ratio = float(_get_value(measured, "natural_width") or 0) / max(
+                    1, float(_get_value(requirement, "min_width") or 1)
+                )
+                height_ratio = float(_get_value(measured, "natural_height") or 0) / max(
+                    1, float(_get_value(requirement, "min_height") or 1)
+                )
+                headroom = min(1.0, max(0.0, min(width_ratio, height_ratio) - 1.0))
+            category_scores.append((70.0 if role_fit else 0.0) + 30.0 * headroom)
+    beauty_category_fit = round(statistics.mean(category_scores)) if category_scores else 0
 
     page_identity_facts = [
         index < len(pages)
@@ -540,35 +655,88 @@ def _quality_proxy_metrics(
         for index, frame in enumerate(frames)
         for page in [pages[index] if index < len(pages) else None]
     ]
-    page_dimension_facts = [_page_has_exact_dimensions(page) for page in pages]
     hashes = _get_value(render_manifest, "source_asset_sha256", {})
     hash_fact = isinstance(hashes, dict) and all(
         hashes.get(_get_value(item, "slot_id")) == _get_value(item, "sha256")
         for item in items
     )
-    cross_page_consistency = _score(
-        [font_fact, hash_fact, *page_identity_facts, *page_dimension_facts]
+    headline_sizes = [
+        float(_get_value(text, "font_size") or 0)
+        for page in pages
+        for text in _as_list(_get_value(page, "probe"), "text_results")
+        if _get_value(text, "role") == "headline"
+    ]
+    if headline_sizes and statistics.mean(headline_sizes) > 0:
+        coefficient = statistics.pstdev(headline_sizes) / statistics.mean(
+            headline_sizes
+        )
+        type_consistency = max(0, round(100 * (1 - min(1.0, coefficient * 4))))
+    else:
+        type_consistency = 0
+    page_binding_fact = _as_list(
+        render_manifest, "contact_sheet_page_sha256"
+    ) == [_get_value(page, "sha256") for page in pages]
+    cross_page_consistency = round(
+        statistics.mean(
+            [
+                type_consistency,
+                100 if font_fact else 0,
+                100 if hash_fact else 0,
+                100 if page_binding_fact else 0,
+                _score(page_identity_facts),
+            ]
+        )
     )
 
     cover = frames[0] if frames else None
-    visual_hierarchy = _score(
-        [
-            _get_value(cover, "layout") == "editorial_cover",
-            bool(_get_value(cover, "headline")),
-            font_fact,
-            bool(page_dimension_facts) and all(page_dimension_facts),
+    hierarchy_scores: list[float] = []
+    for page in pages:
+        texts = _as_list(_get_value(page, "probe"), "text_results")
+        headlines = [
+            float(_get_value(text, "font_size") or 0)
+            for text in texts
+            if _get_value(text, "role") == "headline"
         ]
+        bodies = [
+            float(_get_value(text, "font_size") or 0)
+            for text in texts
+            if ".body" in str(_get_value(text, "role") or "")
+            or ".items[" in str(_get_value(text, "role") or "")
+        ]
+        if headlines and bodies and statistics.mean(bodies) > 0:
+            separation = headlines[0] / statistics.mean(bodies)
+            hierarchy_scores.append(min(100.0, max(0.0, (separation - 1.0) * 80)))
+    scale_hierarchy = (
+        statistics.mean(hierarchy_scores) if hierarchy_scores else 0.0
     )
-    saveability = 100 if any(
-        _get_value(frame, "layout") in SAVEABLE_LAYOUTS for frame in frames
-    ) else 0
+    visual_hierarchy = round(
+        0.8 * scale_hierarchy
+        + 10 * (_get_value(cover, "layout") == "editorial_cover")
+        + 10 * bool(_get_value(cover, "headline"))
+    )
+    saveable_item_counts = [
+        sum(len(_as_list(block, "items")) for block in _as_list(frame, "content_blocks"))
+        for frame in frames
+        if _get_value(frame, "layout") in SAVEABLE_LAYOUTS
+    ]
+    saveability = min(100, 20 * max(saveable_item_counts, default=0))
 
     layouts = [str(_get_value(frame, "layout") or "") for frame in frames]
-    repeats = sum(
-        layouts[index] == layouts[index - 1]
-        for index in range(1, len(layouts))
+    template_stiffness = round(
+        100 * (len(layouts) - len(set(layouts))) / max(1, len(layouts))
     )
-    template_stiffness = round(100 * repeats / max(1, len(layouts) - 1))
+    visible_character_counts = [
+        sum(
+            len(str(_get_value(text, "text") or ""))
+            for text in _as_list(_get_value(page, "probe"), "text_results")
+        )
+        for page in pages
+    ]
+    text_density_score = (
+        max(0, round(100 - statistics.mean(visible_character_counts) * 0.7))
+        if visible_character_counts
+        else 0
+    )
     editorial_quality = round(
         (
             beauty_category_fit
@@ -576,8 +744,9 @@ def _quality_proxy_metrics(
             + saveability
             + cross_page_consistency
             + (100 - template_stiffness)
+            + text_density_score
         )
-        / 5
+        / 6
     )
     return {
         "editorial_quality": editorial_quality,
@@ -708,17 +877,29 @@ def validate_rendered_images(package: dict, state: AgentState) -> list[RenderQAI
 
 def _build_r1_decision(package: dict, issues: list[RenderQAIssue]) -> DecisionOutput:
     draft_id = str(package.get("draft_id") or package.get("topic_id") or "render_qa")
+    def task_id(issue: RenderQAIssue) -> str:
+        identity = "|".join(
+            (
+                "render_qa",
+                issue.rule_id,
+                issue.frame_id or "",
+                issue.location_hint,
+            )
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        return f"render_qa_{issue.rule_id}_{digest}"
+
     tasks = EditorialTasks(
         mandatory=[
             SingleTask(
-                task_id=f"render_qa_{issue.rule_id}_{index:03d}",
+                task_id=task_id(issue),
                 source="render_qa",
                 instruction=issue.message,
                 severity="high",
                 location_hint=issue.location_hint,
                 rationale="Generated-file QA blocked human review.",
             )
-            for index, issue in enumerate(issues, start=1)
+            for issue in issues
         ],
         optional=[],
     )
@@ -767,12 +948,59 @@ def render_qa_node(state: AgentState) -> dict:
 
     asset_manifest = state.get("asset_manifest")
     render_manifest = state.get("render_manifest")
-    if asset_manifest is not None and render_manifest is not None:
-        issues = validate_render(package, asset_manifest, render_manifest)
-        metrics = _quality_proxy_metrics(package, asset_manifest, render_manifest)
-    else:
+    visual_plan = state.get("visual_plan")
+    raw_frames = package.get("storyboards")
+    is_explicit_legacy = (
+        isinstance(raw_frames, list)
+        and bool(raw_frames)
+        and all(
+            isinstance(frame, dict)
+            and "template" in frame
+            and not {"layout", "content_blocks", "visual_slots"}.intersection(frame)
+            for frame in raw_frames
+        )
+        and visual_plan is None
+        and asset_manifest is None
+        and render_manifest is None
+    )
+    if is_explicit_legacy:
         issues = validate_rendered_images(package, state)
         metrics = {}
+    else:
+        issues = []
+        if visual_plan is None:
+            issues.append(
+                _issue(
+                    "visual_plan_missing",
+                    "Editorial render QA requires the persisted VisualPlan.",
+                    "visual_plan",
+                )
+            )
+        if asset_manifest is None:
+            issues.append(
+                _issue(
+                    "asset_manifest_missing",
+                    "Editorial render QA requires the persisted AssetManifest.",
+                    "asset_manifest",
+                )
+            )
+        if render_manifest is None:
+            issues.append(
+                _issue(
+                    "render_manifest_missing",
+                    "Editorial render QA requires the persisted RenderManifest.",
+                    "render_manifest",
+                )
+            )
+        if not issues:
+            issues = validate_render(
+                package, asset_manifest, render_manifest, visual_plan
+            )
+            metrics = _quality_proxy_metrics(
+                package, asset_manifest, render_manifest, visual_plan
+            )
+        else:
+            metrics = {}
     result = RenderQAResult(passed=not issues, issues=issues, **metrics)
     output = {"render_qa_result": result, "current_node": "RENDER_QA"}
     if issues:

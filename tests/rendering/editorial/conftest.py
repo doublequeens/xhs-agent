@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import html
+import re
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from src.schemas.assets import AssetManifest, AssetManifestItem
 from src.schemas.storyboard import CarouselFrame, CarouselPayload
@@ -155,7 +158,8 @@ class FakeLocator:
         self.page.screenshot_calls += 1
         if self.page.fail_before_write_at == self.page.screenshot_calls:
             raise RuntimeError("screenshot failed before write")
-        Path(path).write_bytes(b"fake png")
+        size = (1080, 1440) if self.selector == ".card" else (1320, 2400)
+        Image.new("RGB", size, "white").save(path, format="PNG")
         if self.page.fail_screenshot_at == self.page.screenshot_calls:
             raise RuntimeError("screenshot failed")
 
@@ -184,6 +188,74 @@ class FakePage:
         self.events: list[str] = []
         self.loaded_html: list[str] = []
 
+    def _layout_report(self) -> dict:
+        document = self.loaded_html[-1]
+        matches = re.findall(
+            r'<[^>]*data-card-copy[^>]*data-copy-role="([^"]+)"[^>]*>'
+            r"(.*?)</[^>]+>",
+            document,
+            flags=re.DOTALL,
+        )
+        texts = []
+        for role, raw_text in matches:
+            value = html.unescape(re.sub(r"<[^>]+>", "", raw_text))
+            if role == "headline":
+                font_family, font_size, line_height = (
+                    "Source Han Serif SC",
+                    64.0,
+                    74.88,
+                )
+            elif role.endswith(".body") or ".items[" in role:
+                font_family, font_size, line_height = (
+                    "Source Han Sans SC",
+                    29.0,
+                    42.05,
+                )
+            else:
+                font_family, font_size, line_height = (
+                    "Source Han Sans SC",
+                    25.0,
+                    33.0,
+                )
+            texts.append(
+                {
+                    "role": role,
+                    "text": value,
+                    "visible": True,
+                    "overflow": False,
+                    "ink_clipped": False,
+                    "layout_clipped": False,
+                    "font_family": font_family,
+                    "font_size": font_size,
+                    "line_height": line_height,
+                    "line_count": 1,
+                    "x": 84.0,
+                    "y": 84.0,
+                    "width": 400.0,
+                    "height": line_height,
+                }
+            )
+        slots = re.findall(r'data-asset-slot="([^"]+)"', document)
+        return {
+            "canvas": {"width": 1080, "height": 1440},
+            "safe_margin": 84.0,
+            "texts": texts,
+            "assets": [
+                {
+                    "slot_id": slot,
+                    "natural_width": 1080,
+                    "natural_height": 1440,
+                    "rendered_width": 360.0,
+                    "rendered_height": 480.0,
+                    "object_fit": "contain",
+                    "cropped": False,
+                    "aspect_ratio_error": 0.0,
+                }
+                for slot in slots
+            ],
+            "issues": self.probe_issues,
+        }
+
     def set_viewport_size(self, size: dict[str, int]) -> None:
         self.events.append(f"viewport:{size['width']}x{size['height']}")
 
@@ -198,7 +270,7 @@ class FakePage:
             return self.font_report
         if "EDITORIAL_LAYOUT_PROBE" in script:
             self.events.append("layout-probe")
-            return self.probe_issues
+            return self._layout_report()
         raise AssertionError("unexpected browser probe")
 
     def locator(self, selector: str) -> FakeLocator:

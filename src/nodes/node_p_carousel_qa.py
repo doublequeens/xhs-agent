@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from pydantic import ValidationError
@@ -71,23 +72,30 @@ def _schema_location(index: int, location: tuple[Any, ...]) -> str:
     return result
 
 
-def _editorial_schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
+def _editorial_schema_audit(
+    raw_frames: Any,
+) -> tuple[list[CarouselQAIssue], set[int]]:
     if not isinstance(raw_frames, list):
-        return [
-            _issue(
-                "storyboard_schema_invalid",
-                "Editorial storyboards must be a list of structured frames.",
-                "storyboards",
-                before=str(raw_frames),
-                after_hint="Provide a list of schema-valid CarouselFrame values.",
-            )
-        ]
+        return (
+            [
+                _issue(
+                    "storyboard_schema_invalid",
+                    "Editorial storyboards must be a list of structured frames.",
+                    "storyboards",
+                    before=str(raw_frames),
+                    after_hint="Provide a list of schema-valid CarouselFrame values.",
+                )
+            ],
+            set(),
+        )
 
     issues: list[CarouselQAIssue] = []
+    invalid_indexes: set[int] = set()
     for index, raw_frame in enumerate(raw_frames):
         try:
             CarouselFrame.model_validate(raw_frame)
         except ValidationError as exc:
+            invalid_indexes.add(index)
             for error in exc.errors():
                 issues.append(
                     _issue(
@@ -99,6 +107,84 @@ def _editorial_schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
                         after_hint="Provide a schema-valid editorial storyboard frame.",
                     )
                 )
+    return issues, invalid_indexes
+
+
+def _duplicate_identity_issues(
+    frames: list[Any], visual_plan: Any
+) -> list[CarouselQAIssue]:
+    issues: list[CarouselQAIssue] = []
+
+    def audit(
+        values: list[tuple[Any, str, Any]], rule_id: str, message: str
+    ) -> None:
+        seen: set[Any] = set()
+        for value, location, owner in values:
+            if value in seen:
+                issues.append(
+                    _issue(
+                        rule_id,
+                        message,
+                        location,
+                        frame=owner,
+                        before=str(value or ""),
+                    )
+                )
+            else:
+                seen.add(value)
+
+    planned = _as_list(visual_plan, "frame_plan")
+    audit(
+        [
+            (
+                _get_value(frame, "frame_id"),
+                f"visual_plan.frame_plan[{index}].frame_id",
+                frame,
+            )
+            for index, frame in enumerate(planned)
+        ],
+        "duplicate_plan_frame_id",
+        "Visual-plan frame IDs must be unique.",
+    )
+    audit(
+        [
+            (
+                _get_value(frame, "frame_id"),
+                _location(index, "frame_id"),
+                frame,
+            )
+            for index, frame in enumerate(frames)
+        ],
+        "duplicate_storyboard_frame_id",
+        "Storyboard frame IDs must be unique.",
+    )
+    for frame_index, frame in enumerate(frames):
+        audit(
+            [
+                (
+                    _get_value(slot, "slot_id"),
+                    _location(frame_index, f"visual_slots[{slot_index}].slot_id"),
+                    frame,
+                )
+                for slot_index, slot in enumerate(_as_list(frame, "visual_slots"))
+            ],
+            "duplicate_storyboard_slot_id",
+            "Storyboard visual-slot IDs must be unique within a frame.",
+        )
+    audit(
+        [
+            (
+                _get_value(requirement, "slot_id"),
+                f"visual_plan.required_assets[{index}].slot_id",
+                None,
+            )
+            for index, requirement in enumerate(
+                _as_list(visual_plan, "required_assets")
+            )
+        ],
+        "duplicate_asset_requirement_slot_id",
+        "Visual-plan asset requirement slot IDs must be unique.",
+    )
     return issues
 
 
@@ -155,7 +241,9 @@ def _composition_issues(frames: list[Any]) -> list[CarouselQAIssue]:
     return issues
 
 
-def _plan_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQAIssue]:
+def _plan_contract_issues(
+    frames: list[Any], visual_plan: Any, invalid_indexes: set[int]
+) -> list[CarouselQAIssue]:
     issues: list[CarouselQAIssue] = []
     planned_frames = _as_list(visual_plan, "frame_plan")
     allowed_families = {
@@ -179,37 +267,40 @@ def _plan_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQ
                 )
             )
 
-        if index >= len(frames):
+        if index in invalid_indexes:
             continue
         frame = frames[index]
-        actual_identity = (
-            _get_value(frame, "frame_id"),
-            _get_value(frame, "layout"),
-        )
-        planned_identity = (
-            _get_value(planned, "frame_id"),
-            _get_value(planned, "layout"),
-        )
-        if actual_identity != planned_identity:
+        if _get_value(frame, "frame_id") != _get_value(planned, "frame_id"):
             issues.append(
                 _issue(
-                    "frame_plan_mismatch",
-                    "Storyboard frame identity and layout must match the visual plan order.",
+                    "frame_id_mismatch",
+                    "Storyboard frame ID must match the visual plan order.",
                     _location(index, "frame_id"),
                     frame=frame,
-                    before=str(actual_identity),
-                    after_hint=str(planned_identity),
+                    before=str(_get_value(frame, "frame_id") or ""),
+                    after_hint=str(_get_value(planned, "frame_id") or ""),
                 )
             )
         if _get_value(frame, "role") != _get_value(planned, "role"):
             issues.append(
                 _issue(
-                    "frame_task_mismatch",
+                    "frame_role_mismatch",
                     "Each frame must retain its one planned semantic task.",
                     _location(index, "role"),
                     frame=frame,
                     before=str(_get_value(frame, "role") or ""),
                     after_hint=str(_get_value(planned, "role") or ""),
+                )
+            )
+        if _get_value(frame, "layout") != _get_value(planned, "layout"):
+            issues.append(
+                _issue(
+                    "frame_layout_mismatch",
+                    "Storyboard frame layout must match its planned layout.",
+                    _location(index, "layout"),
+                    frame=frame,
+                    before=str(_get_value(frame, "layout") or ""),
+                    after_hint=str(_get_value(planned, "layout") or ""),
                 )
             )
         blocks = _as_list(frame, "content_blocks")
@@ -227,7 +318,9 @@ def _plan_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQ
     return issues
 
 
-def _slot_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQAIssue]:
+def _slot_contract_issues(
+    frames: list[Any], visual_plan: Any, invalid_indexes: set[int]
+) -> list[CarouselQAIssue]:
     issues: list[CarouselQAIssue] = []
     planned_frames = _as_list(visual_plan, "frame_plan")
     requirements = _as_list(visual_plan, "required_assets")
@@ -236,9 +329,11 @@ def _slot_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQ
         for index, requirement in enumerate(requirements)
     }
 
-    for frame_index, (frame, planned) in enumerate(
-        zip(frames, planned_frames, strict=False)
-    ):
+    for frame_index in range(len(frames)):
+        if frame_index in invalid_indexes:
+            continue
+        frame = frames[frame_index]
+        planned = planned_frames[frame_index]
         frame_id = str(_get_value(frame, "frame_id") or "") or None
         layout = _get_value(planned, "layout")
         expected_roles = [str(value) for value in _as_list(planned, "asset_roles")]
@@ -332,13 +427,31 @@ def validate_carousel(
 
     raw_frames = package.get("storyboards")
     frames = raw_frames if isinstance(raw_frames, list) else []
-    issues = _editorial_schema_issues(raw_frames)
+    issues, invalid_indexes = _editorial_schema_audit(raw_frames)
     issues.extend(_frame_count_issues(frames))
-    issues.extend(_composition_issues(frames))
+    planned_frames = _as_list(visual_plan, "frame_plan")
+    if len(planned_frames) != len(frames):
+        issues.append(
+            _issue(
+                "frame_plan_count_mismatch",
+                "Visual-plan and storyboard frame counts must match before traversal.",
+                "visual_plan.frame_plan",
+                before=str(len(planned_frames)),
+                after_hint=str(len(frames)),
+            )
+        )
+        return issues
+
+    identity_issues = _duplicate_identity_issues(frames, visual_plan)
+    issues.extend(identity_issues)
+    if identity_issues:
+        return issues
+    if not invalid_indexes:
+        issues.extend(_composition_issues(frames))
 
     cover = frames[0] if frames else None
     cover_headline = str(_get_value(cover, "headline") or "")
-    if cover_headline != contract.first_screen_promise:
+    if 0 not in invalid_indexes and cover_headline != contract.first_screen_promise:
         issues.append(
             _issue(
                 "first_screen_promise_mismatch",
@@ -350,8 +463,8 @@ def validate_carousel(
             )
         )
 
-    issues.extend(_plan_contract_issues(frames, visual_plan))
-    issues.extend(_slot_contract_issues(frames, visual_plan))
+    issues.extend(_plan_contract_issues(frames, visual_plan, invalid_indexes))
+    issues.extend(_slot_contract_issues(frames, visual_plan, invalid_indexes))
     return issues
 
 
@@ -418,10 +531,6 @@ def _validate_legacy_carousel(
 
 
 def _selected_content_contract(state: AgentState, package: dict) -> ContentContract:
-    package_contract = package.get("content_contract")
-    if package_contract is not None:
-        return ContentContract.model_validate(package_contract)
-
     topic_id = package.get("topic_id")
     matches = [
         topic
@@ -443,10 +552,22 @@ def _selected_content_contract(state: AgentState, package: dict) -> ContentContr
 
 
 def _build_r1_tasks(issues: list[CarouselQAIssue]) -> EditorialTasks:
+    def task_id(issue: CarouselQAIssue) -> str:
+        identity = "|".join(
+            (
+                "carousel_qa",
+                issue.rule_id,
+                issue.frame_id or "",
+                issue.location_hint,
+            )
+        )
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:12]
+        return f"carousel_qa_{issue.rule_id}_{digest}"
+
     return EditorialTasks(
         mandatory=[
             SingleTask(
-                task_id=f"carousel_qa_{issue.rule_id}_{index:03d}",
+                task_id=task_id(issue),
                 source="carousel_qa",
                 instruction=issue.message,
                 severity="high",
@@ -455,7 +576,7 @@ def _build_r1_tasks(issues: list[CarouselQAIssue]) -> EditorialTasks:
                 before=issue.before,
                 after_hint=issue.after_hint,
             )
-            for index, issue in enumerate(issues, start=1)
+            for issue in issues
         ],
         optional=[],
     )
@@ -510,10 +631,52 @@ def carousel_qa_node(state: AgentState) -> dict:
 
     contract = _selected_content_contract(state, package)
     visual_plan = state.get("visual_plan")
-    if visual_plan is None:
+    raw_frames = package.get("storyboards")
+    is_explicit_legacy = (
+        isinstance(raw_frames, list)
+        and bool(raw_frames)
+        and all(
+            isinstance(frame, dict)
+            and "template" in frame
+            and not {"layout", "content_blocks", "visual_slots"}.intersection(frame)
+            for frame in raw_frames
+        )
+        and visual_plan is None
+        and state.get("asset_manifest") is None
+        and state.get("render_manifest") is None
+    )
+    if is_explicit_legacy:
         issues = _validate_legacy_carousel(package, contract)
+    elif visual_plan is None:
+        issues = [
+            _issue(
+                "visual_plan_missing",
+                "Editorial carousel QA requires the persisted visual plan.",
+                "visual_plan",
+            )
+        ]
     else:
         issues = validate_carousel(package, contract, visual_plan)
+        package_contract = package.get("content_contract")
+        try:
+            matches_authoritative = (
+                package_contract is not None
+                and ContentContract.model_validate(package_contract).model_dump(
+                    mode="json"
+                )
+                == contract.model_dump(mode="json")
+            )
+        except ValidationError:
+            matches_authoritative = False
+        if not matches_authoritative:
+            issues.insert(
+                0,
+                _issue(
+                    "content_contract_mismatch",
+                    "Publish-package content contract must match the selected topic contract.",
+                    "publish_package.content_contract",
+                ),
+            )
     result = CarouselQAResult(passed=not issues, issues=issues)
     output = {"carousel_qa_result": result, "current_node": "CAROUSEL_QA"}
     if issues:
