@@ -48,7 +48,7 @@ def format_run(run: AgentRun, *, verbose: bool = False) -> str:
         "completed": "已完成",
     }
     subject = run.title or run.topic_summary or run.focus_keyword or "（尚无选题摘要）"
-    short_id = run.thread_id if len(run.thread_id) <= 31 else run.thread_id[:30] + "..."
+    short_id = run.thread_id if len(run.thread_id) <= 33 else run.thread_id[:30] + "..."
     lines = [
         f"[{run.run_id}] {run.updated_at.replace('T', ' ').replace('Z', ' UTC')} ｜"
         f"{labels[run.status]}｜断在：{run.last_node or '未知'}",

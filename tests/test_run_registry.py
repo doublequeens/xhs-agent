@@ -73,3 +73,12 @@ def test_error_truncation_and_compact_display_hide_full_thread_id(registry):
     assert run.thread_id not in format_run(run)
     assert "xhs_conversation_20260713T0632..." in format_run(run)
     assert run.thread_id in format_run(run, verbose=True)
+
+
+def test_compact_display_keeps_ids_through_33_characters(registry):
+    short = registry.create_run("a" * 33, "通勤防晒")
+    long = registry.create_run("b" * 34, "通勤防晒")
+
+    assert f"ID：{short.thread_id}" in format_run(short)
+    assert long.thread_id not in format_run(long)
+    assert f"ID：{'b' * 30}..." in format_run(long)
