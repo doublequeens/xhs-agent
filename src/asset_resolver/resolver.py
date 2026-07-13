@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
+from typing import Literal
 
 from src.schemas.assets import (
     AssetManifest,
@@ -120,7 +121,7 @@ def _manifest_item(
     requirement: AssetRequirement,
     entry: AssetEntry,
     *,
-    status: str,
+    status: Literal["active", "fallback"],
 ) -> AssetManifestItem:
     return AssetManifestItem(
         slot_id=requirement.slot_id,

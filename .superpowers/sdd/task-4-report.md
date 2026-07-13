@@ -2,10 +2,10 @@
 
 ## Implemented
 
-- Added `src.asset_resolver.catalog` with immutable catalog models and a loader
-  that accepts only local `active/` production assets, verifies required
-  provenance, file existence, sha256 values, dimensions metadata, and unique
-  IDs/paths.
+- Added `src.asset_resolver.catalog` with immutable resolver-facing catalog
+  models. Its loader delegates integrity validation to the existing design
+  system loader, which accepts only local `active/` production assets and
+  verifies provenance, file existence, hashes, dimensions, and uniqueness.
 - Added `src.asset_resolver.resolver` with deterministic local exact matching,
   hard eligibility filters, recent-repeat exclusion, semantic ranking,
   least-recently-used ordering, and `asset_id` tie-breaking.
