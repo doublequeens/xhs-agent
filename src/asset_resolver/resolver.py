@@ -521,11 +521,33 @@ def _resolution_lock(
             os.close(descriptor)
     with lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-        held_inodes.add(inode_identity)
         try:
-            yield
+            try:
+                locked_descriptor_stat = os.fstat(lock_handle.fileno())
+                locked_path_stat = os.lstat(lock_path)
+            except OSError as error:
+                raise AssetResolutionError(
+                    "resolution lock path changed while waiting"
+                ) from error
+            if (
+                stat.S_ISLNK(locked_path_stat.st_mode)
+                or lock_path.resolve() != lock_path
+                or locked_descriptor_stat.st_nlink != 1
+                or locked_path_stat.st_nlink != 1
+                or (locked_descriptor_stat.st_dev, locked_descriptor_stat.st_ino)
+                != (locked_path_stat.st_dev, locked_path_stat.st_ino)
+                or (locked_descriptor_stat.st_dev, locked_descriptor_stat.st_ino)
+                != inode_identity
+            ):
+                raise AssetResolutionError(
+                    "resolution lock path changed while waiting"
+                )
+            held_inodes.add(inode_identity)
+            try:
+                yield
+            finally:
+                held_inodes.discard(inode_identity)
         finally:
-            held_inodes.discard(inode_identity)
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 

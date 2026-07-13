@@ -55,8 +55,8 @@ candidate ranking, and download-error auditing before each corresponding impleme
 Final focused GREEN:
 
 ```text
-python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-119 passed, 2 skipped
+python -m pytest tests/asset_resolver -q
+115 passed, 2 skipped
 ```
 
 Most recent full-suite GREEN before the final lock-file-only correction:
@@ -182,11 +182,20 @@ symlink case was already rejected, while the new hard-link case first failed wit
   duplicate inode before `flock` and removing it on exit. This set is local to one
   acquisition, so normal cross-process contention for the same lock still waits.
 
-Both targeted alias cases passed, `test_external_resolution.py` passed 30 tests, and the
-asset-resolver-focused suite passed 114 tests with 2 live-provider skips. The combined
-focused count above includes the design-system tests. The full-suite result shown above is
-the immediately preceding run; the requested final verification scope was focused on the
-external resolver and asset resolver.
+A final pathname-replacement review found that the pre-`flock` identity checks could become
+stale while the call blocked: another process could replace pathname inode A with inode B,
+leaving this process locked on A while peers lock B. The deterministic regression replaces
+the pathname from inside the patched blocking call; it first failed with `DID NOT RAISE`,
+proving the critical section was entered. After acquiring `flock`, the resolver now repeats
+`fstat` and `lstat`, rejects symlinks, lexical/resolved mismatches, non-single link counts,
+and path/descriptor device-inode mismatches before adding `held_inodes` or yielding. Any
+failure raises `resolution lock path changed while waiting` from inside an unlock-guaranteed
+`finally` block.
+
+All 3 targeted resolution-lock cases passed, `test_external_resolution.py` passed 31 tests,
+and the asset-resolver-focused suite passed 115 tests with 2 live-provider skips. The
+full-suite result shown above is the immediately preceding run; the requested final
+verification scope was focused on the external resolver and asset resolver.
 
 Remaining risks:
 

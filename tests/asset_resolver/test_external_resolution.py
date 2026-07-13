@@ -690,6 +690,56 @@ def test_resolution_lock_rejects_in_root_inode_alias_without_deadlock(
         resolve_assets(plan, empty_catalog(tmp_path, [provider]))
 
 
+def test_resolution_lock_revalidates_path_after_blocking_flock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import fcntl
+    import os
+
+    from src.asset_resolver.resolver import (
+        AssetResolutionError,
+        _resolution_lock,
+        requirement_fingerprint,
+    )
+
+    catalog = empty_catalog(tmp_path, [])
+    requirement = texture_plan().required_assets[0]
+    fingerprint = requirement_fingerprint(requirement)
+    lock_name = hashlib.sha256(
+        f"{requirement.slot_id}\0{fingerprint}".encode()
+    ).hexdigest()
+    lock_path = catalog.incoming_root / ".resolution-locks" / f"{lock_name}.lock"
+    original_flock = fcntl.flock
+    path_replaced = False
+    lock_operations: list[int] = []
+
+    def replace_path_before_lock_acquisition(
+        descriptor: int, operation: int
+    ) -> None:
+        nonlocal path_replaced
+        lock_operations.append(operation)
+        if operation & fcntl.LOCK_EX and not path_replaced:
+            lock_path.unlink()
+            lock_path.touch()
+            path_replaced = True
+        original_flock(descriptor, operation)
+
+    monkeypatch.setattr(
+        "src.asset_resolver.resolver.fcntl.flock",
+        replace_path_before_lock_acquisition,
+    )
+    entered_critical_section = False
+
+    with pytest.raises(AssetResolutionError, match="resolution lock.*changed"):
+        with _resolution_lock(catalog, requirement, fingerprint, set()):
+            entered_critical_section = True
+
+    assert path_replaced
+    assert not entered_critical_section
+    assert lock_operations[-1] & fcntl.LOCK_UN
+    assert os.lstat(lock_path).st_nlink == 1
+
+
 def test_resolver_rejects_non_allowlisted_candidate_urls_before_download(
     tmp_path: Path,
 ) -> None:
