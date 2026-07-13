@@ -221,7 +221,7 @@ def test_hashtag_input_rejects_missing_domain_metadata():
     assert [error["loc"] for error in exc_info.value.errors()] == [("domain",)]
 
 
-def test_main_initial_state_includes_metadata_briefs(monkeypatch):
+def test_main_initial_state_includes_metadata_briefs(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     captured = {}
 
@@ -229,7 +229,11 @@ def test_main_initial_state_includes_metadata_briefs(monkeypatch):
         return SimpleNamespace(
             domain=None,
             subdomain=None,
+            new=False,
+            resume=None,
             thread_id=None,
+            runs=False,
+            verbose=False,
             focus_keyword=None,
             topic_num=10,
             provider=None,
@@ -242,6 +246,7 @@ def test_main_initial_state_includes_metadata_briefs(monkeypatch):
     monkeypatch.setattr(main.argparse.ArgumentParser, "parse_args", lambda self: fake_parse_args())
     monkeypatch.setattr(main, "load_run_state", fake_load_run_state)
     monkeypatch.setattr(main, "stream_graph_until_stop", lambda *args, **kwargs: None)
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", tmp_path / "agent_runs.sqlite")
 
     main.main()
 
