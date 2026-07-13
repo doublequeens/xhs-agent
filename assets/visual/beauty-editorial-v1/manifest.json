@@ -1,0 +1,1775 @@
+{
+  "catalog_id": "beauty_editorial_v1",
+  "assets": [
+    {
+      "asset_id": "face_front",
+      "role": "face_angle",
+      "path": "active/faces/face-front.svg",
+      "description": "Symmetric front face outline",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "acd97e545fea53ac57107717705464150752c6354b78ed1fdc971a7d0c6b778d",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "left_right_comparison"
+      ],
+      "tags": [
+        "face",
+        "front",
+        "symmetry"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_zone_mask"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "face_three_quarter_left",
+      "role": "face_angle",
+      "path": "active/faces/face-three-quarter-left.svg",
+      "description": "Left three-quarter face outline",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "1fe1494778051e0b9d5f9e969ae2f039e15dd2f28c6d4778f358b392c29564b7",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "left_right_comparison"
+      ],
+      "tags": [
+        "face",
+        "three-quarter",
+        "left"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_zone_mask"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "face_profile_right",
+      "role": "face_angle",
+      "path": "active/faces/face-profile-right.svg",
+      "description": "Right profile face outline",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "7a40f973cfd98b591eeb55081b0861066133f7fd8c405ecafbf7f2aeb169f434",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "left_right_comparison"
+      ],
+      "tags": [
+        "face",
+        "profile",
+        "right"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_zone_mask"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_forehead",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-forehead.svg",
+      "description": "Forehead application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "a98e3bcc808c5aacf802e1cbf0f086590549a8a418c22517eb39939118d0e0d2",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "forehead",
+        "upper-face"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_t_zone",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-t-zone.svg",
+      "description": "T-zone application mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "04afb472c80a3b06446ce472ded00d3f82d1d79d58d158e09eccda8ad3caa2f4",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "t-zone",
+        "center-face"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_nose",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-nose.svg",
+      "description": "Nose application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "8d3efac9ea0c3a3ddd1dd70e0272201735927baf1389bf790e83a871d93b1b9e",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "nose",
+        "center-face"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_left_cheek",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-left-cheek.svg",
+      "description": "Left cheek application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "a9bd407da97e66b4f6cd3a936c301e45b41784ed79e30aee5c37d6b0ce895464",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "cheek",
+        "left"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_right_cheek",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-right-cheek.svg",
+      "description": "Right cheek application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "aff5425fbd6a1e9a4d864f677b982ccf02e3756574346cbc46c14679d6686bb2",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "cheek",
+        "right"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_chin",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-chin.svg",
+      "description": "Chin application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "da5a017e3f4d63c4c6b598fed4145a0cd64f4ca527647c3f8ef7395fe7b8ff94",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "chin",
+        "lower-face"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_jawline",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-jawline.svg",
+      "description": "Jawline application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "e551938e63075d1e790d1341a549e713f985d775eeaf45323e4ed14442d48eba",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "jawline",
+        "contour"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_under_eye_pair",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-under-eye-pair.svg",
+      "description": "Paired under-eye application zones",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "c8528aad01a39266d443427e06cf887f5e1a614057bd7460889af5b679c1a39e",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "under-eye",
+        "paired"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_nasolabial_pair",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-nasolabial-pair.svg",
+      "description": "Paired nasolabial application zones",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "f5c6e78892f77d7f5fca4eb39fd5ea47a6802eb70bf2f686722cbc137327ba8f",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "nasolabial",
+        "paired"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "mask_full_face_oval",
+      "role": "face_zone_mask",
+      "path": "active/masks/mask-full-face-oval.svg",
+      "description": "Full face application zone mask",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "85995d87a61da97a4631386b677500e601ffcf3d7b6115b284e735a51c142942",
+      "allowed_layouts": [
+        "front_face_zone",
+        "three_quarter_face_zone",
+        "three_state_diagnostic"
+      ],
+      "tags": [
+        "face-zone",
+        "full-face",
+        "overall"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "face_angle"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "serum_ripple",
+      "role": "serum_texture",
+      "path": "active/textures/serum-ripple.svg",
+      "description": "Concentric serum ripple",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "72523efc390603b1ac4d32d4b987be30d2fea68d75383fb9fb54c87b4bc24bec",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "serum",
+        "ripple",
+        "fluid"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "liquid_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "serum_drops",
+      "role": "serum_texture",
+      "path": "active/textures/serum-drops.svg",
+      "description": "Suspended serum droplets",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "0c81068046b03827881bbeebeb706ed0a429c0047273933d105a4111ba1145ce",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "serum",
+        "droplets",
+        "transparent"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "liquid_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "serum_smear",
+      "role": "serum_texture",
+      "path": "active/textures/serum-smear.svg",
+      "description": "Diagonal serum smear",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "732b62005b283e849228ede248cb887e17d214c681caa5e0d66cddfaba1f99f1",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "serum",
+        "smear",
+        "diagonal"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "liquid_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "serum_beads",
+      "role": "serum_texture",
+      "path": "active/textures/serum-beads.svg",
+      "description": "Clustered serum micro-beads",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "63d82231d504fffdb0d9cd5f055fb80dbf195bb6f80a31e8105efaa20fbb077e",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "serum",
+        "beads",
+        "cluster"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "liquid_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "gel_wave",
+      "role": "gel_texture",
+      "path": "active/textures/gel-wave.svg",
+      "description": "Layered translucent gel wave",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "a5d15333b3be5c8673252fb5b2b085f1cb5f2d4c377d222ad379d4269a6923ed",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "gel",
+        "wave",
+        "translucent"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "cream_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "gel_dollop",
+      "role": "gel_texture",
+      "path": "active/textures/gel-dollop.svg",
+      "description": "Rounded gel dollop",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "08308c8718b1e238f48afe6374768b913d4d9d3328d40dbe81f749df24bf5871",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "gel",
+        "dollop",
+        "rounded"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "cream_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "gel_bubbles",
+      "role": "gel_texture",
+      "path": "active/textures/gel-bubbles.svg",
+      "description": "Bubbled gel field",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "7c60bfb9ea5075b59fca63f0622c2b83ee75a732361a757d5aa803123ccd5962",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "gel",
+        "bubbles",
+        "field"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "cream_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "gel_swipe",
+      "role": "gel_texture",
+      "path": "active/textures/gel-swipe.svg",
+      "description": "Curved gel swipe",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "0424f5fee9bf049dad25a87e3a71590c5074fed32f577a1a638efa9398823a37",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "gel",
+        "swipe",
+        "curve"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "cream_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "cream_peak",
+      "role": "cream_texture",
+      "path": "active/textures/cream-peak.svg",
+      "description": "Single cream peak",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "ebc272776490ebc56b3a63c92115cfbdcb245194a7ed0aa03537da5f2a74b4ff",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "cream",
+        "peak",
+        "rich"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "gel_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "cream_rosette",
+      "role": "cream_texture",
+      "path": "active/textures/cream-rosette.svg",
+      "description": "Piped cream rosette",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "a6aac0db31adf75019bf59710296d0f14e61b13d67840ab582662891a8d36eb1",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "cream",
+        "rosette",
+        "piped"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "gel_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "cream_swatch",
+      "role": "cream_texture",
+      "path": "active/textures/cream-swatch.svg",
+      "description": "Palette-knife cream swatch",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "bf092718be4752c8c0b4acc6d5cac3685c306ec92c46b5d935a0c2e17ef57663",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "cream",
+        "swatch",
+        "palette-knife"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "gel_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "cream_dots",
+      "role": "cream_texture",
+      "path": "active/textures/cream-dots.svg",
+      "description": "Measured cream dot row",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "29dd0ac2bb0a7adfe66bf3c0d21658ddeed1adeb0f151c00ad9bb7355c99be9b",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "cream",
+        "dots",
+        "quantity"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "gel_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "liquid_pool",
+      "role": "liquid_texture",
+      "path": "active/textures/liquid-pool.svg",
+      "description": "Irregular liquid pool",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "da7a6e300cf9aafb28723053e9a5db870055c29a08c79e4e8d03ec7b58c38121",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "liquid",
+        "pool",
+        "irregular"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "serum_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "liquid_splash",
+      "role": "liquid_texture",
+      "path": "active/textures/liquid-splash.svg",
+      "description": "Radial liquid splash",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "b0e8b18b09cec6e61d95921e3f24340ba4e1f7d5900243e71f2ee5136d35b483",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "liquid",
+        "splash",
+        "radial"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "serum_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "liquid_rings",
+      "role": "liquid_texture",
+      "path": "active/textures/liquid-rings.svg",
+      "description": "Offset liquid ring study",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "3e6fe378af46d7ca3cc06e800b44f7b4a1eab75cfcb1ff7ebd78e76b5eb143a0",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "liquid",
+        "rings",
+        "offset"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "serum_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "liquid_drips",
+      "role": "liquid_texture",
+      "path": "active/textures/liquid-drips.svg",
+      "description": "Vertical liquid drips",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "0edbe25503bccb1d30c0d38b4b7bb3caf82710b544a89e9f7b445b34e887d7e9",
+      "allowed_layouts": [
+        "texture_baseline",
+        "three_state_diagnostic",
+        "editorial_cover"
+      ],
+      "tags": [
+        "liquid",
+        "drips",
+        "vertical"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "serum_texture"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "pump_tall",
+      "role": "pump_shape",
+      "path": "active/containers/pump-tall.svg",
+      "description": "Tall pump bottle line art",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "ebe0ebdea971ea03b5249f5fe87e4d35d607c4f0caa0401b665138d36ec35572",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "pump",
+        "tall",
+        "bottle"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "container_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "pump_round",
+      "role": "pump_shape",
+      "path": "active/containers/pump-round.svg",
+      "description": "Rounded pump bottle line art",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "9a30a3ff7d30daebca0e075d4a4ef600ce0ebf01ab9d092ee2883b03bc422128",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "pump",
+        "round",
+        "bottle"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "container_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "pump_airless",
+      "role": "pump_shape",
+      "path": "active/containers/pump-airless.svg",
+      "description": "Airless pump cylinder",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "107b1ff76fe23e9f5231a4a591fb7177e31d8a3a906f0918e96deabb9d3ef447",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "pump",
+        "airless",
+        "cylinder"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "container_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "pump_travel",
+      "role": "pump_shape",
+      "path": "active/containers/pump-travel.svg",
+      "description": "Compact travel pump",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "0d1e2c6183118389cbb2aa80e05b6a5cf429b7e5ba11e89a52367aad9177339d",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "pump",
+        "travel",
+        "compact"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "container_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "dropper_classic",
+      "role": "dropper_shape",
+      "path": "active/containers/dropper-classic.svg",
+      "description": "Classic glass dropper bottle",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "488629f49f96f02529f4710b530f4b335b57f0b1d71535bec705adbb1ebfe11e",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "dropper",
+        "classic",
+        "glass"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "pump_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "dropper_bulb",
+      "role": "dropper_shape",
+      "path": "active/containers/dropper-bulb.svg",
+      "description": "Detached bulb dropper",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "111eae63dee0f0147e5121a733f0b6bf44ca70a80708c4c6cdf11909a06045ab",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "dropper",
+        "bulb",
+        "detached"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "pump_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "dropper_pipette",
+      "role": "dropper_shape",
+      "path": "active/containers/dropper-pipette.svg",
+      "description": "Measured pipette line art",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "99d982268dc79997d82feb1887b59daecc97586556599c9580a1111a06b21c7d",
+      "allowed_layouts": [
+        "step_timeline",
+        "morning_evening_flow",
+        "saveable_reference"
+      ],
+      "tags": [
+        "dropper",
+        "pipette",
+        "measured"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "pump_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "container_square_bottle",
+      "role": "container_shape",
+      "path": "active/containers/container-square-bottle.svg",
+      "description": "Square unbranded bottle",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "2566ff6262cb7bc6d608313d50266b379154568d814fb8c4cf528a7071220846",
+      "allowed_layouts": [
+        "left_right_comparison",
+        "decision_tree",
+        "saveable_reference"
+      ],
+      "tags": [
+        "container",
+        "square",
+        "bottle"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "pump_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "container_low_jar",
+      "role": "container_shape",
+      "path": "active/containers/container-low-jar.svg",
+      "description": "Low cosmetic jar",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "d2438e0ace7c172be50b928ff40772dd37060d859a5b0c117e225192f7c33881",
+      "allowed_layouts": [
+        "left_right_comparison",
+        "decision_tree",
+        "saveable_reference"
+      ],
+      "tags": [
+        "container",
+        "jar",
+        "low"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "pump_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "container_soft_tube",
+      "role": "container_shape",
+      "path": "active/containers/container-soft-tube.svg",
+      "description": "Soft squeeze tube",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "885eca274068dbc43a64a2a1a8e2bdcd7ce9156d2d7ca813d31c60ee2c7d9840",
+      "allowed_layouts": [
+        "left_right_comparison",
+        "decision_tree",
+        "saveable_reference"
+      ],
+      "tags": [
+        "container",
+        "tube",
+        "squeeze"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "pump_shape"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "hand_open_palm",
+      "role": "hand_detail",
+      "path": "active/details/hand-open-palm.svg",
+      "description": "Open palm line detail",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "70ff9f1cb7c9b7a84a2146f560100d1a06e995bc52dd742ecdfbdcf806025520",
+      "allowed_layouts": [
+        "step_timeline",
+        "texture_baseline",
+        "editorial_cover"
+      ],
+      "tags": [
+        "hand",
+        "palm",
+        "open"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "skin_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "hand_fingertip",
+      "role": "hand_detail",
+      "path": "active/details/hand-fingertip.svg",
+      "description": "Fingertip application detail",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "fcabbc547d8f6bea49db22f5f06f24fbc3f47bf20a95d819bb861e7cf4304c3e",
+      "allowed_layouts": [
+        "step_timeline",
+        "texture_baseline",
+        "editorial_cover"
+      ],
+      "tags": [
+        "hand",
+        "fingertip",
+        "application"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "skin_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "hand_cupping",
+      "role": "hand_detail",
+      "path": "active/details/hand-cupping.svg",
+      "description": "Cupped hand gesture",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "6cb3ef997771f7ccc7d41a911199ab28ba585bfea65e9d9c9f5caed471fb89f0",
+      "allowed_layouts": [
+        "step_timeline",
+        "texture_baseline",
+        "editorial_cover"
+      ],
+      "tags": [
+        "hand",
+        "cupping",
+        "support"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "skin_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "hand_pump_gesture",
+      "role": "hand_detail",
+      "path": "active/details/hand-pump-gesture.svg",
+      "description": "Finger pressing pump gesture",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "2637eec8e8b9e75a6747d739c95698ac21572f2d861c19779418e860c0994c2e",
+      "allowed_layouts": [
+        "step_timeline",
+        "texture_baseline",
+        "editorial_cover"
+      ],
+      "tags": [
+        "hand",
+        "pump",
+        "press"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "skin_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "skin_pores",
+      "role": "skin_detail",
+      "path": "active/details/skin-pores.svg",
+      "description": "Magnified pore pattern",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "68d3dd2ff39bde7f64d50778757a3e859a3f4450664d628753796148f387f8a8",
+      "allowed_layouts": [
+        "three_state_diagnostic",
+        "left_right_comparison",
+        "saveable_reference"
+      ],
+      "tags": [
+        "skin",
+        "pores",
+        "magnified"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "hand_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "skin_dry_flakes",
+      "role": "skin_detail",
+      "path": "active/details/skin-dry-flakes.svg",
+      "description": "Dry flake texture detail",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "a2adedff466ff8aa5f89b9347d376cbb68b80deb17e6bfa4ee8b6fbd0c544d7c",
+      "allowed_layouts": [
+        "three_state_diagnostic",
+        "left_right_comparison",
+        "saveable_reference"
+      ],
+      "tags": [
+        "skin",
+        "dryness",
+        "flakes"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "hand_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "skin_hydrated_glow",
+      "role": "skin_detail",
+      "path": "active/details/skin-hydrated-glow.svg",
+      "description": "Hydrated glow detail",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "ebaaeb784bce0f8500753f8fef31fbef9143062045fb3701e57ffe0fe6ff5c76",
+      "allowed_layouts": [
+        "three_state_diagnostic",
+        "left_right_comparison",
+        "saveable_reference"
+      ],
+      "tags": [
+        "skin",
+        "hydrated",
+        "glow"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "hand_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "skin_redness_patch",
+      "role": "skin_detail",
+      "path": "active/details/skin-redness-patch.svg",
+      "description": "Localized redness patch detail",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 512,
+        "height": 512
+      },
+      "sha256": "9592a7f2b01e4df780df7c8c0b4384970e04f7a69f4a221372dd7ebabea5fc32",
+      "allowed_layouts": [
+        "three_state_diagnostic",
+        "left_right_comparison",
+        "saveable_reference"
+      ],
+      "tags": [
+        "skin",
+        "redness",
+        "localized"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "hand_detail"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "background_paper_grain",
+      "role": "background_token",
+      "path": "active/tokens/background-paper-grain.svg",
+      "description": "Subtle paper grain background",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "b8e9ffe888176b035baf15642f159954f6ec13956610080bfa0671f8d30eab8d",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "background",
+        "paper",
+        "grain"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "background_arch",
+      "role": "background_token",
+      "path": "active/tokens/background-arch.svg",
+      "description": "Editorial arch background",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "22bbb2ae135ddf97e215c6dc286ee4814ab1c78301f1440110966a1740171876",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "background",
+        "arch",
+        "editorial"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "background_dot_field",
+      "role": "background_token",
+      "path": "active/tokens/background-dot-field.svg",
+      "description": "Ordered dot field background",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "3f4a76c4a5e32a1eff05973eea8a2ac190d9bf29a94c61557248c234d4f7db1a",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "background",
+        "dots",
+        "grid"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "background_soft_blobs",
+      "role": "background_token",
+      "path": "active/tokens/background-soft-blobs.svg",
+      "description": "Soft organic blob background",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "7df64a03362884e9b96cc38e290a9ed07ab7d0a25494743e2a4e0b246c980a47",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "background",
+        "blob",
+        "organic"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "line_fine_rule",
+      "role": "line_token",
+      "path": "active/tokens/line-fine-rule.svg",
+      "description": "Fine editorial divider rule",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 300
+      },
+      "sha256": "cb1bd2b0eb38482f636a5d8e314ab3c635aa1433208b4f01f6417f9c37680432",
+      "allowed_layouts": [
+        "step_timeline",
+        "decision_tree",
+        "saveable_checklist"
+      ],
+      "tags": [
+        "line",
+        "divider",
+        "fine"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "background_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "line_soft_wave",
+      "role": "line_token",
+      "path": "active/tokens/line-soft-wave.svg",
+      "description": "Soft wave divider",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 300
+      },
+      "sha256": "1016836362774fecd856a85a5d2fcfe6155d69060bcd955a65aaa8273c653b23",
+      "allowed_layouts": [
+        "step_timeline",
+        "decision_tree",
+        "saveable_checklist"
+      ],
+      "tags": [
+        "line",
+        "divider",
+        "wave"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "background_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "line_bracket",
+      "role": "line_token",
+      "path": "active/tokens/line-bracket.svg",
+      "description": "Open bracket framing rule",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 300
+      },
+      "sha256": "dd265e647327538b99c181ad1b342be839824485654fe99e375b749d09cc2a68",
+      "allowed_layouts": [
+        "step_timeline",
+        "decision_tree",
+        "saveable_checklist"
+      ],
+      "tags": [
+        "line",
+        "bracket",
+        "frame"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "background_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "line_connector",
+      "role": "line_token",
+      "path": "active/tokens/line-connector.svg",
+      "description": "Node connector line",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 1080,
+        "height": 300
+      },
+      "sha256": "68930b40067d9e6e4664ecb81682995f88d09daff4e042b6e958f2fa317e8327",
+      "allowed_layouts": [
+        "step_timeline",
+        "decision_tree",
+        "saveable_checklist"
+      ],
+      "tags": [
+        "line",
+        "connector",
+        "nodes"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "background_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "page_number_oval",
+      "role": "page_number_token",
+      "path": "active/tokens/page-number-oval.svg",
+      "description": "Oval page number cartouche",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 256,
+        "height": 256
+      },
+      "sha256": "fb06f7aa58c23460efe44e8011c3ca1aff68a3b063a89f05c9f1f4cf971f8247",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "page-number",
+        "oval",
+        "cartouche"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "page_number_circle",
+      "role": "page_number_token",
+      "path": "active/tokens/page-number-circle.svg",
+      "description": "Circular page number badge",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 256,
+        "height": 256
+      },
+      "sha256": "149a663df95343117915e1ce97e9de1a8c4e00f910999d65d59d01f7c077efb5",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "page-number",
+        "circle",
+        "badge"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "page_number_corner",
+      "role": "page_number_token",
+      "path": "active/tokens/page-number-corner.svg",
+      "description": "Corner fold page number marker",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 256,
+        "height": 256
+      },
+      "sha256": "7b94e1887cdff643aa6f2600b8971a71bd174f939b2422c4f42ed937dc60e99a",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "page-number",
+        "corner",
+        "fold"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    },
+    {
+      "asset_id": "page_number_tab",
+      "role": "page_number_token",
+      "path": "active/tokens/page-number-tab.svg",
+      "description": "Vertical page number tab",
+      "ownership": "project_original",
+      "license": "project_internal",
+      "dimensions": {
+        "width": 256,
+        "height": 256
+      },
+      "sha256": "8e6fb4740cb9e714d62c1a7afd8227dba4b6ce289bcbc95f2f2c5a8eb1c10245",
+      "allowed_layouts": [
+        "editorial_cover",
+        "saveable_checklist",
+        "saveable_reference"
+      ],
+      "tags": [
+        "page-number",
+        "tab",
+        "vertical"
+      ],
+      "disabled_contexts": [
+        "medical_diagnosis"
+      ],
+      "fallback_roles": [
+        "line_token"
+      ],
+      "usage": "production"
+    }
+  ]
+}

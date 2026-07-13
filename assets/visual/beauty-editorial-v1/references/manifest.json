@@ -1,0 +1,44 @@
+{
+  "catalog_id": "beauty_editorial_v1_quality_anchors",
+  "assets": [
+    {
+      "asset_id": "editorial_cover_anchor",
+      "path": "editorial-cover-anchor.png",
+      "description": "style only: never copy title, copy, topic, or page sequence.",
+      "ownership": "approved_internal_reference",
+      "license": "reference_only_not_for_redistribution",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "eaa63ace12c9ec200cb7b09a1d36f9f24557ce5c5702de12d301a0f2438be0bc",
+      "usage": "reference_only"
+    },
+    {
+      "asset_id": "face_diagram_anchor",
+      "path": "face-diagram-anchor.png",
+      "description": "style only: never copy title, copy, topic, or page sequence.",
+      "ownership": "approved_internal_reference",
+      "license": "reference_only_not_for_redistribution",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "f4432562dd7c4715da259685f369bf01bb8cbff455f202882212365654e052e9",
+      "usage": "reference_only"
+    },
+    {
+      "asset_id": "save_card_anchor",
+      "path": "save-card-anchor.png",
+      "description": "style only: never copy title, copy, topic, or page sequence.",
+      "ownership": "approved_internal_reference",
+      "license": "reference_only_not_for_redistribution",
+      "dimensions": {
+        "width": 1080,
+        "height": 1440
+      },
+      "sha256": "d94a8dda5c1c29dfc32d3f5a2b6e5717b6964fb99ba96d112a0c475ac5898a06",
+      "usage": "reference_only"
+    }
+  ]
+}

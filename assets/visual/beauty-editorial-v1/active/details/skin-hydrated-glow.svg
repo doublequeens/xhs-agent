@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" fill="none">
+  <title>Hydrated glow detail</title>
+  <desc>Project-original reusable beauty editorial vector.</desc>
+  <circle cx="256" cy="256" r="202" fill="#E8C8C3"/>
+  <circle cx="256" cy="256" r="146" fill="#F7F2EA" fill-opacity=".4"/>
+  <g stroke="#F7F2EA" stroke-width="18" stroke-linecap="round"><path d="M256 88V132M256 380V424M88 256H132M380 256H424M138 138L170 170M342 342L374 374M374 138L342 170M170 342L138 374"/></g>
+</svg>
