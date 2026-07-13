@@ -549,6 +549,36 @@ def test_resume_accepts_run_id_or_full_thread_id(monkeypatch, tmp_path):
     assert main.select_run(registry, main.parse_cli_args(["--resume", run.thread_id])) == (run.thread_id, False)
 
 
+def test_resume_prefers_exact_numeric_thread_id_over_run_id_collision(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    unrelated = registry.create_run("thread-unrelated", "旧任务")
+    numeric_thread = registry.create_run("1", "数字线程")
+    registry.update_run(unrelated.thread_id, status="interrupted")
+    registry.update_run(numeric_thread.thread_id, status="interrupted")
+
+    selection = main.select_run(registry, main.parse_cli_args(["--resume", "1"]))
+
+    assert selection == (numeric_thread.thread_id, False)
+    assert registry.get_by_thread_id(numeric_thread.thread_id).status == "running"
+    assert registry.get_by_thread_id(unrelated.thread_id).status == "interrupted"
+
+
+def test_bare_resume_uses_interactive_recovery_list(monkeypatch, tmp_path, capsys):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("thread-resume", "通勤防晒")
+
+    selection = main.select_run(
+        registry,
+        main.parse_cli_args(["--resume"]),
+        input_fn=lambda _prompt: str(run.run_id),
+    )
+
+    assert selection == (run.thread_id, False)
+    assert "可恢复的任务" in capsys.readouterr().out
+
+
 def test_extract_run_updates_prefers_publish_package_then_first_trend(monkeypatch):
     main = _load_main(monkeypatch)
 
@@ -605,3 +635,24 @@ def test_runs_exits_before_memory_manager_or_graph(monkeypatch, tmp_path, capsys
     main.main()
 
     assert "通勤防晒" in capsys.readouterr().out
+
+
+def test_runs_verbose_prints_full_ids_and_limits_output_to_twenty(monkeypatch, tmp_path, capsys):
+    main = _load_main(monkeypatch)
+    registry_path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(registry_path)
+    thread_ids = [f"thread-{index}-{'x' * 40}" for index in range(21)]
+    for thread_id in thread_ids:
+        registry.create_run(thread_id, "通勤防晒")
+    registry.close()
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(main, "XHSMemoryManager", lambda *_args: pytest.fail("memory should not be constructed"))
+    monkeypatch.setattr(main, "create_graph", lambda: pytest.fail("graph should not be constructed"))
+    monkeypatch.setattr("sys.argv", ["main.py", "--runs", "--verbose"])
+
+    main.main()
+
+    output = capsys.readouterr().out
+    assert output.count("ID：") == 20
+    assert thread_ids[0] not in output
+    assert thread_ids[-1] in output

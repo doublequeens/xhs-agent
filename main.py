@@ -183,7 +183,9 @@ def select_run(registry: RunRegistry, args: argparse.Namespace, input_fn=input, 
     if args.thread_id:
         return args.thread_id, False
     if args.resume not in (None, ""):
-        run = registry.get_by_run_id(int(args.resume)) if args.resume.isdigit() else registry.get_by_thread_id(args.resume)
+        run = registry.get_by_thread_id(args.resume)
+        if run is None and args.resume.isdigit():
+            run = registry.get_by_run_id(int(args.resume))
         if run is None:
             raise RunRegistryError(f"找不到要恢复的任务：{args.resume}")
         registry.update_run(run.thread_id, status="running", error_summary=None)
