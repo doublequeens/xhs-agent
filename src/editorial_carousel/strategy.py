@@ -79,7 +79,6 @@ RECIPES: Final[dict[ContentJob, Recipe]] = {
 # Each alternative changes a non-cover, non-save auxiliary layout while retaining
 # the recipe's semantic role and primary visual family.
 ALTERNATIVE_LAYOUTS: Final[dict[ContentJob, tuple[int, LayoutName]]] = {
-    "diagnose_and_adjust": (4, "decision_tree"),
     "follow_steps": (2, "step_timeline"),
     "compare_and_choose": (2, "decision_tree"),
     "save_and_check": (2, "step_timeline"),
@@ -157,7 +156,11 @@ def _select_recipe(
     ):
         return recipe
 
-    index, alternative_layout = ALTERNATIVE_LAYOUTS[content_job]
+    alternative_recipe = ALTERNATIVE_LAYOUTS.get(content_job)
+    if alternative_recipe is None:
+        return recipe
+
+    index, alternative_layout = alternative_recipe
     alternative = list(recipe)
     role, _layout, asset_role = alternative[index]
     alternative[index] = (role, alternative_layout, asset_role)

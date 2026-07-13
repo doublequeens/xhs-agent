@@ -242,3 +242,128 @@ or external provider behavior was implemented.
   third-party LangGraph deprecation warning and two expected legacy checkpoint
   domain-context fallback warnings. Pytest also prints non-failing macOS temp cleanup
   warnings after some successful commands.
+
+## Review-fix follow-up
+
+### Findings resolved
+
+- Added `storyboards_generator_legacy.txt` and a minimal composer task entry. A state
+  without `visual_plan` now receives the original fixed-six `TextCardPayload` prompt,
+  omits a fabricated visual plan from its human prompt, preserves the old raw handoff,
+  and leaves validation/R1 routing with the current carousel QA. A state with a real
+  `visual_plan` continues to receive only the strict semantic prompt and
+  `CarouselPayload` validation.
+- Removed `diagnose_and_adjust` from anti-repetition alternatives. Its exact six roles
+  and layouts, including `three_state_diagnostic`, are now immutable even if the same
+  signature was recently published. The deterministic alternative test uses
+  `follow_steps` instead.
+- Made `publish_package.content_contract` the only semantic-path contract source.
+  It is validated before the model call and must match the visual plan's content job
+  and primary visual family. Legacy no-plan checkpoints retain topic lookup.
+- Added one shared semantic payload validator used both immediately after model output
+  and after pending/R2/human patch application. It enforces schema, exact frame
+  ID/order/layout alignment, and cover headline equality to the final package
+  contract's `first_screen_promise` at both gates.
+
+### Review-fix RED evidence
+
+Command:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/editorial_carousel/test_strategy.py tests/nodes/test_visual_strategy_planner.py tests/nodes/test_metadata_flow.py tests/prompts/test_composer.py -q
+```
+
+Exact terminal result before fixes:
+
+```text
+..........F..................FFF..FF........F........................... [100%]
+...
+FAILED tests/editorial_carousel/test_strategy.py::test_recent_identical_signature_never_changes_diagnostic_recipe
+FAILED tests/nodes/test_metadata_flow.py::test_storyboard_generator_without_plan_uses_legacy_prompt_and_payload
+FAILED tests/nodes/test_metadata_flow.py::test_semantic_storyboard_uses_final_package_contract_when_trend_is_stale
+FAILED tests/nodes/test_metadata_flow.py::test_semantic_storyboard_rejects_package_contract_that_disagrees_with_plan
+FAILED tests/nodes/test_metadata_flow.py::test_semantic_storyboard_rejects_cover_promise_mismatch_before_state_write
+FAILED tests/nodes/test_metadata_flow.py::test_semantic_storyboard_rejects_cover_promise_mismatch_after_r2_patch
+FAILED tests/prompts/test_composer.py::test_legacy_storyboard_prompt_is_isolated_from_semantic_contract
+7 failed, 65 passed in 2.31s
+```
+
+The seven failures corresponded one-to-one with the requested review fixes: mutated
+diagnostic layout, wrong prompt branch, stale trend contract overwrite, missing
+plan/contract consistency gate, two missing cover gates, and the absent isolated
+legacy prompt.
+
+### Review-fix GREEN evidence
+
+Same focused command after fixes:
+
+```text
+........................................................................ [100%]
+72 passed in 2.20s
+```
+
+The command exited 0. Pytest subsequently emitted two non-failing macOS temporary
+directory cleanup warnings.
+
+Current downstream legacy compatibility command:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/nodes/test_carousel_qa.py tests/schemas/test_text_card.py -q
+```
+
+Exact output:
+
+```text
+..................                                                       [100%]
+18 passed in 0.05s
+```
+
+### Review-fix full-suite verification
+
+Command:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest -q
+```
+
+Exact terminal result:
+
+```text
+........................................................................ [  9%]
+........................................................................ [ 18%]
+........................................................................ [ 27%]
+........................................................................ [ 36%]
+........................................................................ [ 45%]
+........................................................................ [ 54%]
+........................................................................ [ 64%]
+........................................................................ [ 73%]
+........................................................................ [ 82%]
+........................................................................ [ 91%]
+..................................................................       [100%]
+=============================== warnings summary ===============================
+../../../../../../../../opt/anaconda3/envs/xhs-agent/lib/python3.12/site-packages/langgraph/checkpoint/serde/encrypted.py:5
+  /opt/anaconda3/envs/xhs-agent/lib/python3.12/site-packages/langgraph/checkpoint/serde/encrypted.py:5: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+tests/nodes/test_final_policy_guard.py::test_regenerated_storyboards_reapply_visible_text_patch
+tests/nodes/test_final_policy_guard.py::test_regenerated_storyboards_apply_complete_r2_visible_text_without_human_patch
+  /Users/qinqiang/Documents/Workspace/Projects/xhs-agent/.worktrees/editorial-carousel-workflow/src/nodes/node_o_storyboards_generator.py:142: UserWarning: storyboards_generator_legacy is falling back to beauty-v1 for a legacy checkpoint without domain_context.
+    SystemMessage(content=compose_prompt_for_state(prompt_task, state)),
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+786 passed, 3 warnings in 19.10s
+```
+
+The full suite exited 0. Pytest subsequently emitted two non-failing macOS temporary
+directory cleanup warnings.
+
+### Review-fix self-review
+
+- Confirmed the semantic prompt file was not weakened or mixed with legacy rules.
+- Confirmed only the no-plan branch can select `storyboards_generator_legacy`.
+- Confirmed semantic contract disagreement fails before `get_model()` executes.
+- Confirmed semantic generated and post-patch storyboards traverse the same validator.
+- Confirmed diagnostic anti-repetition returns the exact base tuple and the non-zone
+  alternative remains deterministic and schema-valid.
+- Confirmed `git diff --check` exits 0.
+- No new concerns beyond the existing expected third-party/legacy warning notes.

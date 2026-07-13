@@ -39,7 +39,7 @@ def test_visual_strategy_planner_uses_recent_published_frame_plan_signatures():
         visual_strategy_planner_node,
     )
 
-    contract = contract_for("diagnose_and_adjust")
+    contract = contract_for("follow_steps")
     original = build_visual_plan(contract, recent_signatures=[])
     signature = [
         [frame.role, frame.layout]
@@ -52,7 +52,8 @@ def test_visual_strategy_planner_uses_recent_published_frame_plan_signatures():
 
     result = visual_strategy_planner_node(state)
 
-    assert result["visual_plan"].frame_plan[4].layout == "decision_tree"
+    assert result["visual_plan"].content_job == "follow_steps"
+    assert result["visual_plan"].frame_plan[2].layout == "step_timeline"
 
 
 def test_visual_strategy_planner_requires_publish_package_contract():

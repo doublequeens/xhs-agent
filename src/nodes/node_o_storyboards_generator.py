@@ -1,16 +1,18 @@
+from typing import Any
+
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.prompts import PromptTemplate
-from src.editorial_carousel.strategy import build_visual_plan
+
 from src.models import get_model
-from src.schemas import AgentState, CarouselPayload, VisualPlan
 from src.nodes.publish_patch import (
     apply_storyboard_visible_text_patch,
     extract_storyboard_visible_text,
-    merge_storyboard_visible_text,
     merge_publish_package,
+    merge_storyboard_visible_text,
     storyboard_patch_without_visible_text,
 )
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.schemas import AgentState, CarouselPayload, VisualPlan
+from src.schemas.content_contract import ContentContract
 
 
 def _get_value(payload, key):
@@ -20,6 +22,8 @@ def _get_value(payload, key):
 
 
 def _selected_content_contract(state: AgentState, publish_package: dict) -> dict:
+    """Read the topic contract for a pre-visual-plan checkpoint."""
+
     topic_id = publish_package.get("topic_id")
     matches = [
         topic
@@ -39,73 +43,126 @@ def _selected_content_contract(state: AgentState, publish_package: dict) -> dict
     return dict(content_contract)
 
 
+def _final_content_contract(
+    publish_package: dict,
+    visual_plan: VisualPlan,
+) -> ContentContract:
+    raw_contract = publish_package.get("content_contract")
+    if raw_contract is None:
+        raise ValueError(
+            "semantic storyboard generation requires "
+            "publish_package.content_contract"
+        )
+    contract = ContentContract.model_validate(raw_contract)
+    if (
+        contract.content_job != visual_plan.content_job
+        or contract.primary_visual_family != visual_plan.primary_visual_family
+    ):
+        raise ValueError(
+            "publish_package.content_contract must match visual_plan "
+            "content_job and primary_visual_family"
+        )
+    return contract
+
+
+def _semantic_payload(
+    raw_payload: Any,
+    visual_plan: VisualPlan,
+    content_contract: ContentContract,
+) -> CarouselPayload:
+    payload = CarouselPayload.model_validate(raw_payload)
+    expected = [
+        (item.frame_id, item.layout) for item in visual_plan.frame_plan
+    ]
+    actual = [(item.frame_id, item.layout) for item in payload.storyboards]
+    if actual != expected:
+        raise ValueError(
+            "storyboard frames must exactly match visual_plan frame order and layouts"
+        )
+    if payload.storyboards[0].headline != content_contract.first_screen_promise:
+        raise ValueError(
+            "storyboard cover headline must exactly equal "
+            "content_contract.first_screen_promise"
+        )
+    return payload
+
+
+def _human_prompt(
+    *,
+    publish_package: dict,
+    content_contract: dict,
+    visual_plan: VisualPlan | None,
+    domain_context,
+    content_policy,
+    evidence_briefs,
+) -> str:
+    sections = [
+        "输入参数如下：",
+        f"- publish_package:\n{serialize_prompt_value(publish_package)}",
+        f"- content_contract:\n{serialize_prompt_value(content_contract)}",
+    ]
+    if visual_plan is not None:
+        sections.append(f"- visual_plan:\n{serialize_prompt_value(visual_plan)}")
+    sections.extend(
+        [
+            f"- domain_context:\n{serialize_prompt_value(domain_context)}",
+            f"- content_policy:\n{serialize_prompt_value(content_policy)}",
+            f"- evidence_briefs:\n{serialize_prompt_value(evidence_briefs)}",
+            "请按照 system 规则进行处理。",
+        ]
+    )
+    return "\n".join(sections)
+
+
 def storyboards_generator_node(state: AgentState) -> AgentState:
-    """
-    A node that generates storyboards.
+    """Generate either legacy text cards or a strict semantic carousel."""
 
-    Args:
-        state (AgentState): The current state of the agent containing necessary context for storyboard generation.
-    Returns:
-        dict: A dictionary containing the generated storyboards.
-    """
-
-    
     publish_package = state.get("publish_package", {})
-    content_contract = _selected_content_contract(state, publish_package)
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", {})
     visual_plan_value = state.get("visual_plan")
     semantic_storyboard_contract = visual_plan_value is not None
-    visual_plan = (
-        VisualPlan.model_validate(visual_plan_value)
-        if semantic_storyboard_contract
-        else build_visual_plan(content_contract, recent_signatures=[])
-    )
 
-    system_prompt = compose_prompt_for_state("storyboards_generator", state)
-    template = PromptTemplate(
-        input_variables=["publish_package", "content_contract", "visual_plan", "domain_context", "content_policy", "evidence_briefs"],
-        template=(
-            "输入参数如下：\n"
-            "- publish_package:\n{publish_package}\n"
-            "- content_contract:\n{content_contract}\n"
-            "- visual_plan:\n{visual_plan}\n"
-            "- domain_context:\n{domain_context}\n"
-            "- content_policy:\n{content_policy}\n"
-            "- evidence_briefs:\n{evidence_briefs}\n"
-            "请按照 system 规则进行处理。"
-        ),
-    )
-    human_prompt = template.format(
-        publish_package=serialize_prompt_value(publish_package),
-        content_contract=serialize_prompt_value(content_contract),
-        visual_plan=serialize_prompt_value(visual_plan),
-        domain_context=serialize_prompt_value(domain_context),
-        content_policy=serialize_prompt_value(content_policy),
-        evidence_briefs=serialize_prompt_value(evidence_briefs),
-    )
+    if semantic_storyboard_contract:
+        visual_plan = VisualPlan.model_validate(visual_plan_value)
+        validated_contract = _final_content_contract(
+            publish_package,
+            visual_plan,
+        )
+        content_contract = validated_contract.model_dump(mode="json")
+        prompt_task = "storyboards_generator"
+    else:
+        visual_plan = None
+        validated_contract = None
+        content_contract = _selected_content_contract(state, publish_package)
+        prompt_task = "storyboards_generator_legacy"
+
     messages = [
-        SystemMessage(content=system_prompt),
-        HumanMessage(content=human_prompt)
+        SystemMessage(content=compose_prompt_for_state(prompt_task, state)),
+        HumanMessage(
+            content=_human_prompt(
+                publish_package=publish_package,
+                content_contract=content_contract,
+                visual_plan=visual_plan,
+                domain_context=domain_context,
+                content_policy=content_policy,
+                evidence_briefs=evidence_briefs,
+            )
+        ),
     ]
 
     storyboard_json = get_model().execute(messages)
-    expected = [
-        (item.frame_id, item.layout) for item in visual_plan.frame_plan
-    ]
     if semantic_storyboard_contract:
-        payload = CarouselPayload.model_validate(storyboard_json)
-        actual = [(item.frame_id, item.layout) for item in payload.storyboards]
-        if actual != expected:
-            raise ValueError(
-                "storyboard frames must exactly match visual_plan frame order and layouts"
-            )
+        payload = _semantic_payload(
+            storyboard_json,
+            visual_plan,
+            validated_contract,
+        )
         generated_storyboards = payload.model_dump(mode="json")["storyboards"]
     else:
-        # Pre-migration checkpoints can resume before the planner node has
-        # written visual_plan. Keep their existing cards intact; all new graph
-        # executions provide visual_plan and take the strict branch above.
+        # Preserve the old node's raw handoff so existing carousel QA owns
+        # legacy TextCardPayload validation and R1 routing until graph rewiring.
         generated_storyboards = (
             storyboard_json.get("storyboards")
             if isinstance(storyboard_json, dict)
@@ -121,7 +178,9 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
         merged_publish_package = merge_publish_package(
             merged_publish_package,
             storyboard_patch_without_visible_text(pending_patch),
-            replace_storyboards=bool(state.get("pending_human_replace_storyboards")),
+            replace_storyboards=bool(
+                state.get("pending_human_replace_storyboards")
+            ),
         )
 
     r2_output = state.get("r2_output")
@@ -137,21 +196,19 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
             visible_text,
         )
         if visible_patch:
-            merged_publish_package["storyboards"] = apply_storyboard_visible_text_patch(
-                merged_publish_package.get("storyboards"), visible_patch
+            merged_publish_package["storyboards"] = (
+                apply_storyboard_visible_text_patch(
+                    merged_publish_package.get("storyboards"),
+                    visible_patch,
+                )
             )
 
     if semantic_storyboard_contract:
-        final_payload = CarouselPayload.model_validate(
-            {"storyboards": merged_publish_package.get("storyboards")}
+        final_payload = _semantic_payload(
+            {"storyboards": merged_publish_package.get("storyboards")},
+            visual_plan,
+            validated_contract,
         )
-        final_actual = [
-            (item.frame_id, item.layout) for item in final_payload.storyboards
-        ]
-        if final_actual != expected:
-            raise ValueError(
-                "storyboard frames must exactly match visual_plan frame order and layouts"
-            )
         merged_publish_package["storyboards"] = final_payload.model_dump(
             mode="json"
         )["storyboards"]

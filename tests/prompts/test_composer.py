@@ -94,6 +94,21 @@ def test_storyboard_prompt_requires_semantic_carousel_contract():
     assert "固定六张" not in prompt
 
 
+def test_legacy_storyboard_prompt_is_isolated_from_semantic_contract():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt(
+        "storyboards_generator_legacy",
+        get_domain_profile("beauty"),
+    )
+
+    assert "Structured Text Card Generator" in prompt
+    assert "必须恰好输出六张卡" in prompt
+    assert "cover_statement" in prompt
+    assert "question_closer" in prompt
+    assert "CarouselPayload" not in prompt
+
+
 def test_virality_prompt_requires_integer_breakdown_scores():
     from src.prompts.composer import compose_prompt
 

@@ -100,10 +100,25 @@ def test_non_zone_recipes_use_the_smallest_schema_valid_frame_count(job):
     assert len(plan.frame_plan) == 5
 
 
-def test_recent_identical_signature_selects_deterministic_auxiliary_layout():
+def test_recent_identical_signature_never_changes_diagnostic_recipe():
     from src.editorial_carousel.strategy import build_visual_plan
 
     contract = contract_for("diagnose_and_adjust")
+    original = build_visual_plan(contract, recent_signatures=[])
+    signature = tuple(
+        (frame.role, frame.layout) for frame in original.frame_plan
+    )
+
+    repeated = build_visual_plan(contract, recent_signatures=[signature])
+
+    assert repeated.frame_plan == original.frame_plan
+    assert repeated.frame_plan[4].layout == "three_state_diagnostic"
+
+
+def test_recent_identical_non_diagnostic_signature_selects_deterministic_auxiliary_layout():
+    from src.editorial_carousel.strategy import build_visual_plan
+
+    contract = contract_for("follow_steps")
     original = build_visual_plan(contract, recent_signatures=[])
     signature = tuple(
         (frame.role, frame.layout) for frame in original.frame_plan
@@ -116,7 +131,7 @@ def test_recent_identical_signature_selects_deterministic_auxiliary_layout():
     assert alternative.primary_visual_family == original.primary_visual_family
     assert alternative.frame_plan != original.frame_plan
     assert alternative.frame_plan == repeated.frame_plan
-    assert alternative.frame_plan[4].layout == "decision_tree"
+    assert alternative.frame_plan[2].layout == "step_timeline"
 
 
 def test_legacy_hydration_is_explicit_and_preserves_supplied_values():

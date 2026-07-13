@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
-from src.schemas import CarouselPayload
+from src.schemas import CarouselPayload, TextCardPayload
 from src.schemas.topic import TopicItem
 
 
@@ -108,6 +108,67 @@ def _storyboard_frames():
             }
         )
     return frames
+
+
+def _legacy_storyboard_frames():
+    common = {"theme": "warm_neutral", "footer": "按需微调"}
+    return [
+        {
+            "frame_id": "frame_001",
+            **common,
+            "template": "cover_statement",
+            "kicker": "封面",
+            "headline": _content_contract()["first_screen_promise"],
+        },
+        {
+            "frame_id": "frame_002",
+            **common,
+            "template": "wrong_vs_right",
+            "kicker": "对照",
+            "headline": "避免误区",
+            "wrong_items": ["立刻执行", "一次加量"],
+            "right_items": ["先做记录", "逐步调整"],
+        },
+        {
+            "frame_id": "frame_003",
+            **common,
+            "template": "step_timeline",
+            "kicker": "步骤",
+            "headline": "三步执行",
+            "steps": [
+                {"name": "记录", "hint": "观察现状"},
+                {"name": "调整", "hint": "每次一项"},
+                {"name": "复盘", "hint": "按周总结"},
+            ],
+        },
+        {
+            "frame_id": "frame_004",
+            **common,
+            "template": "saveable_checklist",
+            "kicker": "保存",
+            "headline": "执行清单",
+            "checklist_items": ["记录现状", "逐项调整", "定期复盘"],
+        },
+        {
+            "frame_id": "frame_005",
+            **common,
+            "template": "decision_rule",
+            "kicker": "判断",
+            "headline": "按情况判断",
+            "conditions": [
+                {"situation": "执行困难", "recommendation": "缩小调整范围"},
+                {"situation": "状态稳定", "recommendation": "保持当前节奏"},
+            ],
+        },
+        {
+            "frame_id": "frame_006",
+            **common,
+            "template": "question_closer",
+            "kicker": "讨论",
+            "headline": "你的下一步",
+            "question": "你最想先调整哪一步？",
+        },
+    ]
 
 
 def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
@@ -593,8 +654,11 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
 def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
 
+    captured = {}
+
     class FakeModel:
         def execute(self, messages):
+            captured["system_prompt"] = messages[0].content
             return {"storyboards": _storyboard_frames()}
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
@@ -619,6 +683,7 @@ def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(mo
         "content_intent": "how_to",
         "risk_level": "medium",
         "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+        "content_contract": _content_contract(),
     }
 
     result = module.storyboards_generator_node(
@@ -657,6 +722,114 @@ def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(mo
     ]
     assert frames[0]["headline"] == _content_contract()["first_screen_promise"]
     assert frames[3]["content_blocks"][0]["body"] == "第4张的单一信息任务"
+    assert "Semantic Editorial Carousel Storyboard Generator" in captured["system_prompt"]
+    assert "Structured Text Card Generator" not in captured["system_prompt"]
+
+
+def test_storyboard_generator_without_plan_uses_legacy_prompt_and_payload(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    captured = {}
+
+    class FakeModel:
+        def execute(self, messages):
+            captured["system_prompt"] = messages[0].content
+            return {"storyboards": _legacy_storyboard_frames()}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    result = module.storyboards_generator_node(
+        {
+            "publish_package": {"topic_id": "tp_001"},
+            "trends": [_topic()],
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+        }
+    )
+
+    legacy_payload = TextCardPayload.model_validate(
+        {"storyboards": result["publish_package"]["storyboards"]}
+    )
+    assert len(legacy_payload.storyboards) == 6
+    assert "Structured Text Card Generator" in captured["system_prompt"]
+    assert "Semantic Editorial Carousel Storyboard Generator" not in captured["system_prompt"]
+
+
+def test_semantic_storyboard_uses_final_package_contract_when_trend_is_stale(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    captured = {}
+    final_contract = _content_contract()
+    stale_contract = {
+        **final_contract,
+        "first_screen_promise": "这是一份已经过期的首屏承诺",
+        "content_job": "diagnose_and_adjust",
+        "primary_visual_family": "face_zone_map",
+        "primary_visual_subject": "face_map",
+    }
+
+    class FakeModel:
+        def execute(self, messages):
+            captured["human_prompt"] = messages[1].content
+            return {"storyboards": _storyboard_frames()}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    result = module.storyboards_generator_node(
+        {
+            "publish_package": {
+                "topic_id": "tp_001",
+                "content_contract": final_contract,
+            },
+            "trends": [
+                SimpleNamespace(topic_id="tp_001", content_contract=stale_contract)
+            ],
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+            "visual_plan": _visual_plan(),
+        }
+    )
+
+    assert result["publish_package"]["content_contract"] == final_contract
+    assert '"content_job": "save_and_check"' in captured["human_prompt"]
+    assert stale_contract["first_screen_promise"] not in captured["human_prompt"]
+
+
+def test_semantic_storyboard_rejects_package_contract_that_disagrees_with_plan(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    mismatched_contract = {
+        **_content_contract(),
+        "content_job": "diagnose_and_adjust",
+        "primary_visual_family": "face_zone_map",
+        "primary_visual_subject": "face_map",
+    }
+    calls = {"count": 0}
+
+    class FakeModel:
+        def execute(self, _messages):
+            calls["count"] += 1
+            return {"storyboards": _storyboard_frames()}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(
+        ValueError,
+        match="publish_package.content_contract must match visual_plan",
+    ):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {
+                    "topic_id": "tp_001",
+                    "content_contract": mismatched_contract,
+                },
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "visual_plan": _visual_plan(),
+            }
+        )
+    assert calls["count"] == 0
 
 
 def test_carousel_payload_accepts_the_visual_plan_frame_count():
@@ -701,6 +874,7 @@ def test_storyboard_generator_rejects_invalid_payload_before_state_write(monkeyp
             "content_intent": "how_to",
             "risk_level": "medium",
             "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+            "content_contract": _content_contract(),
         },
         "trends": [_topic()],
         "domain_context": _domain_context(),
@@ -711,6 +885,74 @@ def test_storyboard_generator_rejects_invalid_payload_before_state_write(monkeyp
     with pytest.raises(ValidationError):
         module.storyboards_generator_node(state)
     assert "storyboards" not in state["publish_package"]
+
+
+def test_semantic_storyboard_rejects_cover_promise_mismatch_before_state_write(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    frames = _storyboard_frames()
+    frames[0]["headline"] = "错误的首屏承诺"
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {"storyboards": frames}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+    state = {
+        "publish_package": {
+            "topic_id": "tp_001",
+            "content_contract": _content_contract(),
+        },
+        "trends": [_topic()],
+        "domain_context": _domain_context(),
+        "content_policy": _content_policy(),
+        "visual_plan": _visual_plan(),
+    }
+
+    with pytest.raises(
+        ValueError,
+        match="cover headline must exactly equal content_contract.first_screen_promise",
+    ):
+        module.storyboards_generator_node(state)
+    assert "storyboards" not in state["publish_package"]
+
+
+def test_semantic_storyboard_rejects_cover_promise_mismatch_after_r2_patch(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {"storyboards": _storyboard_frames()}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(
+        ValueError,
+        match="cover headline must exactly equal content_contract.first_screen_promise",
+    ):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {
+                    "topic_id": "tp_001",
+                    "content_contract": _content_contract(),
+                    "storyboards": _storyboard_frames(),
+                },
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "visual_plan": _visual_plan(),
+                "r2_output": SimpleNamespace(
+                    content_snapshot=SimpleNamespace(
+                        storyboard_visible_text=[
+                            {
+                                "frame_id": "cover",
+                                "text_blocks": {"headline": "补丁改坏的首屏承诺"},
+                            }
+                        ]
+                    )
+                ),
+            }
+        )
 
 
 def test_storyboard_generator_rejects_frame_order_or_layout_drift(monkeypatch):
