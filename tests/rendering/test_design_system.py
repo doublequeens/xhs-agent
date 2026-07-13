@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import FrozenInstanceError
+from pathlib import Path
 
 import pytest
 
@@ -9,6 +11,30 @@ from src.rendering.editorial.design_system import (
     FONT_ROOT,
     REPOSITORY_ROOT,
 )
+
+
+PINNED_FONT_SHA256 = {
+    "display": "faf16caeaf207e1926e01af8d9f1a8e71b0e9d8f51bf3b5d9a78f9f30e7e3e31",
+    "body_regular": "f1d8611151880c6c336aabeac4640ef434fa13cbfbf1ffe82d0a71b2a5637256",
+    "body_medium": "1df61d31687d04fd2f928a3bb6ca6cd61f0e988cc267cf317f32406edbb49f70",
+    "numeral": "dd9660ca406734a3b64f5b6c3a7a823c624f17479235761e82862e61ecdbaf57",
+}
+
+PINNED_LICENSE_SHA256 = {
+    "LICENSE-source-han-serif.txt": (
+        "9ff5bb567e1b92c801fc1069e5fbf992ff8efccacb9db94e5959a5b3ba9bb903"
+    ),
+    "LICENSE-source-han.txt": (
+        "fcac737e761ec63dbfbdce11030a1780161920d80315edba9c8beff1c2bac5a2"
+    ),
+    "OFL-bodoni-moda.txt": (
+        "86279342767d5f3e6b07b49dd591f196dcb0ec9ec8b9ea339c09221e61863d46"
+    ),
+}
+
+
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_design_system_exposes_immutable_editorial_tokens() -> None:
@@ -57,3 +83,34 @@ def test_design_system_fonts_are_repo_local_and_licensed() -> None:
     )
     assert "SIL OPEN FONT LICENSE Version 1.1" in source_han_license
     assert "SIL OPEN FONT LICENSE Version 1.1" in bodoni_license
+
+
+def test_design_system_fonts_match_pinned_upstream_files() -> None:
+    for role, expected_hash in PINNED_FONT_SHA256.items():
+        assert _sha256(BEAUTY_EDITORIAL_V1.font_paths[role]) == expected_hash
+
+
+def test_design_system_license_files_match_pinned_upstream_notices() -> None:
+    for filename, expected_hash in PINNED_LICENSE_SHA256.items():
+        license_path = FONT_ROOT / filename
+        assert license_path.is_file(), f"missing pinned license file: {filename}"
+        assert _sha256(license_path) == expected_hash
+
+    source_han_serif_license = (
+        FONT_ROOT / "LICENSE-source-han-serif.txt"
+    ).read_text(encoding="utf-8")
+    source_han_sans_license = (FONT_ROOT / "LICENSE-source-han.txt").read_text(
+        encoding="utf-8"
+    )
+    bodoni_license = (FONT_ROOT / "OFL-bodoni-moda.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert source_han_serif_license.startswith(
+        "Copyright 2017-2022 Adobe (http://www.adobe.com/)"
+    )
+    assert source_han_sans_license.startswith(
+        "Copyright 2014-2025 Adobe (http://www.adobe.com/)"
+    )
+    assert bodoni_license.startswith("Copyright 2020 The Bodoni Moda Project Authors")
+    assert "SIL OPEN FONT LICENSE Version 1.1" in source_han_serif_license
