@@ -436,7 +436,31 @@ def export_completed_publish_package(graph, config) -> bool:
     return True
 
 
-def stream_graph_until_stop(graph, run_input, config):
+def sync_run_from_graph(
+    registry: RunRegistry,
+    graph,
+    config: dict,
+    thread_id: str,
+    last_node: str | None,
+) -> None:
+    state = graph.get_state(config)
+    values = getattr(state, "values", None) or {}
+    registry.update_run(
+        thread_id,
+        status="running",
+        error_summary=None,
+        **extract_run_updates(values, last_node),
+    )
+
+
+def stream_graph_until_stop(
+    graph,
+    run_input,
+    config,
+    *,
+    registry: RunRegistry | None = None,
+    thread_id: str | None = None,
+) -> bool:
     next_input = run_input
 
     while True:
@@ -449,89 +473,116 @@ def stream_graph_until_stop(graph, run_input, config):
                     payload = interrupt_event.value
                     if not isinstance(payload, dict):
                         raise ValueError("Interrupt payload must be a dict.")
+                    if registry is not None and thread_id is not None:
+                        registry.update_run(thread_id, status="awaiting_review")
                     next_input = Command(resume=collect_interrupt_response(payload))
+                    if registry is not None and thread_id is not None:
+                        registry.update_run(thread_id, status="running", error_summary=None)
                     break
 
                 print(f"Finished processing node: {key}")
+                if registry is not None and thread_id is not None:
+                    sync_run_from_graph(registry, graph, config, thread_id, key)
             if interrupted:
                 break
 
         if not interrupted:
-            export_completed_publish_package(graph, config)
-            return
+            return export_completed_publish_package(graph, config)
+
 
 def main():
     args = parse_cli_args()
-    registry = RunRegistry(RUN_REGISTRY_PATH)
-    if args.runs:
-        try:
+    try:
+        registry = RunRegistry(RUN_REGISTRY_PATH)
+    except RunRegistryError as exc:
+        print(f"本地运行注册表错误：{exc}", file=sys.stderr)
+        sys.exit(1)
+
+    thread_id = None
+    try:
+        if args.runs:
             for run in registry.list_recent(20):
                 print(format_run(run, verbose=args.verbose))
-        finally:
-            registry.close()
-        return
+            return
 
-    selection = select_run(registry, args)
-    if selection is None:
-        registry.close()
-        return
-    thread_id, _is_new_run = selection
+        selection = select_run(registry, args)
+        if selection is None:
+            return
+        thread_id, is_new = selection
 
-    init_message = f"Starting Xiaohongshu Agent"
-    if args.provider:
-        init_message += f" with default model: {args.provider},"
-    if args.focus_keyword:
-        init_message += f" with topic focus keyword: {args.focus_keyword},"
-    if args.domain:
-        init_message += f" with domain: {args.domain},"
-    if args.subdomain:
-        init_message += f" with subdomain: {args.subdomain},"
-    if args.topic_num:
-        init_message += f" with topic number: {args.topic_num}."
-    print(init_message)
-    
-    # 如果用户在启动时指定了 provider，才去修改全局配置，否则保持 __init__.py 里的默认值
-    if args.provider:
-        set_default_provider(args.provider)
+        init_message = "Starting Xiaohongshu Agent"
+        if args.provider:
+            init_message += f" with default model: {args.provider},"
+        if args.focus_keyword:
+            init_message += f" with topic focus keyword: {args.focus_keyword},"
+        if args.domain:
+            init_message += f" with domain: {args.domain},"
+        if args.subdomain:
+            init_message += f" with subdomain: {args.subdomain},"
+        if args.topic_num:
+            init_message += f" with topic number: {args.topic_num}."
+        print(init_message)
 
-    database = XHSMemoryManager("data/xhs_memory.db")
-    database.init_db("memory/schema.sql")
+        if args.provider:
+            set_default_provider(args.provider)
 
-    graph = create_graph()
+        database = XHSMemoryManager("data/xhs_memory.db")
+        database.init_db("memory/schema.sql")
+        graph = create_graph()
+        initial_state = create_initial_state(args)
+        config = build_run_config(thread_id)
+        current_state, run_input = load_run_state(graph, config, initial_state)
 
-    initial_state = create_initial_state(args)
+        if args.thread_id:
+            backfill_legacy_run(registry, thread_id, current_state)
+        if not current_state.values:
+            if not is_new and args.resume is not None:
+                raise RunRegistryError("所选任务的 LangGraph checkpoint 不存在，请使用 --new 创建新任务")
+            if registry.get_by_thread_id(thread_id) is None:
+                registry.create_run(thread_id, args.focus_keyword)
+            print("No existing state found, starting a new run...")
+        else:
+            registry.update_run(
+                thread_id,
+                status="running",
+                error_summary=None,
+                **extract_run_updates(current_state.values),
+            )
+            print("Found existing state, resuming from the latest checkpoint...")
 
-    config = build_run_config(thread_id)
-    currentState, run_input = load_run_state(graph, config, initial_state)
-    backfill_legacy_run(registry, thread_id, currentState)
-    # print(currentState.value
-    
-    # 判断是否已有历史状态，如果有则传入 None 恢复执行，否则传入 initial_state 全新启动
-    if currentState.values:
-        print("Found existing state, resuming from the latest checkpoint...")
-        # history = list(graph.get_state_history(config, limit=2))
-        # if len(history) >= 2:
-        #     print("The last executed node was:", history[1].values.get("current_node", "Unknown"))
-        # else:
-        #     print("No previous nodes found in history.")
-        
-        # 如果历史状态已经没有任何需要执行的下一个节点（即已经运行到 END）
-        if not currentState.next:
-            if currentState.values["publish_package"]:
-                print("该任务已经全部执行完毕，直接从历史状态导出 publish_package.json...")
-                export_completed_publish_package(graph, config)
-                return # 直接退出，不需要再跑 stream
-            
-    else:
-        print("No existing state found, starting a new run...")
+        if current_state.values and not current_state.next:
+            if export_completed_publish_package(graph, config):
+                registry.update_run(thread_id, status="completed", error_summary=None)
+            else:
+                registry.update_run(thread_id, status="awaiting_review")
+            return
 
-    # Run the graph
-    try:
-        stream_graph_until_stop(graph, run_input, config)
-
-    except Exception as e:
-        print(f"Error running agent: {e}")
+        exported = stream_graph_until_stop(
+            graph,
+            run_input,
+            config,
+            registry=registry,
+            thread_id=thread_id,
+        )
+        if exported:
+            registry.update_run(thread_id, status="completed", error_summary=None)
+        else:
+            registry.update_run(thread_id, status="awaiting_review")
+    except Exception as exc:
+        if thread_id is not None:
+            try:
+                if registry.get_by_thread_id(thread_id) is not None:
+                    registry.update_run(
+                        thread_id,
+                        status="interrupted",
+                        error_summary=exception_summary(exc),
+                    )
+            except RunRegistryError as registry_exc:
+                print(f"本地运行注册表错误：{registry_exc}", file=sys.stderr)
+        print(f"Error running agent: {exc}")
         sys.exit(1)
+    finally:
+        registry.close()
 
 if __name__ == "__main__":
     main()

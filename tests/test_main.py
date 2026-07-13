@@ -656,3 +656,104 @@ def test_runs_verbose_prints_full_ids_and_limits_output_to_twenty(monkeypatch, t
     assert output.count("ID：") == 20
     assert thread_ids[0] not in output
     assert thread_ids[-1] in output
+
+
+def test_stream_syncs_last_node_and_summary_before_clean_export(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("stream-thread", "通勤防晒")
+
+    class FakeGraph:
+        def stream(self, _run_input, config):
+            assert config["configurable"]["thread_id"] == run.thread_id
+            yield {"title_ranker": {}}
+
+        def get_state(self, _config):
+            return SimpleNamespace(
+                values={"current_node": "TITLE_RANKER", "trends": [{"topic": "防晒后底妆卡粉"}]},
+                next=(),
+            )
+
+    monkeypatch.setattr(main, "export_completed_publish_package", lambda *_args: True)
+    assert main.stream_graph_until_stop(
+        FakeGraph(), {}, main.build_run_config(run.thread_id), registry=registry, thread_id=run.thread_id
+    ) is True
+
+    updated = registry.get_by_thread_id(run.thread_id)
+    assert updated.status == "running"
+    assert updated.last_node == "TITLE_RANKER"
+    assert updated.topic_summary == "防晒后底妆卡粉"
+
+
+def test_main_marks_timeout_interrupted_with_truncated_reason(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run("timeout-thread", "通勤防晒")
+    registry.close()
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(main, "select_run", lambda *_args, **_kwargs: (run.thread_id, False))
+    monkeypatch.setattr(main, "XHSMemoryManager", lambda *_args: SimpleNamespace(init_db=lambda *_: None))
+    monkeypatch.setattr(main, "create_graph", lambda: SimpleNamespace(
+        get_state=lambda _config: SimpleNamespace(
+            values={"domain_context": {"domain": "beauty"}, "trends": []},
+            next=("node",),
+        )
+    ))
+    monkeypatch.setattr(
+        main, "stream_graph_until_stop",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("request timed out")),
+    )
+    monkeypatch.setattr("sys.argv", ["main.py"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 1
+    check = RunRegistry(path)
+    assert check.get_by_thread_id(run.thread_id).status == "interrupted"
+    assert check.get_by_thread_id(run.thread_id).error_summary == "TimeoutError: request timed out"
+    check.close()
+
+
+def test_review_interrupt_remains_awaiting_review_when_input_stops(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run("review-thread", "通勤防晒")
+
+    class Interrupt:
+        value = {"kind": "publish_review", "message": "请审核", "publish_package": {"title": "标题"}}
+
+    class FakeGraph:
+        def stream(self, *_args, **_kwargs):
+            yield {"__interrupt__": [Interrupt()]}
+
+        def get_state(self, _config):
+            return SimpleNamespace(values={"review_status": None}, next=("human_review",))
+
+    monkeypatch.setattr(
+        main, "collect_interrupt_response",
+        lambda _payload: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    with pytest.raises(KeyboardInterrupt):
+        main.stream_graph_until_stop(
+            FakeGraph(), {}, main.build_run_config(run.thread_id), registry=registry, thread_id=run.thread_id
+        )
+    assert registry.get_by_thread_id(run.thread_id).status == "awaiting_review"
+
+
+def test_legacy_thread_id_backfills_only_real_checkpoints(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    active = SimpleNamespace(values={"trends": [{"topic": "防晒后底妆卡粉"}]}, next=("title_ranker",))
+    terminal = SimpleNamespace(values={"publish_package": {"title": "通勤底妆指南"}}, next=())
+    empty = SimpleNamespace(values={}, next=())
+
+    main.backfill_legacy_run(registry, "active-legacy", active)
+    main.backfill_legacy_run(registry, "terminal-legacy", terminal)
+    main.backfill_legacy_run(registry, "empty-legacy", empty)
+
+    assert registry.get_by_thread_id("active-legacy").status == "running"
+    assert registry.get_by_thread_id("active-legacy").topic_summary == "防晒后底妆卡粉"
+    assert registry.get_by_thread_id("terminal-legacy").status == "completed"
+    assert registry.get_by_thread_id("empty-legacy") is None
