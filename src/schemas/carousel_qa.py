@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class CarouselQAIssue(BaseModel):
-    rule_id: str
+    rule_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     message: str
     location_hint: str
     frame_id: Optional[str] = None

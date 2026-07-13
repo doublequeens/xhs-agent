@@ -4,12 +4,11 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from src.editorial_carousel.strategy import ASSET_ADAPTER, LAYOUT_FAMILY
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas.agent_state import AgentState
 from src.schemas.carousel_qa import CarouselQAIssue, CarouselQAResult
 from src.schemas.content_contract import ContentContract
-from src.schemas.storyboard import StoryboardPayload
-from src.schemas.text_card import REQUIRED_TEXT_CARD_TEMPLATES
 from src.schemas.decision import (
     ContentCandidate,
     DecisionOutput,
@@ -20,12 +19,22 @@ from src.schemas.decision import (
     RevisionMeta,
     SingleTask,
 )
+from src.schemas.storyboard import CarouselFrame, StoryboardPayload
+from src.schemas.text_card import REQUIRED_TEXT_CARD_TEMPLATES
+
+
+SAVEABLE_LAYOUTS = frozenset({"saveable_checklist", "saveable_reference"})
 
 
 def _get_value(payload: Any, key: str, default=None):
     if isinstance(payload, dict):
         return payload.get(key, default)
     return getattr(payload, key, default)
+
+
+def _as_list(payload: Any, key: str) -> list[Any]:
+    value = _get_value(payload, key, [])
+    return list(value) if isinstance(value, (list, tuple)) else []
 
 
 def _location(index: int, field_name: str) -> str:
@@ -38,6 +47,7 @@ def _issue(
     location_hint: str,
     *,
     frame: Any = None,
+    frame_id: str | None = None,
     before: str | None = None,
     after_hint: str | None = None,
 ) -> CarouselQAIssue:
@@ -45,109 +55,286 @@ def _issue(
         rule_id=rule_id,
         message=message,
         location_hint=location_hint,
-        frame_id=_get_value(frame, "frame_id") if frame is not None else None,
+        frame_id=frame_id or (_get_value(frame, "frame_id") if frame is not None else None),
         before=before,
         after_hint=after_hint,
     )
 
 
-def _schema_location(location: tuple[Any, ...]) -> str:
-    result = ""
+def _schema_location(index: int, location: tuple[Any, ...]) -> str:
+    result = f"storyboards[{index}]"
     for segment in location:
         if isinstance(segment, int):
             result += f"[{segment}]"
-        elif result:
-            result += f".{segment}"
         else:
-            result = str(segment)
-    return result or "storyboards"
+            result += f".{segment}"
+    return result
 
 
-def _schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
-    try:
-        StoryboardPayload.model_validate({"storyboards": raw_frames})
-    except ValidationError as exc:
-        issues = []
-        for error in exc.errors():
-            location = tuple(error["loc"])
-            if (
-                location == ("storyboards",)
-                and error["type"] in {"too_short", "too_long"}
-            ):
-                # The deterministic card-count rule below produces the more
-                # actionable task for this same condition.
-                continue
-            frame = None
-            if (
-                isinstance(raw_frames, list)
-                and len(location) > 1
-                and isinstance(location[1], int)
-                and location[1] < len(raw_frames)
-            ):
-                frame = raw_frames[location[1]]
+def _editorial_schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
+    if not isinstance(raw_frames, list):
+        return [
+            _issue(
+                "storyboard_schema_invalid",
+                "Editorial storyboards must be a list of structured frames.",
+                "storyboards",
+                before=str(raw_frames),
+                after_hint="Provide a list of schema-valid CarouselFrame values.",
+            )
+        ]
+
+    issues: list[CarouselQAIssue] = []
+    for index, raw_frame in enumerate(raw_frames):
+        try:
+            CarouselFrame.model_validate(raw_frame)
+        except ValidationError as exc:
+            for error in exc.errors():
+                issues.append(
+                    _issue(
+                        "storyboard_schema_invalid",
+                        f"Storyboard schema validation failed: {error['msg']}",
+                        _schema_location(index, tuple(error["loc"])),
+                        frame=raw_frame,
+                        before=str(error.get("input") or ""),
+                        after_hint="Provide a schema-valid editorial storyboard frame.",
+                    )
+                )
+    return issues
+
+
+def _frame_count_issues(frames: list[Any]) -> list[CarouselQAIssue]:
+    if 5 <= len(frames) <= 7:
+        return []
+    return [
+        _issue(
+            "frame_count_out_of_range",
+            "An editorial carousel must contain five to seven frames.",
+            "storyboards",
+            before=str(len(frames)),
+            after_hint="Provide five to seven ordered editorial frames.",
+        )
+    ]
+
+
+def _composition_issues(frames: list[Any]) -> list[CarouselQAIssue]:
+    issues: list[CarouselQAIssue] = []
+    layouts = [str(_get_value(frame, "layout") or "") for frame in frames]
+    if len(set(layouts)) < 3:
+        issues.append(
+            _issue(
+                "insufficient_layout_variety",
+                "An editorial carousel must use at least three distinct layouts.",
+                "storyboards",
+                before=", ".join(layouts),
+                after_hint="Use at least three layout families without changing frame tasks.",
+            )
+        )
+
+    for index in range(1, len(layouts)):
+        if layouts[index] and layouts[index] == layouts[index - 1]:
             issues.append(
                 _issue(
-                    "storyboard_schema_invalid",
-                    f"Storyboard schema validation failed: {error['msg']}",
-                    _schema_location(location),
-                    frame=frame,
-                    before=str(error.get("input") or ""),
-                    after_hint="Provide a schema-valid storyboard frame or carousel payload.",
+                    "consecutive_layout_repeat",
+                    "Adjacent frames must not repeat the same layout.",
+                    _location(index, "layout"),
+                    frame=frames[index],
+                    before=layouts[index],
+                    after_hint="Choose a compatible layout for the same planned task.",
                 )
             )
-        return issues
-    return []
+
+    if not SAVEABLE_LAYOUTS.intersection(layouts):
+        issues.append(
+            _issue(
+                "missing_saveable_frame",
+                "The carousel needs at least one standalone saveable frame.",
+                "storyboards",
+                after_hint="Use saveable_checklist or saveable_reference for one frame.",
+            )
+        )
+    return issues
+
+
+def _plan_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQAIssue]:
+    issues: list[CarouselQAIssue] = []
+    planned_frames = _as_list(visual_plan, "frame_plan")
+    allowed_families = {
+        str(_get_value(visual_plan, "primary_visual_family") or ""),
+        *(str(value) for value in _as_list(visual_plan, "supporting_families")),
+    }
+
+    for index, planned in enumerate(planned_frames):
+        frame_id = str(_get_value(planned, "frame_id") or "") or None
+        layout = _get_value(planned, "layout")
+        family = LAYOUT_FAMILY.get(layout)
+        if family is not None and family not in allowed_families:
+            issues.append(
+                _issue(
+                    "layout_family_mismatch",
+                    f"Layout {layout} belongs to undeclared visual family {family}.",
+                    f"visual_plan.frame_plan[{index}].layout",
+                    frame_id=frame_id,
+                    before=str(layout or ""),
+                    after_hint="Declare the family or select a layout from a declared family.",
+                )
+            )
+
+        if index >= len(frames):
+            continue
+        frame = frames[index]
+        actual_identity = (
+            _get_value(frame, "frame_id"),
+            _get_value(frame, "layout"),
+        )
+        planned_identity = (
+            _get_value(planned, "frame_id"),
+            _get_value(planned, "layout"),
+        )
+        if actual_identity != planned_identity:
+            issues.append(
+                _issue(
+                    "frame_plan_mismatch",
+                    "Storyboard frame identity and layout must match the visual plan order.",
+                    _location(index, "frame_id"),
+                    frame=frame,
+                    before=str(actual_identity),
+                    after_hint=str(planned_identity),
+                )
+            )
+        if _get_value(frame, "role") != _get_value(planned, "role"):
+            issues.append(
+                _issue(
+                    "frame_task_mismatch",
+                    "Each frame must retain its one planned semantic task.",
+                    _location(index, "role"),
+                    frame=frame,
+                    before=str(_get_value(frame, "role") or ""),
+                    after_hint=str(_get_value(planned, "role") or ""),
+                )
+            )
+        blocks = _as_list(frame, "content_blocks")
+        if not blocks:
+            issues.append(
+                _issue(
+                    "frame_task_missing",
+                    "Each frame must contain content for its one planned task.",
+                    _location(index, "content_blocks"),
+                    frame=frame,
+                    after_hint=str(_get_value(planned, "purpose") or ""),
+                )
+            )
+
+    return issues
+
+
+def _slot_contract_issues(frames: list[Any], visual_plan: Any) -> list[CarouselQAIssue]:
+    issues: list[CarouselQAIssue] = []
+    planned_frames = _as_list(visual_plan, "frame_plan")
+    requirements = _as_list(visual_plan, "required_assets")
+    requirements_by_slot = {
+        _get_value(requirement, "slot_id"): (index, requirement)
+        for index, requirement in enumerate(requirements)
+    }
+
+    for frame_index, (frame, planned) in enumerate(
+        zip(frames, planned_frames, strict=False)
+    ):
+        frame_id = str(_get_value(frame, "frame_id") or "") or None
+        layout = _get_value(planned, "layout")
+        expected_roles = [str(value) for value in _as_list(planned, "asset_roles")]
+        slots = _as_list(frame, "visual_slots")
+        actual_roles = [str(_get_value(slot, "role") or "") for slot in slots]
+
+        for slot_index, slot in enumerate(slots):
+            semantic_role = str(_get_value(slot, "role") or "")
+            location = _location(frame_index, f"visual_slots[{slot_index}].role")
+            if slot_index >= len(expected_roles) or semantic_role != expected_roles[slot_index]:
+                issues.append(
+                    _issue(
+                        "semantic_slot_role_mismatch",
+                        "Storyboard visual slots must keep semantic roles from the frame plan.",
+                        location,
+                        frame_id=frame_id,
+                        before=semantic_role,
+                        after_hint=(
+                            expected_roles[slot_index]
+                            if slot_index < len(expected_roles)
+                            else "Remove the unplanned visual slot."
+                        ),
+                    )
+                )
+                continue
+
+            adapter = ASSET_ADAPTER.get((layout, semantic_role))
+            if adapter is None:
+                issues.append(
+                    _issue(
+                        "asset_adapter_missing",
+                        "No approved semantic-to-catalog asset adapter exists for this slot.",
+                        location,
+                        frame_id=frame_id,
+                        before=f"{layout}:{semantic_role}",
+                    )
+                )
+                continue
+
+            slot_id = _get_value(slot, "slot_id")
+            indexed_requirement = requirements_by_slot.get(slot_id)
+            if indexed_requirement is None:
+                issues.append(
+                    _issue(
+                        "asset_requirement_missing",
+                        "Every semantic visual slot needs one plan asset requirement with the same slot_id.",
+                        _location(frame_index, f"visual_slots[{slot_index}].slot_id"),
+                        frame_id=frame_id,
+                        before=str(slot_id or ""),
+                    )
+                )
+                continue
+
+            requirement_index, requirement = indexed_requirement
+            expected_concrete_role = adapter[0]
+            if (
+                _get_value(requirement, "role") != expected_concrete_role
+                or _get_value(requirement, "layout") != layout
+            ):
+                issues.append(
+                    _issue(
+                        "asset_requirement_role_mismatch",
+                        "The plan requirement must use the adapter's concrete catalog role and frame layout.",
+                        f"visual_plan.required_assets[{requirement_index}].role",
+                        frame_id=frame_id,
+                        before=str(_get_value(requirement, "role") or ""),
+                        after_hint=expected_concrete_role,
+                    )
+                )
+
+        if len(actual_roles) < len(expected_roles):
+            for missing_index in range(len(actual_roles), len(expected_roles)):
+                issues.append(
+                    _issue(
+                        "semantic_slot_role_mismatch",
+                        "Storyboard frame is missing a planned semantic visual slot.",
+                        _location(frame_index, "visual_slots"),
+                        frame_id=frame_id,
+                        after_hint=expected_roles[missing_index],
+                    )
+                )
+    return issues
 
 
 def validate_carousel(
     package: dict,
     contract: ContentContract,
-    creator_profile: Any = None,
+    visual_plan: Any,
 ) -> list[CarouselQAIssue]:
-    """Return deterministic, independently actionable carousel contract violations."""
+    """Return atomic deterministic violations of the editorial carousel contract."""
+
     raw_frames = package.get("storyboards")
-    issues = _schema_issues(raw_frames)
     frames = raw_frames if isinstance(raw_frames, list) else []
-
-    if len(frames) != len(REQUIRED_TEXT_CARD_TEMPLATES):
-        issues.append(
-            _issue(
-                "card_count_out_of_range",
-                "A structured text-card carousel must contain exactly six cards.",
-                _location(0, "frame_id"),
-                before=str(len(frames)),
-                after_hint="Provide exactly the six required text-card templates.",
-            )
-        )
-
-    templates = [_get_value(frame, "template") for frame in frames]
-    if templates != list(REQUIRED_TEXT_CARD_TEMPLATES):
-        issues.append(
-            _issue(
-                "template_order_mismatch",
-                "Storyboards must use the six required templates in their fixed order.",
-                _location(0, "template"),
-                frame=frames[0] if frames else None,
-                before=", ".join(str(template or "") for template in templates),
-                after_hint=", ".join(REQUIRED_TEXT_CARD_TEMPLATES),
-            )
-        )
-
-    themes = [str(_get_value(frame, "theme") or "") for frame in frames]
-    if len(set(themes)) > 1:
-        mismatch_index = next(
-            index for index, theme in enumerate(themes) if theme != themes[0]
-        )
-        issues.append(
-            _issue(
-                "mixed_theme",
-                "All six structured text cards must use the same theme.",
-                _location(mismatch_index, "theme"),
-                frame=frames[mismatch_index],
-                before=themes[mismatch_index],
-                after_hint=themes[0],
-            )
-        )
+    issues = _editorial_schema_issues(raw_frames)
+    issues.extend(_frame_count_issues(frames))
+    issues.extend(_composition_issues(frames))
 
     cover = frames[0] if frames else None
     cover_headline = str(_get_value(cover, "headline") or "")
@@ -163,21 +350,78 @@ def validate_carousel(
             )
         )
 
+    issues.extend(_plan_contract_issues(frames, visual_plan))
+    issues.extend(_slot_contract_issues(frames, visual_plan))
+    return issues
+
+
+def _legacy_schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
+    try:
+        StoryboardPayload.model_validate({"storyboards": raw_frames})
+    except ValidationError as exc:
+        return [
+            _issue(
+                "storyboard_schema_invalid",
+                f"Storyboard schema validation failed: {error['msg']}",
+                "storyboards",
+            )
+            for error in exc.errors()
+            if error["type"] not in {"too_short", "too_long"}
+        ]
+    return []
+
+
+def _validate_legacy_carousel(
+    package: dict, contract: ContentContract
+) -> list[CarouselQAIssue]:
+    """Narrow checkpoint bridge until Task 8 removes the old graph path."""
+
+    raw_frames = package.get("storyboards")
+    frames = raw_frames if isinstance(raw_frames, list) else []
+    issues = _legacy_schema_issues(raw_frames)
+    templates = [_get_value(frame, "template") for frame in frames]
+    if len(frames) != len(REQUIRED_TEXT_CARD_TEMPLATES):
+        issues.append(
+            _issue(
+                "card_count_out_of_range",
+                "A legacy text-card checkpoint must contain exactly six cards.",
+                "storyboards",
+            )
+        )
+    if templates != list(REQUIRED_TEXT_CARD_TEMPLATES):
+        issues.append(
+            _issue(
+                "template_order_mismatch",
+                "Legacy text-card templates must remain in their checkpoint order.",
+                "storyboards[0].template",
+            )
+        )
+    cover = frames[0] if frames else None
+    if str(_get_value(cover, "headline") or "") != contract.first_screen_promise:
+        issues.append(
+            _issue(
+                "first_screen_promise_mismatch",
+                "The cover headline must exactly equal the first-screen promise.",
+                "storyboards[0].headline",
+                frame=cover,
+            )
+        )
     if "saveable_checklist" not in templates:
         issues.append(
             _issue(
                 "missing_saveable_checklist",
-                "The fourth card must be the saveable_checklist template.",
-                _location(3, "template"),
-                frame=frames[3] if len(frames) > 3 else None,
-                after_hint="Use saveable_checklist with three to five actionable checklist items.",
+                "The legacy checkpoint must retain its saveable checklist.",
+                "storyboards[3].template",
             )
         )
-
     return issues
 
 
 def _selected_content_contract(state: AgentState, package: dict) -> ContentContract:
+    package_contract = package.get("content_contract")
+    if package_contract is not None:
+        return ContentContract.model_validate(package_contract)
+
     topic_id = package.get("topic_id")
     matches = [
         topic
@@ -188,11 +432,14 @@ def _selected_content_contract(state: AgentState, package: dict) -> ContentContr
         raise ValueError(f"Unknown topic_id: {topic_id}")
     if len(matches) > 1:
         raise ValueError(f"Duplicate topic_id: {topic_id}")
-
     contract = _get_value(matches[0], "content_contract")
     if contract is None:
         raise ValueError(f"Selected topic {topic_id} requires content_contract")
-    return contract if isinstance(contract, ContentContract) else ContentContract.model_validate(contract)
+    return (
+        contract
+        if isinstance(contract, ContentContract)
+        else ContentContract.model_validate(contract)
+    )
 
 
 def _build_r1_tasks(issues: list[CarouselQAIssue]) -> EditorialTasks:
@@ -232,7 +479,9 @@ def _build_r1_decision(package: dict, issues: list[CarouselQAIssue]) -> Decision
             angle=str(package.get("angle") or ""),
             target_group=str(package.get("target_group") or ""),
             core_pain=str(package.get("core_pain") or ""),
-            storyboard_visible_text=extract_storyboard_visible_text(package.get("storyboards")),
+            storyboard_visible_text=extract_storyboard_visible_text(
+                package.get("storyboards")
+            ),
         ),
         editorial_tasks=_build_r1_tasks(issues),
         revision_meta=RevisionMeta(
@@ -260,7 +509,11 @@ def carousel_qa_node(state: AgentState) -> dict:
         raise ValueError("carousel_qa_node requires publish_package as a dict.")
 
     contract = _selected_content_contract(state, package)
-    issues = validate_carousel(package, contract, state.get("creator_profile"))
+    visual_plan = state.get("visual_plan")
+    if visual_plan is None:
+        issues = _validate_legacy_carousel(package, contract)
+    else:
+        issues = validate_carousel(package, contract, visual_plan)
     result = CarouselQAResult(passed=not issues, issues=issues)
     output = {"carousel_qa_result": result, "current_node": "CAROUSEL_QA"}
     if issues:
