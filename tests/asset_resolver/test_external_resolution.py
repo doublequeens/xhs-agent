@@ -255,6 +255,30 @@ def test_rerun_resumes_existing_pending_without_provider_calls(tmp_path: Path) -
     assert resumed.items[0].pending_id == first.items[0].pending_id
 
 
+def test_pending_resume_requires_the_same_requirement_fingerprint(tmp_path: Path) -> None:
+    from src.asset_resolver.resolver import resolve_assets
+
+    first_provider = FakeProvider("pexels", [candidate("pexels", "p1")])
+    asset_catalog = empty_catalog(tmp_path, [first_provider])
+    first = resolve_assets(texture_plan(), asset_catalog)
+    changed_plan = texture_plan()
+    changed_plan.required_assets[0].palette_tags = ["sage"]
+    second_provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", "p2", color="sage")],
+    )
+    changed_catalog = empty_catalog(tmp_path, [second_provider])
+
+    second = resolve_assets(changed_plan, changed_catalog)
+
+    assert second.items[0].pending_id != first.items[0].pending_id
+    assert second.items[0].requirement_fingerprint
+    assert second.items[0].requirement_fingerprint != (
+        first.items[0].requirement_fingerprint
+    )
+    assert len(second_provider.search_calls) == 1
+
+
 def test_reject_returns_next_downloaded_candidate_in_rank_order(tmp_path: Path) -> None:
     from src.asset_resolver.lifecycle import list_pending_assets, reject_external_asset
     from src.asset_resolver.resolver import resolve_assets
@@ -264,8 +288,12 @@ def test_reject_returns_next_downloaded_candidate_in_rank_order(tmp_path: Path) 
         [candidate("pexels", "p1"), candidate("pexels", "p2"), candidate("pexels", "p3")],
     )
     asset_catalog = empty_catalog(tmp_path, [provider])
-    resolve_assets(texture_plan(), asset_catalog)
-    pending = list_pending_assets(asset_catalog, slot_id="serum-slot")
+    manifest = resolve_assets(texture_plan(), asset_catalog)
+    pending = list_pending_assets(
+        asset_catalog,
+        slot_id="serum-slot",
+        requirement_fingerprint=manifest.items[0].requirement_fingerprint,
+    )
 
     assert [item.candidate_rank for item in pending] == [1, 2, 3]
     next_candidate = reject_external_asset(
@@ -395,16 +423,89 @@ def test_external_gap_downloads_at_most_top_three_ranked_candidates(tmp_path: Pa
         [candidate("pexels", f"p{index}") for index in range(5)],
     )
 
-    resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
+    manifest = resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
 
     assert len(provider.download_calls) == 3
     assert len(provider.record_calls) == 3
-    audit_files = list((tmp_path / "incoming" / "external" / "run-42").glob("*.json"))
+    audit_files = list(
+        (tmp_path / "incoming" / "external" / "run-42").glob(
+            "serum-slot-pexels-*.json"
+        )
+    )
     assert len(audit_files) == 3
     audit = json.loads(audit_files[0].read_text(encoding="utf-8"))
     assert audit["source_type"] == "stock_photo"
     assert audit["acquired_at"]
     assert audit["provider_attribution"]
+    assert audit["attempt_number"] in {1, 2, 3}
+    assert audit["requirement_fingerprint"] == manifest.items[0].requirement_fingerprint
+
+
+def test_download_attempt_budget_persists_across_rejections_and_reruns(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import list_pending_assets, reject_external_asset
+    from src.asset_resolver.resolver import AssetResolutionError, requirement_fingerprint, resolve_assets
+
+    provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", f"p{index}") for index in range(1, 7)],
+    )
+    asset_catalog = empty_catalog(tmp_path, [provider])
+    plan = texture_plan()
+    resolve_assets(plan, asset_catalog)
+    fingerprint = requirement_fingerprint(plan.required_assets[0])
+    pending = list_pending_assets(
+        asset_catalog,
+        slot_id="serum-slot",
+        requirement_fingerprint=fingerprint,
+    )
+    for item in pending:
+        reject_external_asset(item, reason="not suitable", catalog=asset_catalog)
+    attempts_after_first_run = len(provider.download_calls)
+
+    with pytest.raises(AssetResolutionError):
+        resolve_assets(plan, asset_catalog)
+
+    assert attempts_after_first_run == 3
+    assert len(provider.download_calls) == 3
+    ledger = list((tmp_path / "incoming" / "external" / "run-42").glob("attempts-*.json"))
+    assert len(ledger) == 1
+    assert len(json.loads(ledger[0].read_text())["attempts"]) == 3
+
+
+def test_resolver_rejects_non_allowlisted_candidate_urls_before_download(
+    tmp_path: Path,
+) -> None:
+    from dataclasses import replace
+
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    forged = replace(
+        candidate("pexels", "p1"),
+        source_file_url="https://evil.test/payload.png",
+    )
+    provider = FakeProvider("pexels", [forged])
+
+    with pytest.raises(AssetResolutionError):
+        resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
+
+    assert provider.record_calls == []
+    assert provider.download_calls == []
+    assert not (tmp_path / "incoming").exists()
+
+
+def test_catalog_rejects_incoming_external_symlink_outside_root(tmp_path: Path) -> None:
+    from src.asset_resolver.catalog import CatalogError
+
+    outside = tmp_path.parent / f"{tmp_path.name}-outside"
+    outside.mkdir()
+    incoming = tmp_path / "incoming"
+    incoming.mkdir()
+    (incoming / "external").symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(CatalogError, match="incoming/external"):
+        empty_catalog(tmp_path, [])
 
 
 def test_duplicate_source_urls_are_removed_before_download(tmp_path: Path) -> None:
@@ -436,7 +537,11 @@ def test_byte_identical_downloads_are_deduplicated_by_sha256(tmp_path: Path) -> 
 
     resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
 
-    audits = list((tmp_path / "incoming" / "external" / "run-42").glob("*.json"))
+    audits = list(
+        (tmp_path / "incoming" / "external" / "run-42").glob(
+            "serum-slot-*.json"
+        )
+    )
     assert len(provider.download_calls) == 2
     assert len(audits) == 1
 
@@ -457,7 +562,11 @@ def test_visually_identical_downloads_are_deduplicated_by_average_hash(
 
     resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
 
-    audits = list((tmp_path / "incoming" / "external" / "run-42").glob("*.json"))
+    audits = list(
+        (tmp_path / "incoming" / "external" / "run-42").glob(
+            "serum-slot-*.json"
+        )
+    )
     assert len(audits) == 1
 
 
@@ -473,7 +582,11 @@ def test_downloaded_pixels_must_still_match_required_orientation(tmp_path: Path)
     with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
         resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
 
-    assert list((tmp_path / "incoming" / "external" / "run-42").glob("*.json")) == []
+    assert list(
+        (tmp_path / "incoming" / "external" / "run-42").glob(
+            "serum-slot-*.json"
+        )
+    ) == []
 
 
 def test_small_average_hash_distance_is_treated_as_perceptual_duplicate(
@@ -492,7 +605,11 @@ def test_small_average_hash_distance_is_treated_as_perceptual_duplicate(
 
     resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
 
-    audits = list((tmp_path / "incoming" / "external" / "run-42").glob("*.json"))
+    audits = list(
+        (tmp_path / "incoming" / "external" / "run-42").glob(
+            "serum-slot-*.json"
+        )
+    )
     assert len(audits) == 1
 
 

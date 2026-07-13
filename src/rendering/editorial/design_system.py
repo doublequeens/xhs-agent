@@ -6,6 +6,7 @@ import re
 import struct
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
@@ -34,6 +35,28 @@ _ENTRY_FIELDS = frozenset(
         "usage",
     }
 )
+_EXTERNAL_PROVENANCE_FIELDS = frozenset(
+    {
+        "source_type",
+        "acquired_at",
+        "run_id",
+        "provider",
+        "provider_asset_id",
+        "source_url",
+        "source_file_url",
+        "author",
+        "provider_attribution",
+        "license_snapshot",
+        "license_snapshot_sha256",
+        "license_terms_url",
+        "average_hash",
+        "requirement_fingerprint",
+        "safety_review_decisions",
+        "safety_reviewed_at",
+        "review_disposition",
+    }
+)
+_AVERAGE_HASH_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 
 
 @dataclass(frozen=True)
@@ -58,6 +81,7 @@ class CatalogEntry:
     disabled_contexts: tuple[str, ...]
     fallback_roles: tuple[str, ...]
     usage: str
+    provenance: "ExternalAssetProvenance | None"
     _catalog_root: Path
 
     @property
@@ -69,6 +93,133 @@ class CatalogEntry:
 class AssetCatalog:
     catalog_id: str
     entries: tuple[CatalogEntry, ...]
+
+
+@dataclass(frozen=True)
+class ExternalAssetProvenance:
+    source_type: str
+    acquired_at: str
+    run_id: str
+    provider: str
+    provider_asset_id: str
+    source_url: str
+    source_file_url: str
+    author: str
+    provider_attribution: Mapping[str, str]
+    license_snapshot: str
+    license_snapshot_sha256: str
+    license_terms_url: str
+    average_hash: str
+    requirement_fingerprint: str
+    safety_review_decisions: Mapping[str, bool]
+    safety_reviewed_at: str
+    review_disposition: str
+
+
+def _require_timezone_timestamp(value: Any, field: str, asset_id: str) -> str:
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"{asset_id}: provenance {field} must be non-empty")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as error:
+        raise ValueError(f"{asset_id}: provenance {field} is invalid") from error
+    if parsed.tzinfo is None:
+        raise ValueError(f"{asset_id}: provenance {field} needs timezone")
+    return value
+
+
+def _load_external_provenance(
+    raw: Any, catalog_root: Path, asset_id: str
+) -> ExternalAssetProvenance:
+    if not isinstance(raw, dict) or set(raw) != _EXTERNAL_PROVENANCE_FIELDS:
+        raise ValueError(f"{asset_id}: external provenance schema is invalid")
+    text_fields = {
+        field: raw.get(field)
+        for field in _EXTERNAL_PROVENANCE_FIELDS
+        if field
+        not in {
+            "provider_attribution",
+            "safety_review_decisions",
+            "acquired_at",
+            "safety_reviewed_at",
+        }
+    }
+    if any(not isinstance(value, str) or not value for value in text_fields.values()):
+        raise ValueError(f"{asset_id}: external provenance text is invalid")
+    if raw["source_type"] != "stock_photo":
+        raise ValueError(f"{asset_id}: external provenance source_type is invalid")
+    attribution = raw["provider_attribution"]
+    if (
+        not isinstance(attribution, dict)
+        or not attribution
+        or any(
+            not isinstance(key, str)
+            or not key
+            or not isinstance(value, str)
+            or not value
+            for key, value in attribution.items()
+        )
+    ):
+        raise ValueError(f"{asset_id}: external provenance attribution is invalid")
+    decisions = raw["safety_review_decisions"]
+    if not isinstance(decisions, dict) or any(
+        not isinstance(key, str)
+        or not key
+        or type(value) is not bool
+        for key, value in decisions.items()
+    ):
+        raise ValueError(f"{asset_id}: external provenance safety review is invalid")
+    if raw["review_disposition"] != "approved_for_publishing":
+        raise ValueError(f"{asset_id}: external provenance disposition is invalid")
+    if not _SHA256_PATTERN.fullmatch(raw["license_snapshot_sha256"]):
+        raise ValueError(f"{asset_id}: external provenance snapshot hash is invalid")
+    if not _SHA256_PATTERN.fullmatch(raw["requirement_fingerprint"]):
+        raise ValueError(f"{asset_id}: external provenance fingerprint is invalid")
+    if not _AVERAGE_HASH_PATTERN.fullmatch(raw["average_hash"]):
+        raise ValueError(f"{asset_id}: external provenance average hash is invalid")
+    from src.asset_resolver.providers import candidate_urls_are_allowed
+
+    if not candidate_urls_are_allowed(
+        raw["provider"],
+        source_url=raw["source_url"],
+        source_file_url=raw["source_file_url"],
+        license_terms_url=raw["license_terms_url"],
+    ):
+        raise ValueError(f"{asset_id}: external provenance URLs are invalid")
+    snapshot_relative = Path(raw["license_snapshot"])
+    snapshot_path = (catalog_root / snapshot_relative).resolve()
+    license_root = (catalog_root / "licenses").resolve()
+    if (
+        snapshot_relative.is_absolute()
+        or not snapshot_path.is_relative_to(license_root)
+        or not snapshot_path.is_file()
+        or hashlib.sha256(snapshot_path.read_bytes()).hexdigest()
+        != raw["license_snapshot_sha256"]
+    ):
+        raise ValueError(f"{asset_id}: external provenance license snapshot is invalid")
+    return ExternalAssetProvenance(
+        source_type=raw["source_type"],
+        acquired_at=_require_timezone_timestamp(
+            raw["acquired_at"], "acquired_at", asset_id
+        ),
+        run_id=raw["run_id"],
+        provider=raw["provider"],
+        provider_asset_id=raw["provider_asset_id"],
+        source_url=raw["source_url"],
+        source_file_url=raw["source_file_url"],
+        author=raw["author"],
+        provider_attribution=MappingProxyType(dict(attribution)),
+        license_snapshot=raw["license_snapshot"],
+        license_snapshot_sha256=raw["license_snapshot_sha256"],
+        license_terms_url=raw["license_terms_url"],
+        average_hash=raw["average_hash"],
+        requirement_fingerprint=raw["requirement_fingerprint"],
+        safety_review_decisions=MappingProxyType(dict(decisions)),
+        safety_reviewed_at=_require_timezone_timestamp(
+            raw["safety_reviewed_at"], "safety_reviewed_at", asset_id
+        ),
+        review_disposition=raw["review_disposition"],
+    )
 
 
 def _require_text(item: Mapping[str, Any], field: str, asset_id: str) -> str:
@@ -153,11 +304,22 @@ def _load_entry(raw: Any, catalog_root: Path) -> CatalogEntry:
     if actual_hash != expected_hash:
         raise ValueError(f"{asset_id}: sha256 does not match asset file")
 
+    ownership = _require_text(raw, "ownership", asset_id)
+    provenance_raw = raw.get("provenance")
+    if ownership == "licensed_stock":
+        provenance = _load_external_provenance(
+            provenance_raw, catalog_root, asset_id
+        )
+    elif provenance_raw is not None:
+        raise ValueError(f"{asset_id}: only licensed stock may have provenance")
+    else:
+        provenance = None
+
     return CatalogEntry(
         asset_id=asset_id,
         role=_require_text(raw, "role", asset_id),
         path=relative_path.as_posix(),
-        ownership=_require_text(raw, "ownership", asset_id),
+        ownership=ownership,
         license=_require_text(raw, "license", asset_id),
         dimensions=(width, height),
         sha256=expected_hash,
@@ -172,6 +334,7 @@ def _load_entry(raw: Any, catalog_root: Path) -> CatalogEntry:
             raw, "fallback_roles", asset_id, allow_empty=False
         ),
         usage=usage,
+        provenance=provenance,
         _catalog_root=catalog_root,
     )
 

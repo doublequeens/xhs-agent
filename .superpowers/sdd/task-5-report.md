@@ -18,14 +18,16 @@ break the legacy graph; the implementation plan explicitly removes both in Task 
 - Local approved matches make zero provider calls. Gaps search enabled providers
   concurrently, retain deterministic provider-report order, merge candidates without
   provider weighting, apply provenance/safety/dimension/orientation filters, and
-  download no more than the top three candidates per slot.
+  download no more than three candidates per run, slot, and requirement fingerprint,
+  including across reruns and rejections.
 - Pillow strips image metadata and normalizes opaque input to lossless WebP and alpha
   input to PNG. The design-system loader now validates WebP pixel dimensions.
 - Deduplication runs before download by provider ID/source URL and after normalization
   by SHA-256 and 8x8 grayscale average-hash Hamming distance, including prior runs.
 - Pending files and atomic JSON audits live under
-  `incoming/external/<run_id>/`. Audits preserve provenance, attribution, acquisition
-  time, hashes, review status, and provider/download failures.
+  `incoming/external/<run_id>/`. Strict Pydantic audits preserve provenance,
+  attribution, acquisition time, requirement fingerprints, attempt numbers, hashes,
+  review status, explicit safety decisions, and provider/download failures.
 - Approval validates run scope, audit state, and unchanged bytes, stages the approval
   audit, moves bytes into `active`, validates the complete candidate manifest through
   the production catalog loader, and atomically replaces the manifest. Failures restore
@@ -54,14 +56,14 @@ Final focused GREEN:
 
 ```text
 python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-95 passed, 2 skipped
+109 passed, 2 skipped
 ```
 
 Final full-suite GREEN after all review corrections:
 
 ```text
 python -m pytest -q
-893 passed, 2 skipped, 3 warnings
+907 passed, 2 skipped, 3 warnings
 ```
 
 The warnings are existing LangGraph/legacy-checkpoint warnings. Pytest also intermittently
@@ -96,6 +98,35 @@ Review-correction RED runs covered unsafe run paths, redirect/final-host attacks
 downloads and images, provider identity spoofing, lost manifest updates, forged pending
 objects, incomplete rollback, resume/reject advancement, pre-cap cross-run deduplication,
 and dishonest license snapshot semantics before each implementation was added.
+
+A third adversarial review drove further failing tests and corrections:
+
+- A separate per-candidate lifecycle lock now spans canonical reload, state checks, safety
+  resolution, audit staging, file movement, manifest append, and rollback. Forced
+  approve/approve and approve/reject races prove exactly one operation wins while the
+  audit, active file, and manifest remain consistent.
+- Pending audit parsing is a strict Pydantic contract with forbidden extras and validated
+  types, non-empty values, URLs, layout, hashes, paths, status transitions, tags, and
+  attribution. Unknown safety facts remain previewable but approval requires an explicit
+  safe human decision for every unknown and records the decision, time, and disposition.
+- Every pending audit and manifest carries a deterministic requirement fingerprint. Resume
+  only considers the matching contract and revalidates the pending file hash; approved
+  audits validate the exact moved production path instead.
+- A locked persisted attempt ledger enforces the three-download ceiling across reruns and
+  rejections, independently of global candidate rank. Exhaustion proceeds to the declared
+  fallback or terminal structured error and never advances to candidates four through six.
+- Incoming roots are revalidated on every access so an external symlink cannot escape the
+  catalog. Catalog scope is mandatory for public load and reject operations.
+- Approved stock provenance is stored as a validated typed catalog mapping and survives a
+  fresh catalog load, including acquisition, provider, licensing, hash, fingerprint, and
+  safety-review fields. Seed project-original assets remain compatible.
+- The resolver independently applies official URL allowlists before provider download or
+  persistence, including for injected provider implementations.
+
+Third-review RED evidence included stale requirement resume, persisted-budget bypass,
+catalog symlink escape, permissive audit types, dropped reloaded provenance, malicious
+injected URLs, and both same-candidate races. Final GREEN counts above include all of these
+regressions.
 
 Remaining risks:
 

@@ -1,14 +1,29 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
-import re
 import tempfile
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal, Mapping
+
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    StrictStr,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from src.schemas.assets import LayoutName
 
 from .catalog import AssetCatalog, AssetEntry
 from .providers import candidate_urls_are_allowed
@@ -45,6 +60,8 @@ class PendingAsset:
     tags: tuple[str, ...]
     fallback_roles: tuple[str, ...]
     unresolved_safety_checks: tuple[str, ...]
+    requirement_fingerprint: str
+    attempt_number: int
     source_type: str = "stock_photo"
     acquired_at: str = field(
         default_factory=lambda: datetime.now(UTC).isoformat()
@@ -65,11 +82,6 @@ class PendingAsset:
 
 
 _PENDING_FIELDS = frozenset(item.name for item in fields(PendingAsset))
-_AUDIT_EXTRA_FIELDS = frozenset(
-    {"rejection_reason", "approved_path", "approved_sha256"}
-)
-_HEX64 = re.compile(r"^[0-9a-f]{64}$")
-_AVERAGE_HASH = re.compile(r"^[0-9a-f]{16}$")
 _SAFETY_CHECKS = frozenset(
     {
         "has_watermark",
@@ -79,6 +91,126 @@ _SAFETY_CHECKS = frozenset(
         "allowed_for_publishing",
     }
 )
+
+NonEmptyStrictString = Annotated[StrictStr, Field(min_length=1)]
+Hash64 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
+AverageHash = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{16}$")]
+
+
+class PendingAuditRecord(BaseModel):
+    """Strict on-disk contract for a reviewed external candidate."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    pending_id: NonEmptyStrictString
+    slot_id: NonEmptyStrictString
+    candidate_rank: Annotated[StrictInt, Field(ge=1)]
+    path: NonEmptyStrictString
+    metadata_path: NonEmptyStrictString
+    provider: NonEmptyStrictString
+    provider_asset_id: NonEmptyStrictString
+    author: NonEmptyStrictString
+    source_url: NonEmptyStrictString
+    source_file_url: NonEmptyStrictString
+    role: NonEmptyStrictString
+    layout: LayoutName
+    width: Annotated[StrictInt, Field(ge=1)]
+    height: Annotated[StrictInt, Field(ge=1)]
+    license: NonEmptyStrictString
+    license_snapshot: NonEmptyStrictString
+    license_snapshot_sha256: Hash64
+    license_terms_url: NonEmptyStrictString
+    sha256: Hash64
+    average_hash: AverageHash
+    run_id: NonEmptyStrictString
+    production_relative_path: NonEmptyStrictString
+    tags: Annotated[list[NonEmptyStrictString], Field(min_length=1)]
+    fallback_roles: Annotated[list[NonEmptyStrictString], Field(min_length=1)]
+    unresolved_safety_checks: list[NonEmptyStrictString]
+    requirement_fingerprint: Hash64
+    attempt_number: Annotated[StrictInt, Field(ge=1, le=3)]
+    source_type: Literal["stock_photo"]
+    acquired_at: NonEmptyStrictString
+    provider_attribution: Annotated[
+        dict[NonEmptyStrictString, NonEmptyStrictString], Field(min_length=1)
+    ]
+    review_status: Literal["pending", "approved", "rejected"]
+    rejection_reason: NonEmptyStrictString | None = None
+    approved_path: NonEmptyStrictString | None = None
+    approved_sha256: Hash64 | None = None
+    safety_review_decisions: dict[NonEmptyStrictString, StrictBool] | None = None
+    safety_reviewed_at: NonEmptyStrictString | None = None
+    review_disposition: Literal[
+        "approved_for_publishing", "rejected"
+    ] | None = None
+
+    @field_validator("pending_id", "slot_id", "provider", "provider_asset_id", "author", "role", "license", "run_id")
+    @classmethod
+    def reject_whitespace_only(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("must not be blank")
+        return value
+
+    @field_validator("unresolved_safety_checks")
+    @classmethod
+    def validate_safety_checks(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)) or not set(value).issubset(_SAFETY_CHECKS):
+            raise ValueError("invalid unresolved safety checks")
+        return value
+
+    @field_validator("acquired_at", "safety_reviewed_at")
+    @classmethod
+    def validate_timestamp(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            raise ValueError("timestamp must include timezone")
+        return value
+
+    @model_validator(mode="after")
+    def validate_review_state(self) -> "PendingAuditRecord":
+        if self.review_status == "pending" and any(
+            value is not None
+            for value in (
+                self.rejection_reason,
+                self.approved_path,
+                self.approved_sha256,
+                self.safety_review_decisions,
+                self.safety_reviewed_at,
+                self.review_disposition,
+            )
+        ):
+            raise ValueError("pending audit contains completed review fields")
+        if self.review_status == "approved" and (
+            self.approved_path is None
+            or self.approved_sha256 is None
+            or self.safety_review_decisions is None
+            or self.safety_reviewed_at is None
+            or self.review_disposition != "approved_for_publishing"
+            or self.rejection_reason is not None
+        ):
+            raise ValueError("approved audit is incomplete")
+        if self.review_status == "approved" and self.safety_review_decisions is not None:
+            decisions = self.safety_review_decisions
+            unresolved = set(self.unresolved_safety_checks)
+            if set(decisions) != unresolved or any(
+                decisions[name] is not False
+                for name in unresolved - {"allowed_for_publishing"}
+            ) or (
+                "allowed_for_publishing" in unresolved
+                and decisions["allowed_for_publishing"] is not True
+            ):
+                raise ValueError("approved safety review is invalid")
+        if self.review_status == "rejected" and (
+            self.rejection_reason is None
+            or self.safety_reviewed_at is None
+            or self.review_disposition != "rejected"
+            or self.approved_path is not None
+            or self.approved_sha256 is not None
+        ):
+            raise ValueError("rejected audit is incomplete")
+        return self
 
 
 def sha256_file(path: Path) -> str:
@@ -109,68 +241,62 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
 
 
 def write_pending_audit(candidate: PendingAsset) -> None:
-    _atomic_write_json(candidate.metadata_path, candidate.audit_record())
+    try:
+        audit = PendingAuditRecord.model_validate(candidate.audit_record(), strict=True)
+    except (ValidationError, TypeError, ValueError) as error:
+        raise AssetLifecycleError("pending asset audit schema is invalid") from error
+    _atomic_write_json(candidate.metadata_path, audit.model_dump(mode="json"))
 
 
 def load_pending_asset(
-    metadata_path: str | Path, catalog: AssetCatalog | None = None
+    metadata_path: str | Path, catalog: AssetCatalog
 ) -> PendingAsset:
-    path = Path(metadata_path).resolve()
     try:
-        audit = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as error:
+        path = Path(metadata_path).resolve()
+    except (TypeError, ValueError, OSError) as error:
+        raise AssetLifecycleError("pending asset audit path is invalid") from error
+    incoming_root = catalog.incoming_root
+    if not path.is_relative_to(incoming_root) or path.parent != incoming_root:
+        raise AssetLifecycleError(
+            "pending asset must stay in the catalog run-scoped incoming directory"
+        )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        audit = PendingAuditRecord.model_validate(raw, strict=True)
+    except OSError as error:
         raise AssetLifecycleError("pending asset audit is missing or invalid") from error
-    if not isinstance(audit, dict):
-        raise AssetLifecycleError("pending asset audit schema must be an object")
-    keys = frozenset(audit)
-    if not _PENDING_FIELDS.issubset(keys) or keys - _PENDING_FIELDS - _AUDIT_EXTRA_FIELDS:
-        raise AssetLifecycleError("pending asset audit schema is invalid")
+    except (ValidationError, ValueError, TypeError) as error:
+        raise AssetLifecycleError("pending asset audit schema is invalid") from error
     try:
         candidate = PendingAsset(
             **{
-                **{name: audit[name] for name in _PENDING_FIELDS},
-                "path": Path(audit["path"]).resolve(),
-                "metadata_path": Path(audit["metadata_path"]).resolve(),
-                "production_relative_path": Path(audit["production_relative_path"]),
-                "tags": tuple(audit["tags"]),
-                "fallback_roles": tuple(audit["fallback_roles"]),
+                **{
+                    name: getattr(audit, name)
+                    for name in _PENDING_FIELDS
+                },
+                "path": Path(audit.path).resolve(),
+                "metadata_path": Path(audit.metadata_path).resolve(),
+                "production_relative_path": Path(audit.production_relative_path),
+                "tags": tuple(audit.tags),
+                "fallback_roles": tuple(audit.fallback_roles),
                 "unresolved_safety_checks": tuple(
-                    audit["unresolved_safety_checks"]
+                    audit.unresolved_safety_checks
                 ),
                 "provider_attribution": tuple(
-                    sorted(dict(audit["provider_attribution"]).items())
+                    sorted(audit.provider_attribution.items())
                 ),
             }
         )
-    except (KeyError, TypeError, ValueError) as error:
+    except (TypeError, ValueError, OSError) as error:
         raise AssetLifecycleError("pending asset audit schema is invalid") from error
     if candidate.metadata_path != path:
         raise AssetLifecycleError("pending asset audit metadata path is not canonical")
-    if (
-        isinstance(candidate.candidate_rank, bool)
-        or candidate.candidate_rank < 1
-        or not candidate.slot_id
-        or candidate.review_status not in {"pending", "approved", "rejected"}
-        or candidate.source_type != "stock_photo"
-        or candidate.width < 1
-        or candidate.height < 1
-        or _HEX64.fullmatch(candidate.sha256) is None
-        or _HEX64.fullmatch(candidate.license_snapshot_sha256) is None
-        or _AVERAGE_HASH.fullmatch(candidate.average_hash) is None
-        or not set(candidate.unresolved_safety_checks).issubset(_SAFETY_CHECKS)
-        or not candidate_urls_are_allowed(
+    if not candidate_urls_are_allowed(
             candidate.provider,
             source_url=candidate.source_url,
             source_file_url=candidate.source_file_url,
             license_terms_url=candidate.license_terms_url,
-        )
-    ):
-        raise AssetLifecycleError("pending asset audit schema is invalid")
-    try:
-        acquired_at = datetime.fromisoformat(candidate.acquired_at)
-    except ValueError as error:
-        raise AssetLifecycleError("pending asset audit schema is invalid") from error
-    if acquired_at.tzinfo is None:
+        ):
         raise AssetLifecycleError("pending asset audit schema is invalid")
     production_path = candidate.production_relative_path
     if (
@@ -179,26 +305,30 @@ def load_pending_asset(
         or production_path.suffix.lower() not in {".png", ".webp"}
     ):
         raise AssetLifecycleError("pending asset canonical production path is invalid")
-    if catalog is not None:
-        _validate_run_scope(candidate, catalog)
-        catalog_root = catalog.root.resolve()
-    else:
-        expected_parent = (
-            candidate.path.parents[2] / "external" / candidate.run_id
-            if len(candidate.path.parents) >= 3
-            else Path("/__invalid__")
-        )
-        if candidate.path.parent != expected_parent or candidate.metadata_path.parent != expected_parent:
-            raise AssetLifecycleError(
-                "pending asset must stay in its run-scoped incoming directory"
-            )
-        catalog_root = candidate.path.parents[3].resolve()
+    _validate_run_scope(candidate, catalog)
+    catalog_root = catalog.root.resolve()
     snapshot_path = (catalog_root / candidate.license_snapshot).resolve()
     license_root = (catalog_root / "licenses").resolve()
     if not snapshot_path.is_relative_to(license_root) or not snapshot_path.is_file():
         raise AssetLifecycleError("pending asset canonical license snapshot is invalid")
     if sha256_file(snapshot_path) != candidate.license_snapshot_sha256:
         raise AssetLifecycleError("pending asset canonical license snapshot hash changed")
+    if audit.review_status in {"pending", "rejected"}:
+        if not candidate.path.is_file() or sha256_file(candidate.path) != candidate.sha256:
+            raise AssetLifecycleError("pending asset bytes are missing or changed")
+    elif audit.review_status == "approved":
+        approved_path = Path(str(audit.approved_path)).resolve()
+        expected_approved_path = (
+            catalog.active_root / candidate.production_relative_path
+        ).resolve()
+        if (
+            approved_path != expected_approved_path
+            or audit.approved_sha256 != candidate.sha256
+            or not approved_path.is_relative_to(catalog.active_root.resolve())
+            or not approved_path.is_file()
+            or sha256_file(approved_path) != audit.approved_sha256
+        ):
+            raise AssetLifecycleError("approved asset bytes are missing or changed")
     return candidate
 
 
@@ -206,6 +336,7 @@ def list_pending_assets(
     catalog: AssetCatalog,
     *,
     slot_id: str,
+    requirement_fingerprint: str,
     review_statuses: tuple[str, ...] = ("pending",),
 ) -> list[PendingAsset]:
     if not catalog.incoming_root.exists():
@@ -213,12 +344,14 @@ def list_pending_assets(
     candidates = [
         load_pending_asset(path, catalog)
         for path in catalog.incoming_root.glob("*.json")
+        if not path.name.startswith("attempts-")
     ]
     return sorted(
         (
             candidate
             for candidate in candidates
             if candidate.slot_id == slot_id
+            and candidate.requirement_fingerprint == requirement_fingerprint
             and candidate.review_status in review_statuses
         ),
         key=lambda candidate: (
@@ -230,15 +363,21 @@ def list_pending_assets(
     )
 
 
-def _current_review_status(candidate: PendingAsset) -> str:
-    try:
-        audit = json.loads(candidate.metadata_path.read_text(encoding="utf-8"))
-    except (OSError, ValueError, TypeError) as error:
-        raise AssetLifecycleError("pending asset audit is missing or invalid") from error
-    status = audit.get("review_status")
-    if not isinstance(status, str):
-        raise AssetLifecycleError("pending asset audit has no review status")
-    return status
+@contextmanager
+def _candidate_lifecycle_lock(metadata_path: Path, catalog: AssetCatalog):
+    resolved = metadata_path.resolve()
+    incoming_root = catalog.incoming_root
+    if not resolved.is_relative_to(incoming_root) or resolved.parent != incoming_root:
+        raise AssetLifecycleError(
+            "pending asset must stay in the catalog run-scoped incoming directory"
+        )
+    lock_path = metadata_path.with_suffix(f"{metadata_path.suffix}.lock")
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def _validate_run_scope(candidate: PendingAsset, catalog: AssetCatalog) -> None:
@@ -254,79 +393,125 @@ def _validate_run_scope(candidate: PendingAsset, catalog: AssetCatalog) -> None:
 
 
 def approve_external_asset(
-    candidate: PendingAsset, catalog: AssetCatalog
+    candidate: PendingAsset,
+    catalog: AssetCatalog,
+    *,
+    safety_decisions: Mapping[str, bool] | None = None,
 ) -> AssetEntry:
-    canonical = load_pending_asset(candidate.metadata_path, catalog)
-    if canonical.review_status != "pending":
-        raise AssetLifecycleError("only pending assets can be approved")
-    if canonical != candidate:
-        raise AssetLifecycleError("caller does not match canonical pending audit")
-    candidate = canonical
-    if (
-        candidate.review_status != "pending"
-        or _current_review_status(candidate) != "pending"
-    ):
-        raise AssetLifecycleError("only pending assets can be approved")
-    actual = sha256_file(candidate.path)
-    if actual != candidate.sha256:
-        raise AssetLifecycleError("pending asset hash changed before approval")
-    destination = (catalog.active_root / candidate.production_relative_path).resolve()
-    active_root = catalog.active_root.resolve()
-    if not destination.is_relative_to(active_root):
-        raise AssetLifecycleError("production path escapes active catalog")
-    if destination.exists():
-        raise AssetLifecycleError("approved destination already exists")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    original_audit = json.loads(candidate.metadata_path.read_text(encoding="utf-8"))
-    approved_audit = candidate.audit_record()
-    approved_audit.update(
-        {
-            "review_status": "approved",
-            "approved_path": str(destination),
-            "approved_sha256": actual,
-        }
-    )
-    moved = False
-    try:
-        _atomic_write_json(candidate.metadata_path, approved_audit)
-        candidate.path.replace(destination)
-        moved = True
-        entry = catalog.append_approved(candidate, destination)
-    except Exception:
-        if moved and destination.exists():
-            destination.replace(candidate.path)
-        _atomic_write_json(candidate.metadata_path, original_audit)
-        raise
-    return entry
+    with _candidate_lifecycle_lock(candidate.metadata_path, catalog):
+        canonical = load_pending_asset(candidate.metadata_path, catalog)
+        if canonical.review_status != "pending":
+            raise AssetLifecycleError("only pending assets can be approved")
+        if canonical != candidate:
+            raise AssetLifecycleError("caller does not match canonical pending audit")
+        candidate = canonical
+        decisions = dict(safety_decisions or {})
+        unresolved = set(candidate.unresolved_safety_checks)
+        if set(decisions) != unresolved:
+            raise AssetLifecycleError(
+                "safety review must resolve every unresolved safety check"
+            )
+        if any(
+            decisions[name] is not False
+            for name in unresolved - {"allowed_for_publishing"}
+        ) or (
+            "allowed_for_publishing" in unresolved
+            and decisions["allowed_for_publishing"] is not True
+        ):
+            raise AssetLifecycleError("safety review did not approve safe publishing")
+        if any(type(value) is not bool for value in decisions.values()):
+            raise AssetLifecycleError("safety review decisions must be booleans")
+        actual = sha256_file(candidate.path)
+        if actual != candidate.sha256:
+            raise AssetLifecycleError("pending asset hash changed before approval")
+        destination = (
+            catalog.active_root / candidate.production_relative_path
+        ).resolve()
+        active_root = catalog.active_root.resolve()
+        if not destination.is_relative_to(active_root):
+            raise AssetLifecycleError("production path escapes active catalog")
+        if destination.exists():
+            raise AssetLifecycleError("approved destination already exists")
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        original_audit = json.loads(
+            candidate.metadata_path.read_text(encoding="utf-8")
+        )
+        reviewed_at = datetime.now(UTC).isoformat()
+        approved_audit = candidate.audit_record()
+        approved_audit.update(
+            {
+                "review_status": "approved",
+                "approved_path": str(destination),
+                "approved_sha256": actual,
+                "safety_review_decisions": decisions,
+                "safety_reviewed_at": reviewed_at,
+                "review_disposition": "approved_for_publishing",
+            }
+        )
+        try:
+            validated_audit = PendingAuditRecord.model_validate(
+                approved_audit, strict=True
+            ).model_dump(mode="json")
+        except (ValidationError, TypeError, ValueError) as error:
+            raise AssetLifecycleError("pending asset audit schema is invalid") from error
+        moved = False
+        try:
+            _atomic_write_json(candidate.metadata_path, validated_audit)
+            candidate.path.replace(destination)
+            moved = True
+            entry = catalog.append_approved(
+                candidate,
+                destination,
+                safety_review_decisions=decisions,
+                safety_reviewed_at=reviewed_at,
+                review_disposition="approved_for_publishing",
+            )
+        except Exception:
+            if moved and destination.exists():
+                destination.replace(candidate.path)
+            _atomic_write_json(candidate.metadata_path, original_audit)
+            raise
+        return entry
 
 
 def reject_external_asset(
     candidate: PendingAsset,
     *,
     reason: str,
-    catalog: AssetCatalog | None = None,
+    catalog: AssetCatalog,
 ) -> PendingAsset | None:
-    canonical = load_pending_asset(candidate.metadata_path, catalog)
-    if canonical.review_status != "pending":
-        raise AssetLifecycleError("only pending assets can be rejected")
-    if canonical != candidate:
-        raise AssetLifecycleError("caller does not match canonical pending audit")
-    candidate = canonical
-    if (
-        candidate.review_status != "pending"
-        or _current_review_status(candidate) != "pending"
-    ):
-        raise AssetLifecycleError("only pending assets can be rejected")
-    if not reason.strip():
-        raise AssetLifecycleError("rejection reason is required")
-    if sha256_file(candidate.path) != candidate.sha256:
-        raise AssetLifecycleError("pending asset hash changed before rejection")
-    audit = candidate.audit_record()
-    audit.update({"review_status": "rejected", "rejection_reason": reason.strip()})
-    _atomic_write_json(candidate.metadata_path, audit)
-    if catalog is None:
-        return None
-    remaining = list_pending_assets(catalog, slot_id=candidate.slot_id)
+    with _candidate_lifecycle_lock(candidate.metadata_path, catalog):
+        canonical = load_pending_asset(candidate.metadata_path, catalog)
+        if canonical.review_status != "pending":
+            raise AssetLifecycleError("only pending assets can be rejected")
+        if canonical != candidate:
+            raise AssetLifecycleError("caller does not match canonical pending audit")
+        candidate = canonical
+        if not reason.strip():
+            raise AssetLifecycleError("rejection reason is required")
+        if sha256_file(candidate.path) != candidate.sha256:
+            raise AssetLifecycleError("pending asset hash changed before rejection")
+        audit = candidate.audit_record()
+        audit.update(
+            {
+                "review_status": "rejected",
+                "rejection_reason": reason.strip(),
+                "safety_reviewed_at": datetime.now(UTC).isoformat(),
+                "review_disposition": "rejected",
+            }
+        )
+        try:
+            validated_audit = PendingAuditRecord.model_validate(
+                audit, strict=True
+            ).model_dump(mode="json")
+        except (ValidationError, TypeError, ValueError) as error:
+            raise AssetLifecycleError("pending asset audit schema is invalid") from error
+        _atomic_write_json(candidate.metadata_path, validated_audit)
+    remaining = list_pending_assets(
+        catalog,
+        slot_id=candidate.slot_id,
+        requirement_fingerprint=candidate.requirement_fingerprint,
+    )
     return next(
         (
             item

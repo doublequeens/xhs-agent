@@ -14,7 +14,11 @@ from src.asset_resolver.catalog import AssetCatalog
 
 
 def pending_asset(
-    tmp_path: Path, *, asset_id: str = "p1", candidate_rank: int = 1
+    tmp_path: Path,
+    *,
+    asset_id: str = "p1",
+    candidate_rank: int = 1,
+    unresolved_safety_checks: tuple[str, ...] = (),
 ):
     from src.asset_resolver.lifecycle import PendingAsset
 
@@ -54,7 +58,10 @@ def pending_asset(
         production_relative_path=Path(f"stock/serum-{asset_id}.webp"),
         tags=("serum", "ivory"),
         fallback_roles=("serum_texture",),
-        unresolved_safety_checks=("has_logo", "has_text"),
+        unresolved_safety_checks=unresolved_safety_checks,
+        requirement_fingerprint="a" * 64,
+        attempt_number=min(candidate_rank, 3),
+        provider_attribution=(("author", "Ada"),),
     )
     metadata_path.write_text(json.dumps(pending.audit_record()), encoding="utf-8")
     return pending
@@ -79,7 +86,7 @@ def test_approval_preserves_hash_and_promotes_into_active_catalog(tmp_path: Path
     from src.asset_resolver.catalog import load_catalog
     from src.asset_resolver.lifecycle import approve_external_asset
 
-    pending = pending_asset(tmp_path)
+    pending = pending_asset(tmp_path, unresolved_safety_checks=())
     mutable_catalog = catalog(tmp_path)
     entry = approve_external_asset(pending, mutable_catalog)
 
@@ -92,6 +99,22 @@ def test_approval_preserves_hash_and_promotes_into_active_catalog(tmp_path: Path
     assert reloaded.entries[0].sha256 == pending.sha256
     assert (reloaded.entries[0].width, reloaded.entries[0].height) == (1080, 1440)
     assert reloaded.entries[0].fallback_roles == ("serum_texture",)
+    provenance = reloaded.entries[0].provenance
+    assert provenance is not None
+    assert provenance.source_type == "stock_photo"
+    assert provenance.acquired_at == pending.acquired_at
+    assert provenance.run_id == pending.run_id
+    assert provenance.provider == pending.provider
+    assert provenance.provider_asset_id == pending.provider_asset_id
+    assert provenance.source_url == pending.source_url
+    assert provenance.source_file_url == pending.source_file_url
+    assert provenance.author == pending.author
+    assert provenance.provider_attribution == dict(pending.provider_attribution)
+    assert provenance.license_snapshot == pending.license_snapshot
+    assert provenance.license_snapshot_sha256 == pending.license_snapshot_sha256
+    assert provenance.license_terms_url == pending.license_terms_url
+    assert provenance.average_hash == pending.average_hash
+    assert provenance.review_disposition == "approved_for_publishing"
 
 
 def test_approval_requires_persistent_manifest_and_restores_incoming(
@@ -144,6 +167,15 @@ def test_strict_audit_loader_rehydrates_canonical_pending_asset(tmp_path: Path) 
     assert load_pending_asset(pending.metadata_path, catalog(tmp_path)) == pending
 
 
+def test_audit_loader_requires_catalog_scope(tmp_path: Path) -> None:
+    from src.asset_resolver.lifecycle import load_pending_asset
+
+    pending = pending_asset(tmp_path)
+
+    with pytest.raises(TypeError):
+        load_pending_asset(pending.metadata_path)
+
+
 def test_strict_audit_loader_rejects_unknown_fields(tmp_path: Path) -> None:
     from src.asset_resolver.lifecycle import AssetLifecycleError, load_pending_asset
 
@@ -178,6 +210,30 @@ def test_strict_audit_loader_rejects_invalid_canonical_fields(
     pending.metadata_path.write_text(json.dumps(audit), encoding="utf-8")
 
     with pytest.raises(AssetLifecycleError, match="audit schema|canonical"):
+        load_pending_asset(pending.metadata_path, catalog(tmp_path))
+
+
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("provider", " "),
+        ("candidate_rank", 1.0),
+        ("tags", []),
+        ("provider_attribution", []),
+        ("layout", "not-a-layout"),
+    ],
+)
+def test_pydantic_audit_schema_rejects_wrong_types_and_empty_contract_fields(
+    tmp_path: Path, field_name: str, value: object
+) -> None:
+    from src.asset_resolver.lifecycle import AssetLifecycleError, load_pending_asset
+
+    pending = pending_asset(tmp_path)
+    audit = json.loads(pending.metadata_path.read_text(encoding="utf-8"))
+    audit[field_name] = value
+    pending.metadata_path.write_text(json.dumps(audit), encoding="utf-8")
+
+    with pytest.raises(AssetLifecycleError, match="audit schema"):
         load_pending_asset(pending.metadata_path, catalog(tmp_path))
 
 
@@ -272,7 +328,7 @@ def test_approval_rejects_tampered_pending_bytes(tmp_path: Path) -> None:
     pending = pending_asset(tmp_path)
     pending.path.write_bytes(b"tampered")
 
-    with pytest.raises(AssetLifecycleError, match="hash changed before approval"):
+    with pytest.raises(AssetLifecycleError, match="bytes are missing or changed"):
         approve_external_asset(pending, catalog(tmp_path))
 
     assert not (tmp_path / "active" / "stock" / "serum-p1.webp").exists()
@@ -286,7 +342,7 @@ def test_rejection_remains_auditable_and_never_enters_active(tmp_path: Path) -> 
     )
 
     pending = pending_asset(tmp_path)
-    reject_external_asset(pending, reason="visible logo")
+    reject_external_asset(pending, reason="visible logo", catalog=catalog(tmp_path))
 
     audit = json.loads(pending.metadata_path.read_text())
     assert audit["review_status"] == "rejected"
@@ -295,3 +351,150 @@ def test_rejection_remains_auditable_and_never_enters_active(tmp_path: Path) -> 
     assert not (tmp_path / "active").exists()
     with pytest.raises(AssetLifecycleError, match="only pending assets can be approved"):
         approve_external_asset(pending, catalog(tmp_path))
+
+
+def _safe_review() -> dict[str, bool]:
+    return {
+        "has_logo": False,
+        "has_text": False,
+    }
+
+
+def test_approval_requires_explicit_resolution_for_every_unknown_safety_check(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import AssetLifecycleError, approve_external_asset
+
+    pending = pending_asset(
+        tmp_path,
+        unresolved_safety_checks=("has_logo", "has_text"),
+    )
+
+    with pytest.raises(AssetLifecycleError, match="safety review"):
+        approve_external_asset(pending, catalog(tmp_path))
+
+    with pytest.raises(AssetLifecycleError, match="safety review"):
+        approve_external_asset(
+            pending,
+            catalog(tmp_path),
+            safety_decisions={"has_logo": False},
+        )
+
+
+def test_approval_persists_explicit_safe_human_review(tmp_path: Path) -> None:
+    from src.asset_resolver.lifecycle import approve_external_asset
+
+    pending = pending_asset(
+        tmp_path,
+        unresolved_safety_checks=("has_logo", "has_text"),
+    )
+
+    approve_external_asset(
+        pending,
+        catalog(tmp_path),
+        safety_decisions=_safe_review(),
+    )
+
+    audit = json.loads(pending.metadata_path.read_text(encoding="utf-8"))
+    assert audit["safety_review_decisions"] == _safe_review()
+    assert audit["safety_reviewed_at"]
+    assert audit["review_disposition"] == "approved_for_publishing"
+
+
+def test_same_candidate_concurrent_approvals_have_exactly_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    pending = pending_asset(tmp_path, unresolved_safety_checks=())
+    persistent_catalog = catalog(tmp_path)
+    barrier = Barrier(2)
+    original_write = lifecycle._atomic_write_json
+
+    def synchronized_write(path: Path, payload: dict[str, object]) -> None:
+        if path == pending.metadata_path and payload.get("review_status") == "approved":
+            try:
+                barrier.wait(timeout=0.2)
+            except BrokenBarrierError:
+                pass
+        original_write(path, payload)
+
+    monkeypatch.setattr(lifecycle, "_atomic_write_json", synchronized_write)
+
+    def approve() -> object:
+        try:
+            return lifecycle.approve_external_asset(
+                pending,
+                persistent_catalog,
+            )
+        except Exception as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: approve(), range(2)))
+
+    assert sum(not isinstance(item, Exception) for item in outcomes) == 1
+    assert json.loads(pending.metadata_path.read_text())["review_status"] == "approved"
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    assert destination.is_file()
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert [item["asset_id"] for item in manifest["assets"]] == ["pexels-p1"]
+
+
+def test_same_candidate_approve_reject_race_has_exactly_one_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    pending = pending_asset(tmp_path, unresolved_safety_checks=())
+    persistent_catalog = catalog(tmp_path)
+    barrier = Barrier(2)
+    original_write = lifecycle._atomic_write_json
+
+    def synchronized_write(path: Path, payload: dict[str, object]) -> None:
+        if path == pending.metadata_path and payload.get("review_status") in {
+            "approved",
+            "rejected",
+        }:
+            try:
+                barrier.wait(timeout=0.2)
+            except BrokenBarrierError:
+                pass
+        original_write(path, payload)
+
+    monkeypatch.setattr(lifecycle, "_atomic_write_json", synchronized_write)
+
+    def approve() -> object:
+        try:
+            return lifecycle.approve_external_asset(
+                pending,
+                persistent_catalog,
+            )
+        except Exception as error:
+            return error
+
+    def reject() -> object:
+        try:
+            return lifecycle.reject_external_asset(
+                pending,
+                reason="review rejection",
+                catalog=persistent_catalog,
+            )
+        except Exception as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = [executor.submit(approve), executor.submit(reject)]
+        results = [future.result() for future in outcomes]
+
+    assert sum(not isinstance(item, Exception) for item in results) == 1
+    audit = json.loads(pending.metadata_path.read_text())
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    if audit["review_status"] == "approved":
+        assert destination.is_file()
+        assert [item["asset_id"] for item in manifest["assets"]] == ["pexels-p1"]
+    else:
+        assert audit["review_status"] == "rejected"
+        assert pending.path.is_file()
+        assert manifest["assets"] == []

@@ -77,6 +77,10 @@ class AssetManifestItem(StrictModel):
     metadata_path: str | None = None
     run_id: str | None = None
     candidate_rank: int | None = Field(default=None, ge=1)
+    requirement_fingerprint: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    attempt_number: int | None = Field(default=None, ge=1, le=3)
     unresolved_safety_checks: list[str] = Field(default_factory=list)
 
 

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.rendering.editorial.design_system import (
+    ExternalAssetProvenance,
     load_catalog as load_design_system_catalog,
 )
 
@@ -40,6 +41,7 @@ class AssetEntry:
     license: str
     sha256: str
     usage: str
+    provenance: ExternalAssetProvenance | None = None
 
     @property
     def orientation(self) -> str:
@@ -68,7 +70,10 @@ class AssetCatalog:
             is None
         ):
             raise CatalogError("run_id must be exactly one safe path component")
-        incoming_base = (self.root / "incoming" / "external").resolve()
+        root = self.root.resolve()
+        incoming_base = (root / "incoming" / "external").resolve()
+        if not incoming_base.is_relative_to(root):
+            raise CatalogError("incoming/external escapes catalog root")
         incoming_root = (incoming_base / self.run_id).resolve()
         if not incoming_root.is_relative_to(incoming_base):
             raise CatalogError("run_id escapes incoming/external")
@@ -79,9 +84,24 @@ class AssetCatalog:
 
     @property
     def incoming_root(self) -> Path:
-        return (self.root / "incoming" / "external" / self.run_id).resolve()
+        root = self.root.resolve()
+        incoming_base = (root / "incoming" / "external").resolve()
+        if not incoming_base.is_relative_to(root):
+            raise CatalogError("incoming/external escapes catalog root")
+        incoming_root = (incoming_base / self.run_id).resolve()
+        if not incoming_root.is_relative_to(incoming_base):
+            raise CatalogError("run_id escapes incoming/external")
+        return incoming_root
 
-    def append_approved(self, pending, destination: Path) -> AssetEntry:
+    def append_approved(
+        self,
+        pending,
+        destination: Path,
+        *,
+        safety_review_decisions: Mapping[str, bool],
+        safety_reviewed_at: str,
+        review_disposition: str,
+    ) -> AssetEntry:
         """Atomically append a promoted pending asset to the production manifest."""
 
         asset_id = f"{pending.provider}-{pending.provider_asset_id}"
@@ -99,6 +119,25 @@ class AssetCatalog:
             license=pending.license,
             sha256=pending.sha256,
             usage="production",
+            provenance=ExternalAssetProvenance(
+                source_type=pending.source_type,
+                acquired_at=pending.acquired_at,
+                run_id=pending.run_id,
+                provider=pending.provider,
+                provider_asset_id=pending.provider_asset_id,
+                source_url=pending.source_url,
+                source_file_url=pending.source_file_url,
+                author=pending.author,
+                provider_attribution=dict(pending.provider_attribution),
+                license_snapshot=pending.license_snapshot,
+                license_snapshot_sha256=pending.license_snapshot_sha256,
+                license_terms_url=pending.license_terms_url,
+                average_hash=pending.average_hash,
+                requirement_fingerprint=pending.requirement_fingerprint,
+                safety_review_decisions=dict(safety_review_decisions),
+                safety_reviewed_at=safety_reviewed_at,
+                review_disposition=review_disposition,
+            ),
         )
         if self.manifest_path is None:
             raise CatalogError("approval requires a persistent catalog manifest")
@@ -127,15 +166,25 @@ class AssetCatalog:
                     "disabled_contexts": [],
                     "fallback_roles": list(pending.fallback_roles),
                     "usage": "production",
-                    "provider": pending.provider,
-                    "provider_asset_id": pending.provider_asset_id,
-                    "source_url": pending.source_url,
-                    "source_file_url": pending.source_file_url,
-                    "author": pending.author,
-                    "license_snapshot": pending.license_snapshot,
-                    "license_snapshot_sha256": pending.license_snapshot_sha256,
-                    "license_terms_url": pending.license_terms_url,
-                    "review_status": "approved",
+                    "provenance": {
+                        "source_type": pending.source_type,
+                        "acquired_at": pending.acquired_at,
+                        "run_id": pending.run_id,
+                        "provider": pending.provider,
+                        "provider_asset_id": pending.provider_asset_id,
+                        "source_url": pending.source_url,
+                        "source_file_url": pending.source_file_url,
+                        "author": pending.author,
+                        "provider_attribution": dict(pending.provider_attribution),
+                        "license_snapshot": pending.license_snapshot,
+                        "license_snapshot_sha256": pending.license_snapshot_sha256,
+                        "license_terms_url": pending.license_terms_url,
+                        "average_hash": pending.average_hash,
+                        "requirement_fingerprint": pending.requirement_fingerprint,
+                        "safety_review_decisions": dict(safety_review_decisions),
+                        "safety_reviewed_at": safety_reviewed_at,
+                        "review_disposition": review_disposition,
+                    },
                 }
             )
             file_descriptor, temporary_name = tempfile.mkstemp(
@@ -187,6 +236,7 @@ def load_catalog(path: str | Path) -> AssetCatalog:
             license=entry.license,
             sha256=entry.sha256,
             usage=entry.usage,
+            provenance=entry.provenance,
         )
         for entry in validated.entries
     )

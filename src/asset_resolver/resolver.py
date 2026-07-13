@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 import re
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime
+from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from typing import Literal
@@ -29,11 +30,16 @@ from .lifecycle import (
     list_pending_assets,
     write_pending_audit,
 )
-from .providers import ExternalAssetCandidate, structured_query
+from .providers import (
+    ExternalAssetCandidate,
+    candidate_urls_are_allowed,
+    structured_query,
+)
 
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MAX_IMAGE_PIXELS = 40_000_000
+MAX_DOWNLOAD_ATTEMPTS = 3
 
 
 class AssetResolutionError(RuntimeError):
@@ -44,6 +50,19 @@ class AssetResolutionError(RuntimeError):
     ) -> None:
         super().__init__(message)
         self.search_report = search_report
+
+
+def requirement_fingerprint(requirement: AssetRequirement) -> str:
+    """Return a stable identity for every resolution-relevant requirement field."""
+
+    payload = requirement.model_dump(mode="json")
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _has_complete_provenance(entry: AssetEntry) -> bool:
@@ -358,6 +377,13 @@ def _atomic_write_bytes(path: Path, content: bytes) -> None:
             pass
 
 
+def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
+    content = (
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    ).encode("utf-8")
+    _atomic_write_bytes(path, content)
+
+
 def _persist_license_snapshot(
     catalog: AssetCatalog, candidate: ExternalAssetCandidate
 ) -> tuple[str, str]:
@@ -384,12 +410,70 @@ def _safe_component(value: str) -> str:
     return sanitized or "asset"
 
 
+def _attempt_ledger_path(
+    catalog: AssetCatalog, requirement: AssetRequirement, fingerprint: str
+) -> Path:
+    return catalog.incoming_root / (
+        f"attempts-{_safe_component(requirement.slot_id)}-{fingerprint}.json"
+    )
+
+
+def _reserve_download_attempt(
+    catalog: AssetCatalog,
+    requirement: AssetRequirement,
+    fingerprint: str,
+    candidate: ExternalAssetCandidate,
+) -> int | None:
+    ledger_path = _attempt_ledger_path(catalog, requirement, fingerprint)
+    ledger_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = ledger_path.with_suffix(f"{ledger_path.suffix}.lock")
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            if ledger_path.exists():
+                try:
+                    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError, TypeError) as error:
+                    raise AssetResolutionError("download attempt ledger is invalid") from error
+                if (
+                    not isinstance(ledger, dict)
+                    or set(ledger) != {"slot_id", "requirement_fingerprint", "attempts"}
+                    or ledger.get("slot_id") != requirement.slot_id
+                    or ledger.get("requirement_fingerprint") != fingerprint
+                    or not isinstance(ledger.get("attempts"), list)
+                ):
+                    raise AssetResolutionError("download attempt ledger is invalid")
+            else:
+                ledger = {
+                    "slot_id": requirement.slot_id,
+                    "requirement_fingerprint": fingerprint,
+                    "attempts": [],
+                }
+            attempts = ledger["attempts"]
+            if len(attempts) >= MAX_DOWNLOAD_ATTEMPTS:
+                return None
+            attempt_number = len(attempts) + 1
+            attempts.append(
+                {
+                    "attempt_number": attempt_number,
+                    "provider": candidate.provider,
+                    "provider_asset_id": candidate.provider_asset_id,
+                    "attempted_at": datetime.now(UTC).isoformat(),
+                }
+            )
+            _atomic_write_json(ledger_path, ledger)
+            return attempt_number
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
 def _download_pending_candidates(
     requirement: AssetRequirement,
     catalog: AssetCatalog,
     ranked: list[ExternalAssetCandidate],
     providers_by_candidate: dict[int, object],
 ) -> tuple[list[PendingAsset], dict[str, list[str]]]:
+    fingerprint = requirement_fingerprint(requirement)
     existing_ids, existing_urls, existing_sha256, existing_hashes = _existing_audit_keys(
         catalog.root
     )
@@ -401,7 +485,22 @@ def _download_pending_candidates(
         if (candidate.provider, candidate.provider_asset_id) not in existing_ids
         and candidate.source_url not in existing_urls
     ]
-    for candidate_rank, candidate in available[:3]:
+    for candidate_rank, candidate in available:
+        if not candidate_urls_are_allowed(
+            candidate.provider,
+            source_url=candidate.source_url,
+            source_file_url=candidate.source_file_url,
+            license_terms_url=candidate.license_terms_url,
+        ):
+            download_errors.setdefault(candidate.provider, []).append(
+                f"{candidate.provider_asset_id}: provider URLs are not allowlisted"
+            )
+            continue
+        attempt_number = _reserve_download_attempt(
+            catalog, requirement, fingerprint, candidate
+        )
+        if attempt_number is None:
+            break
         candidate_key = (candidate.provider, candidate.provider_asset_id)
         provider = providers_by_candidate[id(candidate)]
         try:
@@ -485,6 +584,8 @@ def _download_pending_candidates(
                 )
                 if getattr(candidate, field_name) is None
             ),
+            requirement_fingerprint=fingerprint,
+            attempt_number=attempt_number,
             provider_attribution=candidate.provider_attribution,
         )
         _atomic_write_bytes(path, normalized)
@@ -527,6 +628,8 @@ def _pending_manifest_item(
         metadata_path=str(pending.metadata_path),
         run_id=pending.run_id,
         candidate_rank=pending.candidate_rank,
+        requirement_fingerprint=pending.requirement_fingerprint,
+        attempt_number=pending.attempt_number,
         unresolved_safety_checks=list(pending.unresolved_safety_checks),
     )
 
@@ -601,6 +704,7 @@ def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManif
     provider_reports: list[ProviderSearchReport] = []
     search_triggered = False
     for requirement in visual_plan.required_assets:
+        fingerprint = requirement_fingerprint(requirement)
         entry = _select_exact(requirement, catalog)
         if entry is not None:
             items.append(_manifest_item(requirement, entry, status="active"))
@@ -610,7 +714,9 @@ def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManif
             continue
 
         resumed_pending = list_pending_assets(
-            catalog, slot_id=requirement.slot_id
+            catalog,
+            slot_id=requirement.slot_id,
+            requirement_fingerprint=fingerprint,
         )
         if resumed_pending:
             items.append(_pending_manifest_item(requirement, resumed_pending[0]))
