@@ -8,6 +8,7 @@ import pytest
 from memory.migrations import (
     migrate_contents_domain_fields,
     migrate_metrics_collection_schema,
+    migrate_topic_generation_schema,
 )
 from memory.memory_manager import XHSMemoryManager
 
@@ -415,6 +416,34 @@ def test_init_db_adds_missing_legacy_run_ledger_columns(tmp_path):
     assert row[2:] == (1, "safe")
 
 
+def test_migrate_topic_generation_schema_is_idempotent_for_legacy_database(tmp_path):
+    db_path = tmp_path / "legacy-topic-generation.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute("CREATE TABLE contents (content_id TEXT PRIMARY KEY)")
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.commit()
+
+    migrate_topic_generation_schema(connection)
+    migrate_topic_generation_schema(connection)
+
+    assert _table_exists(connection, "trend_signals")
+    assert _table_exists(connection, "topic_generation_traces")
+    assert _primary_key_columns(connection, "trend_signals") == ["signal_id"]
+    assert _primary_key_columns(connection, "topic_generation_traces") == ["run_id"]
+    assert "idx_trend_signals_scope_active" in _index_names(
+        connection,
+        "trend_signals",
+    )
+    assert _index_columns(connection, "idx_trend_signals_scope_active") == [
+        "domain",
+        "subdomain",
+        "active_from",
+        "expires_at",
+    ]
+
+
 def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
     db_path = tmp_path / "fresh-metrics.db"
     connection = sqlite3.connect(db_path)
@@ -502,6 +531,51 @@ def test_fresh_schema_includes_metrics_collection_tables(tmp_path):
         assert run_details[counter_column] == ("INTEGER", True, "0")
 
 
+def test_fresh_schema_includes_topic_generation_tables(tmp_path):
+    db_path = tmp_path / "fresh-topic-generation.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    assert _table_exists(connection, "trend_signals")
+    assert _table_exists(connection, "topic_generation_traces")
+    assert _table_columns(connection, "trend_signals") == [
+        "signal_id",
+        "source",
+        "source_url",
+        "raw_title",
+        "normalized_signal",
+        "signal_type",
+        "signal_name",
+        "domain",
+        "subdomain",
+        "why_now",
+        "domain_translation",
+        "risk_level",
+        "avoid_topics",
+        "confidence",
+        "active_from",
+        "expires_at",
+        "collected_at",
+        "metadata",
+    ]
+    assert _table_columns(connection, "topic_generation_traces") == [
+        "run_id",
+        "domain",
+        "subdomain",
+        "trends_num",
+        "signals_used",
+        "creative_briefs_sampled",
+        "generated_candidates_count",
+        "filtered_candidates_count",
+        "final_trends",
+        "diversity_metrics",
+        "degraded_reason",
+        "created_at",
+    ]
+    assert _primary_key_columns(connection, "trend_signals") == ["signal_id"]
+    assert _primary_key_columns(connection, "topic_generation_traces") == ["run_id"]
+
+
 def test_migrate_metrics_collection_schema_rolls_back_on_failure(tmp_path):
     db_path = tmp_path / "metrics-rollback.db"
     connection = sqlite3.connect(db_path)
@@ -564,6 +638,8 @@ def test_init_db_runs_schema_then_migration_on_legacy_database(tmp_path):
         "avg_watch_time_seconds",
         "danmaku_count",
     } <= set(_table_columns(manager.connect(), "metrics"))
+    assert _table_exists(manager.connect(), "trend_signals")
+    assert _table_exists(manager.connect(), "topic_generation_traces")
 
 
 def test_init_db_deduplicates_legacy_post_ids_before_unique_index(tmp_path):

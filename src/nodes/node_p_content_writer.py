@@ -24,6 +24,15 @@ def _require_value(source, key: str) -> str:
     return value
 
 
+def _require_content_contract(publish_package: dict) -> dict:
+    content_contract = publish_package.get("content_contract")
+    if content_contract is None:
+        raise ValueError("content_writer_node requires content_contract metadata before persistence.")
+    if hasattr(content_contract, "model_dump"):
+        return content_contract.model_dump(mode="json")
+    return dict(content_contract)
+
+
 def _require_r2_compliance_status(state: AgentState) -> str:
     r2_output = state.get("r2_output")
     if r2_output is None:
@@ -59,6 +68,7 @@ def content_writer_node(state: AgentState) -> AgentState:
     domain_context = state.get("domain_context", {})
     compliance_status = _require_r2_compliance_status(state)
     profile_version = _require_value(domain_context, "profile_version")
+    content_contract = _require_content_contract(publish_package)
     storyboards = list(_get_value(publish_package, "storyboards") or [])
     images = list(_get_value(publish_package, "images") or [])
 
@@ -101,6 +111,7 @@ def content_writer_node(state: AgentState) -> AgentState:
             "content_intent": topic_metadata["content_intent"],
             "profile_version": profile_version,
             "risk_level": topic_metadata["risk_level"],
+            "content_contract": content_contract,
         },
     )
 

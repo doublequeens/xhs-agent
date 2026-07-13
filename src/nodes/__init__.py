@@ -22,9 +22,16 @@ _EXPORTS = {
     "image_qa_node": "src.nodes.node_n_image_qa",
     "assembler_node": "src.nodes.node_o_assembler",
     "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
+    "carousel_qa_node": "src.nodes.node_p_carousel_qa",
+    "text_card_renderer_node": "src.nodes.node_p_text_card_renderer",
+    "render_qa_node": "src.nodes.node_p_render_qa",
     "content_writer_node": "src.nodes.node_p_content_writer",
     "human_review_node": "src.nodes.node_q_human_review",
     "final_policy_guard_node": "src.nodes.node_q_01_final_policy_guard",
+    "topic_ideator_node": "src.nodes.node_a_04_topic_ideator",
+    "topic_diversity_filter_node": "src.nodes.node_a_05_topic_diversity_filter",
+    "topic_signal_collector_node": "src.nodes.node_a_02_topic_signal_collector",
+    "creative_brief_builder_node": "src.nodes.node_a_03_creative_brief_builder",
 }
 
 __all__ = list(_EXPORTS)

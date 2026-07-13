@@ -24,8 +24,81 @@ def test_domain_router_node_returns_context_and_policy():
     assert result["content_policy"].risk_level == result["domain_context"].risk_level
 
 
-def test_domain_confirmation_node_skips_interrupt_for_high_confidence(monkeypatch):
-    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
+def test_domain_router_rejects_out_of_scope_explicit_domain():
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    with pytest.raises(ValueError, match="outside creator profile scope"):
+        domain_router_node(
+            {
+                "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+                "domain": "healthy_lifestyle",
+                "subdomain": "daily_habits",
+                "focus_keyword": "久坐",
+            }
+        )
+
+
+def test_domain_router_uses_creator_profile_defaults_when_scope_is_omitted():
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    result = domain_router_node(
+        {
+            "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+            "domain": None,
+            "subdomain": None,
+            "focus_keyword": "久坐",
+        }
+    )
+
+    assert result["domain_context"].domain == "beauty"
+    assert result["domain_context"].subdomain == "skincare"
+
+
+def test_domain_confirmation_rejects_resume_outside_creator_profile_scope(monkeypatch):
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    context = resolve_domain(domain="beauty", focus_keyword="防晒")
+    monkeypatch.setattr(
+        "src.nodes.node_a_00_domain_confirmation.interrupt",
+        lambda _payload: {"domain": "wellness", "subdomain": "sleep"},
+    )
+
+    with pytest.raises(ValueError, match="outside creator profile scope"):
+        domain_confirmation_node(
+            {"domain_context": context, "creator_profile": COMMUTING_BEAUTY_WOMEN_V1}
+        )
+
+
+def test_domain_confirmation_payload_limits_choices_to_creator_profile(monkeypatch):
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    context = resolve_domain(domain="beauty", focus_keyword="防晒")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"domain": "beauty", "subdomain": "makeup_basics"}
+
+    monkeypatch.setattr(
+        "src.nodes.node_a_00_domain_confirmation.interrupt", fake_interrupt
+    )
+
+    result = domain_confirmation_node(
+        {"domain_context": context, "creator_profile": COMMUTING_BEAUTY_WOMEN_V1}
+    )
+
+    assert captured["payload"]["allowed_domains"] == ("beauty",)
+    assert captured["payload"]["allowed_subdomains"] == (
+        "skincare",
+        "makeup_basics",
+    )
+    assert result["domain_context"].subdomain == "makeup_basics"
+
+
+def test_domain_confirmation_node_skips_interrupt_for_high_confidence_inferred_domain(
+    monkeypatch,
+):
+    context = resolve_domain(domain=None, focus_keyword="改善睡眠")
 
     def fail_interrupt(_payload):
         raise AssertionError("interrupt should not be called")
@@ -35,8 +108,27 @@ def test_domain_confirmation_node_skips_interrupt_for_high_confidence(monkeypatc
     assert domain_confirmation_node({"domain_context": context}) == {}
 
 
-def test_domain_confirmation_node_interrupts_and_accepts_resume(monkeypatch):
-    context = resolve_domain(domain=None, focus_keyword="完全无关的关键词")
+def test_domain_confirmation_node_skips_interrupt_for_explicit_domain_with_subdomain(
+    monkeypatch,
+):
+    context = resolve_domain(
+        domain="beauty",
+        subdomain="skincare",
+        focus_keyword="改善睡眠",
+    )
+
+    def fail_interrupt(_payload):
+        raise AssertionError("interrupt should not be called")
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fail_interrupt)
+
+    assert domain_confirmation_node({"domain_context": context}) == {}
+
+
+def test_domain_confirmation_node_interrupts_and_accepts_resume_for_default_subdomain(
+    monkeypatch,
+):
+    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
     captured = {}
 
     def fake_interrupt(payload):
@@ -49,12 +141,61 @@ def test_domain_confirmation_node_interrupts_and_accepts_resume(monkeypatch):
 
     assert captured["payload"]["kind"] == "domain_confirmation"
     assert "message" in captured["payload"]
+    assert captured["payload"]["context"]["classification_source"] == "explicit_domain_default_subdomain"
     assert result["domain_context"].domain == "wellness"
     assert result["domain_context"].subdomain == "sleep"
     assert result["domain_context"].classification_source == "explicit"
     assert result["domain_context"].classification_confidence == 1
     assert result["domain_context"].profile_version == "wellness-v1"
     assert result["content_policy"] == build_content_policy(get_domain_profile("wellness"))
+
+
+def test_domain_confirmation_node_still_interrupts_for_interactive_default_subdomain(
+    monkeypatch,
+):
+    context = resolve_domain(domain="beauty", focus_keyword="改善睡眠")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"domain": "beauty", "subdomain": "makeup_basics"}
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fake_interrupt)
+
+    result = domain_confirmation_node({"domain_context": context, "interactive": True})
+
+    assert captured["payload"]["kind"] == "domain_confirmation"
+    assert captured["payload"]["context"]["classification_source"] == "explicit_domain_default_subdomain"
+    assert result["domain_context"].domain == "beauty"
+    assert result["domain_context"].subdomain == "makeup_basics"
+    assert result["domain_context"].classification_source == "explicit"
+
+
+def test_domain_router_and_confirmation_skip_interrupt_when_non_interactive(monkeypatch):
+    routed = domain_router_node(
+        {
+            "domain": "beauty",
+            "subdomain": None,
+            "focus_keyword": "改善睡眠",
+            "interactive": False,
+        }
+    )
+    captured = {"called": False}
+
+    def fail_interrupt(_payload):
+        captured["called"] = True
+        raise AssertionError("interrupt should not be called")
+
+    monkeypatch.setattr("src.nodes.node_a_00_domain_confirmation.interrupt", fail_interrupt)
+
+    confirmation_result = domain_confirmation_node(
+        {"domain_context": routed["domain_context"], "interactive": False}
+    )
+
+    assert routed["domain_context"].classification_source == "explicit_domain_default_subdomain"
+    assert routed["domain_context"].classification_confidence == 1
+    assert confirmation_result == {}
+    assert captured["called"] is False
 
 
 def test_domain_confirmation_node_rejects_invalid_subdomain(monkeypatch):
@@ -149,7 +290,10 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
             domain_router_node=fake_node,
             domain_confirmation_node=fake_node,
             retrieve_memory_node=fake_node,
-            trend_scout_node=fake_node,
+            topic_signal_collector_node=fake_node,
+            creative_brief_builder_node=fake_node,
+            topic_ideator_node=fake_node,
+            topic_diversity_filter_node=fake_node,
             angle_strategist_node=fake_node,
             novelty_guard_node=fake_node,
             virality_scorer_node=fake_node,
@@ -167,6 +311,9 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
             final_policy_guard_node=fake_node,
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
+            carousel_qa_node=fake_node,
+            text_card_renderer_node=fake_node,
+            render_qa_node=fake_node,
         ),
     )
 
@@ -180,7 +327,17 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("virality_score", "evidence_brief") in added_edges
     assert ("evidence_brief", "outline_architect") in added_edges
     assert ("virality_score", "outline_architect") not in added_edges
-    assert ("storyboard_generator", "human_review") in added_edges
+    assert ("storyboard_generator", "carousel_qa") in added_edges
+    assert ("storyboard_generator", "human_review") not in added_edges
+    assert (
+        "carousel_qa",
+        (("r1_reflector", "r1_reflector"), ("text_card_renderer", "text_card_renderer")),
+    ) in added_edges
+    assert ("text_card_renderer", "render_qa") in added_edges
+    assert (
+        "render_qa",
+        (("human_review", "human_review"), ("r1_reflector", "r1_reflector")),
+    ) in added_edges
     assert ("human_review", "final_policy_guard") not in added_edges
     assert (
         "human_review",
@@ -227,7 +384,10 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
             domain_router_node=fake_node,
             domain_confirmation_node=fake_node,
             retrieve_memory_node=fake_node,
-            trend_scout_node=fake_node,
+            topic_signal_collector_node=fake_node,
+            creative_brief_builder_node=fake_node,
+            topic_ideator_node=fake_node,
+            topic_diversity_filter_node=fake_node,
             angle_strategist_node=fake_node,
             novelty_guard_node=fake_node,
             virality_scorer_node=fake_node,
@@ -245,6 +405,9 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
             final_policy_guard_node=fake_node,
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
+            carousel_qa_node=fake_node,
+            text_card_renderer_node=fake_node,
+            render_qa_node=fake_node,
         ),
     )
 

@@ -48,6 +48,15 @@ def _publish_package(**overrides):
         "content_intent": "how_to",
         "risk_level": "medium",
         "risk_flags": ["medical-adjacent"],
+        "content_contract": {
+            "audience": "上班族",
+            "trigger_situation": "通勤前",
+            "decision_problem": "如何安排日常习惯",
+            "first_screen_promise": "通勤前快速掌握基础步骤",
+            "screenshot_asset": "步骤清单截图",
+            "proof_asset": "执行前后对比",
+            "visual_mode": "text_card",
+        },
     }
     package.update(overrides)
     return package
@@ -61,6 +70,15 @@ def _topic(topic_id="tp_001"):
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-adjacent"],
+        content_contract={
+            "audience": "上班族",
+            "trigger_situation": "通勤前",
+            "decision_problem": "如何安排日常习惯",
+            "first_screen_promise": "通勤前快速掌握基础步骤",
+            "screenshot_asset": "步骤清单截图",
+            "proof_asset": "执行前后对比",
+            "visual_mode": "text_card",
+        },
     )
 
 
@@ -183,6 +201,7 @@ def test_content_writer_uses_state_topic_metadata_over_editable_package_fields(m
         "content_intent": "how_to",
         "profile_version": "wellness-v1",
         "risk_level": "medium",
+        "content_contract": topic.content_contract,
     }
     assert result == {"data_writed": True}
 

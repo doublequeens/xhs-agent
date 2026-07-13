@@ -57,12 +57,21 @@ def _storyboard_visible_text(storyboards) -> list[str]:
             text_fragments.append(str(frame))
             continue
         text_fragments.extend(
-            [
-                _coerce_text(frame.get("frame_title")),
-                _coerce_text(frame.get("on_image_copy")),
-                _coerce_text(frame.get("narration")),
-            ]
+            _coerce_text(value)
+            for key, value in frame.items()
+            if key in {"kicker", "headline", "footer", "question"}
         )
+        for field_name in ("wrong_items", "right_items", "checklist_items"):
+            text_fragments.extend(_coerce_text(value) for value in frame.get(field_name) or [])
+        for step in frame.get("steps") or []:
+            if isinstance(step, dict):
+                text_fragments.extend(_coerce_text(step.get(key)) for key in ("name", "hint"))
+        for condition in frame.get("conditions") or []:
+            if isinstance(condition, dict):
+                text_fragments.extend(
+                    _coerce_text(condition.get(key))
+                    for key in ("situation", "recommendation")
+                )
     return text_fragments
 
 

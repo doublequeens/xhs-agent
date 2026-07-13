@@ -7,6 +7,18 @@ from src.evidence import EvidenceBrief, EvidenceItem
 from src.prompts.composer import TASK_FILES
 
 
+def _profile_bound_state():
+    from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+
+    return {
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+        "domain_context": {
+            "domain": "beauty",
+            "profile_version": "beauty-v1",
+        },
+    }
+
+
 @pytest.mark.parametrize("domain", ["beauty", "wellness", "healthy_lifestyle"])
 def test_all_task_files_compose_for_each_domain_profile(domain):
     from src.prompts.composer import compose_prompt
@@ -21,10 +33,10 @@ def test_all_task_files_compose_for_each_domain_profile(domain):
         assert f'"domain": "{profile.domain}"' in prompt
         composed_count += 1
 
-    assert composed_count == 15
+    assert composed_count == len(TASK_FILES)
 
 
-def test_task_profile_matrix_has_45_successful_compositions():
+def test_task_profile_matrix_composes_every_task_for_every_domain():
     from src.prompts.composer import compose_prompt
 
     success_count = 0
@@ -35,7 +47,7 @@ def test_task_profile_matrix_has_45_successful_compositions():
             assert compose_prompt(task, profile)
             success_count += 1
 
-    assert success_count == 45
+    assert success_count == len(TASK_FILES) * len(("beauty", "wellness", "healthy_lifestyle"))
 
 
 def test_compose_prompt_includes_task_safety_and_profile_payload_for_wellness():
@@ -79,6 +91,13 @@ def test_compose_prompt_rejects_unknown_task():
 
     with pytest.raises(ValueError, match="Unknown prompt task: missing_task"):
         compose_prompt("missing_task", get_domain_profile("beauty"))
+
+
+def test_compose_prompt_rejects_removed_storyboard_image_generator_task():
+    from src.prompts.composer import compose_prompt
+
+    with pytest.raises(ValueError, match="Unknown prompt task"):
+        compose_prompt("storyboards_images_generator", get_domain_profile("beauty"))
 
 
 def test_compose_prompt_surfaces_missing_fragment_path(monkeypatch, tmp_path):
@@ -155,6 +174,28 @@ def test_compose_prompt_for_state_rejects_wrong_profile_version_in_modern_state(
             "trend_scout",
             {"domain_context": {"domain": "wellness", "profile_version": "beauty-v1"}},
         )
+
+
+def test_stateful_prompt_includes_creator_profile_fragment():
+    from src.prompts.composer import compose_prompt_for_state
+
+    prompt = compose_prompt_for_state("draft_writer", _profile_bound_state())
+
+    assert "23–35 岁、通勤、有基础护肤和底妆需求的女性" in prompt
+    assert "不使用卡通角色、IP 或纯装饰性 AI 插图" in prompt
+
+
+def test_stateful_prompt_layers_creator_profile_between_safety_and_domain_fragments():
+    from src.prompts.composer import compose_prompt_for_state
+
+    prompt = compose_prompt_for_state("draft_writer", _profile_bound_state())
+
+    assert (
+        prompt.index("【Shared Safety Rules】")
+        < prompt.index("【Creator Profile Contract】")
+        < prompt.index("【Creator Profile】")
+        < prompt.index("【Domain Fragment】")
+    )
 
 
 def test_serialize_prompt_value_json_serializes_nested_evidence_briefs_with_url_strings():

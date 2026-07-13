@@ -13,6 +13,7 @@ from memory.migrations import (
     deduplicate_content_post_ids,
     migrate_contents_domain_fields,
     migrate_metrics_collection_schema,
+    migrate_topic_generation_schema,
 )
 from memory.models import ContentRecord, MetricsRecord, MemoryContext
 
@@ -175,6 +176,7 @@ class XHSMemoryManager:
                 migrate_contents_domain_fields(conn)
                 migrate_metrics_collection_schema(conn)
                 deduplicate_content_post_ids(conn)
+                migrate_topic_generation_schema(conn)
                 self._create_required_indexes(conn)
             except Exception:
                 conn.execute(f"ROLLBACK TO {_INIT_DB_SAVEPOINT}")
@@ -1663,3 +1665,166 @@ class XHSMemoryManager:
             seen.add(v)
             out.append(v)
         return out
+
+    def upsert_trend_signals(self, signals: list[object]) -> None:
+        with self._immediate_transaction() as conn:
+            for signal in signals:
+                payload = signal.model_dump() if hasattr(signal, "model_dump") else dict(signal)
+                conn.execute(
+                    """
+                    INSERT INTO trend_signals (
+                        signal_id, source, source_url, raw_title,
+                        normalized_signal, signal_type, signal_name,
+                        domain, subdomain, why_now, domain_translation,
+                        risk_level, avoid_topics, confidence, active_from,
+                        expires_at, collected_at, metadata
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(signal_id) DO UPDATE SET
+                        source = excluded.source,
+                        source_url = excluded.source_url,
+                        raw_title = excluded.raw_title,
+                        normalized_signal = excluded.normalized_signal,
+                        signal_type = excluded.signal_type,
+                        signal_name = excluded.signal_name,
+                        domain = excluded.domain,
+                        subdomain = excluded.subdomain,
+                        why_now = excluded.why_now,
+                        domain_translation = excluded.domain_translation,
+                        risk_level = excluded.risk_level,
+                        avoid_topics = excluded.avoid_topics,
+                        confidence = excluded.confidence,
+                        active_from = excluded.active_from,
+                        expires_at = excluded.expires_at,
+                        collected_at = excluded.collected_at,
+                        metadata = excluded.metadata
+                    """,
+                    (
+                        payload["signal_id"],
+                        payload["source"],
+                        payload.get("source_url"),
+                        payload.get("raw_title"),
+                        payload["normalized_signal"],
+                        payload["signal_type"],
+                        payload["signal_name"],
+                        payload["domain"],
+                        payload["subdomain"],
+                        payload["why_now"],
+                        payload["domain_translation"],
+                        payload["risk_level"],
+                        json.dumps(payload.get("avoid_topics", []), ensure_ascii=False),
+                        payload["confidence"],
+                        str(payload["active_from"]),
+                        str(payload["expires_at"]),
+                        payload["collected_at"].isoformat()
+                        if hasattr(payload["collected_at"], "isoformat")
+                        else str(payload["collected_at"]),
+                        json.dumps(payload.get("metadata", {}), ensure_ascii=False),
+                    ),
+                )
+
+    def get_active_trend_signals(
+        self,
+        domain: str,
+        subdomain: str,
+        today: str,
+        *,
+        min_confidence: float = 0.75,
+    ) -> list[dict[str, object]]:
+        with self.connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM trend_signals
+                WHERE domain = ?
+                  AND subdomain = ?
+                  AND active_from <= ?
+                  AND expires_at >= ?
+                  AND confidence >= ?
+                  AND risk_level != 'high'
+                ORDER BY confidence DESC, collected_at DESC, signal_id
+                """,
+                (domain, subdomain, today, today, min_confidence),
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            item["avoid_topics"] = json.loads(item["avoid_topics"])
+            item["metadata"] = json.loads(item["metadata"])
+            result.append(item)
+        return result
+
+    def has_successful_trend_collection(self, collection_date: str) -> bool:
+        with self.connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1
+                FROM trend_collection_runs
+                WHERE collection_date = ?
+                  AND status = 'success'
+                LIMIT 1
+                """,
+                (collection_date,),
+            ).fetchone()
+        return row is not None
+
+    def record_trend_collection_run(self, summary: dict[str, object]) -> None:
+        with self._immediate_transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO trend_collection_runs (
+                    collection_date,
+                    status,
+                    started_at,
+                    completed_at,
+                    collected_signals,
+                    error_summary
+                )
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(collection_date) DO UPDATE SET
+                    status = excluded.status,
+                    started_at = excluded.started_at,
+                    completed_at = excluded.completed_at,
+                    collected_signals = excluded.collected_signals,
+                    error_summary = excluded.error_summary
+                """,
+                (
+                    summary["collection_date"],
+                    summary["status"],
+                    summary["started_at"],
+                    summary.get("completed_at"),
+                    summary.get("collected_signals", 0),
+                    summary.get("error_summary"),
+                ),
+            )
+
+    def save_topic_generation_trace(self, trace: object) -> None:
+        payload = trace.model_dump() if hasattr(trace, "model_dump") else dict(trace)
+        with self._immediate_transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO topic_generation_traces (
+                    run_id, domain, subdomain, trends_num, signals_used,
+                    creative_briefs_sampled, generated_candidates_count,
+                    filtered_candidates_count, final_trends, diversity_metrics,
+                    degraded_reason, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload["run_id"],
+                    payload["domain"],
+                    payload["subdomain"],
+                    payload["trends_num"],
+                    json.dumps(payload["signals_used"], ensure_ascii=False),
+                    json.dumps(payload["creative_briefs_sampled"], ensure_ascii=False),
+                    payload["generated_candidates_count"],
+                    payload["filtered_candidates_count"],
+                    json.dumps(payload["final_trends"], ensure_ascii=False),
+                    json.dumps(payload["diversity_metrics"], ensure_ascii=False),
+                    payload.get("degraded_reason"),
+                    payload["created_at"].isoformat()
+                    if hasattr(payload["created_at"], "isoformat")
+                    else str(payload["created_at"]),
+                ),
+            )

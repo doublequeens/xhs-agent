@@ -14,6 +14,8 @@ from src.schemas import AgentState
 import src.nodes as nodes
 from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
 from src.nodes.node_q_human_review import route_after_human_review
+from src.nodes.node_p_carousel_qa import route_after_carousel_qa
+from src.nodes.node_p_render_qa import route_after_render_qa
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
@@ -79,7 +81,10 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("domain_router", nodes.domain_router_node)
     builder.add_node("domain_confirmation", nodes.domain_confirmation_node)
     builder.add_node("memory_retriever", nodes.retrieve_memory_node)
-    builder.add_node("trend_scout", nodes.trend_scout_node)
+    builder.add_node("topic_signal_collector", nodes.topic_signal_collector_node)
+    builder.add_node("creative_brief_builder", nodes.creative_brief_builder_node)
+    builder.add_node("topic_ideator", nodes.topic_ideator_node)
+    builder.add_node("topic_diversity_filter", nodes.topic_diversity_filter_node)
     builder.add_node("angle_strategist", nodes.angle_strategist_node)
     builder.add_node("novelty_guard", nodes.novelty_guard_node)
     builder.add_node("virality_score", nodes.virality_scorer_node)
@@ -93,6 +98,9 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("r2_compliance", nodes.r2_compliance_node)
     builder.add_node("hashtag", nodes.hashtag_node)
     builder.add_node("storyboard_generator", nodes.storyboards_generator_node)
+    builder.add_node("carousel_qa", nodes.carousel_qa_node)
+    builder.add_node("text_card_renderer", nodes.text_card_renderer_node)
+    builder.add_node("render_qa", nodes.render_qa_node)
     # builder.add_node("visual_director", visual_director_node)
     # builder.add_node("image_sourcing", image_sourcing_node)
     # builder.add_node("image_qa", image_qa_node)
@@ -102,8 +110,11 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("content_writer", nodes.content_writer_node)
     builder.add_edge("domain_router", "domain_confirmation")
     builder.add_edge("domain_confirmation", "memory_retriever")
-    builder.add_edge("memory_retriever", "trend_scout")
-    builder.add_edge("trend_scout", "angle_strategist")
+    builder.add_edge("memory_retriever", "topic_signal_collector")
+    builder.add_edge("topic_signal_collector", "creative_brief_builder")
+    builder.add_edge("creative_brief_builder", "topic_ideator")
+    builder.add_edge("topic_ideator", "topic_diversity_filter")
+    builder.add_edge("topic_diversity_filter", "angle_strategist")
     builder.add_edge("angle_strategist", "novelty_guard")
     builder.add_edge("novelty_guard", "virality_score")
     builder.add_edge("virality_score", "evidence_brief")
@@ -124,7 +135,18 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_edge("image_sourcing", "image_qa")
     # builder.add_edge("image_qa", "assembler")
     builder.add_edge("assembler", "storyboard_generator")
-    builder.add_edge("storyboard_generator", "human_review")
+    builder.add_edge("storyboard_generator", "carousel_qa")
+    builder.add_conditional_edges(
+        "carousel_qa",
+        route_after_carousel_qa,
+        {"r1_reflector": "r1_reflector", "text_card_renderer": "text_card_renderer"},
+    )
+    builder.add_edge("text_card_renderer", "render_qa")
+    builder.add_conditional_edges(
+        "render_qa",
+        route_after_render_qa,
+        {"r1_reflector": "r1_reflector", "human_review": "human_review"},
+    )
     builder.add_conditional_edges(
         "human_review",
         route_after_human_review,

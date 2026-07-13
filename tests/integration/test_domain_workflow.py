@@ -24,6 +24,29 @@ from src.schemas.decision import RevisionMeta
 from src.schemas.topic import TopicItem
 
 
+def _creative_seed():
+    return {
+        "signal_type": "evergreen_context",
+        "signal_name": "测试默认信号",
+        "why_now": "测试中使用稳定 evergreen 信号。",
+        "domain_translation": "测试中保持原 domain/subdomain。",
+        "evergreen_pain": "测试核心痛点。",
+        "timely_framing": "测试时机包装。",
+    }
+
+
+def _structured_storyboards(contract):
+    common = {"theme": "warm_neutral", "footer": "按需微调"}
+    return [
+        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract.first_screen_promise},
+        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["立刻执行", "一次太多"], "right_items": ["逐步记录", "按需调整"]},
+        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步执行", "steps": [{"name": "记录", "hint": "观察现状"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
+        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "执行清单", "checklist_items": ["记录现状", "每次一项", "每周复盘"]},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "遇到阻碍时", "conditions": [{"situation": "执行受阻", "recommendation": "缩小调整范围"}, {"situation": "时间紧张", "recommendation": "先做关键步骤"}]},
+        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的选择", "question": "你会先调整哪一步？"},
+    ]
+
+
 class _EvidenceProvider:
     def __init__(self, events, *, has_results=True):
         self.events = events
@@ -89,7 +112,16 @@ def _install_graph_doubles(
         events["memory_calls"].append(state["domain_context"].domain)
         return {"memory_context": {}}
 
-    def trend_node(state):
+    def topic_signal_collector_node(_state):
+        return {"topic_signals": [], "topic_generation_degraded_reason": None}
+
+    def creative_brief_builder_node(_state):
+        return {"creative_briefs": []}
+
+    def topic_ideator_node(_state):
+        return {"topic_candidates": []}
+
+    def topic_diversity_filter_node(state):
         context = state["domain_context"]
         if context.domain == "beauty":
             intent, risk = "experience", "low"
@@ -112,6 +144,16 @@ def _install_graph_doubles(
                     content_intent=intent,
                     risk_level=risk,
                     risk_flags=[],
+                    content_contract={
+                        "audience": "上班族",
+                        "trigger_situation": "通勤前",
+                        "decision_problem": "如何安排日常习惯",
+                        "first_screen_promise": "通勤前快速掌握基础步骤",
+                        "screenshot_asset": "步骤清单截图",
+                        "proof_asset": "执行前后对比",
+                        "visual_mode": "text_card",
+                    },
+                    creative_seed=_creative_seed(),
                 )
             ]
         }
@@ -280,6 +322,16 @@ def _install_graph_doubles(
             }
         }
 
+    def storyboard_generator_node(state):
+        contract = state["trends"][0].content_contract
+        storyboards = _structured_storyboards(contract)
+        return {
+            "publish_package": {
+                **state["publish_package"],
+                "storyboards": storyboards,
+            }
+        }
+
     def writer_node(_state):
         events["writer_calls"] += 1
         events["structured_writes"] += 1
@@ -290,7 +342,10 @@ def _install_graph_doubles(
         "domain_router_node": domain_router_node,
         "domain_confirmation_node": domain_confirmation_node,
         "retrieve_memory_node": memory_node,
-        "trend_scout_node": trend_node,
+        "topic_signal_collector_node": topic_signal_collector_node,
+        "creative_brief_builder_node": creative_brief_builder_node,
+        "topic_ideator_node": topic_ideator_node,
+        "topic_diversity_filter_node": topic_diversity_filter_node,
         "angle_strategist_node": passthrough("angles", []),
         "novelty_guard_node": passthrough("novelty_check_results", []),
         "virality_scorer_node": lambda _state: {
@@ -306,7 +361,7 @@ def _install_graph_doubles(
         "r2_compliance_node": r2_node,
         "hashtag_node": hashtag_node,
         "assembler_node": assembler_node,
-        "storyboards_generator_node": lambda _state: {},
+        "storyboards_generator_node": storyboard_generator_node,
         "human_review_node": human_review_node,
         "final_policy_guard_node": final_policy_guard_node,
         "content_writer_node": writer_node,
@@ -362,7 +417,7 @@ def _run_to_review(graph, initial_state, thread_id):
     "initial_state,expected",
     [
         (
-            {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+            {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
             ("beauty", "skincare", "experience", "low", False),
         ),
         (
@@ -433,7 +488,7 @@ def test_blocked_r2_cannot_reach_hashtags(graph_factory):
 
     with pytest.raises(RuntimeError, match="blocked before hashtags"):
         graph.invoke(
-            {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+            {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
             config={"configurable": {"thread_id": "blocked-r2"}},
         )
 
@@ -445,7 +500,7 @@ def test_human_treatment_edit_returns_to_review_before_write(graph_factory):
     graph, events = graph_factory()
     config, _interrupted = _run_to_review(
         graph,
-        {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+        {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
         "human-edit",
     )
 
@@ -469,7 +524,7 @@ def test_rejected_review_never_calls_memory_writes(graph_factory):
     graph, events = graph_factory()
     config, _interrupted = _run_to_review(
         graph,
-        {"domain": "beauty", "focus_keyword": "夏季防晒", "trends_num": 1},
+        {"domain": "beauty", "subdomain": "skincare", "focus_keyword": "夏季防晒", "trends_num": 1},
         "rejected-review",
     )
 

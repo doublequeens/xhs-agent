@@ -10,11 +10,34 @@ from src.schemas.decision import HashTagInput
 from src.schemas.topic import TopicItem
 
 
+def _creative_seed():
+    return {
+        "signal_type": "evergreen_context",
+        "signal_name": "测试默认信号",
+        "why_now": "测试中使用稳定 evergreen 信号。",
+        "domain_translation": "测试中保持原 domain/subdomain。",
+        "evergreen_pain": "测试核心痛点。",
+        "timely_framing": "测试时机包装。",
+    }
+
+
+def _content_contract():
+    return {
+        "audience": "上班族",
+        "trigger_situation": "通勤前",
+        "decision_problem": "如何安排日常习惯",
+        "first_screen_promise": "通勤前快速掌握基础步骤",
+        "screenshot_asset": "步骤清单截图",
+        "proof_asset": "执行前后对比",
+        "visual_mode": "text_card",
+    }
+
+
 def _load_main(monkeypatch):
     models = ModuleType("src.models")
     models.set_default_provider = lambda _provider: None
-    prompts = ModuleType("src.prompts")
-    prompts.all_prompts = {}
+    composer = ModuleType("src.prompts.composer")
+    composer.compose_prompt = lambda *args, **kwargs: ""
     graph = ModuleType("src.graph")
     graph.create_graph = lambda: object()
     memory_memory_manager = ModuleType("memory.memory_manager")
@@ -29,7 +52,7 @@ def _load_main(monkeypatch):
     memory_memory_manager.XHSMemoryManager = FakeMemoryManager
 
     monkeypatch.setitem(sys.modules, "src.models", models)
-    monkeypatch.setitem(sys.modules, "src.prompts", prompts)
+    monkeypatch.setitem(sys.modules, "src.prompts.composer", composer)
     monkeypatch.setitem(sys.modules, "src.graph", graph)
     monkeypatch.setitem(sys.modules, "memory.memory_manager", memory_memory_manager)
     sys.modules.pop("main", None)
@@ -50,6 +73,8 @@ def test_topic_item_accepts_domain_metadata():
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-disorder"],
+        content_contract=_content_contract(),
+        creative_seed=_creative_seed(),
     )
 
     assert topic.domain == "wellness"
@@ -73,6 +98,8 @@ def test_get_topic_metadata_returns_expected_metadata_and_copies_risk_flags():
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-disorder"],
+        content_contract=_content_contract(),
+        creative_seed=_creative_seed(),
     )
 
     metadata = get_topic_metadata([topic], "tp_1")
@@ -103,6 +130,8 @@ def test_get_topic_metadata_rejects_unknown_topic_id():
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent"],
+        content_contract=_content_contract(),
+        creative_seed=_creative_seed(),
     )
 
     with pytest.raises(ValueError, match="Unknown topic_id: tp_missing"):
@@ -124,6 +153,8 @@ def test_get_topic_metadata_rejects_duplicate_topic_id():
             content_intent="how_to",
             risk_level="medium",
             risk_flags=["medical-adjacent"],
+            content_contract=_content_contract(),
+            creative_seed=_creative_seed(),
         ),
         TopicItem(
             topic_id="tp_1",
@@ -138,6 +169,8 @@ def test_get_topic_metadata_rejects_duplicate_topic_id():
             content_intent="checklist",
             risk_level="medium",
             risk_flags=["medical-adjacent"],
+            content_contract=_content_contract(),
+            creative_seed=_creative_seed(),
         ),
     ]
 
@@ -195,6 +228,7 @@ def test_main_initial_state_includes_metadata_briefs(monkeypatch):
     def fake_parse_args():
         return SimpleNamespace(
             domain=None,
+            subdomain=None,
             thread_id=None,
             focus_keyword=None,
             topic_num=10,

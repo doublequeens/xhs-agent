@@ -31,6 +31,49 @@ def _valid_score():
     }
 
 
+def test_virality_scorer_receives_content_contract(monkeypatch):
+    class FakeModel:
+        def __init__(self):
+            self.last_messages = []
+
+        def execute(self, messages):
+            self.last_messages = messages
+            return [_valid_score()]
+
+    fake_model = FakeModel()
+    monkeypatch.setattr(module, "get_model", lambda: fake_model)
+
+    result = module.virality_scorer_node(
+        {
+            "novelty_check_results": [],
+            "trends": [
+                {
+                    "topic_id": "tp_001",
+                    "content_contract": {
+                        "audience": "23–35 岁、通勤、有基础护肤和底妆需求的女性",
+                        "trigger_situation": "早高峰通勤前",
+                        "decision_problem": "底妆是否会斑驳",
+                        "first_screen_promise": "通勤前底妆判断清单",
+                        "screenshot_asset": "三步判断清单",
+                        "proof_asset": "产品质地实拍",
+                        "visual_mode": "text_plus_real_proof",
+                    },
+                }
+            ],
+            "domain_context": {
+                "domain": "beauty",
+                "profile_version": "beauty-v1",
+            },
+            "content_policy": {},
+        }
+    )
+
+    assert result["scores"][0].topic_id == "tp_001"
+    sent = fake_model.last_messages[-1].content
+    assert '"first_screen_promise"' in sent
+    assert '"screenshot_asset"' in sent
+
+
 def test_virality_scorer_retries_schema_errors_with_model_feedback(monkeypatch):
     invalid = _valid_score()
     invalid.pop("suggested_structure")

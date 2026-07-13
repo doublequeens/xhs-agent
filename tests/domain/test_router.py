@@ -10,8 +10,8 @@ def test_resolve_domain_explicit_domain_overrides_keyword():
 
     assert context.domain == "beauty"
     assert context.subdomain == "skincare"
-    assert context.classification_source == "explicit"
-    assert context.classification_confidence == 1
+    assert context.classification_source == "explicit_domain_default_subdomain"
+    assert context.classification_confidence == pytest.approx(0.85)
     assert context.profile_version == "beauty-v1"
 
 
@@ -104,3 +104,43 @@ def test_resolve_domain_uses_score_based_confidence_for_multi_keyword_match(monk
     assert context.domain == "wellness"
     assert context.subdomain == "sleep"
     assert context.classification_confidence == pytest.approx(0.85)
+
+
+def test_explicit_domain_and_subdomain_are_used_directly():
+    context = resolve_domain(
+        domain="healthy_lifestyle",
+        subdomain="exercise",
+        focus_keyword="",
+    )
+
+    assert context.domain == "healthy_lifestyle"
+    assert context.subdomain == "exercise"
+    assert context.classification_source == "explicit"
+    assert context.classification_confidence == 1
+
+
+def test_explicit_domain_rejects_invalid_subdomain():
+    with pytest.raises(ValueError, match="Unsupported subdomain"):
+        resolve_domain(
+            domain="healthy_lifestyle",
+            subdomain="skincare",
+            focus_keyword="",
+        )
+
+
+def test_bare_subdomain_is_rejected():
+    with pytest.raises(ValueError, match="subdomain requires domain"):
+        resolve_domain(domain=None, subdomain="daily_habits", focus_keyword="")
+
+
+def test_explicit_domain_without_subdomain_uses_default_when_non_interactive():
+    context = resolve_domain(
+        domain="healthy_lifestyle",
+        subdomain=None,
+        focus_keyword="",
+        interactive=False,
+    )
+
+    assert context.domain == "healthy_lifestyle"
+    assert context.subdomain == "daily_habits"
+    assert context.classification_source == "explicit_domain_default_subdomain"

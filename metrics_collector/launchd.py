@@ -84,7 +84,7 @@ def install_launchagent(
         os.close(home_fd)
 
     launchagents_dir = home / "Library" / "LaunchAgents"
-    plist_path = launchagents_dir / f"{LABEL}.plist"
+    plist_path = launchagents_dir / f"{payload['Label']}.plist"
     return plist_path
 
 
@@ -112,7 +112,7 @@ def _prepare_log_directories(
 
 
 def _write_plist(payload: Mapping[str, Any], launchagents_fd: int) -> None:
-    plist_name = f"{LABEL}.plist"
+    plist_name = f"{payload['Label']}.plist"
     try:
         target_stat = os.stat(
             plist_name, dir_fd=launchagents_fd, follow_symlinks=False
@@ -122,7 +122,7 @@ def _write_plist(payload: Mapping[str, Any], launchagents_fd: int) -> None:
     if target_stat is not None and stat.S_ISLNK(target_stat.st_mode):
         raise ValueError("refusing to replace symlink plist target")
 
-    temporary_name = f".{LABEL}.{secrets.token_hex(8)}.tmp"
+    temporary_name = f".{payload['Label']}.{secrets.token_hex(8)}.tmp"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW
     fd = os.open(temporary_name, flags, 0o600, dir_fd=launchagents_fd)
     try:

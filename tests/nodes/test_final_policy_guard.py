@@ -12,6 +12,7 @@ from src.nodes import node_i_r2_compliance as r2_module
 from src.nodes import node_j_decision_engine as decision_module
 from src.nodes import node_o_storyboards_generator as storyboard_module
 from src.nodes.node_q_human_review import route_after_human_review
+from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas import R1Output
 
 
@@ -34,6 +35,15 @@ def _publish_package(**overrides):
         "risk_level": "medium",
         "risk_flags": ["medical-adjacent"],
         "profile_version": "wellness-v1",
+        "content_contract": {
+            "audience": "上班族",
+            "trigger_situation": "通勤前",
+            "decision_problem": "如何安排日常习惯",
+            "first_screen_promise": "通勤前快速掌握基础步骤",
+            "screenshot_asset": "步骤清单截图",
+            "proof_asset": "执行前后对比",
+            "visual_mode": "text_card",
+        },
     }
     package.update(overrides)
     return package
@@ -42,25 +52,26 @@ def _publish_package(**overrides):
 def _storyboard_frame(frame_id, **overrides):
     frame = {
         "frame_id": frame_id,
-        "narrative_role": "opening",
-        "frame_title": f"标题 {frame_id}",
-        "image_orientation": "vertical",
-        "aspect_ratio": "3:4",
-        "recommended_size": "1080x1440",
-        "visual_description": f"场景 {frame_id}",
-        "character_action": "记录作息",
-        "scene_background": "卧室",
-        "composition": "居中构图",
-        "text_area": "顶部留白",
-        "on_image_copy": f"画面文字 {frame_id}",
-        "narration": f"旁白 {frame_id}",
-        "image_prompt_cn": f"原始提示词 {frame_id}",
-        "image_prompt_en": f"prompt {frame_id}",
-        "negative_prompt": "horror",
-        "continuity_note": "保持角色一致",
+        "template": "cover_statement",
+        "theme": "warm_neutral",
+        "kicker": "封面",
+        "headline": f"标题 {frame_id}",
+        "footer": "按需调整",
     }
     frame.update(overrides)
     return frame
+
+
+def _structured_storyboards():
+    common = {"theme": "warm_neutral", "footer": "按需调整"}
+    return [
+        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": "作息调整"},
+        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["熬夜硬扛", "随意加量"], "right_items": ["记录诱因", "逐步调整"]},
+        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "逐步调整", "steps": [{"name": "记录", "hint": "观察诱因"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
+        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "睡前检查", "checklist_items": ["记录睡眠", "每天250毫克", "减少屏幕"]},
+        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "先小步调整", "conditions": [{"situation": "连续疲惫", "recommendation": "优先规律作息"}, {"situation": "难以坚持", "recommendation": "缩小调整范围"}]},
+        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你会怎么做", "question": "你最想调整哪一步？"},
+    ]
 
 
 def _r2_input(title="经验分享", body="分享我的作息调整记录。"):
@@ -150,6 +161,59 @@ def test_r2_compliance_node_blocks_publish_when_deterministic_guard_finds_issues
     assert "deterministic_policy_issues" in prompt_text
     assert "medical_treatment" in prompt_text
     assert "guaranteed_outcome" in prompt_text
+
+
+def test_r2_compliance_node_does_not_block_clean_fully_compliant_safety_rules(monkeypatch):
+    class FakeModel:
+        def execute(self, messages):
+            return {
+                "content_snapshot": {
+                    "draft_id": "draft_001",
+                    "revised_title": "作息记录",
+                    "revised_md": "分享我的作息调整记录。",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "作息调整",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                },
+                "compliance_audit": {
+                    "compliance_status": "fully_compliant",
+                    "issues": [],
+                    "required_fixes": [],
+                    "suggested_fixes": [],
+                    "block_publish": True,
+                    "matched_policy_rules": [
+                        "no_prohibited_topics",
+                        "no_prohibited_claims",
+                        "disclaimer_included",
+                    ],
+                    "unresolved_claims": [],
+                },
+                "revision_meta": {
+                    "revision_id": "rev_001",
+                    "round": 1,
+                    "diff_summary": ["clean"],
+                    "next_actions": ["publish"],
+                },
+            }
+
+    monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
+
+    result = r2_module.r2_compliance_node(
+        _r2_state(title="作息记录", body="分享我的作息调整记录。")
+    )
+
+    audit = result["r2_output"].compliance_audit
+
+    assert audit.block_publish is False
+    assert audit.matched_policy_rules == [
+        "no_prohibited_topics",
+        "no_prohibited_claims",
+        "disclaimer_included",
+    ]
 
 
 def test_r2_compliance_node_blocks_publish_for_unresolved_claims(monkeypatch):
@@ -445,7 +509,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
             "approved": True,
             "edited_publish_package": {
                 "title": "更新后的标题",
-                "storyboards": [{"frame_title": "新标题", "on_image_copy": "提示", "narration": "说明"}],
+                "storyboards": [{"frame_id": "frame_001", "headline": "新标题"}],
             },
             "feedback": "edited",
         }
@@ -455,7 +519,16 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
     result = human_review_node(
         {
             "publish_package": _publish_package(
-                storyboards=[{"frame_title": "旧标题", "on_image_copy": "旧提示", "narration": "旧说明"}]
+                storyboards=[
+                    {
+                        "frame_id": "frame_001",
+                        "template": "cover_statement",
+                        "theme": "warm_neutral",
+                        "kicker": "旧标签",
+                        "headline": "旧标题",
+                        "footer": "旧页脚",
+                    }
+                ]
             ),
             "review_round": 0,
             "final_policy_issues": [{"rule_id": "guaranteed_outcome"}],
@@ -492,16 +565,56 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
         "core_pain": "熬夜后疲惫",
         "best_cover_copy": "作息调整记录",
         "storyboard_visible_text": [
-            {
-                "frame_id": None,
-                "frame_title": "新标题",
-                "on_image_copy": "提示",
-                "narration": "说明",
+                {
+                    "frame_id": "frame_001",
+                    "template": "cover_statement",
+                    "text_blocks": {
+                        "kicker": "旧标签",
+                        "headline": "新标题",
+                        "footer": "旧页脚",
+                    },
             }
         ],
     }
     assert result["decision_output"].normalized_input.r2_input.revision_meta.round == 2
     assert result["decision_output"].normalized_input.r2_input.decision_trace.source_node == "HUMAN_REVIEW"
+
+
+def test_human_review_enforces_title_max_length_including_punctuation(monkeypatch):
+    def fake_interrupt(_payload):
+        return {
+            "approved": True,
+            "edited_publish_package": {"title": "1234567890123456789！超长标题"},
+            "feedback": "edited",
+        }
+
+    monkeypatch.setattr("src.nodes.node_q_human_review.interrupt", fake_interrupt)
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(),
+            "review_round": 0,
+            "final_policy_issues": [],
+            "domain_context": {"profile_version": "wellness-v1"},
+            "r2_output": SimpleNamespace(
+                content_snapshot=SimpleNamespace(draft_id="draft_001"),
+                revision_meta=SimpleNamespace(
+                    revision_id="rev_001",
+                    round=1,
+                    diff_summary=["first pass"],
+                    next_actions=["human review"],
+                ),
+            ),
+        }
+    )
+
+    title = result["publish_package"]["title"]
+    assert title == "1234567890123456789！"
+    assert len(title) == 20
+    assert (
+        result["decision_output"].normalized_input.r2_input.content_snapshot.revised_title
+        == title
+    )
 
 
 def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypatch):
@@ -510,7 +623,7 @@ def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypa
         lambda _payload: {
             "approved": True,
             "edited_publish_package": {
-                "storyboards": [{"image_prompt_cn": "更新后的提示词"}],
+                "storyboards": [{"theme": "cool_sage"}],
             },
         },
     )
@@ -527,7 +640,7 @@ def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypa
     merged_frames = result["publish_package"]["storyboards"]
     assert merged_frames[0] == {
         **original_frames[0],
-        "image_prompt_cn": "更新后的提示词",
+        "theme": "cool_sage",
     }
     assert merged_frames[1] == original_frames[1]
 
@@ -539,7 +652,7 @@ def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(
             "approved": True,
             "edited_publish_package": {
                 "storyboards": [
-                    {"frame_id": "frame_002", "image_prompt_cn": "第二帧新提示"},
+                    {"frame_id": "frame_002", "theme": "cool_sage"},
                     _storyboard_frame("frame_003"),
                 ],
             },
@@ -563,7 +676,7 @@ def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(
     ]
     assert merged_frames[1] == {
         **original_frames[1],
-        "image_prompt_cn": "第二帧新提示",
+        "theme": "cool_sage",
     }
 
 
@@ -591,124 +704,61 @@ def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
     assert result["publish_package"]["storyboards"] == replacement
 
 
-def test_unsafe_storyboard_edit_is_in_r2_input_and_cannot_route_to_writer(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(
-        "src.nodes.node_q_human_review.interrupt",
-        lambda _payload: {
-            "approved": True,
-            "edited_publish_package": {
-                "storyboards": [
-                    {
-                        "frame_id": "frame_001",
-                        "frame_title": "保证立即见效",
-                        "on_image_copy": "停 药就好",
-                        "narration": "每 天 250 毫克",
-                    }
-                ]
-            },
-        },
+def test_checklist_policy_task_uses_precise_location_and_patch_updates_card():
+    storyboards = _structured_storyboards()
+    snapshot = SimpleNamespace(
+        revised_title="作息记录",
+        revised_md="分享个人体验",
+        storyboard_visible_text=extract_storyboard_visible_text(storyboards),
     )
-    reviewed = human_review_node(
-        {
-            "publish_package": _publish_package(
-                storyboards=[_storyboard_frame("frame_001")]
-            ),
-            "review_round": 0,
-            "final_policy_issues": [],
-        }
-    )
-
-    storyboard_text = (
-        reviewed["decision_output"]
-        .normalized_input.r2_input.content_snapshot.storyboard_visible_text[0]
-    )
-    assert storyboard_text.frame_title == "保证立即见效"
-    assert storyboard_text.on_image_copy == "停 药就好"
-    assert storyboard_text.narration == "每 天 250 毫克"
-    assert reviewed["pending_human_publish_patch"]["storyboards"][0]["frame_id"] == "frame_001"
-
-    class FakeModel:
-        def execute(self, messages):
-            captured["prompt"] = messages[1].content
-            snapshot = (
-                reviewed["decision_output"]
-                .normalized_input.r2_input.content_snapshot.model_dump()
-            )
-            return {
-                "content_snapshot": snapshot,
-                "compliance_audit": {
-                    "compliance_status": "fully_compliant",
-                    "issues": [],
-                    "required_fixes": [],
-                    "suggested_fixes": [],
-                    "block_publish": False,
-                    "matched_policy_rules": [],
-                    "unresolved_claims": [],
-                },
-                "revision_meta": {
-                    "revision_id": "human_review_edit",
-                    "round": 1,
-                    "diff_summary": ["reviewed storyboard"],
-                    "next_actions": ["publish"],
-                },
-            }
-
-    monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
-    r2_result = r2_module.r2_compliance_node(
-        {
-            **reviewed,
-            "domain_context": {
-                "domain": "wellness",
-                "profile_version": "wellness-v1",
-            },
-            "content_policy": {},
-            "evidence_briefs": {},
-        }
-    )
-
-    assert "保证立即见效" in captured["prompt"]
-    assert "停 药就好" in captured["prompt"]
-    assert "每 天 250 毫克" in captured["prompt"]
-    assert r2_result["r2_output"].compliance_audit.block_publish is True
-    assert set(r2_result["r2_output"].compliance_audit.matched_policy_rules) == {
-        "guaranteed_outcome",
-        "medication_advice",
-        "supplement_dosage",
-    }
-    deterministic_tasks = decision_module._build_blocked_r2_tasks(
-        r2_result["r2_output"]
-    )["mandatory"]
-    assert {
-        task["instruction"]: task["location_hint"]
-        for task in deterministic_tasks
-    } == {
-        "Remove or rewrite content that triggers policy rule `medication_advice`.": (
-            "storyboard_visible_text[0].on_image_copy"
+    r2_output = SimpleNamespace(
+        content_snapshot=snapshot,
+        compliance_audit=SimpleNamespace(
+            required_fixes=[], suggested_fixes=[], matched_policy_rules=["supplement_dosage"], unresolved_claims=[]
         ),
-        "Remove or rewrite content that triggers policy rule `supplement_dosage`.": (
-            "storyboard_visible_text[0].narration"
-        ),
-        "Remove or rewrite content that triggers policy rule `guaranteed_outcome`.": (
-            "storyboard_visible_text[0].frame_title"
-        ),
-    }
-    assert next_node(
-        {
-            "current_node": "R2_COMPLIANCE",
-            "decision_output": SimpleNamespace(next_node="HASHTAG_SEO"),
-            "r2_output": r2_result["r2_output"],
-        }
-    ) == "R1_REFLECTOR"
+    )
+
+    task = decision_module._build_blocked_r2_tasks(r2_output)["mandatory"][0]
+    assert task["location_hint"] == "storyboard_visible_text[3].text_blocks.checklist_items[1]"
+
+    patched = storyboard_module.apply_storyboard_visible_text_patch(
+        storyboards,
+        [{"frame_id": "frame_004", "template": "saveable_checklist", "text_blocks": {"checklist_items[1]": "咨询专业人士"}}],
+    )
+    assert patched[3]["checklist_items"][1] == "咨询专业人士"
+
+
+def test_decision_condition_visible_atoms_are_extracted_and_reapplied_by_frame_id():
+    storyboards = _structured_storyboards()
+    visible = extract_storyboard_visible_text(storyboards)
+
+    assert visible[4]["text_blocks"]["conditions[1].situation"] == "难以坚持"
+    assert visible[4]["text_blocks"]["conditions[1].recommendation"] == "缩小调整范围"
+
+    patched = storyboard_module.apply_storyboard_visible_text_patch(
+        storyboards,
+        [{"frame_id": "frame_005", "template": "decision_rule", "text_blocks": {
+            "conditions[1].recommendation": "改成更小目标"
+        }}],
+    )
+
+    assert patched[4]["conditions"][1]["recommendation"] == "改成更小目标"
+
+
+def test_visible_text_patch_rejects_unknown_nonempty_frame_id():
+    with pytest.raises(ValueError, match="unknown frame_id"):
+        storyboard_module.apply_storyboard_visible_text_patch(
+            _structured_storyboards(),
+            [{"frame_id": "stale_frame", "template": "cover_statement", "text_blocks": {"headline": "错误目标"}}],
+        )
 
 
 def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "frame_title": "保证立即见效",
-            "on_image_copy": "停药就好",
-            "narration": "每天250毫克",
+            "template": "cover_statement",
+            "text_blocks": {"headline": "保证立即见效"},
         }
     ]
     r2_output = SimpleNamespace(
@@ -757,9 +807,8 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "frame_title": "作息调整记录",
-            "on_image_copy": "逐步调整",
-            "narration": "分享个人体验",
+            "template": "cover_statement",
+            "text_blocks": {"headline": "作息调整记录"},
         }
     ]
 
@@ -798,16 +847,15 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
         should_run_R1_again=False,
     )
 
-    assert output.storyboard_visible_text[0].frame_title == "作息调整记录"
+    assert output.storyboard_visible_text[0].text_blocks["headline"] == "作息调整记录"
 
 
 def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "frame_title": "作息调整记录",
-            "on_image_copy": "逐步调整",
-            "narration": "分享个人体验",
+            "template": "cover_statement",
+            "text_blocks": {"headline": "作息调整记录"},
         }
     ]
     decision_json = {
@@ -854,105 +902,125 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
     )
 
 
-def test_regenerated_storyboards_reapply_reviewed_patch_once_then_reenter_review(monkeypatch):
-    review_payloads = []
-    responses = iter(
-        [
-            {
-                "approved": True,
-                "edited_publish_package": {
-                    "storyboards": [
-                        {
-                            "frame_id": "frame_001",
-                            "frame_title": "保证立即见效",
-                            "on_image_copy": "停 药就好",
-                            "narration": "每 天 250 毫克",
-                            "image_prompt_cn": "人工审核后的提示词",
-                        }
-                    ]
-                },
-            },
-            {"approved": True},
-        ]
-    )
-
-    def fake_interrupt(payload):
-        review_payloads.append(payload)
-        return next(responses)
-
-    monkeypatch.setattr("src.nodes.node_q_human_review.interrupt", fake_interrupt)
-    first_review = human_review_node(
-        {
-            "publish_package": _publish_package(
-                storyboards=[_storyboard_frame("frame_001")]
-            ),
-            "review_round": 0,
-            "final_policy_issues": [],
-        }
-    )
-
-    regenerated_frames = [
-        _storyboard_frame(f"frame_{index:03d}", frame_title=f"重新生成 {index}")
-        for index in range(1, 9)
-    ]
+def test_regenerated_storyboards_reapply_visible_text_patch(monkeypatch):
+    frames = _structured_storyboards()
+    frames[3]["checklist_items"][0] = "生成器的新清单"
 
     class FakeStoryboardModel:
         def execute(self, _messages):
-            return {"storyboards": regenerated_frames}
+            return {"storyboards": frames}
 
     monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
-    reviewed_snapshot = first_review[
-        "decision_output"
-    ].normalized_input.r2_input.content_snapshot
-    r2_revised_snapshot = reviewed_snapshot.model_copy(
-        update={
-            "storyboard_visible_text": [
-                {
-                    "frame_id": "frame_001",
-                    "frame_title": "作息调整记录",
-                    "on_image_copy": "逐步调整",
-                    "narration": "分享个人体验",
-                }
-            ]
-        }
-    )
     regenerated = storyboard_module.storyboards_generator_node(
         {
-            "publish_package": _publish_package(title="重新组装后的标题"),
-            "pending_human_publish_patch": first_review["pending_human_publish_patch"],
+            "publish_package": _publish_package(storyboards=_structured_storyboards()),
+            "pending_human_publish_patch": {"storyboards": [{"frame_id": "frame_001", "theme": "cool_sage", "headline": "stale"}]},
             "pending_human_replace_storyboards": False,
-            "r2_output": SimpleNamespace(
-                content_snapshot=r2_revised_snapshot
-            ),
-            "domain_context": {
-                "domain": "wellness",
-                "profile_version": "wellness-v1",
-            },
-            "content_policy": {},
-            "evidence_briefs": {},
+            "r2_output": SimpleNamespace(content_snapshot=SimpleNamespace(storyboard_visible_text=[
+                {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2修订标题"}}
+            ])),
+            "trends": [SimpleNamespace(topic_id="tp_001", content_contract=_publish_package()["content_contract"])],
         }
     )
 
     first_frame = regenerated["publish_package"]["storyboards"][0]
-    assert first_frame["frame_title"] == "作息调整记录"
-    assert first_frame["on_image_copy"] == "逐步调整"
-    assert first_frame["narration"] == "分享个人体验"
-    assert first_frame["image_prompt_cn"] == "人工审核后的提示词"
-    assert first_frame["narrative_role"] == "opening"
-    assert regenerated["pending_human_publish_patch"] is None
-    assert regenerated["pending_human_replace_storyboards"] is None
+    assert first_frame["theme"] == "cool_sage"
+    assert first_frame["headline"] == "R2修订标题"
+    assert first_frame["footer"] == "按需调整"
+    assert regenerated["publish_package"]["storyboards"][3]["checklist_items"] == [
+        "记录睡眠", "每天250毫克", "减少屏幕"
+    ]
 
-    second_review = human_review_node(
+
+def test_regenerated_storyboards_apply_complete_r2_visible_text_without_human_patch(monkeypatch):
+    generated_frames = _structured_storyboards()
+    generated_frames[0]["headline"] = "生成器的新标题"
+    generated_frames[3]["checklist_items"][1] = "生成器的新清单"
+    r2_visible_text = extract_storyboard_visible_text(_structured_storyboards())
+    r2_visible_text[0]["text_blocks"]["headline"] = "R2修订标题"
+    r2_visible_text[3]["text_blocks"]["checklist_items[1]"] = "咨询专业人士"
+
+    class FakeStoryboardModel:
+        def execute(self, _messages):
+            return {"storyboards": generated_frames}
+
+    monkeypatch.setattr(storyboard_module, "get_model", lambda: FakeStoryboardModel())
+    regenerated = storyboard_module.storyboards_generator_node(
         {
-            **regenerated,
-            "review_round": first_review["review_round"],
-            "final_policy_issues": [],
+            "publish_package": _publish_package(storyboards=_structured_storyboards()),
+            "r2_output": SimpleNamespace(
+                content_snapshot=SimpleNamespace(storyboard_visible_text=r2_visible_text)
+            ),
+            "trends": [
+                SimpleNamespace(
+                    topic_id="tp_001",
+                    content_contract=_publish_package()["content_contract"],
+                )
+            ],
         }
     )
 
-    assert review_payloads[1]["publish_package"]["storyboards"][0] == first_frame
-    assert second_review["review_status"] == "approved"
-    assert route_after_human_review(second_review) == "final_policy_guard"
+    assert (
+        extract_storyboard_visible_text(regenerated["publish_package"]["storyboards"])
+        == r2_visible_text
+    )
+
+
+def test_visible_text_merge_rejects_unknown_frame_id_and_ignores_empty_frame_id():
+    prior_visible_text = extract_storyboard_visible_text(_structured_storyboards())
+
+    with pytest.raises(ValueError, match="unknown frame_id"):
+        storyboard_module.merge_storyboard_visible_text(
+            prior_visible_text,
+            [
+                {
+                    "frame_id": "stale_frame",
+                    "template": "cover_statement",
+                    "text_blocks": {"headline": "错误目标"},
+                }
+            ],
+        )
+
+    assert storyboard_module.merge_storyboard_visible_text(
+        prior_visible_text,
+        [{"frame_id": "", "text_blocks": {"headline": "忽略"}}],
+    ) == prior_visible_text
+
+
+def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkeypatch):
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "content_snapshot": {
+                    "draft_id": "draft_001",
+                    "revised_title": "经验分享",
+                    "revised_md": "分享我的作息调整记录。",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "作息调整",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                    "storyboard_visible_text": [
+                        {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2标题"}}
+                    ],
+                },
+                "compliance_audit": {"compliance_status": "fully_compliant"},
+                "revision_meta": {"revision_id": "rev_001", "round": 1, "diff_summary": [], "next_actions": []},
+            }
+
+    monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
+    state = _r2_state()
+    state["publish_package"] = _publish_package(storyboards=_structured_storyboards())
+
+    result = r2_module.r2_compliance_node(state)
+
+    visible_text = result["r2_output"].content_snapshot.storyboard_visible_text
+    assert len(visible_text) == 6
+    assert visible_text[0].text_blocks["headline"] == "R2标题"
+    assert visible_text[3].text_blocks["checklist_items[1]"] == "每天250毫克"
+    assert "supplement_dosage" in result["r2_output"].compliance_audit.matched_policy_rules
 
 
 def test_human_review_unchanged_approval_routes_to_final_guard(monkeypatch):
@@ -1106,9 +1174,13 @@ def test_final_policy_guard_scans_storyboard_visible_text():
             "publish_package": _publish_package(
                 storyboards=[
                     {
-                        "frame_title": "治·疗误区",
-                        "on_image_copy": "先别停 药",
-                        "narration": "每 天 250 毫克就够了",
+                        "frame_id": "frame_004",
+                        "template": "saveable_checklist",
+                        "theme": "warm_neutral",
+                        "kicker": "保存",
+                        "headline": "治·疗误区",
+                        "footer": "按需调整",
+                        "checklist_items": ["记录变化", "先别停 药", "每 天 250 毫克就够了"],
                     }
                 ]
             )

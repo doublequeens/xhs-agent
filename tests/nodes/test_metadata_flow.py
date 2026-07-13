@@ -1,9 +1,34 @@
 from types import SimpleNamespace
 
 import pytest
+from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
+from src.schemas import StoryboardPayload
 from src.schemas.topic import TopicItem
+
+
+def _creative_seed():
+    return {
+        "signal_type": "evergreen_context",
+        "signal_name": "测试默认信号",
+        "why_now": "测试中使用稳定 evergreen 信号。",
+        "domain_translation": "测试中保持原 domain/subdomain。",
+        "evergreen_pain": "测试核心痛点。",
+        "timely_framing": "测试时机包装。",
+    }
+
+
+def _content_contract():
+    return {
+        "audience": "上班族",
+        "trigger_situation": "通勤前",
+        "decision_problem": "如何安排日常习惯",
+        "first_screen_promise": "通勤前快速掌握基础步骤",
+        "screenshot_asset": "步骤清单截图",
+        "proof_asset": "执行前后对比",
+        "visual_mode": "text_card",
+    }
 
 
 def _topic(topic_id="tp_001"):
@@ -20,6 +45,8 @@ def _topic(topic_id="tp_001"):
         content_intent="how_to",
         risk_level="medium",
         risk_flags=["medical-adjacent", "sleep-adjacent"],
+        content_contract=_content_contract(),
+        creative_seed=_creative_seed(),
     )
 
 
@@ -39,24 +66,21 @@ def _content_policy():
 
 
 def _storyboard_frame(frame_number: int):
+    frames = [
+        {"template": "cover_statement"},
+        {"template": "wrong_vs_right", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
+        {"template": "step_timeline", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
+        {"template": "saveable_checklist", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
+        {"template": "decision_rule", "conditions": [{"situation": "底妆开始搓泥", "recommendation": "减少用量等待"}, {"situation": "时间不足", "recommendation": "先缩减步骤"}]},
+        {"template": "question_closer", "question": "你最常在哪步搓泥？"},
+    ]
     return {
         "frame_id": f"frame_{frame_number:03d}",
-        "narrative_role": "封面钩子" if frame_number == 1 else "步骤展开",
-        "frame_title": f"画面 {frame_number}",
-        "image_orientation": "vertical",
-        "aspect_ratio": "3:4",
-        "recommended_size": "1080x1440",
-        "visual_description": f"粉红小蝾螈画面 {frame_number}",
-        "character_action": "抱着水杯发呆",
-        "scene_background": "办公桌边",
-        "composition": "竖版 3:4 构图，上方留白",
-        "text_area": "顶部 20% 留白放标题",
-        "on_image_copy": f"提示 {frame_number}",
-        "narration": f"第 {frame_number} 张图的说明内容。",
-        "image_prompt_cn": "中文提示词",
-        "image_prompt_en": "English prompt",
-        "negative_prompt": "realistic, horror",
-        "continuity_note": "保持同一只粉红小蝾螈",
+        "theme": "warm_neutral",
+        "kicker": f"第{frame_number}张",
+        "headline": _content_contract()["first_screen_promise"] if frame_number == 1 else f"第{frame_number}张要点",
+        "footer": "按需微调",
+        **frames[frame_number - 1],
     }
 
 
@@ -82,6 +106,8 @@ def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
                     "content_intent": "how_to",
                     "risk_level": "low",
                     "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+                    "content_contract": _content_contract(),
+                    "creative_seed": _creative_seed(),
                 }
             ]
 
@@ -126,6 +152,8 @@ def test_trend_scout_normalizes_basic_science_risk_level(monkeypatch):
                     "content_intent": "basic_science",
                     "risk_level": "low",
                     "risk_flags": ["medical-adjacent"],
+                    "content_contract": _content_contract(),
+                    "creative_seed": _creative_seed(),
                 }
             ]
 
@@ -432,6 +460,52 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["title"] == "睡眠改善指南"
     assert publish_package["content"] == "body"
     assert publish_package["profile_version"] == "wellness-v1"
+    assert publish_package["content_contract"] == _content_contract()
+
+
+def test_assembler_enforces_title_max_length_including_punctuation(monkeypatch):
+    from src.nodes import node_o_assembler as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "images": [],
+                "hashtags": ["#x"],
+                "notes": [],
+                "storyboard_strategy": "auto",
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    result = module.assembler_node(
+        {
+            "final_content": SimpleNamespace(
+                final_title="1234567890123456789！超长标题",
+                final_md="body",
+                topic_id="tp_001",
+                topic="睡眠改善",
+                angle_id="ag_001",
+                angle="睡眠策略",
+                target_group="上班族",
+                core_pain="熬夜后疲惫",
+                best_cover_copy="cover",
+                domain="wellness",
+                subdomain="sleep",
+                content_intent="how_to",
+                risk_level="medium",
+                risk_flags=["medical-adjacent"],
+            ),
+            "hashtags": SimpleNamespace(hashtags=["#x"]),
+            "final_images": SimpleNamespace(image_final_choices=[]),
+            "trends": [_topic()],
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+        }
+    )
+
+    title = result["publish_package"]["title"]
+    assert title == "1234567890123456789！"
+    assert len(title) == 20
 
 
 def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(monkeypatch):
@@ -467,6 +541,7 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
             ),
             "hashtags": SimpleNamespace(hashtags=["#generated"]),
             "final_images": SimpleNamespace(image_final_choices=[]),
+            "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
             "pending_human_publish_patch": {
@@ -489,35 +564,16 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
     assert "storyboards" not in publish_package
 
 
-def test_storyboards_generator_preserves_full_publish_package_and_frame_contract(monkeypatch):
+def test_storyboards_generator_preserves_full_publish_package_and_text_card_contract(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
-
-    required_frame_keys = {
-        "frame_id",
-        "narrative_role",
-        "frame_title",
-        "image_orientation",
-        "aspect_ratio",
-        "recommended_size",
-        "visual_description",
-        "character_action",
-        "scene_background",
-        "composition",
-        "text_area",
-        "on_image_copy",
-        "narration",
-        "image_prompt_cn",
-        "image_prompt_en",
-        "negative_prompt",
-        "continuity_note",
-    }
 
     class FakeModel:
         def execute(self, messages):
+            frames = [_storyboard_frame(index) for index in range(1, 7)]
             return {
                 "title": "wrong title",
                 "content": "wrong content",
-                "storyboards": [_storyboard_frame(index) for index in range(1, 9)],
+                "storyboards": frames,
             }
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
@@ -547,6 +603,7 @@ def test_storyboards_generator_preserves_full_publish_package_and_frame_contract
     result = module.storyboards_generator_node(
         {
             "publish_package": publish_package,
+            "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
         }
@@ -572,52 +629,64 @@ def test_storyboards_generator_preserves_full_publish_package_and_frame_contract
     assert merged_package["content_intent"] == publish_package["content_intent"]
     assert merged_package["risk_level"] == publish_package["risk_level"]
     assert merged_package["risk_flags"] == publish_package["risk_flags"]
-    assert set(merged_package["storyboards"][0]) == required_frame_keys
+    frames = merged_package["storyboards"]
+    assert [frame["template"] for frame in frames] == [
+        "cover_statement", "wrong_vs_right", "step_timeline",
+        "saveable_checklist", "decision_rule", "question_closer",
+    ]
+    assert {frame["theme"] for frame in frames} == {"warm_neutral"}
+    assert frames[0]["headline"] == _content_contract()["first_screen_promise"]
+    assert frames[3]["checklist_items"] == ["薄涂防晒", "等待成膜", "少量点涂"]
 
 
-@pytest.mark.parametrize(
-    ("storyboards", "error_match"),
-    [
-        ([ _storyboard_frame(index) for index in range(1, 8) ], "storyboards"),
-        ([ _storyboard_frame(index) for index in range(1, 12) ], "storyboards"),
-        ([ {key: value for key, value in _storyboard_frame(1).items() if key != "negative_prompt"} ] + [_storyboard_frame(index) for index in range(2, 9)], "negative_prompt"),
-        ("not-a-list", "storyboards"),
-    ],
-)
-def test_storyboards_generator_rejects_invalid_storyboard_payload(monkeypatch, storyboards, error_match):
+def test_storyboard_payload_requires_exactly_six_cards():
+    with pytest.raises(ValidationError):
+        StoryboardPayload.model_validate(
+            {"storyboards": [_storyboard_frame(index) for index in range(1, 6)]}
+        )
+
+    payload = StoryboardPayload.model_validate(
+        {"storyboards": [_storyboard_frame(index) for index in range(1, 7)]}
+    )
+    assert len(payload.storyboards) == 6
+
+
+def test_storyboard_generator_leaves_schema_rejection_to_carousel_qa(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
-        def execute(self, messages):
-            return {"storyboards": storyboards}
+        def execute(self, _messages):
+            return {"storyboards": [{"template": "not_a_real_card"}]}
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
-    with pytest.raises(RuntimeError, match=error_match):
-        module.storyboards_generator_node(
-            {
-                "publish_package": {
-                    "title": "久坐间隙活动指南",
-                    "content": "body",
-                    "topic_id": "tp_001",
-                    "topic": "睡眠改善",
-                    "angle_id": "ag_001",
-                    "angle": "睡眠策略",
-                    "target_group": "上班族",
-                    "core_pain": "熬夜后疲惫",
-                    "cover_copy": "cover",
-                    "images": [],
-                    "hashtags": ["#x"],
-                    "notes": ["note"],
-                    "storyboard_strategy": "scenario_companion",
-                    "domain": "wellness",
-                    "profile_version": "wellness-v1",
-                    "subdomain": "sleep",
-                    "content_intent": "how_to",
-                    "risk_level": "medium",
-                    "risk_flags": ["medical-adjacent", "sleep-adjacent"],
-                },
-                "domain_context": _domain_context(),
-                "content_policy": _content_policy(),
-            }
-        )
+    state = {
+        "publish_package": {
+            "title": "久坐间隙活动指南",
+            "content": "body",
+            "topic_id": "tp_001",
+            "topic": "睡眠改善",
+            "angle_id": "ag_001",
+            "angle": "睡眠策略",
+            "target_group": "上班族",
+            "core_pain": "熬夜后疲惫",
+            "cover_copy": "cover",
+            "images": [],
+            "hashtags": ["#x"],
+            "notes": ["note"],
+            "storyboard_strategy": "scenario_companion",
+            "domain": "wellness",
+            "profile_version": "wellness-v1",
+            "subdomain": "sleep",
+            "content_intent": "how_to",
+            "risk_level": "medium",
+            "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+        },
+        "trends": [_topic()],
+        "domain_context": _domain_context(),
+        "content_policy": _content_policy(),
+    }
+
+    generated = module.storyboards_generator_node(state)
+    assert generated["publish_package"]["storyboards"] == [{"template": "not_a_real_card"}]

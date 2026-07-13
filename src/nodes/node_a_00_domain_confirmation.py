@@ -9,17 +9,28 @@ def domain_confirmation_node(state: AgentState) -> dict:
     context = state.get("domain_context")
     if context is None:
         raise ValueError("domain_confirmation_node requires `domain_context` in state.")
+    interactive = state.get("interactive", True)
 
-    if context.classification_confidence >= 0.65:
+    if (
+        not interactive
+        or (
+            context.classification_confidence >= 0.65
+            and context.classification_source != "explicit_domain_default_subdomain"
+        )
+    ):
         return {}
 
-    resume = interrupt(
-        {
-            "kind": "domain_confirmation",
-            "message": "当前内容领域判断置信度较低，请确认 domain 和 subdomain。",
-            "context": context.model_dump(),
-        }
-    )
+    interrupt_payload = {
+        "kind": "domain_confirmation",
+        "message": "当前内容领域判断置信度较低，请确认 domain 和 subdomain。",
+        "context": context.model_dump(),
+    }
+    creator_profile = state.get("creator_profile")
+    if creator_profile is not None:
+        interrupt_payload["allowed_domains"] = creator_profile.allowed_domains
+        interrupt_payload["allowed_subdomains"] = creator_profile.allowed_subdomains
+
+    resume = interrupt(interrupt_payload)
 
     if not isinstance(resume, dict):
         raise ValueError("Domain confirmation resume payload must be a dict.")
@@ -29,14 +40,19 @@ def domain_confirmation_node(state: AgentState) -> dict:
     if not selected_domain or not selected_subdomain:
         raise ValueError("Domain confirmation requires both `domain` and `subdomain`.")
 
+    if creator_profile is not None:
+        creator_profile.assert_domain_scope(selected_domain, selected_subdomain)
+
     profile = get_domain_profile(selected_domain)
     if selected_subdomain not in profile.allowed_subdomains:
         raise ValueError(
             f"Unsupported subdomain: {selected_subdomain} for domain {selected_domain}"
         )
 
-    updated_context = resolve_domain(domain=selected_domain, focus_keyword="").model_copy(
-        update={"subdomain": selected_subdomain}
+    updated_context = resolve_domain(
+        domain=selected_domain,
+        subdomain=selected_subdomain,
+        focus_keyword="",
     )
 
     return {

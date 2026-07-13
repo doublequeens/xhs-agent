@@ -14,6 +14,10 @@ novelty_check_results，其中每个 novelty_results 元素都是一个独立候
 - decision = reject
 - 明显存在高合规风险
 - 承诺无法在正文中安全兑现
+- 缺少 content_contract.screenshot_asset，或无法交付一页可截图保存的步骤、清单、判断标准或对比表
+- content_contract.first_screen_promise 含糊，未说清谁、什么问题、得到什么
+- content_contract.audience 不符合输入 creator profile 的固定受众
+- proof_asset 只是卡通角色、IP、纯装饰性 AI 插图或其他装饰性内容，不能作为真实证明
 
 【评分维度】
 - click_potential
@@ -29,6 +33,7 @@ novelty_check_results，其中每个 novelty_results 元素都是一个独立候
 - total_score 接近时，优先 save_value 更高、memory_fit_score 更高、compliance_safety 更高的候选。
 - revise 候选若进入 Top 3，optimization_suggestions 必须吸收 revision_suggestions。
 - strengths / weaknesses / optimization_suggestions 都必须具体，不要空泛。
+- 评分时必须将 novelty_check_results 与同 topic_id 的 trends.content_contract 配对；没有可执行内容契约的候选直接拒绝，不得以高点击潜力弥补。
 
 【输出格式】
 仅输出严格 JSON 数组，按 total_score 从高到低排序：

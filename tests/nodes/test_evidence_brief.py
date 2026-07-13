@@ -6,6 +6,18 @@ from src.schemas.topic import TopicItem
 from src.schemas.virality_score import ScoreBreakdown, ScoreResult
 
 
+def _content_contract():
+    return {
+        "audience": "上班族",
+        "trigger_situation": "通勤前",
+        "decision_problem": "如何安排日常习惯",
+        "first_screen_promise": "通勤前快速掌握基础步骤",
+        "screenshot_asset": "步骤清单截图",
+        "proof_asset": "执行前后对比",
+        "visual_mode": "text_card",
+    }
+
+
 def _topic(*, topic_id: str, topic: str, content_intent: str, risk_level: str) -> TopicItem:
     return TopicItem(
         topic_id=topic_id,
@@ -20,6 +32,15 @@ def _topic(*, topic_id: str, topic: str, content_intent: str, risk_level: str) -
         content_intent=content_intent,
         risk_level=risk_level,
         risk_flags=["medical-adjacent"],
+        content_contract=_content_contract(),
+        creative_seed={
+            "signal_type": "evergreen_context",
+            "signal_name": "测试默认信号",
+            "why_now": "测试中使用稳定 evergreen 信号。",
+            "domain_translation": "测试中保持原 domain/subdomain。",
+            "evergreen_pain": "测试核心痛点。",
+            "timely_framing": "测试时机包装。",
+        },
     )
 
 

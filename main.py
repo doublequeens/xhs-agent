@@ -1,21 +1,25 @@
 import argparse
-import os
 import sys
 import json
 import warnings
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import get_args
 from uuid import uuid4
 
 from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
+from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
 from src.graph import create_graph
 from src.models import set_default_provider
-from src.prompts.composer import compose_prompt
+from src.nodes import node_p_text_card_renderer
+from src.rendering.text_cards import output_paths
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+LEGACY_IMAGE_PROMPT_FILENAME = "Storyboard_images_generator_prompt.txt"
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -85,35 +89,77 @@ def _resolve_publish_package_profile(publish_package: dict):
         ) from exc
 
 
+def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list[Path]]:
+    """Validate the renderer's six-file output before writing the audit JSON."""
+    raw_paths = publish_package.get("rendered_image_paths")
+    expected_names = [path.name for path in output_paths(Path("images"))]
+    if not isinstance(raw_paths, list) or len(raw_paths) != len(expected_names):
+        raise ValueError("publish_package requires exactly six rendered_image_paths")
+
+    publish_root = node_p_text_card_renderer.PUBLISH_ROOT.resolve()
+    package_dir: Path | None = None
+    resolved_paths: list[Path] = []
+    for index, (raw_path, expected_name) in enumerate(zip(raw_paths, expected_names), start=1):
+        try:
+            image_path = Path(raw_path).resolve()
+        except (OSError, TypeError, ValueError) as exc:
+            raise ValueError(f"rendered image path {index} cannot be resolved: {exc}") from exc
+
+        if not image_path.is_relative_to(publish_root):
+            raise ValueError("rendered image paths must remain inside outputs/publish")
+        if image_path.suffix.lower() != ".png":
+            raise ValueError("rendered image paths must be PNG files")
+        if image_path.name != expected_name:
+            raise ValueError("rendered image paths must use the required sequence")
+        if not image_path.is_file():
+            raise ValueError(f"rendered image path is missing: {image_path.name}")
+        try:
+            png_signature = image_path.read_bytes()[: len(PNG_SIGNATURE)]
+        except OSError as exc:
+            raise ValueError(f"rendered image path cannot be read: {image_path.name}") from exc
+        if png_signature != PNG_SIGNATURE:
+            raise ValueError("rendered image paths must contain PNG files")
+        if image_path.parent.name != "images":
+            raise ValueError("rendered image paths must be inside the package images directory")
+
+        current_package_dir = image_path.parent.parent
+        if package_dir is None:
+            package_dir = current_package_dir
+        elif current_package_dir != package_dir:
+            raise ValueError("rendered image paths must belong to one publish package")
+        resolved_paths.append(image_path)
+
+    assert package_dir is not None
+    actual_pngs = sorted(path.resolve() for path in package_dir.joinpath("images").glob("*.png"))
+    if actual_pngs != sorted(resolved_paths):
+        raise ValueError("package images directory must contain exactly the rendered PNG sequence")
+    return package_dir, resolved_paths
+
+
 def export_publish_package(publish_package: dict) -> None:
-    date_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
-    title = publish_package["title"]
-    profile = _resolve_publish_package_profile(publish_package)
-    domain = publish_package["domain"]
-    subdomain = publish_package.get("subdomain") or profile.default_subdomain
-    post_dir = f"{date_str}-{domain}-{subdomain}-{title}"
-    dir_path = "outputs/publish/{post_dir}".format(post_dir=post_dir)
-    if not os.path.exists(dir_path):
-        os.makedirs(dir_path)
+    """Write an audit record alongside the locally rendered final card set."""
+    _resolve_publish_package_profile(publish_package)
+    package_dir, rendered_image_paths = _rendered_image_package_directory(publish_package)
+    title = publish_package.get("title")
+    if not isinstance(title, str) or not title:
+        raise ValueError("publish_package requires a non-empty title for export")
 
-    with open(dir_path + "/" + str(title) + ".json", "w") as f:
-        json.dump(publish_package, f, ensure_ascii=False, indent=4)
+    audit_path = (package_dir / f"{title}.json").resolve()
+    if not audit_path.is_relative_to(package_dir):
+        raise ValueError("publish audit path must remain inside the package directory")
 
-    # 生成供图像生成节点使用的 prompt
-    storyboards_image_gen_prompt = compose_prompt("storyboards_images_generator", profile)
-    storyboards_image_gen_json = {
-        "title": publish_package.get("title", ""),
-        "content": publish_package.get("content", ""),
-        "cover_copy": publish_package.get("cover_copy", ""),
-        "storyboards": publish_package.get("storyboards", [])
-        }
-    image_prompt = (
-        f"{storyboards_image_gen_prompt}\n\n"
-        "下面是 storyboards JSON：\n```json\n"
-        f"{json.dumps(storyboards_image_gen_json, ensure_ascii=False, indent=4)}\n```"
-    )
-    with open(dir_path + "/" + "Storyboard_images_generator_prompt.txt", "w") as f:
-        f.write(image_prompt)
+    legacy_prompt_path = package_dir / LEGACY_IMAGE_PROMPT_FILENAME
+    try:
+        legacy_prompt_path.unlink(missing_ok=True)
+    except OSError as exc:
+        raise ValueError("obsolete image prompt could not be removed from package") from exc
+
+    audit_package = dict(publish_package)
+    audit_package["rendered_image_paths"] = [
+        path.relative_to(package_dir).as_posix() for path in rendered_image_paths
+    ]
+    with audit_path.open("w", encoding="utf-8") as audit_file:
+        json.dump(audit_package, audit_file, ensure_ascii=False, indent=4)
 
 
 def read_multiline_json() -> dict:
@@ -172,6 +218,8 @@ def collect_human_review(interrupt_value: dict) -> dict:
 
 def collect_domain_confirmation(interrupt_value: dict) -> dict:
     context = interrupt_value["context"]
+    allowed_domains = tuple(interrupt_value.get("allowed_domains", SUPPORTED_DOMAINS))
+    profile_subdomains = interrupt_value.get("allowed_subdomains")
     print("\n===== Domain Confirmation Required =====")
     print(interrupt_value["message"])
     print(json.dumps(context, ensure_ascii=False, indent=2))
@@ -179,26 +227,36 @@ def collect_domain_confirmation(interrupt_value: dict) -> dict:
     while True:
         selected_domain = (
             input(
-                f"请输入 domain {SUPPORTED_DOMAINS}，直接回车使用当前值 {context['domain']}: "
+                f"请输入 domain {allowed_domains}，直接回车使用当前值 {context['domain']}: "
             ).strip()
             or context["domain"]
         )
-        if selected_domain not in SUPPORTED_DOMAINS:
+        if selected_domain not in allowed_domains:
             print("无效 domain，请重新输入。")
             continue
 
-        profile = get_domain_profile(selected_domain)
-        print(f"可选 subdomain: {', '.join(profile.allowed_subdomains)}")
-        default_subdomain = (
-            context["subdomain"]
-            if selected_domain == context["domain"]
-            else profile.default_subdomain
-        )
+        if profile_subdomains is not None:
+            allowed_subdomains = tuple(profile_subdomains)
+            default_subdomain = (
+                context["subdomain"]
+                if selected_domain == context["domain"]
+                and context["subdomain"] in allowed_subdomains
+                else allowed_subdomains[0]
+            )
+        else:
+            profile = get_domain_profile(selected_domain)
+            allowed_subdomains = profile.allowed_subdomains
+            default_subdomain = (
+                context["subdomain"]
+                if selected_domain == context["domain"]
+                else profile.default_subdomain
+            )
+        print(f"可选 subdomain: {', '.join(allowed_subdomains)}")
         selected_subdomain = (
             input(f"请输入 subdomain，直接回车使用 {default_subdomain}: ").strip()
             or default_subdomain
         )
-        if selected_subdomain not in profile.allowed_subdomains:
+        if selected_subdomain not in allowed_subdomains:
             print("无效 subdomain，请重新输入。")
             continue
 
@@ -212,6 +270,25 @@ def collect_interrupt_response(interrupt_value: dict) -> dict:
     if kind in {None, "publish_review"}:
         return collect_human_review(interrupt_value)
     raise ValueError(f"Unsupported interrupt kind: {kind}")
+
+
+def export_completed_publish_package(graph, config) -> bool:
+    """Export only from a completed, final-policy-clean graph checkpoint."""
+    if not hasattr(graph, "get_state"):
+        return False
+    completed_state = graph.get_state(config)
+    values = getattr(completed_state, "values", None) or {}
+    if getattr(completed_state, "next", ()):
+        return False
+    if values.get("review_status") != "approved" or values.get("final_policy_issues"):
+        return False
+    publish_package = values.get("publish_package")
+    if not publish_package:
+        return False
+    print("The final publish package title is:")
+    print(publish_package["title"])
+    export_publish_package(publish_package)
+    return True
 
 
 def stream_graph_until_stop(graph, run_input, config):
@@ -231,15 +308,11 @@ def stream_graph_until_stop(graph, run_input, config):
                     break
 
                 print(f"Finished processing node: {key}")
-                if key in {"storyboard_generator", "human_review"} and value.get("publish_package"):
-                    print("The final publish package title is:")
-                    print(value["publish_package"]["title"])
-                    export_publish_package(value["publish_package"])
-
             if interrupted:
                 break
 
         if not interrupted:
+            export_completed_publish_package(graph, config)
             return
 
 def main():
@@ -249,6 +322,11 @@ def main():
         type=str,
         choices=SUPPORTED_DOMAINS,
         help="Explicit domain for routing",
+    )
+    parser.add_argument(
+        "--subdomain",
+        type=str,
+        help="Explicit subdomain for the selected domain",
     )
     parser.add_argument(
         "--thread-id",
@@ -262,6 +340,15 @@ def main():
     # parser.add_argument("--mode", type=str, default="manual", choices=["auto", "manual"], help="Publishing mode")
     
     args = parser.parse_args()
+    if args.subdomain and not args.domain:
+        parser.error("--subdomain requires --domain")
+    if args.domain and args.subdomain:
+        profile = get_domain_profile(args.domain)
+        if args.subdomain not in profile.allowed_subdomains:
+            parser.error(
+                "--subdomain must be one of "
+                f"{', '.join(profile.allowed_subdomains)} for domain {args.domain}"
+            )
     
     init_message = f"Starting Xiaohongshu Agent"
     if args.provider:
@@ -270,6 +357,8 @@ def main():
         init_message += f" with topic focus keyword: {args.focus_keyword},"
     if args.domain:
         init_message += f" with domain: {args.domain},"
+    if args.subdomain:
+        init_message += f" with subdomain: {args.subdomain},"
     if args.topic_num:
         init_message += f" with topic number: {args.topic_num}."
     print(init_message)
@@ -295,7 +384,10 @@ def main():
     graph = create_graph()
 
     initial_state = {
+        "interactive": True,
+        "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
         "domain": args.domain,
+        "subdomain": args.subdomain,
         "domain_context": None,
         "content_policy": None,
         "memory_context": None,
@@ -303,6 +395,11 @@ def main():
         "final_policy_issues": [],
         "trends_num": args.topic_num,
         "focus_keyword": args.focus_keyword if args.focus_keyword else "",
+        "topic_signals": [],
+        "creative_briefs": [],
+        "topic_candidates": [],
+        "topic_generation_trace": None,
+        "topic_generation_degraded_reason": None,
         "trends": [],
         "angles": [],
         "novelty_check_results": None,
@@ -344,9 +441,7 @@ def main():
         if not currentState.next:
             if currentState.values["publish_package"]:
                 print("该任务已经全部执行完毕，直接从历史状态导出 publish_package.json...")
-                print("The final publish package title is:")
-                print(currentState.values["publish_package"]["title"])
-                export_publish_package(currentState.values["publish_package"])
+                export_completed_publish_package(graph, config)
                 return # 直接退出，不需要再跑 stream
             
     else:

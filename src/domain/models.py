@@ -10,7 +10,12 @@ ContentIntent = Literal["experience", "myth_busting", "how_to", "checklist", "ba
 class DomainContext(BaseModel):
     domain: DomainName
     subdomain: str
-    classification_source: Literal["explicit", "inferred", "default"]
+    classification_source: Literal[
+        "explicit",
+        "explicit_domain_default_subdomain",
+        "inferred",
+        "default",
+    ]
     classification_confidence: float = Field(ge=0, le=1)
     profile_version: str
     risk_level: RiskLevel

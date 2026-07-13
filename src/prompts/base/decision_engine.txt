@@ -48,10 +48,9 @@ Decision Engine
         "best_cover_copy": "string",
         "storyboard_visible_text": [
           {
-            "frame_id": "string | null",
-            "frame_title": "string",
-            "on_image_copy": "string",
-            "narration": "string"
+            "frame_id": "string",
+            "template": "string",
+            "text_blocks": {"headline": "string", "checklist_items[1]": "string"}
           }
         ]
       },
@@ -106,10 +105,9 @@ Decision Engine
         "best_cover_copy": "string",
         "storyboard_visible_text": [
           {
-            "frame_id": "string | null",
-            "frame_title": "string",
-            "on_image_copy": "string",
-            "narration": "string"
+            "frame_id": "string",
+            "template": "string",
+            "text_blocks": {"headline": "string", "checklist_items[1]": "string"}
           }
         ]
       },

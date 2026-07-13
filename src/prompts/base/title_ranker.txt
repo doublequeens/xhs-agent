@@ -13,6 +13,8 @@ Title Ranker
 - 对所有 draft 进行排序并选出唯一 winner。
 - 输出 winner 的 must_fix_if_selected 与 optional_improvements，建议必须原子化、可执行、可定位。
 - draft_md 必须保持原文全文，不得被你改写。
+- 将伪造经历、神技、急救、亲测有效、救命、无缝、隐形等夸大表达视为标题风险。
+- 首选标题和封面文案必须准确兑现“谁、什么问题、得到什么”，且不能掩盖正文缺少可截图保存卡片或真实证明的问题。
 
 【评分维度】
 - click_score
