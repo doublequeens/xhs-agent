@@ -2,7 +2,7 @@
 
 ## 状态
 
-待书面规格审核。该设计在实现后取代
+已于 2026-07-14 完成书面规格审核。该设计在实现后取代
 `2026-07-12-local-text-card-rendering-design.md` 中固定六张纯文字卡、固定模板顺序和
 仅两套纯色主题的视觉方案。账号定位、内容合规、首屏承诺和可截图保存资产等既有
 业务约束继续有效。
@@ -30,6 +30,8 @@
 - 不要求真人出镜，也不恢复小蝾螈或其他固定卡通 IP。
 - 不在本次变更中调整美容账号受众、内容安全策略或发布指标采集。
 - 不自动抓取授权不明的社交平台图片。
+- 自动主流程不调用 Codex 内置图像生成；只在最终交付包中生成一个由人手动交给 Codex
+  使用的可选视觉救援 prompt。
 
 ## 核心原则
 
@@ -220,6 +222,32 @@ class CarouselFrame(BaseModel):
 Asset Resolver 返回每个 slot 的本地路径、素材角色、来源、许可证/所有权说明和尺寸。
 Renderer 返回有序 PNG、每页使用的 layout、字体加载结果和 contact sheet 路径。
 
+### ContentLock
+
+最终交付阶段从已通过 R2、Carousel QA、Render QA 和 Human Review 的 publish package
+生成不可变 `ContentLock`：
+
+```python
+class ContentLock(BaseModel):
+    focus_keyword: str
+    topic: str
+    topic_id: str
+    angle: str
+    angle_id: str
+    target_group: str
+    core_pain: str
+    title: str
+    cover_copy: str
+    first_screen_promise: str
+    content: str
+    hashtags: list[str]
+    storyboards: list[dict]
+    canonical_sha256: str
+```
+
+`canonical_sha256` 对上述字段按固定 key 顺序、UTF-8、无多余空白的 canonical JSON 计算。
+ContentLock 只用于导出一致性和人工视觉救援，不进入选题 prompt、memory 或下一篇文章。
+
 ## 混合素材策略
 
 首版素材来自仓库中经过审核的本地素材包：
@@ -281,8 +309,14 @@ assets/visual/beauty-editorial-v1/
   active/         # 已审核、可用于生产
   retired/        # 过时、重复或质量不足，不再选用
   licenses/       # 许可证文本或获取时的条款快照
+  references/     # 只供人工 Codex 救援读取的质量锚点，Asset Resolver 禁止选择
   manifest.json
 ```
+
+`references` 至少包含封面、图解页和保存卡三个抽象命名的 `reference_only` 质量锚点，来自
+已确认的高质量美容编辑式套图。它们只约束纸张质感、配色、线稿、材质、留白、层级和
+精致度；其中的标题、正文、选题和页面顺序不得被复制。reference manifest 必须标记
+`usage: reference_only`，Asset Resolver 和生产 Renderer 都不得把它们当作可合成素材。
 
 每个素材必须经过以下步骤：
 
@@ -537,6 +571,53 @@ Human Review interrupt 展示：
 文字修改继续触发 R2。只修改非文字视觉选择时重新走 Visual Strategy/Asset Resolver/
 Renderer/Render QA，不无条件重跑正文和标题节点。
 
+## 最终交付包与人工 Codex 视觉救援
+
+完整成功运行指 Human Review 已批准、Final Policy Guard 无问题、内容已写入结构化与向量
+数据库，并完成安全导出。每篇最终目录固定为：
+
+```text
+outputs/publish/<YYYYMMDD>-<domain>-<subdomain>-<title>/
+  images/
+    01-cover.png
+    02-<frame-role>.png
+    ...
+    05~07-<frame-role>.png
+  publish-copy.txt
+  codex-image-regeneration-prompt.txt
+  <title>.json
+```
+
+`publish-copy.txt` 使用 UTF-8 和 LF，内容严格为“标题、空行、短正文、空行、空格连接的
+hashtags、末尾换行”。它不包含 storyboard、QA、素材来源或内部说明。
+
+`codex-image-regeneration-prompt.txt` 是供人对 `images/` 不满意时手动交给 Codex 的
+自包含救援指令。生成该文本本身不调用图像模型、API 或网络。prompt 必须：
+
+- 声明这是 `visual-only regeneration`，不是重新选题或重新写作。
+- 要求先读取同目录 `<title>.json`、现有 `images/` 和项目内 `reference_only` 质量锚点。
+- 内嵌 ContentLock canonical JSON、`canonical_sha256` 和每页逐字可见文字，避免只依赖
+  路径或自然语言概述。
+- 锁定 `focus_keyword`、topic/angle、目标人群、核心痛点、标题、封面承诺、正文、hashtags、
+  frame 数量/顺序/角色以及 storyboard 所有可见文字。
+- 禁止增加、删除或改写护肤结论、步骤、用量、判断标准、风险提示和新事实；缺字段时
+  停止并报告，不能补写。
+- 允许改变的只有布局实现、换行、字体层级、留白、素材、插画、背景、光影、裁切和
+  Design System 内的色彩组合；每页的信息任务和文字归属不变。
+- 指导 Codex 使用内置 image generation，而不是 CLI/API：先用 `view_image` 检查当前套图
+  与三个质量锚点，再逐页生成美容视觉底图；封面作为 style anchor，后续页面同时参考
+  封面和上一页，每个不同页面单独调用一次图像生成。
+- 图像生成负责纸张/液体质地、面部线稿、分区图、无品牌容器和光影；中文使用项目字体
+  进行确定性本地叠加，不让图像模型自由生成或改写文字。
+- 每页验证 `1080 × 1440`、无 Logo/水印/二维码/真人正脸、文字逐字一致、主体与内容语义
+  对应；最终通过 contact sheet 检查美容编辑感、跨页一致性、版式变化和可保存性。
+- 把结果写入同目录第一个不存在的 `images-codex-vN/`，不得覆盖 `images/`、文章 JSON、
+  `publish-copy.txt` 或之前的 `images-codex-vN/`。
+
+该 prompt 不能保证随机图像模型每次达到完全相同的像素质量；它通过真实质量锚点、Style
+Lock、逐页生成、确定性中文叠加和最终人工检查，把结果约束在已确认的美容编辑方向。
+救援目录不是自动 Agent 的正式输出，只有用户检查并主动采用后才替代上传文件。
+
 ## 错误处理
 
 - VisualPlan、Storyboard 或 manifest schema 无效：失败并回到 R1，不猜测补字段。
@@ -549,6 +630,8 @@ Renderer/Render QA，不无条件重跑正文和标题节点。
 - 任意页面截图失败：删除本次所有部分输出。
 - QA 失败：保留审计结果，但不进入 Human Review。
 - 旧 checkpoint：通过单一 legacy adapter 升级，不把兼容分支散落在各节点。
+- 最终导出缺少 ContentLock 必填字段、canonical hash 不一致或交付文件写入不完整：清理
+  本次新建的文本/JSON 临时文件并拒绝标记导出成功，不删除已经通过 Render QA 的图片。
 
 ## 测试策略
 
@@ -578,6 +661,10 @@ Renderer/Render QA，不无条件重跑正文和标题节点。
 - Human Review payload 包含待审外部素材的作者、来源页、许可说明、裁切预览和批准动作。
 - 外部素材批准后，`AssetManifest` 记录的源素材 sha256、`RenderManifest` 记录的所用源素材
   sha256 和 `active` 中实际源文件的 sha256 三者一致。
+- `publish-copy.txt` 的标题、正文和 hashtags 逐字来自最终 publish package。
+- ContentLock canonical 序列化稳定，任一锁定字段变化都会改变 sha256。
+- 救援 prompt 包含当前选题/关键词和逐页文字，但不包含测试 fixture 标题、旧文章内容或
+  重新创作指令；prompt 要求输出到不覆盖原图的 `images-codex-vN/`。
 
 ### 测试专用 Golden 与回归
 
@@ -601,7 +688,9 @@ plan，同时共享同一 Design System。现有内容、合规、checkpoint 恢
 3. 用 TDD 实现新 renderer 与 11 个 layout。
 4. 接入新 graph 和 QA，golden fixtures 走新路径。
 5. 将旧 checkpoint 测试切到 legacy adapter。
-6. 全量测试与四个 golden 渲染通过后，删除旧固定模板 schema、旧 renderer、Pexels-only
+6. 在最终导出中增加 `publish-copy.txt`、ContentLock 和人工 Codex 视觉救援 prompt，保持
+   自动 graph 不调用图像生成能力。
+7. 全量测试与四个 golden 渲染通过后，删除旧固定模板 schema、旧 renderer、Pexels-only
    sourcing 和 URL-description-only image QA。
 
 不允许同时长期维护两个生产 renderer；旧实现只在迁移阶段存在。
@@ -619,4 +708,7 @@ plan，同时共享同一 Design System。现有内容、合规、checkpoint 恢
 - 每套至少三种 layout、一个保存页、一个有意义的视觉主体。
 - 完整测试套件通过，真实 Chromium smoke test 通过。
 - Human Review 能看到 contact sheet、单页图片、布局和 QA，而不是只看到 JSON。
+- 每个成功导出的发布目录包含 `images/`、`publish-copy.txt`、
+  `codex-image-regeneration-prompt.txt` 和 `<title>.json`；救援 prompt 的 ContentLock 与
+  JSON 一致，并明确禁止内容重写和覆盖原图。
 - 旧的固定六卡顺序、提问结尾和空白文字卡不再出现在生产路径。
