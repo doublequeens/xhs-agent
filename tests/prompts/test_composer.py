@@ -73,6 +73,27 @@ def test_healthy_lifestyle_prompt_omits_skincare_identity():
     assert "只讨论日常护肤" not in prompt
 
 
+def test_storyboard_prompt_requires_semantic_carousel_contract():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt(
+        "storyboards_generator",
+        get_domain_profile("beauty"),
+    )
+
+    assert "CarouselPayload" in prompt
+    assert "VisualPlan.frame_plan" in prompt
+    assert "first_screen_promise" in prompt
+    assert "HTML" in prompt
+    assert "CSS" in prompt
+    assert "坐标" in prompt
+    assert "URL" in prompt
+    assert "image-generation prompt" in prompt
+    assert "不得改变 topic" in prompt
+    assert "不得增加额外 frame" in prompt
+    assert "固定六张" not in prompt
+
+
 def test_virality_prompt_requires_integer_breakdown_scores():
     from src.prompts.composer import compose_prompt
 

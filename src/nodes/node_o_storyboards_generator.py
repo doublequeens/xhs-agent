@@ -1,7 +1,8 @@
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
+from src.editorial_carousel.strategy import build_visual_plan
 from src.models import get_model
-from src.schemas import AgentState
+from src.schemas import AgentState, CarouselPayload, VisualPlan
 from src.nodes.publish_patch import (
     apply_storyboard_visible_text_patch,
     extract_storyboard_visible_text,
@@ -54,14 +55,22 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", {})
+    visual_plan_value = state.get("visual_plan")
+    semantic_storyboard_contract = visual_plan_value is not None
+    visual_plan = (
+        VisualPlan.model_validate(visual_plan_value)
+        if semantic_storyboard_contract
+        else build_visual_plan(content_contract, recent_signatures=[])
+    )
 
     system_prompt = compose_prompt_for_state("storyboards_generator", state)
     template = PromptTemplate(
-        input_variables=["publish_package", "content_contract", "domain_context", "content_policy", "evidence_briefs"],
+        input_variables=["publish_package", "content_contract", "visual_plan", "domain_context", "content_policy", "evidence_briefs"],
         template=(
             "输入参数如下：\n"
             "- publish_package:\n{publish_package}\n"
             "- content_contract:\n{content_contract}\n"
+            "- visual_plan:\n{visual_plan}\n"
             "- domain_context:\n{domain_context}\n"
             "- content_policy:\n{content_policy}\n"
             "- evidence_briefs:\n{evidence_briefs}\n"
@@ -71,6 +80,7 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     human_prompt = template.format(
         publish_package=serialize_prompt_value(publish_package),
         content_contract=serialize_prompt_value(content_contract),
+        visual_plan=serialize_prompt_value(visual_plan),
         domain_context=serialize_prompt_value(domain_context),
         content_policy=serialize_prompt_value(content_policy),
         evidence_briefs=serialize_prompt_value(evidence_briefs),
@@ -81,15 +91,30 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     ]
 
     storyboard_json = get_model().execute(messages)
-    storyboards = (
-        storyboard_json.get("storyboards")
-        if isinstance(storyboard_json, dict)
-        else None
-    )
+    expected = [
+        (item.frame_id, item.layout) for item in visual_plan.frame_plan
+    ]
+    if semantic_storyboard_contract:
+        payload = CarouselPayload.model_validate(storyboard_json)
+        actual = [(item.frame_id, item.layout) for item in payload.storyboards]
+        if actual != expected:
+            raise ValueError(
+                "storyboard frames must exactly match visual_plan frame order and layouts"
+            )
+        generated_storyboards = payload.model_dump(mode="json")["storyboards"]
+    else:
+        # Pre-migration checkpoints can resume before the planner node has
+        # written visual_plan. Keep their existing cards intact; all new graph
+        # executions provide visual_plan and take the strict branch above.
+        generated_storyboards = (
+            storyboard_json.get("storyboards")
+            if isinstance(storyboard_json, dict)
+            else None
+        )
 
     merged_publish_package = dict(publish_package)
     merged_publish_package["content_contract"] = content_contract
-    merged_publish_package["storyboards"] = storyboards
+    merged_publish_package["storyboards"] = generated_storyboards
 
     pending_patch = state.get("pending_human_publish_patch")
     if pending_patch:
@@ -115,6 +140,21 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
             merged_publish_package["storyboards"] = apply_storyboard_visible_text_patch(
                 merged_publish_package.get("storyboards"), visible_patch
             )
+
+    if semantic_storyboard_contract:
+        final_payload = CarouselPayload.model_validate(
+            {"storyboards": merged_publish_package.get("storyboards")}
+        )
+        final_actual = [
+            (item.frame_id, item.layout) for item in final_payload.storyboards
+        ]
+        if final_actual != expected:
+            raise ValueError(
+                "storyboard frames must exactly match visual_plan frame order and layouts"
+            )
+        merged_publish_package["storyboards"] = final_payload.model_dump(
+            mode="json"
+        )["storyboards"]
 
     return {
         "publish_package": merged_publish_package,

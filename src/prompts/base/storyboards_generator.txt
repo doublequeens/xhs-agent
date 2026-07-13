@@ -1,23 +1,44 @@
 【Task Identity】
-Structured Text Card Generator
+Semantic Editorial Carousel Storyboard Generator
 
-仅输出严格 JSON：
+仅输出严格 JSON，且必须完整匹配 CarouselPayload；顶层只能有 storyboards：
 {
   "storyboards": [
-    {"frame_id":"string","template":"cover_statement","theme":"warm_neutral 或 cool_sage","kicker":"<=10字","headline":"<=28字","footer":"<=18字"},
-    {"frame_id":"string","template":"wrong_vs_right","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","wrong_items":["<=16字", "<=16字"],"right_items":["<=16字", "<=16字"]},
-    {"frame_id":"string","template":"step_timeline","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","steps":[{"name":"<=12字","hint":"<=16字"}]},
-    {"frame_id":"string","template":"saveable_checklist","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","checklist_items":["<=16字", "<=16字", "<=16字"]},
-    {"frame_id":"string","template":"decision_rule","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","conditions":[{"situation":"<=16字","recommendation":"<=16字"},{"situation":"<=16字","recommendation":"<=16字"}]},
-    {"frame_id":"string","template":"question_closer","theme":"同一theme（warm_neutral 或 cool_sage）","kicker":"<=10字","headline":"<=28字","footer":"<=18字","question":"<=22字"}
+    {
+      "frame_id": "逐字复制 VisualPlan.frame_plan 对应 frame_id",
+      "role": "对应页面的单一语义角色",
+      "layout": "逐字复制 VisualPlan.frame_plan 对应 layout",
+      "headline": "本页标题，最多 80 字符",
+      "kicker": "可选短标签或 null",
+      "content_blocks": [
+        {
+          "block_type": "text | bullets | steps | comparison | checklist | decision_tree | labels",
+          "heading": "可选小标题或 null",
+          "body": "可选正文或 null",
+          "items": ["结构化短项"]
+        }
+      ],
+      "emphasis": ["需要强调的短语"],
+      "visual_slots": [
+        {
+          "slot_id": "页面内唯一且稳定的 slot id",
+          "role": "与 VisualPlan asset role 一致的语义角色",
+          "semantic_tags": ["仅语义标签"],
+          "composition": "left | right | center | background | full_bleed | null",
+          "palette_tags": ["结构化色彩标签"]
+        }
+      ],
+      "footer": "可选页脚或 null"
+    }
   ]
 }
 
 硬规则：
-- 必须恰好输出六张卡，template 顺序固定为 cover_statement、wrong_vs_right、step_timeline、saveable_checklist、decision_rule、question_closer；全部使用同一个 theme，且 theme 只能是 warm_neutral 或 cool_sage。
-- 不得输出 image_prompt_cn、image_prompt_en、narration、composition、scene_background、visual_description、text_area 或 negative_prompt。
-- 第一张 template 必须为 cover_statement，headline 必须逐字等于 content_contract.first_screen_promise。
-- decision_rule 必须使用 conditions，且只能有 2–3 个情况/建议对象；不得输出 condition 或 recommendation 顶层字段。
-- 第四张必须为 saveable_checklist，清单内容必须把 screenshot_asset 改写为 3–5 条可执行短项。
-- 每个 headline 最多 28 个汉字；禁止把免责声明、正文段落或互动引导拼入 headline。
-- 只生成卡片数据；不得改写或输出 publish_package 的其他元数据。
+- storyboards 的数量、顺序、frame_id 和 layout 必须逐项等于 VisualPlan.frame_plan；不得增加额外 frame，也不得删除、交换或重命名 frame。
+- 第一张必须使用 VisualPlan 的 cover frame；其 headline 必须逐字等于 content_contract.first_screen_promise。
+- 每页只完成 VisualPlan 对应 role/purpose 的一个信息任务，不得改变 topic、angle、受众、首屏承诺或正文结论。
+- content_blocks 只能使用 CarouselPayload 允许的结构化类型；visual_slots 只描述素材的语义职责，不选择具体素材。
+- 只输出 JSON 数据。禁止 HTML、CSS、自由坐标、字体路径、文件路径、网络 URL、image-generation prompt、image_prompt、negative_prompt 或任何图像生成指令。
+- 新合同没有 theme 字段；不得输出旧版 warm_neutral 或 cool_sage 主题值。
+- 不得输出 publish_package 的 title、content、hashtags、images、notes 等其他元数据。
+- 不得把整段正文复制到页面，不得添加无意义互动结尾，不得生成 schema 之外的字段。

@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
-from src.schemas import StoryboardPayload
+from src.schemas import CarouselPayload
 from src.schemas.topic import TopicItem
 
 
@@ -70,23 +70,44 @@ def _content_policy():
     return build_content_policy(get_domain_profile("wellness"), risk_level="medium").model_dump()
 
 
-def _storyboard_frame(frame_number: int):
-    frames = [
-        {"template": "cover_statement"},
-        {"template": "wrong_vs_right", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
-        {"template": "step_timeline", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
-        {"template": "saveable_checklist", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
-        {"template": "decision_rule", "conditions": [{"situation": "底妆开始搓泥", "recommendation": "减少用量等待"}, {"situation": "时间不足", "recommendation": "先缩减步骤"}]},
-        {"template": "question_closer", "question": "你最常在哪步搓泥？"},
-    ]
-    return {
-        "frame_id": f"frame_{frame_number:03d}",
-        "theme": "warm_neutral",
-        "kicker": f"第{frame_number}张",
-        "headline": _content_contract()["first_screen_promise"] if frame_number == 1 else f"第{frame_number}张要点",
-        "footer": "按需微调",
-        **frames[frame_number - 1],
-    }
+def _visual_plan():
+    from src.editorial_carousel.strategy import build_visual_plan
+
+    return build_visual_plan(_content_contract(), recent_signatures=[])
+
+
+def _storyboard_frames():
+    frames = []
+    for index, item in enumerate(_visual_plan().frame_plan):
+        frames.append(
+            {
+                "frame_id": item.frame_id,
+                "role": item.role,
+                "layout": item.layout,
+                "headline": (
+                    _content_contract()["first_screen_promise"]
+                    if index == 0
+                    else f"第{index + 1}张要点"
+                ),
+                "kicker": f"第{index + 1}张",
+                "content_blocks": [
+                    {
+                        "block_type": "text",
+                        "body": f"第{index + 1}张的单一信息任务",
+                    }
+                ],
+                "emphasis": ["要点"],
+                "visual_slots": [
+                    {
+                        "slot_id": f"{item.frame_id}-visual",
+                        "role": item.asset_roles[0],
+                        "semantic_tags": ["daily-routine"],
+                    }
+                ],
+                "footer": "按需微调",
+            }
+        )
+    return frames
 
 
 def test_trend_scout_includes_domain_context_and_content_policy(monkeypatch):
@@ -569,17 +590,12 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
     assert "storyboards" not in publish_package
 
 
-def test_storyboards_generator_preserves_full_publish_package_and_text_card_contract(monkeypatch):
+def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
 
     class FakeModel:
         def execute(self, messages):
-            frames = [_storyboard_frame(index) for index in range(1, 7)]
-            return {
-                "title": "wrong title",
-                "content": "wrong content",
-                "storyboards": frames,
-            }
+            return {"storyboards": _storyboard_frames()}
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
@@ -611,6 +627,7 @@ def test_storyboards_generator_preserves_full_publish_package_and_text_card_cont
             "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
+            "visual_plan": _visual_plan(),
         }
     )
 
@@ -635,30 +652,27 @@ def test_storyboards_generator_preserves_full_publish_package_and_text_card_cont
     assert merged_package["risk_level"] == publish_package["risk_level"]
     assert merged_package["risk_flags"] == publish_package["risk_flags"]
     frames = merged_package["storyboards"]
-    assert [frame["template"] for frame in frames] == [
-        "cover_statement", "wrong_vs_right", "step_timeline",
-        "saveable_checklist", "decision_rule", "question_closer",
+    assert [(frame["frame_id"], frame["layout"]) for frame in frames] == [
+        (item.frame_id, item.layout) for item in _visual_plan().frame_plan
     ]
-    assert {frame["theme"] for frame in frames} == {"warm_neutral"}
     assert frames[0]["headline"] == _content_contract()["first_screen_promise"]
-    assert frames[3]["checklist_items"] == ["薄涂防晒", "等待成膜", "少量点涂"]
+    assert frames[3]["content_blocks"][0]["body"] == "第4张的单一信息任务"
 
 
-def test_storyboard_payload_requires_exactly_six_cards():
+def test_carousel_payload_accepts_the_visual_plan_frame_count():
     with pytest.raises(ValidationError):
-        StoryboardPayload.model_validate(
-            {"storyboards": [_storyboard_frame(index) for index in range(1, 6)]}
+        CarouselPayload.model_validate(
+            {"storyboards": _storyboard_frames()[:4]}
         )
 
-    payload = StoryboardPayload.model_validate(
-        {"storyboards": [_storyboard_frame(index) for index in range(1, 7)]}
+    payload = CarouselPayload.model_validate(
+        {"storyboards": _storyboard_frames()}
     )
-    assert len(payload.storyboards) == 6
+    assert len(payload.storyboards) == len(_visual_plan().frame_plan)
 
 
-def test_storyboard_generator_leaves_schema_rejection_to_carousel_qa(monkeypatch):
+def test_storyboard_generator_rejects_invalid_payload_before_state_write(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
-    from src.nodes.node_p_carousel_qa import carousel_qa_node
 
     class FakeModel:
         def execute(self, _messages):
@@ -691,7 +705,39 @@ def test_storyboard_generator_leaves_schema_rejection_to_carousel_qa(monkeypatch
         "trends": [_topic()],
         "domain_context": _domain_context(),
         "content_policy": _content_policy(),
+        "visual_plan": _visual_plan(),
     }
 
-    generated = module.storyboards_generator_node(state)
-    assert generated["publish_package"]["storyboards"] == [{"template": "not_a_real_card"}]
+    with pytest.raises(ValidationError):
+        module.storyboards_generator_node(state)
+    assert "storyboards" not in state["publish_package"]
+
+
+def test_storyboard_generator_rejects_frame_order_or_layout_drift(monkeypatch):
+    from src.nodes import node_o_storyboards_generator as module
+
+    frames = _storyboard_frames()
+    frames[1]["layout"] = "decision_tree"
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {"storyboards": frames}
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(
+        ValueError,
+        match="storyboard frames must exactly match visual_plan frame order and layouts",
+    ):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {
+                    "topic_id": "tp_001",
+                    "content_contract": _content_contract(),
+                },
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "visual_plan": _visual_plan(),
+            }
+        )

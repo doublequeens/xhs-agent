@@ -22,6 +22,7 @@ _EXPORTS = {
     "image_qa_node": "src.nodes.node_n_image_qa",
     "assembler_node": "src.nodes.node_o_assembler",
     "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
+    "visual_strategy_planner_node": "src.nodes.node_p_visual_strategy_planner",
     "carousel_qa_node": "src.nodes.node_p_carousel_qa",
     "text_card_renderer_node": "src.nodes.node_p_text_card_renderer",
     "render_qa_node": "src.nodes.node_p_render_qa",
