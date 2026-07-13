@@ -204,6 +204,7 @@ def _manifest_item(
     *,
     status: Literal["active", "fallback"],
 ) -> AssetManifestItem:
+    provenance = entry.provenance
     return AssetManifestItem(
         slot_id=requirement.slot_id,
         role=requirement.role,
@@ -211,11 +212,41 @@ def _manifest_item(
         status=status,
         path=str(entry.path),
         asset_id=entry.asset_id,
-        source_type="local",
+        source_type=provenance.source_type if provenance else "local",
+        provider=provenance.provider if provenance else None,
+        provider_asset_id=provenance.provider_asset_id if provenance else None,
+        source_url=provenance.source_url if provenance else None,
+        source_file_url=provenance.source_file_url if provenance else None,
+        author=provenance.author if provenance else None,
+        provider_attribution=(
+            dict(provenance.provider_attribution) if provenance else {}
+        ),
         license=entry.license,
+        license_snapshot=provenance.license_snapshot if provenance else None,
+        license_snapshot_sha256=(
+            provenance.license_snapshot_sha256 if provenance else None
+        ),
+        license_terms_url=provenance.license_terms_url if provenance else None,
         width=entry.width,
         height=entry.height,
         sha256=entry.sha256,
+        run_id=provenance.run_id if provenance else None,
+        acquired_at=provenance.acquired_at if provenance else None,
+        average_hash=provenance.average_hash if provenance else None,
+        requirement_fingerprint=(
+            provenance.requirement_fingerprint if provenance else None
+        ),
+        unresolved_safety_checks=(
+            list(provenance.unresolved_safety_checks) if provenance else []
+        ),
+        safety_review_decisions=(
+            dict(provenance.safety_review_decisions) if provenance else {}
+        ),
+        safety_reviewed_at=(
+            provenance.safety_reviewed_at if provenance else None
+        ),
+        review_status="approved" if provenance else None,
+        review_disposition=(provenance.review_disposition if provenance else None),
     )
 
 
@@ -413,7 +444,7 @@ def _safe_component(value: str) -> str:
 def _attempt_ledger_path(
     catalog: AssetCatalog, requirement: AssetRequirement, fingerprint: str
 ) -> Path:
-    return catalog.incoming_root / (
+    return catalog.incoming_root / ".attempt-ledgers" / (
         f"attempts-{_safe_component(requirement.slot_id)}-{fingerprint}.json"
     )
 
@@ -423,7 +454,7 @@ def _reserve_download_attempt(
     requirement: AssetRequirement,
     fingerprint: str,
     candidate: ExternalAssetCandidate,
-) -> int | None:
+) -> tuple[Literal["reserved", "duplicate", "exhausted"], int | None]:
     ledger_path = _attempt_ledger_path(catalog, requirement, fingerprint)
     ledger_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = ledger_path.with_suffix(f"{ledger_path.suffix}.lock")
@@ -450,19 +481,31 @@ def _reserve_download_attempt(
                     "attempts": [],
                 }
             attempts = ledger["attempts"]
+            if any(
+                (
+                    item.get("provider") == candidate.provider
+                    and item.get("provider_asset_id")
+                    == candidate.provider_asset_id
+                )
+                or item.get("source_url") == candidate.source_url
+                for item in attempts
+                if isinstance(item, dict)
+            ):
+                return "duplicate", None
             if len(attempts) >= MAX_DOWNLOAD_ATTEMPTS:
-                return None
+                return "exhausted", None
             attempt_number = len(attempts) + 1
             attempts.append(
                 {
                     "attempt_number": attempt_number,
                     "provider": candidate.provider,
                     "provider_asset_id": candidate.provider_asset_id,
+                    "source_url": candidate.source_url,
                     "attempted_at": datetime.now(UTC).isoformat(),
                 }
             )
             _atomic_write_json(ledger_path, ledger)
-            return attempt_number
+            return "reserved", attempt_number
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
@@ -496,11 +539,14 @@ def _download_pending_candidates(
                 f"{candidate.provider_asset_id}: provider URLs are not allowlisted"
             )
             continue
-        attempt_number = _reserve_download_attempt(
+        reservation, attempt_number = _reserve_download_attempt(
             catalog, requirement, fingerprint, candidate
         )
-        if attempt_number is None:
+        if reservation == "duplicate":
+            continue
+        if reservation == "exhausted":
             break
+        assert attempt_number is not None
         candidate_key = (candidate.provider, candidate.provider_asset_id)
         provider = providers_by_candidate[id(candidate)]
         try:

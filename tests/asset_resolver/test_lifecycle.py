@@ -19,12 +19,14 @@ def pending_asset(
     asset_id: str = "p1",
     candidate_rank: int = 1,
     unresolved_safety_checks: tuple[str, ...] = (),
+    run_id: str = "run-42",
+    color: str = "ivory",
 ):
     from src.asset_resolver.lifecycle import PendingAsset
 
-    path = tmp_path / "incoming" / "external" / "run-42" / f"pexels-{asset_id}.webp"
+    path = tmp_path / "incoming" / "external" / run_id / f"pexels-{asset_id}.webp"
     path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", (1080, 1440), "ivory").save(
+    Image.new("RGB", (1080, 1440), color).save(
         path, format="WEBP", lossless=True
     )
     metadata_path = path.with_suffix(".json")
@@ -32,7 +34,7 @@ def pending_asset(
     license_snapshot.parent.mkdir(parents=True, exist_ok=True)
     license_snapshot.write_text("Pexels terms summary v1", encoding="utf-8")
     pending = PendingAsset(
-        pending_id=f"run-42-serum-slot-pexels-{asset_id}",
+        pending_id=f"{run_id}-serum-slot-pexels-{asset_id}",
         slot_id="serum-slot",
         candidate_rank=candidate_rank,
         path=path,
@@ -54,7 +56,7 @@ def pending_asset(
         license_terms_url="https://www.pexels.com/license/",
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         average_hash="0123456789abcdef",
-        run_id="run-42",
+        run_id=run_id,
         production_relative_path=Path(f"stock/serum-{asset_id}.webp"),
         tags=("serum", "ivory"),
         fallback_roles=("serum_texture",),
@@ -67,7 +69,7 @@ def pending_asset(
     return pending
 
 
-def catalog(tmp_path: Path) -> AssetCatalog:
+def catalog(tmp_path: Path, *, run_id: str = "run-42") -> AssetCatalog:
     manifest_path = tmp_path / "manifest.json"
     manifest_path.write_text(
         json.dumps({"catalog_id": "test-catalog", "assets": []}),
@@ -77,7 +79,7 @@ def catalog(tmp_path: Path) -> AssetCatalog:
         catalog_id="test-catalog",
         root=tmp_path,
         entries=(),
-        run_id="run-42",
+        run_id=run_id,
         manifest_path=manifest_path,
     )
 
@@ -498,3 +500,151 @@ def test_same_candidate_approve_reject_race_has_exactly_one_winner(
         assert audit["review_status"] == "rejected"
         assert pending.path.is_file()
         assert manifest["assets"] == []
+
+
+def test_cross_run_same_asset_approvals_have_one_catalog_winner(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    first = pending_asset(tmp_path, run_id="run-a", color="red")
+    second = pending_asset(tmp_path, run_id="run-b", color="blue")
+    first_catalog = catalog(tmp_path, run_id="run-a")
+    second_catalog = catalog(tmp_path, run_id="run-b")
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    barrier = Barrier(2)
+    original_exists = Path.exists
+
+    def synchronized_destination_check(path: Path) -> bool:
+        exists = original_exists(path)
+        if path == destination and not exists:
+            try:
+                barrier.wait(timeout=0.2)
+            except BrokenBarrierError:
+                pass
+        return exists
+
+    monkeypatch.setattr(Path, "exists", synchronized_destination_check)
+
+    def approve(item, asset_catalog) -> object:
+        try:
+            return lifecycle.approve_external_asset(item, asset_catalog)
+        except Exception as error:
+            return error
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [
+            executor.submit(approve, first, first_catalog),
+            executor.submit(approve, second, second_catalog),
+        ]
+        outcomes = [future.result() for future in futures]
+
+    assert sum(not isinstance(item, Exception) for item in outcomes) == 1
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert destination.is_file()
+    assert len(manifest["assets"]) == 1
+    assert manifest["assets"][0]["sha256"] == hashlib.sha256(
+        destination.read_bytes()
+    ).hexdigest()
+    audits = [
+        json.loads(item.metadata_path.read_text(encoding="utf-8"))
+        for item in (first, second)
+    ]
+    assert sorted(audit["review_status"] for audit in audits) == [
+        "approved",
+        "pending",
+    ]
+
+
+def test_reloaded_approved_stock_keeps_provenance_in_local_manifest(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.catalog import load_catalog
+    from src.asset_resolver.lifecycle import approve_external_asset
+    from src.asset_resolver.resolver import resolve_assets
+    from src.schemas.assets import AssetRequirement
+    from src.schemas.visual_plan import FramePlanItem, VisualPlan
+
+    pending = pending_asset(tmp_path)
+    approve_external_asset(pending, catalog(tmp_path))
+    reloaded = load_catalog(tmp_path / "manifest.json")
+    plan = VisualPlan(
+        design_system="beauty_editorial_v1",
+        content_job="diagnose_and_adjust",
+        primary_visual_family="face_zone_map",
+        supporting_families=["beauty_editorial", "saveable_reference"],
+        frame_plan=[
+            FramePlanItem(frame_id="cover", role="cover", layout="editorial_cover", purpose="cover"),
+            FramePlanItem(frame_id="texture", role="texture", layout="texture_baseline", purpose="texture"),
+            FramePlanItem(frame_id="face", role="face", layout="front_face_zone", purpose="face"),
+            FramePlanItem(frame_id="steps", role="steps", layout="step_timeline", purpose="steps"),
+            FramePlanItem(frame_id="save", role="save", layout="saveable_reference", purpose="save"),
+        ],
+        required_assets=[
+            AssetRequirement(
+                slot_id="serum-slot",
+                role="serum_texture",
+                layout="texture_baseline",
+                min_width=1080,
+                min_height=1440,
+                context_tags=["serum"],
+                orientation="portrait",
+            )
+        ],
+    )
+
+    manifest = resolve_assets(plan, reloaded)
+    item = manifest.items[0]
+
+    assert item.status == "active"
+    assert item.source_type == "stock_photo"
+    assert item.provider == pending.provider
+    assert item.provider_asset_id == pending.provider_asset_id
+    assert item.source_url == pending.source_url
+    assert item.source_file_url == pending.source_file_url
+    assert item.author == pending.author
+    assert item.provider_attribution == dict(pending.provider_attribution)
+    assert item.license_snapshot == pending.license_snapshot
+    assert item.license_snapshot_sha256 == pending.license_snapshot_sha256
+    assert item.license_terms_url == pending.license_terms_url
+    assert item.run_id == pending.run_id
+    assert item.acquired_at == pending.acquired_at
+    assert item.average_hash == pending.average_hash
+    assert item.safety_review_decisions == {}
+    assert item.review_status == "approved"
+    assert item.review_disposition == "approved_for_publishing"
+    assert item.requirement_fingerprint == pending.requirement_fingerprint
+
+
+@pytest.mark.parametrize(
+    "field_name,unsafe_value",
+    [
+        ("has_logo", True),
+        ("allowed_for_publishing", False),
+    ],
+)
+def test_catalog_reload_rejects_unsafe_approved_safety_decisions(
+    tmp_path: Path, field_name: str, unsafe_value: bool
+) -> None:
+    from src.asset_resolver.catalog import CatalogError, load_catalog
+    from src.asset_resolver.lifecycle import approve_external_asset
+
+    pending = pending_asset(
+        tmp_path,
+        unresolved_safety_checks=(field_name,),
+    )
+    safe_value = field_name == "allowed_for_publishing"
+    approve_external_asset(
+        pending,
+        catalog(tmp_path),
+        safety_decisions={field_name: safe_value},
+    )
+    manifest_path = tmp_path / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["assets"][0]["provenance"]["safety_review_decisions"][
+        field_name
+    ] = unsafe_value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(CatalogError, match="safety review"):
+        load_catalog(manifest_path)

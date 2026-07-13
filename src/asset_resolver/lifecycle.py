@@ -344,7 +344,6 @@ def list_pending_assets(
     candidates = [
         load_pending_asset(path, catalog)
         for path in catalog.incoming_root.glob("*.json")
-        if not path.name.startswith("attempts-")
     ]
     return sorted(
         (
@@ -378,6 +377,72 @@ def _candidate_lifecycle_lock(metadata_path: Path, catalog: AssetCatalog):
             yield
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _catalog_asset_lock(catalog: AssetCatalog, asset_id: str):
+    lock_root = (catalog.root.resolve() / ".asset-locks").resolve()
+    if not lock_root.is_relative_to(catalog.root.resolve()):
+        raise AssetLifecycleError("catalog asset lock escapes catalog root")
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_name = hashlib.sha256(asset_id.encode("utf-8")).hexdigest()
+    with (lock_root / f"{lock_name}.lock").open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _complete_approval(
+    candidate: PendingAsset,
+    catalog: AssetCatalog,
+    destination: Path,
+    actual: str,
+    decisions: dict[str, bool],
+) -> AssetEntry:
+    if destination.exists():
+        raise AssetLifecycleError("approved destination already exists")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    original_audit = json.loads(
+        candidate.metadata_path.read_text(encoding="utf-8")
+    )
+    reviewed_at = datetime.now(UTC).isoformat()
+    approved_audit = candidate.audit_record()
+    approved_audit.update(
+        {
+            "review_status": "approved",
+            "approved_path": str(destination),
+            "approved_sha256": actual,
+            "safety_review_decisions": decisions,
+            "safety_reviewed_at": reviewed_at,
+            "review_disposition": "approved_for_publishing",
+        }
+    )
+    try:
+        validated_audit = PendingAuditRecord.model_validate(
+            approved_audit, strict=True
+        ).model_dump(mode="json")
+    except (ValidationError, TypeError, ValueError) as error:
+        raise AssetLifecycleError("pending asset audit schema is invalid") from error
+    moved = False
+    try:
+        _atomic_write_json(candidate.metadata_path, validated_audit)
+        candidate.path.replace(destination)
+        moved = True
+        entry = catalog.append_approved(
+            candidate,
+            destination,
+            safety_review_decisions=decisions,
+            safety_reviewed_at=reviewed_at,
+            review_disposition="approved_for_publishing",
+        )
+    except Exception:
+        if moved and destination.exists():
+            destination.replace(candidate.path)
+        _atomic_write_json(candidate.metadata_path, original_audit)
+        raise
+    return entry
 
 
 def _validate_run_scope(candidate: PendingAsset, catalog: AssetCatalog) -> None:
@@ -430,48 +495,11 @@ def approve_external_asset(
         active_root = catalog.active_root.resolve()
         if not destination.is_relative_to(active_root):
             raise AssetLifecycleError("production path escapes active catalog")
-        if destination.exists():
-            raise AssetLifecycleError("approved destination already exists")
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        original_audit = json.loads(
-            candidate.metadata_path.read_text(encoding="utf-8")
-        )
-        reviewed_at = datetime.now(UTC).isoformat()
-        approved_audit = candidate.audit_record()
-        approved_audit.update(
-            {
-                "review_status": "approved",
-                "approved_path": str(destination),
-                "approved_sha256": actual,
-                "safety_review_decisions": decisions,
-                "safety_reviewed_at": reviewed_at,
-                "review_disposition": "approved_for_publishing",
-            }
-        )
-        try:
-            validated_audit = PendingAuditRecord.model_validate(
-                approved_audit, strict=True
-            ).model_dump(mode="json")
-        except (ValidationError, TypeError, ValueError) as error:
-            raise AssetLifecycleError("pending asset audit schema is invalid") from error
-        moved = False
-        try:
-            _atomic_write_json(candidate.metadata_path, validated_audit)
-            candidate.path.replace(destination)
-            moved = True
-            entry = catalog.append_approved(
-                candidate,
-                destination,
-                safety_review_decisions=decisions,
-                safety_reviewed_at=reviewed_at,
-                review_disposition="approved_for_publishing",
+        asset_id = f"{candidate.provider}-{candidate.provider_asset_id}"
+        with _catalog_asset_lock(catalog, asset_id):
+            return _complete_approval(
+                candidate, catalog, destination, actual, decisions
             )
-        except Exception:
-            if moved and destination.exists():
-                destination.replace(candidate.path)
-            _atomic_write_json(candidate.metadata_path, original_audit)
-            raise
-        return entry
 
 
 def reject_external_asset(

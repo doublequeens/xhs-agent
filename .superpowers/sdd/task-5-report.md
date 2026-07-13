@@ -56,14 +56,14 @@ Final focused GREEN:
 
 ```text
 python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-109 passed, 2 skipped
+115 passed, 2 skipped
 ```
 
 Final full-suite GREEN after all review corrections:
 
 ```text
 python -m pytest -q
-907 passed, 2 skipped, 3 warnings
+913 passed, 2 skipped, 3 warnings
 ```
 
 The warnings are existing LangGraph/legacy-checkpoint warnings. Pytest also intermittently
@@ -127,6 +127,29 @@ Third-review RED evidence included stale requirement resume, persisted-budget by
 catalog symlink escape, permissive audit types, dropped reloaded provenance, malicious
 injected URLs, and both same-candidate races. Final GREEN counts above include all of these
 regressions.
+
+A final review added five bounded corrections:
+
+- A catalog-scoped provider-asset lock now serializes cross-run approvals that share the
+  same production asset identity. It is held across the destination check, move, manifest
+  append, and rollback, so the losing run cannot overwrite or move the winner's bytes.
+- Attempt reservation atomically enforces provider/asset-ID and source-URL uniqueness and
+  distinguishes duplicate candidates from an exhausted budget. Concurrent resolves skip
+  duplicate reservations and consume the three-attempt budget with three unique candidates.
+- Approved external provenance is projected back into `AssetManifestItem` when a freshly
+  loaded stock entry is selected locally, including acquisition, licensing, provider,
+  perceptual hash, requirement, and safety-review evidence.
+- Production-catalog validation retains the original unresolved-safety context and requires
+  an exact, complete decision set: risk flags must be false and publishing permission must
+  be true before `approved_for_publishing` is accepted.
+- Attempt ledgers now live under the dedicated `.attempt-ledgers/` directory. Candidate
+  listing reads only run-root JSON audits, so legal slot IDs beginning with `attempts-`
+  resume and advance normally.
+
+The final RED run produced six failures across the cross-run approval race, concurrent
+reservation race, local provenance projection, two unsafe decision variants, and the
+`attempts-` slot collision. The targeted GREEN run passed all six before the focused and
+full-suite runs above.
 
 Remaining risks:
 

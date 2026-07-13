@@ -134,6 +134,7 @@ class AssetCatalog:
                 license_terms_url=pending.license_terms_url,
                 average_hash=pending.average_hash,
                 requirement_fingerprint=pending.requirement_fingerprint,
+                unresolved_safety_checks=pending.unresolved_safety_checks,
                 safety_review_decisions=dict(safety_review_decisions),
                 safety_reviewed_at=safety_reviewed_at,
                 review_disposition=review_disposition,
@@ -181,6 +182,9 @@ class AssetCatalog:
                         "license_terms_url": pending.license_terms_url,
                         "average_hash": pending.average_hash,
                         "requirement_fingerprint": pending.requirement_fingerprint,
+                        "unresolved_safety_checks": list(
+                            pending.unresolved_safety_checks
+                        ),
                         "safety_review_decisions": dict(safety_review_decisions),
                         "safety_reviewed_at": safety_reviewed_at,
                         "review_disposition": review_disposition,

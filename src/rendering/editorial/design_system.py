@@ -51,12 +51,22 @@ _EXTERNAL_PROVENANCE_FIELDS = frozenset(
         "license_terms_url",
         "average_hash",
         "requirement_fingerprint",
+        "unresolved_safety_checks",
         "safety_review_decisions",
         "safety_reviewed_at",
         "review_disposition",
     }
 )
 _AVERAGE_HASH_PATTERN = re.compile(r"^[0-9a-f]{16}$")
+_SAFETY_KEYS = frozenset(
+    {
+        "has_watermark",
+        "has_logo",
+        "has_text",
+        "recognizable_face",
+        "allowed_for_publishing",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -111,6 +121,7 @@ class ExternalAssetProvenance:
     license_terms_url: str
     average_hash: str
     requirement_fingerprint: str
+    unresolved_safety_checks: tuple[str, ...]
     safety_review_decisions: Mapping[str, bool]
     safety_reviewed_at: str
     review_disposition: str
@@ -140,6 +151,7 @@ def _load_external_provenance(
         not in {
             "provider_attribution",
             "safety_review_decisions",
+            "unresolved_safety_checks",
             "acquired_at",
             "safety_reviewed_at",
         }
@@ -167,6 +179,23 @@ def _load_external_provenance(
         or not key
         or type(value) is not bool
         for key, value in decisions.items()
+    ):
+        raise ValueError(f"{asset_id}: external provenance safety review is invalid")
+    unresolved = raw["unresolved_safety_checks"]
+    if (
+        not isinstance(unresolved, list)
+        or any(not isinstance(item, str) or not item for item in unresolved)
+        or len(unresolved) != len(set(unresolved))
+        or not set(unresolved).issubset(_SAFETY_KEYS)
+        or set(decisions) != set(unresolved)
+        or any(
+            decisions[name] is not False
+            for name in set(unresolved) - {"allowed_for_publishing"}
+        )
+        or (
+            "allowed_for_publishing" in unresolved
+            and decisions["allowed_for_publishing"] is not True
+        )
     ):
         raise ValueError(f"{asset_id}: external provenance safety review is invalid")
     if raw["review_disposition"] != "approved_for_publishing":
@@ -214,6 +243,7 @@ def _load_external_provenance(
         license_terms_url=raw["license_terms_url"],
         average_hash=raw["average_hash"],
         requirement_fingerprint=raw["requirement_fingerprint"],
+        unresolved_safety_checks=tuple(unresolved),
         safety_review_decisions=MappingProxyType(dict(decisions)),
         safety_reviewed_at=_require_timezone_timestamp(
             raw["safety_reviewed_at"], "safety_reviewed_at", asset_id

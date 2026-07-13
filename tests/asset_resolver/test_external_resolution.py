@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from threading import Barrier
@@ -102,6 +103,17 @@ class BarrierProvider(FakeProvider):
     def __init__(self, name: str, results: list[object], barrier: Barrier) -> None:
         super().__init__(name, results)
         self.barrier = barrier
+
+    def search(self, requirement: AssetRequirement) -> list[object]:
+        self.search_calls.append(requirement)
+        self.barrier.wait(timeout=1)
+        return self.results
+
+
+class ConcurrentResolveProvider(FakeProvider):
+    def __init__(self, name: str, results: list[object]) -> None:
+        super().__init__(name, results)
+        self.barrier = Barrier(2)
 
     def search(self, requirement: AssetRequirement) -> list[object]:
         self.search_calls.append(requirement)
@@ -469,9 +481,95 @@ def test_download_attempt_budget_persists_across_rejections_and_reruns(
 
     assert attempts_after_first_run == 3
     assert len(provider.download_calls) == 3
-    ledger = list((tmp_path / "incoming" / "external" / "run-42").glob("attempts-*.json"))
+    ledger = list(
+        (
+            tmp_path
+            / "incoming"
+            / "external"
+            / "run-42"
+            / ".attempt-ledgers"
+        ).glob("*.json")
+    )
     assert len(ledger) == 1
     assert len(json.loads(ledger[0].read_text())["attempts"]) == 3
+
+
+def test_concurrent_resolves_reserve_unique_candidates_with_one_attempt_budget(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import resolve_assets
+
+    provider = ConcurrentResolveProvider(
+        "pexels",
+        [candidate("pexels", f"p{index}") for index in range(1, 7)],
+    )
+    asset_catalog = empty_catalog(tmp_path, [provider])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        manifests = list(
+            executor.map(
+                lambda _: resolve_assets(texture_plan(), asset_catalog),
+                range(2),
+            )
+        )
+
+    run_root = tmp_path / "incoming" / "external" / "run-42"
+    ledger_paths = [
+        path
+        for path in run_root.rglob("*.json")
+        if path.name.startswith("attempts-")
+    ]
+    assert len(ledger_paths) == 1
+    attempts = json.loads(ledger_paths[0].read_text())["attempts"]
+    identities = [
+        (item["provider"], item["provider_asset_id"], item["source_url"])
+        for item in attempts
+    ]
+    assert len(identities) == len(set(identities)) == 3
+    candidate_audits = [
+        path
+        for path in run_root.glob("*.json")
+        if not path.name.startswith("attempts-")
+    ]
+    assert len(candidate_audits) == 3
+    assert all(item.items[0].pending_id for item in manifests)
+
+
+def test_attempts_prefixed_slot_id_resumes_and_advances_normally(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import list_pending_assets, reject_external_asset
+    from src.asset_resolver.resolver import requirement_fingerprint, resolve_assets
+
+    plan = texture_plan()
+    plan.required_assets[0].slot_id = "attempts-featured"
+    provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", "p1"), candidate("pexels", "p2")],
+    )
+    asset_catalog = empty_catalog(tmp_path, [provider])
+    first = resolve_assets(plan, asset_catalog)
+    resumed = resolve_assets(plan, asset_catalog)
+    pending = list_pending_assets(
+        asset_catalog,
+        slot_id="attempts-featured",
+        requirement_fingerprint=requirement_fingerprint(plan.required_assets[0]),
+    )
+    next_candidate = reject_external_asset(
+        pending[0], reason="not suitable", catalog=asset_catalog
+    )
+
+    assert resumed.items[0].pending_id == first.items[0].pending_id
+    assert next_candidate is not None
+    assert next_candidate.candidate_rank == 2
+    ledger_dir = (
+        tmp_path
+        / "incoming"
+        / "external"
+        / "run-42"
+        / ".attempt-ledgers"
+    )
+    assert len(list(ledger_dir.glob("*.json"))) == 1
 
 
 def test_resolver_rejects_non_allowlisted_candidate_urls_before_download(
