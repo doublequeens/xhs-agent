@@ -66,9 +66,18 @@ class AssetManifestItem(StrictModel):
     author: str | None = None
     license: str = Field(min_length=1)
     license_snapshot: str | None = None
+    license_snapshot_sha256: str | None = Field(
+        default=None, pattern=r"^[0-9a-f]{64}$"
+    )
+    license_terms_url: str | None = None
     width: int = Field(ge=1)
     height: int = Field(ge=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pending_id: str | None = None
+    metadata_path: str | None = None
+    run_id: str | None = None
+    candidate_rank: int | None = Field(default=None, ge=1)
+    unresolved_safety_checks: list[str] = Field(default_factory=list)
 
 
 class AssetManifest(StrictModel):

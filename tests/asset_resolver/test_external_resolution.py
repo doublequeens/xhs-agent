@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from io import BytesIO
 from pathlib import Path
 from threading import Barrier
@@ -123,17 +124,30 @@ def candidate(
 ):
     from src.asset_resolver.providers import ExternalAssetCandidate
 
+    if provider == "pexels":
+        source_url = f"https://www.pexels.com/photo/{asset_id}/"
+        source_file_url = f"https://images.pexels.com/photos/{asset_id}.png"
+        license_terms_url = "https://www.pexels.com/license/"
+    else:
+        source_url = f"https://unsplash.com/photos/{asset_id}"
+        source_file_url = f"https://images.unsplash.com/{asset_id}"
+        license_terms_url = "https://unsplash.com/license"
     return ExternalAssetCandidate(
         provider=provider,
         provider_asset_id=asset_id,
         author=f"author-{asset_id}",
-        source_url=f"https://example.test/{provider}/{asset_id}",
-        source_file_url=f"https://cdn.example.test/{provider}/{asset_id}.png",
+        source_url=source_url,
+        source_file_url=source_file_url,
         width=1080,
         height=1440,
         role="serum_texture",
         license=f"{provider} license",
-        license_snapshot=f"https://example.test/{provider}/license",
+        license_snapshot=(
+            f"{provider} terms summary v1\n"
+            f"Official terms: {license_terms_url}\n"
+            "Mandatory human review before production use."
+        ),
+        license_terms_url=license_terms_url,
         score_tags=score_tags,
         palette_tags=(color,),
         dominant_color=color,
@@ -168,14 +182,29 @@ def texture_plan() -> VisualPlan:
     )
 
 
-def empty_catalog(tmp_path: Path, providers: list[object]) -> AssetCatalog:
+def empty_catalog(
+    tmp_path: Path, providers: list[object], *, run_id: str = "run-42"
+) -> AssetCatalog:
     return AssetCatalog(
         catalog_id="test-catalog",
         root=tmp_path,
         entries=(),
         providers=tuple(providers),
-        run_id="run-42",
+        run_id=run_id,
     )
+
+
+@pytest.mark.parametrize("run_id", ["../escape", "/tmp/escape", ".", "a/b"])
+def test_catalog_rejects_unsafe_run_id(tmp_path: Path, run_id: str) -> None:
+    from src.asset_resolver.catalog import CatalogError
+
+    with pytest.raises(CatalogError, match="run_id"):
+        AssetCatalog(
+            catalog_id="test-catalog",
+            root=tmp_path,
+            entries=(),
+            run_id=run_id,
+        )
 
 
 def test_gap_queries_both_enabled_providers_and_merges_results(tmp_path: Path) -> None:
@@ -196,6 +225,55 @@ def test_gap_queries_both_enabled_providers_and_merges_results(tmp_path: Path) -
     assert Path(manifest.items[0].path).is_relative_to(
         tmp_path / "incoming" / "external" / "run-42"
     )
+    assert manifest.items[0].pending_id
+    assert manifest.items[0].metadata_path.endswith(".json")
+    assert manifest.items[0].run_id == "run-42"
+    assert manifest.items[0].candidate_rank == 1
+    assert manifest.items[0].unresolved_safety_checks
+    snapshot_path = tmp_path / str(manifest.items[0].license_snapshot)
+    assert snapshot_path.is_file()
+    assert hashlib.sha256(snapshot_path.read_bytes()).hexdigest() == (
+        manifest.items[0].license_snapshot_sha256
+    )
+    assert manifest.items[0].license_terms_url.startswith("https://")
+
+
+def test_rerun_resumes_existing_pending_without_provider_calls(tmp_path: Path) -> None:
+    from src.asset_resolver.resolver import resolve_assets
+
+    provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", "p1"), candidate("pexels", "p2")],
+    )
+    asset_catalog = empty_catalog(tmp_path, [provider])
+    first = resolve_assets(texture_plan(), asset_catalog)
+    calls_after_first = len(provider.search_calls)
+
+    resumed = resolve_assets(texture_plan(), asset_catalog)
+
+    assert len(provider.search_calls) == calls_after_first
+    assert resumed.items[0].pending_id == first.items[0].pending_id
+
+
+def test_reject_returns_next_downloaded_candidate_in_rank_order(tmp_path: Path) -> None:
+    from src.asset_resolver.lifecycle import list_pending_assets, reject_external_asset
+    from src.asset_resolver.resolver import resolve_assets
+
+    provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", "p1"), candidate("pexels", "p2"), candidate("pexels", "p3")],
+    )
+    asset_catalog = empty_catalog(tmp_path, [provider])
+    resolve_assets(texture_plan(), asset_catalog)
+    pending = list_pending_assets(asset_catalog, slot_id="serum-slot")
+
+    assert [item.candidate_rank for item in pending] == [1, 2, 3]
+    next_candidate = reject_external_asset(
+        pending[0], reason="visible logo", catalog=asset_catalog
+    )
+
+    assert next_candidate is not None
+    assert next_candidate.candidate_rank == 2
 
 
 def test_one_provider_timeout_keeps_other_provider_result(tmp_path: Path) -> None:
@@ -211,6 +289,64 @@ def test_one_provider_timeout_keeps_other_provider_result(tmp_path: Path) -> Non
     assert manifest.search_report.provider_reports[0].elapsed_ms is not None
     assert manifest.search_report.provider_reports[0].elapsed_ms >= 0
     assert manifest.items[0].provider == "unsplash"
+
+
+def test_terminal_resolution_error_preserves_complete_search_report(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    providers = [
+        FailingProvider("pexels", TimeoutError("pexels timeout")),
+        FailingProvider("unsplash", TimeoutError("unsplash timeout")),
+    ]
+
+    with pytest.raises(AssetResolutionError) as caught:
+        resolve_assets(texture_plan(), empty_catalog(tmp_path, providers))
+
+    report = caught.value.search_report
+    assert report.search_triggered is True
+    assert report.queries == ["serum texture drop ivory"]
+    assert [item.error for item in report.provider_reports] == [
+        "pexels timeout",
+        "unsplash timeout",
+    ]
+    assert all(item.elapsed_ms is not None for item in report.provider_reports)
+
+
+def test_provider_identity_mismatch_is_rejected_and_audited(tmp_path: Path) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    forged = candidate("unsplash", "u1")
+    provider = FakeProvider("pexels", [forged])
+
+    with pytest.raises(AssetResolutionError) as caught:
+        resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
+
+    report = caught.value.search_report.provider_reports[0]
+    assert report.status == "failed"
+    assert "provider identity mismatch" in str(report.error)
+
+
+def test_download_rejects_image_over_pixel_ceiling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    monkeypatch.setattr("src.asset_resolver.resolver.MAX_IMAGE_PIXELS", 100)
+    provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", "p1")],
+        downloads={"p1": image_bytes(0, size=(20, 20))},
+    )
+    plan = texture_plan()
+    plan.required_assets[0].min_width = 1
+    plan.required_assets[0].min_height = 1
+
+    with pytest.raises(AssetResolutionError) as caught:
+        resolve_assets(plan, empty_catalog(tmp_path, [provider]))
+
+    assert "pixel limit" in caught.value.search_report.provider_reports[0].download_errors[0]
 
 
 def test_enabled_provider_searches_overlap_but_reports_keep_catalog_order(
@@ -358,3 +494,29 @@ def test_small_average_hash_distance_is_treated_as_perceptual_duplicate(
 
     audits = list((tmp_path / "incoming" / "external" / "run-42").glob("*.json"))
     assert len(audits) == 1
+
+
+def test_cross_run_id_url_dedupe_occurs_before_three_attempt_cap(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import resolve_assets
+
+    old_provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", f"p{index}") for index in range(3)],
+    )
+    resolve_assets(
+        texture_plan(), empty_catalog(tmp_path, [old_provider], run_id="run-old")
+    )
+    new_provider = FakeProvider(
+        "pexels",
+        [candidate("pexels", f"p{index}") for index in range(4)],
+    )
+
+    manifest = resolve_assets(
+        texture_plan(), empty_catalog(tmp_path, [new_provider], run_id="run-new")
+    )
+
+    assert [item.provider_asset_id for item in new_provider.download_calls] == ["p3"]
+    assert manifest.items[0].provider_asset_id == "p3"
+    assert manifest.items[0].candidate_rank == 4

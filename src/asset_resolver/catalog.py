@@ -4,6 +4,9 @@ import json
 import os
 import tempfile
 import xml.etree.ElementTree as ET
+import re
+import hashlib
+import fcntl
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -58,13 +61,25 @@ class AssetCatalog:
     run_id: str = "adhoc"
     manifest_path: Path | None = None
 
+    def __post_init__(self) -> None:
+        if (
+            self.run_id in {".", ".."}
+            or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", self.run_id)
+            is None
+        ):
+            raise CatalogError("run_id must be exactly one safe path component")
+        incoming_base = (self.root / "incoming" / "external").resolve()
+        incoming_root = (incoming_base / self.run_id).resolve()
+        if not incoming_root.is_relative_to(incoming_base):
+            raise CatalogError("run_id escapes incoming/external")
+
     @property
     def active_root(self) -> Path:
         return self.root / "active"
 
     @property
     def incoming_root(self) -> Path:
-        return self.root / "incoming" / "external" / self.run_id
+        return (self.root / "incoming" / "external" / self.run_id).resolve()
 
     def append_approved(self, pending, destination: Path) -> AssetEntry:
         """Atomically append a promoted pending asset to the production manifest."""
@@ -88,52 +103,63 @@ class AssetCatalog:
         if self.manifest_path is None:
             raise CatalogError("approval requires a persistent catalog manifest")
         manifest_path = self.manifest_path
-        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-        assets = raw.setdefault("assets", [])
-        if any(item.get("asset_id") == asset_id for item in assets):
-            raise CatalogError(f"duplicate approved asset_id: {asset_id}")
-        assets.append(
-            {
-                "asset_id": asset_id,
-                "role": pending.role,
-                "path": destination.relative_to(self.root).as_posix(),
-                "ownership": "licensed_stock",
-                "license": pending.license,
-                "dimensions": {"width": pending.width, "height": pending.height},
-                "sha256": pending.sha256,
-                "allowed_layouts": [pending.layout],
-                "tags": list(pending.tags),
-                "disabled_contexts": [],
-                "fallback_roles": list(pending.fallback_roles),
-                "usage": "production",
-                "provider": pending.provider,
-                "provider_asset_id": pending.provider_asset_id,
-                "source_url": pending.source_url,
-                "source_file_url": pending.source_file_url,
-                "author": pending.author,
-                "license_snapshot": pending.license_snapshot,
-                "review_status": "approved",
-            }
-        )
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        file_descriptor, temporary_name = tempfile.mkstemp(
-            dir=manifest_path.parent,
-            prefix=f".{manifest_path.name}.",
-            suffix=".tmp",
-        )
-        try:
-            with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-                json.dump(raw, handle, ensure_ascii=False, indent=2)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            load_design_system_catalog(Path(temporary_name))
-            os.replace(temporary_name, manifest_path)
-        finally:
+        lock_path = manifest_path.with_suffix(f"{manifest_path.suffix}.lock")
+        with lock_path.open("a+b") as lock_handle:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+            original_bytes = manifest_path.read_bytes()
+            original_version = hashlib.sha256(original_bytes).hexdigest()
+            raw = json.loads(original_bytes.decode("utf-8"))
+            assets = raw.setdefault("assets", [])
+            if any(item.get("asset_id") == asset_id for item in assets):
+                raise CatalogError(f"duplicate approved asset_id: {asset_id}")
+            assets.append(
+                {
+                    "asset_id": asset_id,
+                    "role": pending.role,
+                    "path": destination.relative_to(self.root).as_posix(),
+                    "ownership": "licensed_stock",
+                    "license": pending.license,
+                    "dimensions": {"width": pending.width, "height": pending.height},
+                    "sha256": pending.sha256,
+                    "allowed_layouts": [pending.layout],
+                    "tags": list(pending.tags),
+                    "disabled_contexts": [],
+                    "fallback_roles": list(pending.fallback_roles),
+                    "usage": "production",
+                    "provider": pending.provider,
+                    "provider_asset_id": pending.provider_asset_id,
+                    "source_url": pending.source_url,
+                    "source_file_url": pending.source_file_url,
+                    "author": pending.author,
+                    "license_snapshot": pending.license_snapshot,
+                    "license_snapshot_sha256": pending.license_snapshot_sha256,
+                    "license_terms_url": pending.license_terms_url,
+                    "review_status": "approved",
+                }
+            )
+            file_descriptor, temporary_name = tempfile.mkstemp(
+                dir=manifest_path.parent,
+                prefix=f".{manifest_path.name}.",
+                suffix=".tmp",
+            )
             try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
-                pass
+                with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
+                    json.dump(raw, handle, ensure_ascii=False, indent=2)
+                    handle.write("\n")
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                load_design_system_catalog(Path(temporary_name))
+                current_version = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+                if current_version != original_version:
+                    raise CatalogError("catalog manifest changed during approval")
+                os.replace(temporary_name, manifest_path)
+            finally:
+                try:
+                    os.unlink(temporary_name)
+                except FileNotFoundError:
+                    pass
+                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
         return entry
 
 

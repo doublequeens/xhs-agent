@@ -54,14 +54,14 @@ Final focused GREEN:
 
 ```text
 python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-64 passed, 2 skipped
+95 passed, 2 skipped
 ```
 
 Final full-suite GREEN after all review corrections:
 
 ```text
 python -m pytest -q
-862 passed, 2 skipped, 3 warnings
+893 passed, 2 skipped, 3 warnings
 ```
 
 The warnings are existing LangGraph/legacy-checkpoint warnings. Pytest also intermittently
@@ -69,10 +69,33 @@ reports a macOS temporary-directory cleanup warning after successful runs.
 
 ## Review and remaining risks
 
-The two-axis review found no repository-standard violations. Review findings fixed before
-commit include concurrent provider calls, grounded result tags instead of query-inflated
-ranking, response timing/download failures, run-scope enforcement, and audit-first approval
-rollback.
+The two-axis review found no repository-standard violations. The first review pass fixed
+concurrent provider calls, grounded result tags instead of query-inflated ranking, response
+timing/download failures, run-scope enforcement, and audit-first approval rollback.
+
+A second adversarial review produced additional RED/GREEN cycles and the following
+hardening corrections:
+
+- Run IDs are restricted to one safe path component and all incoming paths are checked
+  against their resolved run root.
+- Provider requests use exact official-host allowlists, reject redirects, validate response
+  URLs, bind candidates to the adapter instance that returned them, stream downloads under
+  byte limits, and reject oversized decoded images before loading pixels.
+- Pending audit files are the canonical source of truth. The public list/load/reject/approve
+  contract supports deterministic resume, rejects forged caller state, preserves unresolved
+  safety checks, and carries stable pending/run/rank identity into manifests.
+- Approval now locks and version-guards manifest replacement, while rollback covers staged
+  audit changes, file movement, and manifest failure. A forced concurrent-approval test first
+  reproduced a lost update and then passed with the lock in place.
+- Cross-run provider-ID/source-URL deduplication occurs before the top-three attempt cap, and
+  provider license records now contain a versioned local terms summary with a verified hash
+  plus the official terms URL instead of treating a URL as a snapshot.
+- Terminal resolution failures expose the complete structured search report to callers.
+
+Review-correction RED runs covered unsafe run paths, redirect/final-host attacks, oversized
+downloads and images, provider identity spoofing, lost manifest updates, forged pending
+objects, incomplete rollback, resume/reject advancement, pre-cap cross-run deduplication,
+and dishonest license snapshot semantics before each implementation was added.
 
 Remaining risks:
 

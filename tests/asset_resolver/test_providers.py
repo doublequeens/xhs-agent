@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -12,12 +12,23 @@ from src.schemas.assets import AssetRequirement
 class FakeResponse:
     payload: dict[str, Any]
     content: bytes = b""
+    url: str | None = None
+    headers: dict[str, str] = field(default_factory=dict)
+    status_code: int = 200
+    closed: bool = False
 
     def raise_for_status(self) -> None:
         return None
 
     def json(self) -> dict[str, Any]:
         return self.payload
+
+    def iter_content(self, chunk_size: int = 8192):
+        for offset in range(0, len(self.content), chunk_size):
+            yield self.content[offset : offset + chunk_size]
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class FakeSession:
@@ -46,9 +57,7 @@ def requirement() -> AssetRequirement:
 def test_pexels_search_uses_official_endpoint_and_preserves_real_urls() -> None:
     from src.asset_resolver.providers import PexelsProvider
 
-    session = FakeSession(
-        [
-            FakeResponse(
+    search_response = FakeResponse(
                 {
                     "photos": [
                         {
@@ -64,8 +73,7 @@ def test_pexels_search_uses_official_endpoint_and_preserves_real_urls() -> None:
                     ]
                 }
             )
-        ]
-    )
+    session = FakeSession([search_response])
 
     result = PexelsProvider("pexels-key", session=session, timeout=7).search(
         requirement()
@@ -81,6 +89,9 @@ def test_pexels_search_uses_official_endpoint_and_preserves_real_urls() -> None:
     assert result[0].author == "Ada"
     assert "texture" not in result[0].score_tags
     assert result[0].palette_tags == ("ivory",)
+    assert not result[0].license_snapshot.startswith("http")
+    assert result[0].license_terms_url == "https://www.pexels.com/license/"
+    assert search_response.closed is True
 
 
 def test_unsplash_search_and_download_tracking_use_official_urls() -> None:
@@ -194,6 +205,8 @@ def test_package_exports_external_provider_and_lifecycle_contracts() -> None:
         ExternalAssetCandidate,
         PendingAsset,
         approve_external_asset,
+        list_pending_assets,
+        load_pending_asset,
         reject_external_asset,
     )
 
@@ -201,4 +214,107 @@ def test_package_exports_external_provider_and_lifecycle_contracts() -> None:
     assert ExternalAssetCandidate is not None
     assert PendingAsset is not None
     assert callable(approve_external_asset)
+    assert callable(list_pending_assets)
+    assert callable(load_pending_asset)
     assert callable(reject_external_asset)
+
+
+def test_pexels_rejects_non_official_page_and_file_hosts() -> None:
+    from src.asset_resolver.providers import PexelsProvider
+
+    payload = {
+        "photos": [
+            {
+                "id": 41,
+                "width": 1600,
+                "height": 2400,
+                "url": "https://evil.test/photo/41/",
+                "photographer": "Ada",
+                "alt": "serum drop",
+                "src": {"original": "https://evil.test/41.jpeg"},
+            }
+        ]
+    }
+    session = FakeSession([FakeResponse(payload)])
+
+    assert PexelsProvider("key", session=session).search(requirement()) == []
+    assert session.calls[0][2]["allow_redirects"] is False
+
+
+def test_unsplash_rejects_non_official_download_location_host() -> None:
+    from src.asset_resolver.providers import UnsplashProvider
+
+    payload = {
+        "results": [
+            {
+                "id": "abc",
+                "width": 1600,
+                "height": 2400,
+                "user": {"name": "Lin"},
+                "links": {
+                    "html": "https://unsplash.com/photos/abc",
+                    "download_location": "https://evil.test/track",
+                },
+                "urls": {"full": "https://images.unsplash.com/photo-abc"},
+            }
+        ]
+    }
+
+    assert UnsplashProvider("key", session=FakeSession([FakeResponse(payload)])).search(
+        requirement()
+    ) == []
+
+
+def test_search_rejects_redirect_and_untrusted_final_url() -> None:
+    from src.asset_resolver.providers import PexelsProvider, ProviderSecurityError
+
+    response = FakeResponse(
+        {"photos": []},
+        url="https://evil.test/redirected",
+        status_code=302,
+    )
+    session = FakeSession([response])
+
+    with pytest.raises(ProviderSecurityError, match="redirect|host"):
+        PexelsProvider("key", session=session).search(requirement())
+
+
+@pytest.mark.parametrize(
+    "headers,content",
+    [
+        ({"Content-Length": "9"}, b"123456789"),
+        ({}, b"123456789"),
+    ],
+    ids=["content-length", "stream-total"],
+)
+def test_download_rejects_payload_over_byte_limit(
+    headers: dict[str, str], content: bytes
+) -> None:
+    from src.asset_resolver.providers import PexelsProvider, ProviderDownloadError
+
+    search = FakeResponse(
+        {
+            "photos": [
+                {
+                    "id": 41,
+                    "width": 1600,
+                    "height": 2400,
+                    "url": "https://www.pexels.com/photo/41/",
+                    "photographer": "Ada",
+                    "alt": "serum drop",
+                    "src": {"original": "https://images.pexels.com/photos/41.jpeg"},
+                }
+            ]
+        }
+    )
+    download = FakeResponse(
+        {}, content=content, url="https://images.pexels.com/photos/41.jpeg", headers=headers
+    )
+    provider = PexelsProvider(
+        "key", session=FakeSession([search, download]), max_download_bytes=8
+    )
+    candidate = provider.search(requirement())[0]
+
+    with pytest.raises(ProviderDownloadError, match="byte limit"):
+        provider.download(candidate)
+    assert download.closed is True

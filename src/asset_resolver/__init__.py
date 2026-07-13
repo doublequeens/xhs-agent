@@ -5,6 +5,8 @@ from .lifecycle import (
     AssetLifecycleError,
     PendingAsset,
     approve_external_asset,
+    list_pending_assets,
+    load_pending_asset,
     reject_external_asset,
 )
 from .providers import (
@@ -27,7 +29,9 @@ __all__ = [
     "PexelsProvider",
     "UnsplashProvider",
     "approve_external_asset",
+    "list_pending_assets",
     "load_catalog",
+    "load_pending_asset",
     "reject_external_asset",
     "resolve_assets",
 ]
