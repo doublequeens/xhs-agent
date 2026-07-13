@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import FrozenInstanceError
 from pathlib import Path
 
@@ -114,3 +115,40 @@ def test_design_system_license_files_match_pinned_upstream_notices() -> None:
     )
     assert bodoni_license.startswith("Copyright 2020 The Bodoni Moda Project Authors")
     assert "SIL OPEN FONT LICENSE Version 1.1" in source_han_serif_license
+
+
+def test_catalog_loader_validates_webp_dimensions(tmp_path: Path) -> None:
+    from PIL import Image
+
+    from src.rendering.editorial.design_system import load_catalog
+
+    asset_path = tmp_path / "active" / "stock" / "serum.webp"
+    asset_path.parent.mkdir(parents=True)
+    Image.new("RGB", (1080, 1440), "ivory").save(
+        asset_path, format="WEBP", lossless=True
+    )
+    manifest = {
+        "catalog_id": "test-catalog",
+        "assets": [
+            {
+                "asset_id": "serum-p1",
+                "role": "serum_texture",
+                "path": "active/stock/serum.webp",
+                "ownership": "licensed_stock",
+                "license": "Pexels License",
+                "dimensions": {"width": 1080, "height": 1440},
+                "sha256": hashlib.sha256(asset_path.read_bytes()).hexdigest(),
+                "allowed_layouts": ["texture_baseline"],
+                "tags": ["serum"],
+                "disabled_contexts": [],
+                "fallback_roles": ["serum_texture"],
+                "usage": "production",
+            }
+        ],
+    }
+    manifest_path = tmp_path / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    loaded = load_catalog(manifest_path)
+
+    assert loaded.entries[0].dimensions == (1080, 1440)

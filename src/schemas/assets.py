@@ -40,6 +40,8 @@ class ProviderSearchReport(StrictModel):
     query: str | None = None
     result_ids: list[str] = Field(default_factory=list)
     error: str | None = None
+    elapsed_ms: float | None = Field(default=None, ge=0)
+    download_errors: list[str] = Field(default_factory=list)
 
 
 class AssetSearchReport(StrictModel):

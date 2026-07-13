@@ -9,6 +9,7 @@ chromadb
 sentence-transformers
 python-dotenv
 requests
+Pillow
 pydantic
 streamlit
 watchdog

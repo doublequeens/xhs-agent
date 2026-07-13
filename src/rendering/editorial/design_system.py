@@ -10,6 +10,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from PIL import Image
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 FONT_ROOT = REPOSITORY_ROOT / "assets/fonts/beauty-editorial-v1"
@@ -102,6 +104,12 @@ def _read_dimensions(path: Path) -> tuple[int, int]:
         if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
             raise ValueError(f"{path}: invalid PNG header")
         return struct.unpack(">II", header[16:24])
+    if suffix == ".webp":
+        try:
+            with Image.open(path) as image:
+                return image.size
+        except (OSError, ValueError) as error:
+            raise ValueError(f"{path}: invalid WebP image") from error
     raise ValueError(f"{path}: unsupported catalog file type")
 
 

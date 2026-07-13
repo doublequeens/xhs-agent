@@ -1,19 +1,31 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import os
 import re
+import tempfile
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 from typing import Literal
+
+from PIL import Image
 
 from src.schemas.assets import (
     AssetManifest,
     AssetManifestItem,
     AssetRequirement,
     AssetSearchReport,
+    ProviderSearchReport,
 )
 from src.schemas.visual_plan import VisualPlan
 
 from .catalog import AssetCatalog, AssetEntry
+from .lifecycle import PendingAsset, write_pending_audit
+from .providers import ExternalAssetCandidate, structured_query
 
 
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
@@ -177,21 +189,387 @@ def _manifest_item(
     )
 
 
-def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManifest:
-    """Resolve every visual-plan slot from approved local assets or explicit fallbacks.
+def _external_eligible(
+    candidate: ExternalAssetCandidate, requirement: AssetRequirement
+) -> bool:
+    return (
+        candidate.role == requirement.role
+        and candidate.width >= requirement.min_width
+        and candidate.height >= requirement.min_height
+        and (
+            requirement.orientation == "any"
+            or candidate.orientation == requirement.orientation
+        )
+        and bool(candidate.provider)
+        and bool(candidate.provider_asset_id)
+        and bool(candidate.author)
+        and candidate.source_url.startswith("https://")
+        and candidate.source_file_url.startswith("https://")
+        and bool(candidate.license)
+        and bool(candidate.license_snapshot)
+        and not candidate.has_watermark
+        and not candidate.has_logo
+        and not candidate.has_text
+        and not candidate.recognizable_face
+        and candidate.allowed_for_publishing
+    )
 
-    External provider search and pending-asset lifecycle are intentionally deferred to
-    Task 5. Providers attached to the catalog are never called by this implementation.
-    """
+
+def _external_rank_key(
+    candidate: ExternalAssetCandidate, requirement: AssetRequirement
+) -> tuple[int, int, int, int, str, str]:
+    score_tags = set(candidate.score_tags)
+    palette_tags = set(candidate.palette_tags)
+    return (
+        -len(score_tags.intersection(requirement.context_tags)),
+        -int(
+            requirement.orientation != "any"
+            and candidate.orientation == requirement.orientation
+        ),
+        -len(palette_tags.intersection(requirement.palette_tags)),
+        -(candidate.width * candidate.height),
+        candidate.provider_asset_id,
+        candidate.source_url,
+    )
+
+
+def _deduplicate_candidates(
+    candidates: list[ExternalAssetCandidate],
+) -> list[ExternalAssetCandidate]:
+    result: list[ExternalAssetCandidate] = []
+    seen_provider_ids: set[tuple[str, str]] = set()
+    seen_source_urls: set[str] = set()
+    for candidate in candidates:
+        provider_id = (candidate.provider, candidate.provider_asset_id)
+        if provider_id in seen_provider_ids or candidate.source_url in seen_source_urls:
+            continue
+        seen_provider_ids.add(provider_id)
+        seen_source_urls.add(candidate.source_url)
+        result.append(candidate)
+    return result
+
+
+def _normalize_image(raw: bytes) -> tuple[bytes, str, int, int, str]:
+    try:
+        with Image.open(BytesIO(raw)) as source:
+            source.load()
+            width, height = source.size
+            has_alpha = "A" in source.getbands() or "transparency" in source.info
+            normalized = source.convert("RGBA" if has_alpha else "RGB")
+    except (OSError, ValueError) as error:
+        raise AssetResolutionError("provider returned an invalid image") from error
+    output = BytesIO()
+    if has_alpha:
+        normalized.save(output, format="PNG", optimize=True)
+        extension = ".png"
+    else:
+        normalized.save(output, format="WEBP", lossless=True, method=6)
+        extension = ".webp"
+    return output.getvalue(), extension, width, height, _average_hash(normalized)
+
+
+def _average_hash(image: Image.Image) -> str:
+    grayscale = image.convert("L").resize((8, 8), Image.Resampling.LANCZOS)
+    pixels = list(grayscale.tobytes())
+    average = sum(pixels) / len(pixels)
+    bits = "".join("1" if pixel >= average else "0" for pixel in pixels)
+    return f"{int(bits, 2):016x}"
+
+
+def _hash_distance(left: str, right: str) -> int:
+    return (int(left, 16) ^ int(right, 16)).bit_count()
+
+
+def _has_near_duplicate(average_hash: str, known_hashes: set[str]) -> bool:
+    return any(_hash_distance(average_hash, known) <= 5 for known in known_hashes)
+
+
+def _pixel_orientation(width: int, height: int) -> str:
+    if width == height:
+        return "square"
+    if width > height:
+        return "landscape"
+    return "portrait"
+
+
+def _existing_audit_keys(root: Path) -> tuple[set[tuple[str, str]], set[str], set[str], set[str]]:
+    provider_ids: set[tuple[str, str]] = set()
+    source_urls: set[str] = set()
+    sha256_values: set[str] = set()
+    average_hashes: set[str] = set()
+    audit_root = root / "incoming" / "external"
+    if not audit_root.exists():
+        return provider_ids, source_urls, sha256_values, average_hashes
+    for audit_path in audit_root.glob("*/*.json"):
+        try:
+            audit = json.loads(audit_path.read_text(encoding="utf-8"))
+            provider = audit.get("provider")
+            asset_id = audit.get("provider_asset_id")
+            source_url = audit.get("source_url")
+            sha256 = audit.get("sha256")
+            average_hash = audit.get("average_hash")
+            if isinstance(provider, str) and isinstance(asset_id, str):
+                provider_ids.add((provider, asset_id))
+            if isinstance(source_url, str):
+                source_urls.add(source_url)
+            if isinstance(sha256, str):
+                sha256_values.add(sha256)
+            if isinstance(average_hash, str):
+                average_hashes.add(average_hash)
+        except (OSError, ValueError, TypeError):
+            continue
+    return provider_ids, source_urls, sha256_values, average_hashes
+
+
+def _atomic_write_bytes(path: Path, content: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
+def _safe_component(value: str) -> str:
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-.")
+    return sanitized or "asset"
+
+
+def _download_pending_candidates(
+    requirement: AssetRequirement,
+    catalog: AssetCatalog,
+    ranked: list[ExternalAssetCandidate],
+    providers_by_name: dict[str, object],
+) -> tuple[list[PendingAsset], dict[str, list[str]]]:
+    existing_ids, existing_urls, existing_sha256, existing_hashes = _existing_audit_keys(
+        catalog.root
+    )
+    pending_assets: list[PendingAsset] = []
+    download_errors: dict[str, list[str]] = {}
+    for candidate in ranked[:3]:
+        candidate_key = (candidate.provider, candidate.provider_asset_id)
+        if candidate_key in existing_ids or candidate.source_url in existing_urls:
+            continue
+        provider = providers_by_name[candidate.provider]
+        try:
+            provider.record_download(candidate)
+            normalized, extension, width, height, average_hash = _normalize_image(
+                provider.download(candidate)
+            )
+        except Exception as error:
+            download_errors.setdefault(candidate.provider, []).append(
+                f"{candidate.provider_asset_id}: {error}"
+            )
+            continue
+        if (
+            width < requirement.min_width
+            or height < requirement.min_height
+            or (
+                requirement.orientation != "any"
+                and _pixel_orientation(width, height) != requirement.orientation
+            )
+        ):
+            continue
+        sha256 = hashlib.sha256(normalized).hexdigest()
+        if sha256 in existing_sha256 or _has_near_duplicate(
+            average_hash, existing_hashes
+        ):
+            continue
+        basename = "-".join(
+            (
+                _safe_component(requirement.slot_id),
+                _safe_component(candidate.provider),
+                _safe_component(candidate.provider_asset_id),
+            )
+        )
+        path = catalog.incoming_root / f"{basename}{extension}"
+        metadata_path = catalog.incoming_root / f"{basename}.json"
+        tags = tuple(
+            dict.fromkeys(
+                (*candidate.score_tags, *candidate.palette_tags, *requirement.context_tags)
+            )
+        ) or (requirement.role,)
+        pending = PendingAsset(
+            pending_id=f"{catalog.run_id}-{basename}",
+            path=path,
+            metadata_path=metadata_path,
+            provider=candidate.provider,
+            provider_asset_id=candidate.provider_asset_id,
+            author=candidate.author,
+            source_url=candidate.source_url,
+            source_file_url=candidate.source_file_url,
+            role=requirement.role,
+            layout=requirement.layout,
+            width=width,
+            height=height,
+            license=candidate.license,
+            license_snapshot=candidate.license_snapshot,
+            sha256=sha256,
+            average_hash=average_hash,
+            run_id=catalog.run_id,
+            production_relative_path=Path("stock")
+            / f"{_safe_component(candidate.provider)}-{_safe_component(candidate.provider_asset_id)}{extension}",
+            tags=tags,
+            fallback_roles=(requirement.role,),
+            provider_attribution=candidate.provider_attribution,
+        )
+        _atomic_write_bytes(path, normalized)
+        try:
+            write_pending_audit(pending)
+        except Exception:
+            path.unlink(missing_ok=True)
+            raise
+        pending_assets.append(pending)
+        existing_ids.add(candidate_key)
+        existing_urls.add(candidate.source_url)
+        existing_sha256.add(sha256)
+        existing_hashes.add(average_hash)
+    return pending_assets, download_errors
+
+
+def _pending_manifest_item(
+    requirement: AssetRequirement, pending: PendingAsset
+) -> AssetManifestItem:
+    return AssetManifestItem(
+        slot_id=requirement.slot_id,
+        role=requirement.role,
+        layout=requirement.layout,
+        status="pending_external",
+        path=str(pending.path),
+        source_type="external",
+        provider=pending.provider,
+        provider_asset_id=pending.provider_asset_id,
+        source_url=pending.source_url,
+        source_file_url=pending.source_file_url,
+        author=pending.author,
+        license=pending.license,
+        license_snapshot=pending.license_snapshot,
+        width=pending.width,
+        height=pending.height,
+        sha256=pending.sha256,
+    )
+
+
+def _search_provider(
+    provider: object,
+    requirement: AssetRequirement,
+    query: str,
+) -> tuple[ProviderSearchReport, list[ExternalAssetCandidate]]:
+    started_at = time.perf_counter()
+    if getattr(provider, "enabled", True) is False:
+        return (
+            ProviderSearchReport(
+                provider=provider.name,
+                status="not_configured",
+                query=query,
+                elapsed_ms=(time.perf_counter() - started_at) * 1000,
+            ),
+            [],
+        )
+    try:
+        results = provider.search(requirement)
+    except Exception as error:
+        return (
+            ProviderSearchReport(
+                provider=provider.name,
+                status="failed",
+                query=query,
+                error=str(error),
+                elapsed_ms=(time.perf_counter() - started_at) * 1000,
+            ),
+            [],
+        )
+    normalized_results = [
+        result for result in results if isinstance(result, ExternalAssetCandidate)
+    ]
+    return (
+        ProviderSearchReport(
+            provider=provider.name,
+            status="success",
+            query=query,
+            result_ids=[result.provider_asset_id for result in normalized_results],
+            elapsed_ms=(time.perf_counter() - started_at) * 1000,
+        ),
+        normalized_results,
+    )
+
+
+def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManifest:
+    """Resolve local assets first, then audited external gaps, then fallbacks."""
 
     items: list[AssetManifestItem] = []
     selection_reasons: dict[str, str] = {}
+    queries: list[str] = []
+    provider_reports: list[ProviderSearchReport] = []
+    search_triggered = False
     for requirement in visual_plan.required_assets:
         entry = _select_exact(requirement, catalog)
         if entry is not None:
             items.append(_manifest_item(requirement, entry, status="active"))
             selection_reasons[requirement.slot_id] = (
                 f"selected eligible local exact match {entry.asset_id}"
+            )
+            continue
+
+        valid_providers = [
+            provider
+            for provider in catalog.providers
+            if isinstance(getattr(provider, "name", None), str)
+            and callable(getattr(provider, "search", None))
+            and callable(getattr(provider, "record_download", None))
+            and callable(getattr(provider, "download", None))
+        ]
+        external_candidates: list[ExternalAssetCandidate] = []
+        report_start = len(provider_reports)
+        providers_by_name = {
+            str(provider.name): provider for provider in valid_providers
+        }
+        if valid_providers:
+            search_triggered = True
+            query = structured_query(requirement)
+            queries.append(query)
+            with ThreadPoolExecutor(max_workers=len(valid_providers)) as executor:
+                search_results = executor.map(
+                    lambda provider: _search_provider(
+                        provider, requirement, query
+                    ),
+                    valid_providers,
+                )
+                for report, normalized_results in search_results:
+                    provider_reports.append(report)
+                    external_candidates.extend(normalized_results)
+        ranked = sorted(
+            (
+                candidate
+                for candidate in _deduplicate_candidates(external_candidates)
+                if _external_eligible(candidate, requirement)
+            ),
+            key=lambda candidate: _external_rank_key(candidate, requirement),
+        )
+        pending, download_errors = _download_pending_candidates(
+            requirement, catalog, ranked, providers_by_name
+        )
+        for index in range(report_start, len(provider_reports)):
+            report = provider_reports[index]
+            errors = download_errors.get(report.provider, [])
+            if errors:
+                provider_reports[index] = report.model_copy(
+                    update={"download_errors": errors}
+                )
+        if pending:
+            items.append(_pending_manifest_item(requirement, pending[0]))
+            selection_reasons[requirement.slot_id] = (
+                f"selected pending external candidate {pending[0].provider}:"
+                f"{pending[0].provider_asset_id}"
             )
             continue
 
@@ -210,9 +588,9 @@ def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManif
     return AssetManifest(
         items=items,
         search_report=AssetSearchReport(
-            search_triggered=False,
-            queries=[],
-            provider_reports=[],
+            search_triggered=search_triggered,
+            queries=queries,
+            provider_reports=provider_reports,
             selection_reasons=selection_reasons,
         ),
     )
