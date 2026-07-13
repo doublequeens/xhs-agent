@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import hashlib
+import time
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
 from pathlib import Path
 from threading import Barrier
+from threading import Event
 
 from PIL import Image, ImageDraw
 import pytest
@@ -110,15 +112,19 @@ class BarrierProvider(FakeProvider):
         return self.results
 
 
-class ConcurrentResolveProvider(FakeProvider):
+class DelayedThirdReservationProvider(FakeProvider):
     def __init__(self, name: str, results: list[object]) -> None:
         super().__init__(name, results)
-        self.barrier = Barrier(2)
+        self.third_download_started = Event()
 
-    def search(self, requirement: AssetRequirement) -> list[object]:
-        self.search_calls.append(requirement)
-        self.barrier.wait(timeout=1)
-        return self.results
+    def download(self, candidate: object) -> bytes:
+        self.download_calls.append(candidate)
+        asset_id = str(getattr(candidate, "provider_asset_id"))
+        if asset_id in {"p1", "p2"}:
+            return image_bytes(int(asset_id[-1]), size=(1600, 1440))
+        self.third_download_started.set()
+        time.sleep(0.2)
+        return image_bytes(3)
 
 
 class FailingDownloadProvider(FakeProvider):
@@ -499,7 +505,7 @@ def test_concurrent_resolves_reserve_unique_candidates_with_one_attempt_budget(
 ) -> None:
     from src.asset_resolver.resolver import resolve_assets
 
-    provider = ConcurrentResolveProvider(
+    provider = FakeProvider(
         "pexels",
         [candidate("pexels", f"p{index}") for index in range(1, 7)],
     )
@@ -533,6 +539,7 @@ def test_concurrent_resolves_reserve_unique_candidates_with_one_attempt_budget(
     ]
     assert len(candidate_audits) == 3
     assert all(item.items[0].pending_id for item in manifests)
+    assert len(provider.search_calls) == 1
 
 
 def test_attempts_prefixed_slot_id_resumes_and_advances_normally(
@@ -572,6 +579,49 @@ def test_attempts_prefixed_slot_id_resumes_and_advances_normally(
     assert len(list(ledger_dir.glob("*.json"))) == 1
 
 
+def test_attempt_ledger_directory_symlink_cannot_escape_incoming_root(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    outside = tmp_path.parent / f"{tmp_path.name}-ledger-outside"
+    outside.mkdir()
+    run_root = tmp_path / "incoming" / "external" / "run-42"
+    run_root.mkdir(parents=True)
+    (run_root / ".attempt-ledgers").symlink_to(
+        outside, target_is_directory=True
+    )
+    provider = FakeProvider("pexels", [candidate("pexels", "p1")])
+
+    with pytest.raises(AssetResolutionError, match="attempt ledger"):
+        resolve_assets(texture_plan(), empty_catalog(tmp_path, [provider]))
+
+    assert list(outside.iterdir()) == []
+    assert provider.download_calls == []
+
+
+def test_concurrent_same_requirement_resolves_resume_one_pending_candidate(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import resolve_assets
+
+    provider = DelayedThirdReservationProvider(
+        "pexels",
+        [candidate("pexels", "p1"), candidate("pexels", "p2"), candidate("pexels", "p3")],
+    )
+    asset_catalog = empty_catalog(tmp_path, [provider])
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(resolve_assets, texture_plan(), asset_catalog)
+        assert provider.third_download_started.wait(timeout=1)
+        second = executor.submit(resolve_assets, texture_plan(), asset_catalog)
+        manifests = [first.result(), second.result()]
+
+    assert manifests[0].items[0].pending_id == manifests[1].items[0].pending_id
+    assert manifests[0].items[0].provider_asset_id == "p3"
+    assert len(provider.search_calls) == 1
+
+
 def test_resolver_rejects_non_allowlisted_candidate_urls_before_download(
     tmp_path: Path,
 ) -> None:
@@ -590,7 +640,9 @@ def test_resolver_rejects_non_allowlisted_candidate_urls_before_download(
 
     assert provider.record_calls == []
     assert provider.download_calls == []
-    assert not (tmp_path / "incoming").exists()
+    run_root = tmp_path / "incoming" / "external" / "run-42"
+    assert list(run_root.glob("*.json")) == []
+    assert not (run_root / ".attempt-ledgers").exists()
 
 
 def test_catalog_rejects_incoming_external_symlink_outside_root(tmp_path: Path) -> None:

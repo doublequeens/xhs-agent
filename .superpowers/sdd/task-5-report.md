@@ -56,14 +56,14 @@ Final focused GREEN:
 
 ```text
 python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-115 passed, 2 skipped
+117 passed, 2 skipped
 ```
 
 Final full-suite GREEN after all review corrections:
 
 ```text
 python -m pytest -q
-913 passed, 2 skipped, 3 warnings
+915 passed, 2 skipped, 3 warnings
 ```
 
 The warnings are existing LangGraph/legacy-checkpoint warnings. Pytest also intermittently
@@ -150,6 +150,21 @@ The final RED run produced six failures across the cross-run approval race, conc
 reservation race, local provenance projection, two unsafe decision variants, and the
 `attempts-` slot collision. The targeted GREEN run passed all six before the focused and
 full-suite runs above.
+
+The closing re-review identified and corrected two remaining concurrency/path gaps:
+
+- The `.attempt-ledgers` directory, ledger file, and ledger lock are resolved and checked
+  beneath the run-scoped incoming root before directory creation or ledger access. An
+  outside-directory symlink now fails before any download or external write.
+- Requirements without an exact local match and with a complete external provider are
+  serialized by a run/slot/requirement-fingerprint lock. The lock spans resume checking,
+  search, reservation, download, and pending persistence, so a concurrent caller waits for
+  the owner and then resumes the same canonical pending audit without another provider call.
+  Catalogs without an external provider retain the previous read-only local/fallback path.
+
+Both closing tests failed before implementation: the ledger symlink accepted an outside
+write, and a peer resolver exhausted by the owner's reservations raised a terminal error.
+The targeted GREEN passed both, followed by the focused and full-suite counts above.
 
 Remaining risks:
 

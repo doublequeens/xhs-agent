@@ -8,6 +8,7 @@ import re
 import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -444,9 +445,48 @@ def _safe_component(value: str) -> str:
 def _attempt_ledger_path(
     catalog: AssetCatalog, requirement: AssetRequirement, fingerprint: str
 ) -> Path:
-    return catalog.incoming_root / ".attempt-ledgers" / (
+    incoming_root = catalog.incoming_root.resolve()
+    ledger_root = (incoming_root / ".attempt-ledgers").resolve()
+    if not ledger_root.is_relative_to(incoming_root):
+        raise AssetResolutionError("attempt ledger directory escapes incoming root")
+    ledger_root.mkdir(parents=True, exist_ok=True)
+    ledger_root = ledger_root.resolve()
+    if not ledger_root.is_relative_to(incoming_root):
+        raise AssetResolutionError("attempt ledger directory escapes incoming root")
+    ledger_path = ledger_root / (
         f"attempts-{_safe_component(requirement.slot_id)}-{fingerprint}.json"
     )
+    if (
+        not ledger_path.resolve().is_relative_to(ledger_root)
+        or ledger_path.resolve().parent != ledger_root
+    ):
+        raise AssetResolutionError("attempt ledger path escapes incoming root")
+    return ledger_path
+
+
+@contextmanager
+def _resolution_lock(
+    catalog: AssetCatalog, requirement: AssetRequirement, fingerprint: str
+):
+    incoming_root = catalog.incoming_root.resolve()
+    lock_root = (incoming_root / ".resolution-locks").resolve()
+    if not lock_root.is_relative_to(incoming_root):
+        raise AssetResolutionError("resolution lock directory escapes incoming root")
+    lock_root.mkdir(parents=True, exist_ok=True)
+    lock_root = lock_root.resolve()
+    if not lock_root.is_relative_to(incoming_root):
+        raise AssetResolutionError("resolution lock directory escapes incoming root")
+    identity = f"{requirement.slot_id}\0{fingerprint}"
+    lock_name = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    lock_path = lock_root / f"{lock_name}.lock"
+    if not lock_path.resolve().is_relative_to(lock_root):
+        raise AssetResolutionError("resolution lock path escapes incoming root")
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 def _reserve_download_attempt(
@@ -456,8 +496,13 @@ def _reserve_download_attempt(
     candidate: ExternalAssetCandidate,
 ) -> tuple[Literal["reserved", "duplicate", "exhausted"], int | None]:
     ledger_path = _attempt_ledger_path(catalog, requirement, fingerprint)
-    ledger_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = ledger_path.with_suffix(f"{ledger_path.suffix}.lock")
+    ledger_root = ledger_path.parent.resolve()
+    if (
+        not ledger_root.is_relative_to(catalog.incoming_root.resolve())
+        or not lock_path.resolve().is_relative_to(ledger_root)
+    ):
+        raise AssetResolutionError("attempt ledger path escapes incoming root")
     with lock_path.open("a+b") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         try:
@@ -742,6 +787,45 @@ def _search_provider(
 
 
 def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManifest:
+    """Serialize external resolution by run, slot, and requirement contract."""
+
+    has_external_provider = any(
+        isinstance(getattr(provider, "name", None), str)
+        and callable(getattr(provider, "search", None))
+        and callable(getattr(provider, "record_download", None))
+        and callable(getattr(provider, "download", None))
+        for provider in catalog.providers
+    )
+    requirements_needing_external = [
+        requirement
+        for requirement in visual_plan.required_assets
+        if has_external_provider and _select_exact(requirement, catalog) is None
+    ]
+    lock_requirements = sorted(
+        {
+            (requirement.slot_id, requirement_fingerprint(requirement)): requirement
+            for requirement in requirements_needing_external
+        }.values(),
+        key=lambda requirement: (
+            requirement.slot_id,
+            requirement_fingerprint(requirement),
+        ),
+    )
+    with ExitStack() as stack:
+        for requirement in lock_requirements:
+            stack.enter_context(
+                _resolution_lock(
+                    catalog,
+                    requirement,
+                    requirement_fingerprint(requirement),
+                )
+            )
+        return _resolve_assets_unlocked(visual_plan, catalog)
+
+
+def _resolve_assets_unlocked(
+    visual_plan: VisualPlan, catalog: AssetCatalog
+) -> AssetManifest:
     """Resolve local assets first, then audited external gaps, then fallbacks."""
 
     items: list[AssetManifestItem] = []
