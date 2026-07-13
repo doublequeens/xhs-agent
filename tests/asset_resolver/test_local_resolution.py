@@ -300,6 +300,27 @@ def test_hard_filters_reject_asset_outside_catalog_active_root(
         resolve_assets(_plan(_requirement()), _catalog(tmp_path, [outside]))
 
 
+def test_outside_catalog_asset_is_rejected_before_its_bytes_are_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    outside = _entry(tmp_path, under_active=False)
+    outside_path = outside.path.resolve()
+    original_read_bytes = Path.read_bytes
+
+    def guarded_read_bytes(path: Path) -> bytes:
+        if path.resolve() == outside_path:
+            raise AssertionError("outside-catalog bytes must not be read")
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", guarded_read_bytes)
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(_plan(_requirement()), _catalog(tmp_path, [outside]))
+
+
 def test_hard_filters_reject_asset_whose_bytes_do_not_match_sha256(
     tmp_path: Path,
 ) -> None:
@@ -309,6 +330,80 @@ def test_hard_filters_reject_asset_whose_bytes_do_not_match_sha256(
 
     with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
         resolve_assets(_plan(_requirement()), _catalog(tmp_path, [mismatched]))
+
+
+def test_off_active_primary_cannot_authorize_named_fallback(tmp_path: Path) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    declaration = _entry(
+        tmp_path,
+        asset_id="outside-primary",
+        width=512,
+        height=512,
+        fallback_roles=("face_zone_mask",),
+        under_active=False,
+    )
+    fallback = _entry(
+        tmp_path,
+        asset_id="fallback-mask",
+        role="face_zone_mask",
+    )
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(
+            _plan(_requirement(fallback_asset_ids=["fallback-mask"])),
+            _catalog(tmp_path, [declaration, fallback]),
+        )
+
+
+def test_stale_hash_primary_cannot_authorize_named_fallback(tmp_path: Path) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    declaration = _entry(
+        tmp_path,
+        asset_id="stale-primary",
+        width=512,
+        height=512,
+        fallback_roles=("face_zone_mask",),
+        sha256="a" * 64,
+    )
+    fallback = _entry(
+        tmp_path,
+        asset_id="fallback-mask",
+        role="face_zone_mask",
+    )
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(
+            _plan(_requirement(fallback_asset_ids=["fallback-mask"])),
+            _catalog(tmp_path, [declaration, fallback]),
+        )
+
+
+def test_incomplete_provenance_primary_cannot_authorize_named_fallback(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import AssetResolutionError, resolve_assets
+
+    declaration = _entry(
+        tmp_path,
+        asset_id="unlicensed-primary",
+        width=512,
+        height=512,
+        fallback_roles=("face_zone_mask",),
+        license="",
+    )
+    fallback = _entry(
+        tmp_path,
+        asset_id="fallback-mask",
+        role="face_zone_mask",
+    )
+
+    with pytest.raises(AssetResolutionError, match="no eligible asset or fallback"):
+        resolve_assets(
+            _plan(_requirement(fallback_asset_ids=["fallback-mask"])),
+            _catalog(tmp_path, [declaration, fallback]),
+        )
 
 
 def test_ranking_prefers_tag_and_palette_overlap_before_asset_id(

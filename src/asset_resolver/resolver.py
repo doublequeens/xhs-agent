@@ -28,7 +28,6 @@ def _has_complete_provenance(entry: AssetEntry) -> bool:
         entry.ownership
         and entry.license
         and _SHA256_PATTERN.fullmatch(entry.sha256)
-        and entry.path.is_file()
     )
 
 
@@ -61,10 +60,27 @@ def _has_catalog_integrity(entry: AssetEntry, catalog: AssetCatalog) -> bool:
     try:
         path = entry.path.resolve()
         active_root = catalog.active_root.resolve()
+        if not path.is_relative_to(active_root):
+            return False
         actual_hash = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return False
-    return path.is_relative_to(active_root) and actual_hash == entry.sha256
+    return actual_hash == entry.sha256
+
+
+def _can_authorize_fallback_role(
+    entry: AssetEntry,
+    fallback_role: str,
+    requirement: AssetRequirement,
+    catalog: AssetCatalog,
+) -> bool:
+    return (
+        entry.usage == "production"
+        and entry.role == requirement.role
+        and fallback_role in entry.fallback_roles
+        and _has_complete_provenance(entry)
+        and _has_catalog_integrity(entry, catalog)
+    )
 
 
 def _last_used_timestamp(catalog: AssetCatalog, asset_id: str) -> float:
@@ -121,9 +137,12 @@ def _select_explicit_fallback(
     for asset_id in requirement.fallback_asset_ids:
         entry = entries_by_id.get(asset_id)
         fallback_role_is_declared = entry is not None and any(
-            candidate.usage == "production"
-            and candidate.role == requirement.role
-            and entry.role in candidate.fallback_roles
+            _can_authorize_fallback_role(
+                candidate,
+                entry.role,
+                requirement,
+                catalog,
+            )
             for candidate in catalog.entries
         )
         if (

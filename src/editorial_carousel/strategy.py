@@ -37,76 +37,128 @@ LAYOUT_FAMILY: Final[dict[LayoutName, VisualFamily]] = {
     "saveable_reference": "saveable_reference",
 }
 
-ASSET_ROLE_BY_LAYOUT: Final[dict[LayoutName, str]] = {
-    "editorial_cover": "background_token",
-    "texture_baseline": "serum_texture",
-    "front_face_zone": "face_angle",
-    "three_quarter_face_zone": "face_zone_mask",
-    "step_timeline": "line_token",
-    "morning_evening_flow": "pump_shape",
-    "left_right_comparison": "skin_detail",
-    "three_state_diagnostic": "skin_detail",
-    "decision_tree": "container_shape",
-    "saveable_checklist": "background_token",
-    "saveable_reference": "background_token",
-}
-
 AssetOrientation = Literal["portrait", "landscape", "square", "any"]
-ASSET_PROFILE_BY_ROLE: Final[dict[str, tuple[int, int, AssetOrientation]]] = {
-    "background_token": (1080, 1440, "portrait"),
-    "line_token": (1080, 300, "landscape"),
-    "serum_texture": (512, 512, "square"),
-    "face_angle": (512, 512, "square"),
-    "face_zone_mask": (512, 512, "square"),
-    "skin_detail": (512, 512, "square"),
-    "container_shape": (512, 512, "square"),
-    "pump_shape": (512, 512, "square"),
-}
+AssetAdapter = tuple[str, int, int, AssetOrientation, tuple[str, ...]]
 
-# Fallback IDs are included only where the manifest-declared fallback role has
-# the same layout compatibility, minimum dimensions, and orientation.
-FALLBACK_ASSET_IDS: Final[dict[tuple[str, LayoutName], tuple[str, ...]]] = {
-    ("serum_texture", "texture_baseline"): ("liquid_drips",),
-    ("face_angle", "front_face_zone"): ("mask_chin",),
-    ("face_zone_mask", "three_quarter_face_zone"): ("face_front",),
+# Task 2 recipes and frame plans retain semantic roles. This adapter is the
+# single seam where a (layout, semantic role) becomes a concrete catalog query.
+ASSET_ADAPTER: Final[dict[tuple[LayoutName, str], AssetAdapter]] = {
+    ("editorial_cover", "beauty_subject"): (
+        "background_token",
+        1080,
+        1440,
+        "portrait",
+        (),
+    ),
+    ("texture_baseline", "product_texture"): (
+        "serum_texture",
+        512,
+        512,
+        "square",
+        ("liquid_drips",),
+    ),
+    ("front_face_zone", "face_map"): (
+        "face_angle",
+        512,
+        512,
+        "square",
+        ("mask_chin",),
+    ),
+    ("three_quarter_face_zone", "face_map"): (
+        "face_zone_mask",
+        512,
+        512,
+        "square",
+        ("face_front",),
+    ),
+    ("step_timeline", "process"): ("line_token", 1080, 300, "landscape", ()),
+    ("step_timeline", "comparison"): (
+        "line_token",
+        1080,
+        300,
+        "landscape",
+        (),
+    ),
+    ("morning_evening_flow", "process"): (
+        "pump_shape",
+        512,
+        512,
+        "square",
+        (),
+    ),
+    ("left_right_comparison", "comparison"): (
+        "skin_detail",
+        512,
+        512,
+        "square",
+        (),
+    ),
+    ("three_state_diagnostic", "comparison"): (
+        "skin_detail",
+        512,
+        512,
+        "square",
+        (),
+    ),
+    ("decision_tree", "comparison"): (
+        "container_shape",
+        512,
+        512,
+        "square",
+        (),
+    ),
+    ("saveable_checklist", "reference"): (
+        "background_token",
+        1080,
+        1440,
+        "portrait",
+        (),
+    ),
+    ("saveable_reference", "reference"): (
+        "background_token",
+        1080,
+        1440,
+        "portrait",
+        (),
+    ),
 }
 
 RECIPES: Final[dict[ContentJob, Recipe]] = {
     "diagnose_and_adjust": (
-        ("cover", "editorial_cover", "background_token"),
-        ("baseline", "texture_baseline", "serum_texture"),
-        ("applicable_case", "front_face_zone", "face_angle"),
-        ("zone_adjustment", "three_quarter_face_zone", "face_zone_mask"),
-        ("feedback_diagnosis", "three_state_diagnostic", "skin_detail"),
-        ("save", "saveable_reference", "background_token"),
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("baseline", "texture_baseline", "product_texture"),
+        ("applicable_case", "front_face_zone", "face_map"),
+        ("zone_adjustment", "three_quarter_face_zone", "face_map"),
+        ("feedback_diagnosis", "three_state_diagnostic", "comparison"),
+        ("save", "saveable_reference", "reference"),
     ),
     "follow_steps": (
-        ("cover", "editorial_cover", "background_token"),
-        ("sequence", "step_timeline", "line_token"),
-        ("routine", "morning_evening_flow", "pump_shape"),
-        ("decision", "decision_tree", "container_shape"),
-        ("save", "saveable_checklist", "background_token"),
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("sequence", "step_timeline", "process"),
+        ("routine", "morning_evening_flow", "process"),
+        ("decision", "decision_tree", "comparison"),
+        ("save", "saveable_checklist", "reference"),
     ),
     "compare_and_choose": (
-        ("cover", "editorial_cover", "background_token"),
-        ("comparison", "left_right_comparison", "skin_detail"),
-        ("feedback_diagnosis", "three_state_diagnostic", "skin_detail"),
-        ("decision", "decision_tree", "container_shape"),
-        ("save", "saveable_reference", "background_token"),
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("comparison", "left_right_comparison", "comparison"),
+        ("feedback_diagnosis", "three_state_diagnostic", "comparison"),
+        ("decision", "decision_tree", "comparison"),
+        ("save", "saveable_reference", "reference"),
     ),
     "save_and_check": (
-        ("cover", "editorial_cover", "background_token"),
-        ("checklist", "saveable_checklist", "background_token"),
-        ("decision", "decision_tree", "container_shape"),
-        ("comparison", "left_right_comparison", "skin_detail"),
-        ("save", "saveable_reference", "background_token"),
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("checklist", "saveable_checklist", "reference"),
+        ("decision", "decision_tree", "comparison"),
+        ("comparison", "left_right_comparison", "comparison"),
+        ("save", "saveable_reference", "reference"),
     ),
     "understand_and_notice": (
-        ("cover", "editorial_cover", "background_token"),
-        ("baseline", "texture_baseline", "serum_texture"),
-        ("observation", "three_state_diagnostic", "skin_detail"),
-        ("method", "step_timeline", "line_token"),
-        ("save", "saveable_reference", "background_token"),
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("baseline", "texture_baseline", "product_texture"),
+        ("observation", "three_state_diagnostic", "comparison"),
+        ("method", "step_timeline", "process"),
+        ("save", "saveable_reference", "reference"),
     ),
 }
 
@@ -196,12 +248,8 @@ def _select_recipe(
 
     index, alternative_layout = alternative_recipe
     alternative = list(recipe)
-    role, _layout, _asset_role = alternative[index]
-    alternative[index] = (
-        role,
-        alternative_layout,
-        ASSET_ROLE_BY_LAYOUT[alternative_layout],
-    )
+    role, _layout, asset_role = alternative[index]
+    alternative[index] = (role, alternative_layout, asset_role)
     return tuple(alternative)
 
 
@@ -219,22 +267,24 @@ def _supporting_families(
 
 def _required_assets(recipe: Recipe) -> list[AssetRequirement]:
     requirements: list[AssetRequirement] = []
-    for role, layout, asset_role in recipe:
-        min_width, min_height, orientation = ASSET_PROFILE_BY_ROLE[asset_role]
+    for role, layout, semantic_role in recipe:
+        (
+            catalog_role,
+            min_width,
+            min_height,
+            orientation,
+            fallback_asset_ids,
+        ) = ASSET_ADAPTER[(layout, semantic_role)]
         requirements.append(
             AssetRequirement(
-                slot_id=(
-                    f"{role.replace('_', '-')}-{asset_role.replace('_', '-')}"
-                ),
-                role=asset_role,
+                slot_id=f"{role.replace('_', '-')}-{semantic_role.replace('_', '-')}",
+                role=catalog_role,
                 layout=layout,
                 min_width=min_width,
                 min_height=min_height,
-                context_tags=[asset_role],
+                context_tags=[semantic_role],
                 orientation=orientation,
-                fallback_asset_ids=list(
-                    FALLBACK_ASSET_IDS.get((asset_role, layout), ())
-                ),
+                fallback_asset_ids=list(fallback_asset_ids),
             )
         )
     return requirements

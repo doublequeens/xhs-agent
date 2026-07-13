@@ -13,6 +13,45 @@ FAMILY_BY_JOB = {
     "understand_and_notice": "beauty_editorial",
 }
 
+EXPECTED_RECIPES = {
+    "diagnose_and_adjust": (
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("baseline", "texture_baseline", "product_texture"),
+        ("applicable_case", "front_face_zone", "face_map"),
+        ("zone_adjustment", "three_quarter_face_zone", "face_map"),
+        ("feedback_diagnosis", "three_state_diagnostic", "comparison"),
+        ("save", "saveable_reference", "reference"),
+    ),
+    "follow_steps": (
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("sequence", "step_timeline", "process"),
+        ("routine", "morning_evening_flow", "process"),
+        ("decision", "decision_tree", "comparison"),
+        ("save", "saveable_checklist", "reference"),
+    ),
+    "compare_and_choose": (
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("comparison", "left_right_comparison", "comparison"),
+        ("feedback_diagnosis", "three_state_diagnostic", "comparison"),
+        ("decision", "decision_tree", "comparison"),
+        ("save", "saveable_reference", "reference"),
+    ),
+    "save_and_check": (
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("checklist", "saveable_checklist", "reference"),
+        ("decision", "decision_tree", "comparison"),
+        ("comparison", "left_right_comparison", "comparison"),
+        ("save", "saveable_reference", "reference"),
+    ),
+    "understand_and_notice": (
+        ("cover", "editorial_cover", "beauty_subject"),
+        ("baseline", "texture_baseline", "product_texture"),
+        ("observation", "three_state_diagnostic", "comparison"),
+        ("method", "step_timeline", "process"),
+        ("save", "saveable_reference", "reference"),
+    ),
+}
+
 
 def contract_for(job: str) -> ContentContract:
     subject_by_job = {
@@ -53,17 +92,19 @@ def test_strategy_maps_content_job_to_family(job, family):
         frame.layout in {"saveable_checklist", "saveable_reference"}
         for frame in plan.frame_plan
     )
-    assert [
-        (requirement.role, requirement.layout)
-        for requirement in plan.required_assets
-    ] == [
-        (frame.asset_roles[0], frame.layout)
-        for frame in plan.frame_plan
-        if frame.asset_roles
+    assert len(plan.required_assets) == len(plan.frame_plan)
+    assert [requirement.layout for requirement in plan.required_assets] == [
+        frame.layout for frame in plan.frame_plan
     ]
 
 
-def test_zone_strategy_produces_six_concrete_catalog_roles():
+def test_recipes_preserve_the_exact_task_2_semantic_contract():
+    from src.editorial_carousel.strategy import RECIPES
+
+    assert RECIPES == EXPECTED_RECIPES
+
+
+def test_zone_strategy_produces_the_six_spec_semantic_roles():
     from src.editorial_carousel.strategy import build_visual_plan
 
     plan = build_visual_plan(
@@ -74,12 +115,12 @@ def test_zone_strategy_produces_six_concrete_catalog_roles():
         (frame.role, frame.layout, frame.asset_roles)
         for frame in plan.frame_plan
     ] == [
-        ("cover", "editorial_cover", ["background_token"]),
-        ("baseline", "texture_baseline", ["serum_texture"]),
-        ("applicable_case", "front_face_zone", ["face_angle"]),
-        ("zone_adjustment", "three_quarter_face_zone", ["face_zone_mask"]),
-        ("feedback_diagnosis", "three_state_diagnostic", ["skin_detail"]),
-        ("save", "saveable_reference", ["background_token"]),
+        ("cover", "editorial_cover", ["beauty_subject"]),
+        ("baseline", "texture_baseline", ["product_texture"]),
+        ("applicable_case", "front_face_zone", ["face_map"]),
+        ("zone_adjustment", "three_quarter_face_zone", ["face_map"]),
+        ("feedback_diagnosis", "three_state_diagnostic", ["comparison"]),
+        ("save", "saveable_reference", ["reference"]),
     ]
 
 
@@ -181,10 +222,21 @@ def test_recent_identical_signature_never_changes_diagnostic_recipe():
     assert repeated.frame_plan[4].layout == "three_state_diagnostic"
 
 
-def test_recent_signature_selects_deterministic_auxiliary_layout():
+@pytest.mark.parametrize(
+    ("job", "changed_index", "alternative_layout"),
+    [
+        ("follow_steps", 2, "step_timeline"),
+        ("compare_and_choose", 2, "decision_tree"),
+        ("save_and_check", 2, "step_timeline"),
+        ("understand_and_notice", 3, "morning_evening_flow"),
+    ],
+)
+def test_recent_signature_changes_only_the_auxiliary_layout(
+    job, changed_index, alternative_layout
+):
     from src.editorial_carousel.strategy import build_visual_plan
 
-    contract = contract_for("follow_steps")
+    contract = contract_for(job)
     original = build_visual_plan(contract, recent_signatures=[])
     signature = tuple(
         (frame.role, frame.layout) for frame in original.frame_plan
@@ -197,7 +249,11 @@ def test_recent_signature_selects_deterministic_auxiliary_layout():
     assert alternative.primary_visual_family == original.primary_visual_family
     assert alternative.frame_plan != original.frame_plan
     assert alternative.frame_plan == repeated.frame_plan
-    assert alternative.frame_plan[2].layout == "step_timeline"
+    assert alternative.frame_plan[changed_index].layout == alternative_layout
+    assert (
+        alternative.frame_plan[changed_index].asset_roles
+        == original.frame_plan[changed_index].asset_roles
+    )
 
 
 def test_legacy_hydration_is_explicit_and_preserves_supplied_values():
