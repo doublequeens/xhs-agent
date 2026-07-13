@@ -153,3 +153,86 @@ Pytest also emitted two post-summary temporary-directory cleanup warnings (`OSEr
 
 - No Task 1 implementation concerns.
 - The full suite has three pre-existing runtime warnings and two non-failing pytest temporary-directory cleanup warnings, recorded above.
+
+## Review-fix addendum
+
+### Findings addressed
+
+- Added shared post-validation for `VisualPlan.frame_plan` and `CarouselPayload.storyboards`: the first layout must be `editorial_cover`, the sequence must contain at least three distinct layouts, and at least one layout must be `saveable_checklist` or `saveable_reference`. Existing 5-7 field bounds remain in place.
+- Tightened `RenderManifest.pages` to 5-7 items and `RenderedPage` to the exact `1080 x 1440` canvas.
+- Made `ContentLock.hashtags` and every nested storyboard list/dict recursively immutable after validation using tuples and fresh `MappingProxyType` wrappers. Field serializers thaw them back to JSON arrays and objects, preserving all serialized field names and types. Canonical hash creation remains outside this task.
+
+### Review-fix RED evidence
+
+Command:
+
+```text
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/schemas/test_editorial_carousel.py -q
+```
+
+Exact pytest result:
+
+```text
+..FFF..FFF.FFFFF.F.                                                      [100%]
+=================================== FAILURES ===================================
+FAILED tests/schemas/test_editorial_carousel.py::test_visual_plan_requires_editorial_frame_composition[cover-first]
+FAILED tests/schemas/test_editorial_carousel.py::test_visual_plan_requires_editorial_frame_composition[three-distinct-layouts]
+FAILED tests/schemas/test_editorial_carousel.py::test_visual_plan_requires_editorial_frame_composition[saveable-layout]
+FAILED tests/schemas/test_editorial_carousel.py::test_carousel_payload_requires_editorial_frame_composition[cover-first]
+FAILED tests/schemas/test_editorial_carousel.py::test_carousel_payload_requires_editorial_frame_composition[three-distinct-layouts]
+FAILED tests/schemas/test_editorial_carousel.py::test_carousel_payload_requires_editorial_frame_composition[saveable-layout]
+FAILED tests/schemas/test_editorial_carousel.py::test_render_manifest_requires_five_to_seven_pages[0]
+FAILED tests/schemas/test_editorial_carousel.py::test_render_manifest_requires_five_to_seven_pages[4]
+FAILED tests/schemas/test_editorial_carousel.py::test_render_manifest_requires_five_to_seven_pages[8]
+FAILED tests/schemas/test_editorial_carousel.py::test_rendered_pages_require_exact_canvas_dimensions[width-1079]
+FAILED tests/schemas/test_editorial_carousel.py::test_rendered_pages_require_exact_canvas_dimensions[height-1441]
+FAILED tests/schemas/test_editorial_carousel.py::test_content_lock_is_deeply_frozen_and_serializes_as_json_arrays_and_objects
+12 failed, 7 passed in 0.10s
+```
+
+Each failure was expected: the existing contracts accepted invalid frame composition, empty/partial/oversized manifests, arbitrary positive canvas dimensions, and nested ContentLock mutation.
+
+### Review-fix GREEN evidence
+
+Covering contract tests, fresh final run:
+
+```text
+$ /opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/schemas/test_editorial_carousel.py -q
+...................                                                      [100%]
+19 passed in 0.06s
+```
+
+Task 1 focused suite, fresh final run:
+
+```text
+$ /opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/schemas tests/domain/test_profiles.py tests/nodes/test_metadata_flow.py -q
+...................................................................      [100%]
+67 passed in 2.44s
+```
+
+Diff hygiene:
+
+```text
+$ git diff --check
+```
+
+Exit code 0 with no output.
+
+### Review-fix tests added
+
+- Three invalid composition cases each for `VisualPlan` and `CarouselPayload`: wrong first layout, fewer than three distinct layouts, and no saveable layout.
+- `RenderManifest` page-count rejection at 0, 4, and 8 pages.
+- Exact canvas rejection for width `1079` and height `1441`, plus a valid five-page manifest fixture at `1080 x 1440`.
+- Deep ContentLock mutation rejection for hashtags, storyboard mappings, and nested visual-slot lists, followed by an exact `model_dump(mode="json")` equality check proving arrays/objects and content are preserved.
+
+### Review-fix self-review
+
+- Validation is schema-only and introduces no strategy construction or storyboard-node behavior from Task 2.
+- The composition rule is implemented once and reused by both strict public payloads.
+- Render page bounds and dimensions use Pydantic field/type constraints, so malformed data fails during model validation.
+- Deep freezing copies every input list/dict before wrapping it, so external references cannot mutate lock state; the original serialized schema remains unchanged through explicit field serializers.
+- All mutable paths exercised by the reported defect are rejected after construction, while top-level frozen assignment behavior is unchanged.
+
+### Review-fix concerns
+
+- None.

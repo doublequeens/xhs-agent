@@ -126,6 +126,37 @@ CONTENT_LOCK = {
 }
 
 
+def _frame_sequence(source, layouts):
+    frames = deepcopy(source[: len(layouts)])
+    for frame, layout in zip(frames, layouts, strict=True):
+        frame["layout"] = layout
+    return frames
+
+
+def _render_pages(count=5):
+    layouts = [
+        "editorial_cover",
+        "texture_baseline",
+        "front_face_zone",
+        "three_state_diagnostic",
+        "saveable_reference",
+        "step_timeline",
+        "saveable_checklist",
+        "decision_tree",
+    ]
+    return [
+        {
+            "frame_id": f"frame-{index}",
+            "role": "cover" if index == 1 else f"detail-{index}",
+            "layout": layout,
+            "path": f"{index:02d}-frame.png",
+            "width": 1080,
+            "height": 1440,
+        }
+        for index, layout in enumerate(layouts[:count], start=1)
+    ]
+
+
 def test_content_contract_requires_editorial_strategy_fields():
     with pytest.raises(ValidationError):
         ContentContract.model_validate(BASE_CONTRACT)
@@ -136,6 +167,40 @@ def test_visual_plan_accepts_five_to_seven_frames_and_rejects_arbitrary_layout()
     assert plan.primary_visual_family == "face_zone_map"
     broken = deepcopy(ZONE_PLAN)
     broken["frame_plan"][1]["layout"] = "freeform_html"
+    with pytest.raises(ValidationError):
+        VisualPlan.model_validate(broken)
+
+
+@pytest.mark.parametrize(
+    "layouts",
+    [
+        [
+            "texture_baseline",
+            "front_face_zone",
+            "three_quarter_face_zone",
+            "three_state_diagnostic",
+            "saveable_reference",
+        ],
+        [
+            "editorial_cover",
+            "texture_baseline",
+            "texture_baseline",
+            "texture_baseline",
+            "editorial_cover",
+        ],
+        [
+            "editorial_cover",
+            "texture_baseline",
+            "front_face_zone",
+            "three_quarter_face_zone",
+            "three_state_diagnostic",
+        ],
+    ],
+    ids=["cover-first", "three-distinct-layouts", "saveable-layout"],
+)
+def test_visual_plan_requires_editorial_frame_composition(layouts):
+    broken = deepcopy(ZONE_PLAN)
+    broken["frame_plan"] = _frame_sequence(ZONE_PLAN["frame_plan"], layouts)
     with pytest.raises(ValidationError):
         VisualPlan.model_validate(broken)
 
@@ -159,6 +224,39 @@ def test_carousel_payload_requires_five_to_seven_frames():
         CarouselPayload.model_validate({"storyboards": ZONE_STORYBOARD[:4]})
 
 
+@pytest.mark.parametrize(
+    "layouts",
+    [
+        [
+            "texture_baseline",
+            "front_face_zone",
+            "three_quarter_face_zone",
+            "three_state_diagnostic",
+            "saveable_reference",
+        ],
+        [
+            "editorial_cover",
+            "texture_baseline",
+            "texture_baseline",
+            "texture_baseline",
+            "editorial_cover",
+        ],
+        [
+            "editorial_cover",
+            "texture_baseline",
+            "front_face_zone",
+            "three_quarter_face_zone",
+            "three_state_diagnostic",
+        ],
+    ],
+    ids=["cover-first", "three-distinct-layouts", "saveable-layout"],
+)
+def test_carousel_payload_requires_editorial_frame_composition(layouts):
+    frames = _frame_sequence(ZONE_STORYBOARD, layouts)
+    with pytest.raises(ValidationError):
+        CarouselPayload.model_validate({"storyboards": frames})
+
+
 def test_manifest_contracts_are_strict():
     search_report = AssetSearchReport.model_validate(
         {"search_triggered": False, "queries": [], "provider_reports": [], "selection_reasons": {}}
@@ -168,7 +266,7 @@ def test_manifest_contracts_are_strict():
     )
     render_manifest = RenderManifest.model_validate(
         {
-            "pages": [],
+            "pages": _render_pages(),
             "fonts": {"all_loaded": True, "computed_families": []},
             "contact_sheet_path": "contact-sheet.png",
             "source_asset_sha256": {},
@@ -178,10 +276,55 @@ def test_manifest_contracts_are_strict():
     assert render_manifest.contact_sheet_path == "contact-sheet.png"
 
 
+@pytest.mark.parametrize("count", [0, 4, 8])
+def test_render_manifest_requires_five_to_seven_pages(count):
+    with pytest.raises(ValidationError):
+        RenderManifest.model_validate(
+            {
+                "pages": _render_pages(count),
+                "fonts": {"all_loaded": True, "computed_families": []},
+                "contact_sheet_path": "contact-sheet.png",
+                "source_asset_sha256": {},
+            }
+        )
+
+
+@pytest.mark.parametrize(("field", "value"), [("width", 1079), ("height", 1441)])
+def test_rendered_pages_require_exact_canvas_dimensions(field, value):
+    pages = _render_pages()
+    pages[0][field] = value
+    with pytest.raises(ValidationError):
+        RenderManifest.model_validate(
+            {
+                "pages": pages,
+                "fonts": {"all_loaded": True, "computed_families": []},
+                "contact_sheet_path": "contact-sheet.png",
+                "source_asset_sha256": {},
+            }
+        )
+
+
 def test_content_lock_is_frozen():
     lock = ContentLock.model_validate(CONTENT_LOCK)
     with pytest.raises(ValidationError):
         lock.title = "另一个标题"
+
+
+def test_content_lock_is_deeply_frozen_and_serializes_as_json_arrays_and_objects():
+    lock = ContentLock.model_validate(CONTENT_LOCK)
+
+    with pytest.raises((AttributeError, TypeError)):
+        lock.hashtags.append("新标签")
+    with pytest.raises((AttributeError, TypeError)):
+        lock.storyboards[0]["headline"] = "篡改标题"
+    with pytest.raises((AttributeError, TypeError)):
+        lock.storyboards[0]["visual_slots"].append({"slot_id": "injected"})
+
+    serialized = lock.model_dump(mode="json")
+    assert isinstance(serialized["hashtags"], list)
+    assert isinstance(serialized["storyboards"], list)
+    assert isinstance(serialized["storyboards"][0], dict)
+    assert serialized == CONTENT_LOCK
 
 
 def test_content_lock_rejects_noncanonical_hash_shape():

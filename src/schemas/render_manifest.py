@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from .visual_plan import LayoutName
@@ -12,8 +14,8 @@ class RenderedPage(StrictModel):
     role: str = Field(min_length=1, max_length=48)
     layout: LayoutName
     path: str = Field(min_length=1)
-    width: int = Field(ge=1)
-    height: int = Field(ge=1)
+    width: Literal[1080]
+    height: Literal[1440]
 
 
 class FontLoadReport(StrictModel):
@@ -22,7 +24,7 @@ class FontLoadReport(StrictModel):
 
 
 class RenderManifest(StrictModel):
-    pages: list[RenderedPage]
+    pages: list[RenderedPage] = Field(min_length=5, max_length=7)
     fonts: FontLoadReport
     contact_sheet_path: str = Field(min_length=1)
     source_asset_sha256: dict[str, str]

@@ -1,9 +1,9 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .text_card import TextCardFrame, TextCardPayload
-from .visual_plan import LayoutName
+from .visual_plan import LayoutName, _validate_editorial_frame_layouts
 
 
 class StrictModel(BaseModel):
@@ -47,6 +47,11 @@ class CarouselFrame(StrictModel):
 
 class CarouselPayload(StrictModel):
     storyboards: list[CarouselFrame] = Field(min_length=5, max_length=7)
+
+    @model_validator(mode="after")
+    def require_editorial_frame_composition(self):
+        _validate_editorial_frame_layouts(self.storyboards)
+        return self
 
 
 # Compatibility names remain on the legacy contract until the graph migration.
