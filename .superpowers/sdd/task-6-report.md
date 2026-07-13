@@ -4,8 +4,8 @@
 
 Implemented the project-local beauty editorial renderer with all eleven explicit
 layout functions, one immutable dispatch table, local font enforcement, browser
-probes, ordered page output, a Chromium-rendered contact sheet, and all-or-nothing
-failure cleanup.
+probes, ordered page output, a Chromium-rendered contact sheet, and transactional
+output-set publication.
 
 ## Delivered behavior
 
@@ -31,15 +31,20 @@ failure cleanup.
 - Every PNG and temporary HTML file is first created in an invocation-scoped sibling
   staging directory. Only after screenshots, probes, contact sheet, browser close,
   HTML cleanup, and manifest validation succeed is the complete directory published.
-  Any pre-existing complete output set is preserved on failure; publication errors
-  restore it rather than leaving a mixed set.
+  Any pre-existing complete output set is preserved on pre-commit failure;
+  publication errors restore it rather than leaving a mixed set. Non-renderer-owned
+  files and directories are copied into the new set before its atomic commit. Once
+  the new set is committed, failure while retiring the old set leaves recognizable
+  quarantine residue and emits a warning without rolling back damaged old bytes.
 - Every storyboard `VisualSlot` binds to exactly one manifest item with the same slot
   ID and frame layout. The renderer verifies current local bytes against sha256 and
   records only assets actually passed to a layout. It deliberately does not compare
   the semantic storyboard role to the adapted concrete catalog role; that domain seam
   belongs to Task 7 Carousel QA.
-- The renderer rejects frame-order/layout drift between `VisualPlan` and
-  `CarouselPayload` before launching Chromium.
+- The renderer rejects frame-order/layout drift, duplicate plan or storyboard frame
+  IDs, and duplicate visual-slot IDs within a frame before launching Chromium. This
+  protects frame-to-assets lookup and the slot-keyed source-hash provenance map from
+  identity overwrite.
 
 ## TDD evidence
 
@@ -208,6 +213,71 @@ python -m pytest tests/schemas/test_editorial_carousel.py \
 The first command includes the real Chromium smoke and deterministic probe tests.
 `compileall` and `git diff --check` also exited successfully after the corrections.
 
+## Second review-correction RED/GREEN evidence
+
+### Transactional publication commit point
+
+Fault-injection tests were added for both directory replacements, retirement of a
+partially deleted old set, and preservation of unrelated output entries. The valid
+RED distinguished two missing behaviors from two passing characterizations:
+
+```text
+python -m pytest tests/rendering/editorial/test_renderer.py -q \
+  -k "publication or backup_retirement"
+
+2 failed, 2 passed
+```
+
+The renderer now copies non-owned entries into staging without overwriting new
+outputs, treats successful `staging -> output` replacement as the commit point, and
+only retires the old directory after commit. Retirement failure warns and leaves
+quarantine residue; it never restores partially deleted old bytes over committed
+new output.
+
+```text
+4 passed, 15 deselected
+```
+
+### Strict render identities
+
+Schema-valid duplicate IDs showed that one-sided frame duplicates produced a generic
+order error, matching duplicates launched Chromium and overwrote frame asset lookup,
+and duplicate slots within a frame launched Chromium:
+
+```text
+python -m pytest tests/rendering/editorial/test_renderer.py -q \
+  -k "duplicate_frame_ids or duplicate_visual_slot"
+
+4 failed
+```
+
+Unique plan frame IDs, storyboard frame IDs, and per-frame visual-slot IDs are now
+validated before plan matching, asset resolution, staging, or browser launch:
+
+```text
+4 passed, 19 deselected
+```
+
+Fresh verification after both second-review corrections:
+
+```text
+python -m pytest tests/rendering/editorial/test_layouts.py \
+  tests/rendering/editorial/test_renderer.py \
+  tests/rendering/editorial/test_probes.py -q
+51 passed in 3.05s
+
+python -m pytest tests/rendering/editorial -q
+52 passed in 5.12s
+
+python -m pytest tests/schemas/test_editorial_carousel.py \
+  tests/rendering/test_text_cards.py \
+  tests/editorial_carousel/test_strategy.py -q
+54 passed in 1.28s
+```
+
+The full editorial suite includes the real-Chromium smoke and deterministic browser
+probe tests. `compileall` and `git diff --check` also exited successfully.
+
 ## Self-review
 
 - Scope is limited to `src/rendering/editorial`, `tests/rendering/editorial`, and
@@ -218,8 +288,10 @@ The first command includes the real Chromium smoke and deterministic probe tests
   one fixed visual template: each layout has a distinct semantic structure and CSS
   composition while the shell owns tokens, dimensions, and typography.
 - Failure cleanup removes the isolated staging tree and does not mutate the existing
-  output directory. Existing complete-set tests cover failures before and after bytes
-  are written, during browser close, and during temporary-HTML cleanup.
+  output directory before publication. Existing complete-set tests cover failures
+  before and after bytes are written, during browser close, during temporary-HTML
+  cleanup, and at both pre-commit directory replacements. Post-commit retirement
+  failure leaves quarantine residue rather than rolling damaged old bytes back.
 - The browser session is reused for all pages and the contact sheet, and fonts are
   re-probed after every local document navigation.
 

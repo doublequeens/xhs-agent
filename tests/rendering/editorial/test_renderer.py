@@ -30,6 +30,19 @@ def _assert_existing_set_unchanged(output_dir: Path, old: dict[str, bytes]) -> N
     assert not list(output_dir.parent.glob(f".{output_dir.name}.editorial-*"))
 
 
+def _add_unrelated_entries(output_dir: Path) -> None:
+    (output_dir / "review-notes.json").write_text('{"keep": true}', encoding="utf-8")
+    (output_dir / "audit").mkdir()
+    (output_dir / "audit/source.txt").write_text("preserve me", encoding="utf-8")
+
+
+def _assert_unrelated_entries_preserved(output_dir: Path) -> None:
+    assert (output_dir / "review-notes.json").read_text(
+        encoding="utf-8"
+    ) == '{"keep": true}'
+    assert (output_dir / "audit/source.txt").read_text(encoding="utf-8") == "preserve me"
+
+
 def test_renderer_uses_repo_fonts_without_system_fallback(
     tmp_path, visual_plan, storyboard, asset_manifest
 ):
@@ -235,6 +248,134 @@ def test_temporary_html_cleanup_failure_preserves_existing_complete_output_set(
     _assert_existing_set_unchanged(output_dir, old)
 
 
+def test_successful_publication_preserves_non_renderer_owned_entries(
+    tmp_path, visual_plan, storyboard, asset_manifest
+):
+    from src.rendering.editorial.renderer import render_carousel
+
+    output_dir = tmp_path / "images"
+    old = _existing_complete_set(output_dir)
+    _add_unrelated_entries(output_dir)
+
+    render_carousel(
+        visual_plan,
+        storyboard,
+        asset_manifest,
+        output_dir,
+        playwright_factory=fake_playwright(FakePage()),
+    )
+
+    _assert_unrelated_entries_preserved(output_dir)
+    assert all(
+        (output_dir / name).read_bytes() != content for name, content in old.items()
+    )
+    assert not list(output_dir.parent.glob(f".{output_dir.name}.editorial-*"))
+
+
+def test_first_publication_replace_failure_leaves_previous_directory_intact(
+    tmp_path, visual_plan, storyboard, asset_manifest, monkeypatch
+):
+    from src.rendering.editorial import renderer
+
+    output_dir = tmp_path / "images"
+    old = _existing_complete_set(output_dir)
+    _add_unrelated_entries(output_dir)
+    original_replace = Path.replace
+
+    def fail_first_replace(path, target):
+        if path == output_dir:
+            raise OSError("first replace failed")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_first_replace)
+
+    with pytest.raises(renderer.EditorialCarouselRenderError, match="atomically publish"):
+        renderer.render_carousel(
+            visual_plan,
+            storyboard,
+            asset_manifest,
+            output_dir,
+            playwright_factory=fake_playwright(FakePage()),
+        )
+
+    _assert_existing_set_unchanged(output_dir, old)
+    _assert_unrelated_entries_preserved(output_dir)
+
+
+def test_second_publication_replace_failure_rolls_back_complete_previous_directory(
+    tmp_path, visual_plan, storyboard, asset_manifest, monkeypatch
+):
+    from src.rendering.editorial import renderer
+
+    output_dir = tmp_path / "images"
+    old = _existing_complete_set(output_dir)
+    _add_unrelated_entries(output_dir)
+    original_replace = Path.replace
+    calls = 0
+
+    def fail_second_replace(path, target):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("second replace failed")
+        return original_replace(path, target)
+
+    monkeypatch.setattr(Path, "replace", fail_second_replace)
+
+    with pytest.raises(renderer.EditorialCarouselRenderError, match="atomically publish"):
+        renderer.render_carousel(
+            visual_plan,
+            storyboard,
+            asset_manifest,
+            output_dir,
+            playwright_factory=fake_playwright(FakePage()),
+        )
+
+    assert calls == 3
+    _assert_existing_set_unchanged(output_dir, old)
+    _assert_unrelated_entries_preserved(output_dir)
+
+
+def test_partial_backup_retirement_keeps_new_committed_set_and_quarantines_residue(
+    tmp_path, visual_plan, storyboard, asset_manifest, monkeypatch
+):
+    from src.rendering.editorial import renderer
+
+    output_dir = tmp_path / "images"
+    old = _existing_complete_set(output_dir)
+    _add_unrelated_entries(output_dir)
+    original_rmtree = renderer.shutil.rmtree
+
+    def partially_fail_retirement(path, *args, **kwargs):
+        path = Path(path)
+        if path.name.endswith((".backup", ".quarantine")):
+            old_page = path / "01-cover.png"
+            if old_page.exists():
+                old_page.unlink()
+            raise OSError("backup retirement partially failed")
+        return original_rmtree(path, *args, **kwargs)
+
+    monkeypatch.setattr(renderer.shutil, "rmtree", partially_fail_retirement)
+
+    with pytest.warns(RuntimeWarning, match="quarantine"):
+        manifest = renderer.render_carousel(
+            visual_plan,
+            storyboard,
+            asset_manifest,
+            output_dir,
+            playwright_factory=fake_playwright(FakePage()),
+        )
+
+    assert all(Path(page.path).read_bytes() == b"fake png" for page in manifest.pages)
+    assert (output_dir / "contact-sheet.png").read_bytes() == b"fake png"
+    _assert_unrelated_entries_preserved(output_dir)
+    quarantines = list(
+        output_dir.parent.glob(f".{output_dir.name}.editorial-*.quarantine")
+    )
+    assert len(quarantines) == 1
+    assert not list(output_dir.parent.glob(f".{output_dir.name}.editorial-*.staging"))
+
+
 def test_renderer_rejects_plan_storyboard_drift_before_launch(
     tmp_path, visual_plan, storyboard, asset_manifest
 ):
@@ -256,6 +397,74 @@ def test_renderer_rejects_plan_storyboard_drift_before_launch(
         render_carousel(
             visual_plan,
             drifted,
+            asset_manifest,
+            tmp_path,
+            playwright_factory=lambda: pytest.fail("browser must not launch"),
+        )
+
+
+@pytest.mark.parametrize(
+    ("duplicate_in", "message"),
+    [
+        ("visual_plan", "visual plan has duplicate frame_id"),
+        ("storyboard", "storyboard has duplicate frame_id"),
+        ("both", "visual plan has duplicate frame_id"),
+    ],
+)
+def test_renderer_rejects_schema_valid_duplicate_frame_ids_before_browser_launch(
+    tmp_path,
+    visual_plan,
+    storyboard,
+    asset_manifest,
+    duplicate_in,
+    message,
+):
+    from src.rendering.editorial.renderer import (
+        EditorialCarouselRenderError,
+        render_carousel,
+    )
+    from src.schemas.storyboard import CarouselPayload
+    from src.schemas.visual_plan import VisualPlan
+
+    plan_data = visual_plan.model_dump(mode="python")
+    storyboard_data = storyboard.model_dump(mode="python")
+    if duplicate_in in {"visual_plan", "both"}:
+        plan_data["frame_plan"][1]["frame_id"] = plan_data["frame_plan"][0]["frame_id"]
+    if duplicate_in in {"storyboard", "both"}:
+        storyboard_data["storyboards"][1]["frame_id"] = storyboard_data[
+            "storyboards"
+        ][0]["frame_id"]
+    duplicate_plan = VisualPlan.model_validate(plan_data)
+    duplicate_storyboard = CarouselPayload.model_validate(storyboard_data)
+
+    with pytest.raises(EditorialCarouselRenderError, match=message):
+        render_carousel(
+            duplicate_plan,
+            duplicate_storyboard,
+            asset_manifest,
+            tmp_path,
+            playwright_factory=lambda: pytest.fail("browser must not launch"),
+        )
+
+
+def test_renderer_rejects_duplicate_visual_slot_ids_within_one_frame_before_browser(
+    tmp_path, visual_plan, storyboard, asset_manifest
+):
+    from src.rendering.editorial.renderer import (
+        EditorialCarouselRenderError,
+        render_carousel,
+    )
+    from src.schemas.storyboard import CarouselPayload
+
+    storyboard_data = storyboard.model_dump(mode="python")
+    duplicate_slot = dict(storyboard_data["storyboards"][0]["visual_slots"][0])
+    storyboard_data["storyboards"][0]["visual_slots"].append(duplicate_slot)
+    duplicate_storyboard = CarouselPayload.model_validate(storyboard_data)
+
+    with pytest.raises(EditorialCarouselRenderError, match="duplicate visual slot_id"):
+        render_carousel(
+            visual_plan,
+            duplicate_storyboard,
             asset_manifest,
             tmp_path,
             playwright_factory=lambda: pytest.fail("browser must not launch"),

@@ -4,6 +4,7 @@ import hashlib
 import re
 import shutil
 import uuid
+import warnings
 from html import escape
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
@@ -25,6 +26,7 @@ class EditorialCarouselRenderError(RuntimeError):
 
 
 _ROLE_SEPARATOR = re.compile(r"[^a-z0-9]+")
+_RENDERED_PAGE_NAME = re.compile(r"^\d{2}-.+\.png$")
 
 
 def _font_css() -> str:
@@ -239,6 +241,30 @@ def _resolve_storyboard_assets(
 def _assert_plan_matches_storyboard(
     visual_plan: VisualPlan, storyboard: CarouselPayload
 ) -> None:
+    seen_plan_ids: set[str] = set()
+    for frame in visual_plan.frame_plan:
+        if frame.frame_id in seen_plan_ids:
+            raise EditorialCarouselRenderError(
+                f"visual plan has duplicate frame_id: {frame.frame_id}"
+            )
+        seen_plan_ids.add(frame.frame_id)
+
+    seen_storyboard_ids: set[str] = set()
+    for frame in storyboard.storyboards:
+        if frame.frame_id in seen_storyboard_ids:
+            raise EditorialCarouselRenderError(
+                f"storyboard has duplicate frame_id: {frame.frame_id}"
+            )
+        seen_storyboard_ids.add(frame.frame_id)
+
+        seen_slot_ids: set[str] = set()
+        for slot in frame.visual_slots:
+            if slot.slot_id in seen_slot_ids:
+                raise EditorialCarouselRenderError(
+                    f"{frame.frame_id} has duplicate visual slot_id: {slot.slot_id}"
+                )
+            seen_slot_ids.add(slot.slot_id)
+
     planned = [
         (frame.frame_id, frame.role, frame.layout) for frame in visual_plan.frame_plan
     ]
@@ -300,9 +326,55 @@ def _discard_staging(
         ) from render_error
 
 
+def _is_renderer_owned_name(name: str) -> bool:
+    return (
+        name == "contact-sheet.png"
+        or _RENDERED_PAGE_NAME.fullmatch(name) is not None
+    )
+
+
+def _preserve_unrelated_entries(output_dir: Path, staging_dir: Path) -> None:
+    if not output_dir.exists():
+        return
+    if not output_dir.is_dir():
+        raise EditorialCarouselRenderError(
+            f"editorial output path is not a directory: {output_dir}"
+        )
+    for source in output_dir.iterdir():
+        if _is_renderer_owned_name(source.name):
+            continue
+        destination = staging_dir / source.name
+        if destination.exists() or destination.is_symlink():
+            raise EditorialCarouselRenderError(
+                f"preserved output entry would overwrite staged render: {source.name}"
+            )
+        try:
+            if source.is_symlink():
+                destination.symlink_to(
+                    source.readlink(), target_is_directory=source.is_dir()
+                )
+            elif source.is_dir():
+                shutil.copytree(source, destination, symlinks=True)
+            elif source.is_file():
+                shutil.copy2(source, destination, follow_symlinks=False)
+            else:
+                raise EditorialCarouselRenderError(
+                    f"cannot safely preserve special output entry: {source}"
+                )
+        except EditorialCarouselRenderError:
+            raise
+        except OSError as exc:
+            raise EditorialCarouselRenderError(
+                f"could not preserve output entry {source}: {exc}"
+            ) from exc
+
+
 def _publish_staging(staging_dir: Path, output_dir: Path, invocation: str) -> None:
     backup_dir = output_dir.parent / (
         f".{output_dir.name}.editorial-{invocation}.backup"
+    )
+    quarantine_dir = output_dir.parent / (
+        f".{output_dir.name}.editorial-{invocation}.quarantine"
     )
     previous_moved = False
     try:
@@ -320,23 +392,24 @@ def _publish_staging(staging_dir: Path, output_dir: Path, invocation: str) -> No
     if not previous_moved:
         return
     try:
-        shutil.rmtree(backup_dir)
+        backup_dir.replace(quarantine_dir)
     except OSError as exc:
-        rollback_error: OSError | None = None
-        try:
-            output_dir.replace(staging_dir)
-            backup_dir.replace(output_dir)
-            shutil.rmtree(staging_dir)
-        except OSError as rollback_exc:
-            rollback_error = rollback_exc
-        if rollback_error is not None:
-            raise EditorialCarouselRenderError(
-                "could not retire the previous editorial set or roll publication back: "
-                f"{exc}; rollback failed: {rollback_error}"
-            ) from exc
-        raise EditorialCarouselRenderError(
-            f"could not retire the previous editorial set; publication rolled back: {exc}"
-        ) from exc
+        warnings.warn(
+            "editorial publication committed, but previous output could not be moved "
+            f"to quarantine and remains at {backup_dir}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
+    try:
+        shutil.rmtree(quarantine_dir)
+    except OSError as exc:
+        warnings.warn(
+            "editorial publication committed; partial previous output remains in "
+            f"quarantine at {quarantine_dir}: {exc}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def _contact_sheet_html(page_paths: Sequence[Path]) -> str:
@@ -525,6 +598,7 @@ def render_carousel(
             contact_sheet_path=str(final_contact_sheet_path),
             source_asset_sha256=used_asset_hashes,
         )
+        _preserve_unrelated_entries(output_dir, staging_dir)
         _publish_staging(staging_dir, output_dir, invocation)
         return manifest
     except EditorialCarouselRenderError as render_error:
