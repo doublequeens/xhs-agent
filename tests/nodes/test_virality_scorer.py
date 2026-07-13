@@ -57,6 +57,11 @@ def test_virality_scorer_receives_content_contract(monkeypatch):
                         "screenshot_asset": "三步判断清单",
                         "proof_asset": "产品质地实拍",
                         "visual_mode": "text_plus_real_proof",
+                        "content_job": "save_and_check",
+                        "primary_visual_family": "saveable_reference",
+                        "primary_visual_subject": "checklist",
+                        "proof_mode": "product_texture",
+                        "recommended_frame_count": 6,
                     },
                 }
             ],

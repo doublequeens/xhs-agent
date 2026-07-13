@@ -1,67 +1,155 @@
-# Task 1 report: structured text-card contract
+# Task 1 report: strict editorial carousel contracts
 
-## Delivered
+## Implementation summary
 
-- Added a strict Pydantic text-card schema with six discriminated templates, fixed order, one-theme validation, and card-copy limits.
-- Re-exported the new payload from the storyboard schema module and package exports.
-- Replaced legacy three-field storyboard review text with `frame_id`, `template`, and precise `text_blocks` locations.
-- Added extraction and nested reapplication of visible text, including list entries such as `checklist_items[1]` and timeline fields such as `steps[1].hint`.
-- Updated R1/R2, human review, decision routing, policy scanning, and prompts to preserve and review every displayed text atom.
-- Replaced the storyboard generation prompt with the JSON-only six-card contract; the generator intentionally continues to pass model output through for deterministic QA.
+- Added strict Pydantic v2 contracts for visual plans, semantic storyboard frames, asset requirements/manifests/search reports, render manifests, and immutable ContentLock payloads.
+- Extended `ContentContract` with required editorial strategy fields and the 5-7 recommended-frame invariant.
+- Added optional typed `visual_plan`, `asset_manifest`, and `render_manifest` slots to `AgentState` without removing legacy slots.
+- Exported all new public contracts through `src.schemas`.
+- Kept the legacy `StoryboardFrame`/`StoryboardPayload` aliases on the old text-card contracts so Task 1 does not perform Task 2's graph migration.
+- Updated every test fixture that constructs a `ContentContract`, and updated the production Topic Ideator output contract so new model output must provide the required fields explicitly.
 
-## Verification
+## Files changed
 
-Focused required suite passed:
+Created:
+
+- `src/schemas/visual_plan.py`
+- `src/schemas/assets.py`
+- `src/schemas/render_manifest.py`
+- `src/schemas/content_lock.py`
+- `tests/schemas/test_editorial_carousel.py`
+
+Modified:
+
+- `src/schemas/storyboard.py`
+- `src/schemas/content_contract.py`
+- `src/schemas/agent_state.py`
+- `src/schemas/__init__.py`
+- `src/prompts/base/topic_ideator.txt`
+- `tests/domain/test_topic_metadata.py`
+- `tests/integration/test_beauty_account_workflow.py`
+- `tests/integration/test_domain_workflow.py`
+- `tests/nodes/test_carousel_qa.py`
+- `tests/nodes/test_content_writer.py`
+- `tests/nodes/test_evidence_brief.py`
+- `tests/nodes/test_final_policy_guard.py`
+- `tests/nodes/test_metadata_flow.py`
+- `tests/nodes/test_render_qa.py`
+- `tests/nodes/test_text_card_renderer.py`
+- `tests/nodes/test_topic_ideator.py`
+- `tests/nodes/test_virality_scorer.py`
+- `tests/schemas/test_content_contract.py`
+- `tests/schemas/test_topic_signal.py`
+- `tests/test_signal_driven_topic_generation_integration.py`
+- `tests/topic_signals/test_diversity.py`
+
+## RED evidence
+
+Command:
 
 ```text
-python -m pytest tests/schemas/test_text_card.py tests/nodes/test_metadata_flow.py tests/nodes/test_final_policy_guard.py -v
-47 passed, 1 warning
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/schemas/test_editorial_carousel.py -q
 ```
 
-Additional regression check:
+Exact output:
 
 ```text
-python -m pytest -q
-671 passed, 12 failed, 3 warnings
+==================================== ERRORS ====================================
+__________ ERROR collecting tests/schemas/test_editorial_carousel.py ___________
+ImportError while importing test module '/Users/qinqiang/Documents/Workspace/Projects/xhs-agent/.worktrees/editorial-carousel-workflow/tests/schemas/test_editorial_carousel.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/opt/anaconda3/envs/xhs-agent/lib/python3.12/importlib/__init__.py:90: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/schemas/test_editorial_carousel.py:6: in <module>
+    from src.schemas.assets import AssetManifest, AssetSearchReport
+E   ModuleNotFoundError: No module named 'src.schemas.assets'
+=========================== short test summary info ============================
+ERROR tests/schemas/test_editorial_carousel.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+1 error in 0.11s
 ```
 
-The 12 failures are outside Task 1: legacy carousel QA and integration tests still instantiate and assert the retired image-prompt/card-role schema. They are the follow-on deterministic carousel QA migration; no production workaround was added because Task 1 requires the old schema to be replaced.
+This was the expected RED: collection failed because the first required new schema module did not exist. The failure was caused by missing Task 1 production contracts, not by a test typo.
 
-## Notes
+## GREEN evidence
 
-- The sample headline/footer strings in the task brief were shorter than their stated limits, so the new schema tests use genuinely over-limit fixtures.
-- The focused generator test confirms malformed LLM output remains unvalidated at generation time, as required.
+New schema suite after implementation:
 
-## Review follow-up fixes
+```text
+$ /opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/schemas/test_editorial_carousel.py -q
+.......                                                                  [100%]
+7 passed in 0.05s
+```
 
-- Migrated deterministic carousel QA to the structured six-card contract. It now accepts a schema-valid `TextCardPayload` and produces distinct actionable tasks for invalid schema, exact six-card count, fixed template order, one-theme enforcement, cover-headline/first-screen-promise equality, and the required `saveable_checklist` template. Retired `card_role`, `on_image_copy`, `is_screenshot_asset`, per-card `visual_mode`, and image-prompt/decorative checks were removed.
-- Made visible-text reapplication frame-ID-only. A non-empty unknown `frame_id` now raises `ValueError` instead of falling back to the same list position; empty IDs are ignored rather than positionally applied.
-- Added `merge_storyboard_visible_text` and used it before R2 deterministic policy scanning, after R2 output parsing, and before regenerated storyboards consume an R2 patch. The merge starts from the complete visible-text snapshot, overlays only matching frame IDs and supplied block changes, and retains every prior display atom.
-- Replaced stale legacy carousel and integration fixtures with the real six-template payload. Added regression coverage for: valid structured carousel QA routing to human review; precise structured QA failures; unknown frame-ID rejection; regeneration retaining omitted checklist text; and a partial R2 payload retaining all six cards before scanning the dosage-bearing checklist atom.
+Required focused regression command, fresh final run:
 
-## Review follow-up verification
+```text
+$ /opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/schemas tests/domain/test_profiles.py tests/nodes/test_metadata_flow.py -q
+.......................................................                  [100%]
+55 passed in 2.41s
+```
 
-- RED: `python -m pytest tests/nodes/test_carousel_qa.py -v` initially produced `2 failed, 1 passed`; the valid six-card payload was rejected for retired `card_role`, `on_image_copy`, `is_screenshot_asset`, and `visual_mode` fields.
-- RED: `python -m pytest tests/nodes/test_final_policy_guard.py -v -k 'unknown_nonempty_frame_id or regenerated_storyboards_reapply_visible_text_patch or r2_merges_partial_visible_text'` initially produced `3 failed`; it demonstrated positional unknown-ID mutation and missing-card/atom retention.
-- GREEN regression check: the same focused final-policy command passed `3 passed, 1 warning`.
-- Required focused suite: `python -m pytest tests/schemas/test_text_card.py tests/nodes/test_metadata_flow.py tests/nodes/test_final_policy_guard.py tests/nodes/test_carousel_qa.py -v` passed `52 passed, 1 warning`.
-- Directly affected integration suites: `python -m pytest tests/integration/test_beauty_account_workflow.py tests/integration/test_domain_workflow.py -q` passed `10 passed, 2 warnings`.
-- Full suite: `python -m pytest -q` passed `682 passed, 3 warnings`.
+Diff hygiene:
 
-## Review follow-up warnings
+```text
+$ git diff --check
+```
 
-- The remaining warnings are pre-existing test-environment cleanup warnings plus the generator's intentional legacy-checkpoint fallback warning; no test failed.
+Exit code 0 with no output.
 
-## Re-review follow-up fixes
+## Full-suite result
 
-- Applied R2's complete frame-ID-addressed visible-text snapshot to regenerated storyboards even when there is no pending human publish patch. The human metadata patch remains conditional, but R2 text restoration is now part of every R2-backed regeneration.
-- Made `merge_storyboard_visible_text` reject every non-empty frame ID that is absent from the prior snapshot. Empty IDs are explicitly ignored because they cannot be safely bound to a card and never fall back to list position.
-- Exported `REQUIRED_TEXT_CARD_TEMPLATES` from the text-card schema and made carousel QA consume that single schema-owned sequence.
-- Added regressions for the normal no-human-patch R2 regeneration route, unknown-ID merge rejection, and empty-ID no-op behavior.
+Command:
 
-## Re-review follow-up verification
+```text
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest -q
+```
 
-- RED: `python -m pytest tests/nodes/test_final_policy_guard.py -v -k 'apply_complete_r2_visible_text_without_human_patch or visible_text_merge_rejects_unknown_frame_id'` produced `2 failed, 32 deselected, 1 warning`. It demonstrated that normal regeneration retained generator text and that the merge silently accepted an unknown ID.
-- GREEN regression check: the same focused command passed `2 passed, 32 deselected, 1 warning`.
-- Task 1 focused suite: `python -m pytest tests/schemas/test_text_card.py tests/nodes/test_metadata_flow.py tests/nodes/test_final_policy_guard.py tests/nodes/test_carousel_qa.py -v` passed `54 passed, 2 warnings`.
-- Full suite: `python -m pytest -q` passed `684 passed, 4 warnings`.
+Exact result summary from the fresh final run:
+
+```text
+........................................................................ [  9%]
+........................................................................ [ 19%]
+........................................................................ [ 28%]
+........................................................................ [ 38%]
+........................................................................ [ 48%]
+........................................................................ [ 57%]
+........................................................................ [ 67%]
+........................................................................ [ 77%]
+........................................................................ [ 86%]
+........................................................................ [ 96%]
+............................                                             [100%]
+=============================== warnings summary ===============================
+../../../../../../../../opt/anaconda3/envs/xhs-agent/lib/python3.12/site-packages/langgraph/checkpoint/serde/encrypted.py:5
+  /opt/anaconda3/envs/xhs-agent/lib/python3.12/site-packages/langgraph/checkpoint/serde/encrypted.py:5: LangChainPendingDeprecationWarning: The default value of `allowed_objects` will change in a future version. Pass an explicit value (e.g., allowed_objects='messages' or allowed_objects='core') to suppress this warning.
+    from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
+
+tests/nodes/test_final_policy_guard.py::test_regenerated_storyboards_reapply_visible_text_patch
+tests/nodes/test_final_policy_guard.py::test_regenerated_storyboards_apply_complete_r2_visible_text_without_human_patch
+  /Users/qinqiang/Documents/Workspace/Projects/xhs-agent/.worktrees/editorial-carousel-workflow/src/nodes/node_o_storyboards_generator.py:58: UserWarning: storyboards_generator is falling back to beauty-v1 for a legacy checkpoint without domain_context.
+    system_prompt = compose_prompt_for_state("storyboards_generator", state)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+748 passed, 3 warnings in 20.85s
+```
+
+Pytest also emitted two post-summary temporary-directory cleanup warnings (`OSError: [Errno 66] Directory not empty`) under macOS `/private/var/folders/.../pytest-of-qinqiang/garbage-*`; the command still exited 0.
+
+## Self-review
+
+- Confirmed all five `ContentJob` values, five `VisualFamily` values, and eleven `LayoutName` values match the task brief exactly.
+- Confirmed `VisualPlan.frame_plan` and `CarouselPayload.storyboards` enforce 5-7 items.
+- Confirmed arbitrary layouts, network URL fields, free CSS fields, and other extras are rejected by strict models.
+- Confirmed `ContentLock` is `extra="forbid"`, frozen, and requires a lowercase 64-character SHA-256 shape.
+- Confirmed `ContentContract` has no silent defaults for the five new fields and that `recommended_frame_count` is bounded 5-7.
+- Confirmed new state slots are `NotRequired[Optional[...]]` and no legacy state slots were removed.
+- Confirmed the graph/checkpoint compatibility behavior was not implemented; that remains Task 2.
+- Confirmed no resolver, renderer, QA, or publishing behavior from later tasks was introduced.
+- Confirmed the worktree started at the requested base commit `98dd8cad4ae9f5a0e5d103a63dcc28eab8d6897a`.
+
+## Concerns
+
+- No Task 1 implementation concerns.
+- The full suite has three pre-existing runtime warnings and two non-failing pytest temporary-directory cleanup warnings, recorded above.

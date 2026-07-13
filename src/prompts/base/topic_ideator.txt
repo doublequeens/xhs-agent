@@ -19,7 +19,7 @@ Topic Ideator
 - 不得输出疾病诊断、治疗方案、药物建议、检查指标解读或个体化处方。
 - target_group 必须逐字复制 Creator Profile 的 audience；它不是模型自由生成字段。
 - 每个主题必须包含 content_contract；其 audience 必须逐字复制 Creator Profile 的 audience，并与对应 brief.audience 完全一致。
-- content_contract 必须给出可执行的 trigger_situation、decision_problem、first_screen_promise、screenshot_asset、proof_asset 和 visual_mode。
+- content_contract 必须给出可执行的 trigger_situation、decision_problem、first_screen_promise、screenshot_asset、proof_asset、visual_mode、content_job、primary_visual_family、primary_visual_subject、proof_mode 和 recommended_frame_count；不得省略新增的视觉策略字段。
 - 如果无法提供具体可截图的 screenshot_asset，不得输出该主题。
 
 【输出格式】
@@ -45,7 +45,12 @@ Topic Ideator
       "first_screen_promise": "8-42 characters",
       "screenshot_asset": "string",
       "proof_asset": "string",
-      "visual_mode": "text_card | text_plus_real_proof | comparison_table"
+      "visual_mode": "text_card | text_plus_real_proof | comparison_table",
+      "content_job": "diagnose_and_adjust | follow_steps | compare_and_choose | save_and_check | understand_and_notice",
+      "primary_visual_family": "beauty_editorial | face_zone_map | step_flow | comparison_decision | saveable_reference",
+      "primary_visual_subject": "face_map | serum_texture | product_cutout | skin_macro | checklist | process",
+      "proof_mode": "diagram | real_photo | product_texture | comparison | none",
+      "recommended_frame_count": "integer, 5-7"
     },
     "creative_seed": {
       "signal_type": "seasonal | calendar | weather | creator_center | historical_pattern | weekday_rhythm | evergreen_context",

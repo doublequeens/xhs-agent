@@ -23,6 +23,9 @@ from .image_qa import FinalImages
 from .carousel_qa import CarouselQAResult
 from .render_qa import RenderQAResult
 from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
+from .assets import AssetManifest
+from .render_manifest import RenderManifest
+from .visual_plan import VisualPlan
 
 class AgentState(TypedDict):
     trends_num: int
@@ -58,6 +61,9 @@ class AgentState(TypedDict):
     image_scripts: ImageScriptList
     image_candidates: ImageCandidates
     final_images: FinalImages
+    visual_plan: NotRequired[Optional[VisualPlan]]
+    asset_manifest: NotRequired[Optional[AssetManifest]]
+    render_manifest: NotRequired[Optional[RenderManifest]]
     carousel_qa_result: NotRequired[Optional[CarouselQAResult]]
     render_qa_result: NotRequired[Optional[RenderQAResult]]
     publish_package: dict

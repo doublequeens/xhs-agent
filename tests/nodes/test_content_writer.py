@@ -56,6 +56,11 @@ def _publish_package(**overrides):
             "screenshot_asset": "步骤清单截图",
             "proof_asset": "执行前后对比",
             "visual_mode": "text_card",
+            "content_job": "save_and_check",
+            "primary_visual_family": "saveable_reference",
+            "primary_visual_subject": "checklist",
+            "proof_mode": "diagram",
+            "recommended_frame_count": 6,
         },
     }
     package.update(overrides)
@@ -78,6 +83,11 @@ def _topic(topic_id="tp_001"):
             "screenshot_asset": "步骤清单截图",
             "proof_asset": "执行前后对比",
             "visual_mode": "text_card",
+            "content_job": "save_and_check",
+            "primary_visual_family": "saveable_reference",
+            "primary_visual_subject": "checklist",
+            "proof_mode": "diagram",
+            "recommended_frame_count": 6,
         },
     )
 

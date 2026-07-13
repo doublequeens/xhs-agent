@@ -32,6 +32,11 @@ class FakeModel:
                     "screenshot_asset": "防晒霜与粉底的上脸对比",
                     "proof_asset": "不同用量的搓泥对比图",
                     "visual_mode": "text_plus_real_proof",
+                    "content_job": "diagnose_and_adjust",
+                    "primary_visual_family": "face_zone_map",
+                    "primary_visual_subject": "face_map",
+                    "proof_mode": "product_texture",
+                    "recommended_frame_count": 6,
                 },
                 "creative_seed": {
                     "signal_type": "weather",

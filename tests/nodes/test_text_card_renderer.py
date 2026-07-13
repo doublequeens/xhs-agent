@@ -10,6 +10,11 @@ def _contract():
         "screenshot_asset": "防晒与底妆搭配清单",
         "proof_asset": "产品质地实拍",
         "visual_mode": "text_card",
+        "content_job": "diagnose_and_adjust",
+        "primary_visual_family": "face_zone_map",
+        "primary_visual_subject": "face_map",
+        "proof_mode": "product_texture",
+        "recommended_frame_count": 6,
     }
 
 

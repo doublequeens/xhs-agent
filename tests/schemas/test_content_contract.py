@@ -15,4 +15,9 @@ def test_content_contract_requires_first_screen_and_screenshot_asset():
             screenshot_asset="",
             proof_asset="质地对比图",
             visual_mode="text_plus_real_proof",
+            content_job="diagnose_and_adjust",
+            primary_visual_family="face_zone_map",
+            primary_visual_subject="face_map",
+            proof_mode="product_texture",
+            recommended_frame_count=6,
         )

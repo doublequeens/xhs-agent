@@ -29,7 +29,24 @@ from .text_card import (
     TimelineStep,
     WrongVsRightFrame,
 )
-from .storyboard import StoryboardFrame, StoryboardPayload
+from .assets import (
+    AssetManifest,
+    AssetManifestItem,
+    AssetRequirement,
+    AssetSearchReport,
+    ProviderSearchReport,
+)
+from .content_lock import ContentLock
+from .render_manifest import FontLoadReport, RenderedPage, RenderManifest
+from .storyboard import (
+    CarouselFrame,
+    CarouselPayload,
+    ContentBlock,
+    StoryboardFrame,
+    StoryboardPayload,
+    VisualSlot,
+)
+from .visual_plan import ContentJob, FramePlanItem, LayoutName, VisualFamily, VisualPlan
 from .render_qa import RenderQAIssue, RenderQAResult
 
 
@@ -54,6 +71,11 @@ __all__ = [
     "HashTagOutput",
     "FinalImages", "FinalImageItem",
     "StoryboardFrame", "StoryboardPayload",
+    "CarouselFrame", "CarouselPayload", "ContentBlock", "VisualSlot",
+    "ContentJob", "VisualFamily", "LayoutName", "FramePlanItem", "VisualPlan",
+    "AssetRequirement", "AssetManifestItem", "AssetManifest",
+    "ProviderSearchReport", "AssetSearchReport",
+    "RenderedPage", "FontLoadReport", "RenderManifest", "ContentLock",
     "TextCardFrame", "TextCardPayload", "TimelineStep",
     "REQUIRED_TEXT_CARD_TEMPLATES",
     "CoverStatementFrame", "WrongVsRightFrame", "StepTimelineFrame", "DecisionCondition",
