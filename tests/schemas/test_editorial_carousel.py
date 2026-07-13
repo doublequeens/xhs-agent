@@ -250,6 +250,16 @@ def test_carousel_payload_requires_five_to_seven_frames():
         CarouselPayload.model_validate({"storyboards": ZONE_STORYBOARD[:4]})
 
 
+def test_carousel_payload_rejects_cross_frame_duplicate_visual_slot_id():
+    frames = deepcopy(ZONE_STORYBOARD)
+    frames[1]["visual_slots"][0]["slot_id"] = frames[0]["visual_slots"][0][
+        "slot_id"
+    ]
+
+    with pytest.raises(ValidationError):
+        CarouselPayload.model_validate({"storyboards": frames})
+
+
 @pytest.mark.parametrize(
     "layouts",
     [
@@ -317,6 +327,51 @@ def test_render_manifest_requires_durable_page_probe_and_artifact_evidence():
                 "pages": pages,
                 "fonts": {"all_loaded": True, "computed_families": []},
                 "contact_sheet_path": "contact-sheet.png",
+                "source_asset_sha256": {},
+            }
+        )
+
+
+def test_page_probe_asset_slot_ids_are_unique():
+    pages = _render_pages()
+    geometry = {
+        "slot_id": "cover-visual",
+        "natural_width": 1080,
+        "natural_height": 1440,
+        "rendered_width": 360,
+        "rendered_height": 480,
+        "object_fit": "contain",
+        "cropped": False,
+        "aspect_ratio_error": 0,
+    }
+    pages[0]["probe"]["asset_results"] = [geometry, deepcopy(geometry)]
+
+    with pytest.raises(ValidationError):
+        RenderManifest.model_validate(
+            {
+                "pages": pages,
+                "fonts": {"all_loaded": True, "computed_families": []},
+                "contact_sheet_path": "contact-sheet.png",
+                "contact_sheet_sha256": "f" * 64,
+                "contact_sheet_page_sha256": [page["sha256"] for page in pages],
+                "source_asset_sha256": {},
+            }
+        )
+
+
+def test_contact_sheet_page_hash_binding_requires_strict_sha256_values():
+    pages = _render_pages()
+    hashes = [page["sha256"] for page in pages]
+    hashes[2] = "not-a-sha256"
+
+    with pytest.raises(ValidationError):
+        RenderManifest.model_validate(
+            {
+                "pages": pages,
+                "fonts": {"all_loaded": True, "computed_families": []},
+                "contact_sheet_path": "contact-sheet.png",
+                "contact_sheet_sha256": "f" * 64,
+                "contact_sheet_page_sha256": hashes,
                 "source_asset_sha256": {},
             }
         )

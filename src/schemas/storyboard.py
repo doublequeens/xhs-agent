@@ -51,6 +51,11 @@ class CarouselPayload(StrictModel):
     @model_validator(mode="after")
     def require_editorial_frame_composition(self):
         _validate_editorial_frame_layouts(self.storyboards)
+        slot_ids = [
+            slot.slot_id for frame in self.storyboards for slot in frame.visual_slots
+        ]
+        if len(slot_ids) != len(set(slot_ids)):
+            raise ValueError("storyboard visual slot IDs must be globally unique")
         return self
 
 

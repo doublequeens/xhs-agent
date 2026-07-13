@@ -120,18 +120,279 @@ def _expected_probe_text(frame: Any) -> list[tuple[str, str]]:
     return values
 
 
-def _frame_by_slot(frames: list[Any]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for frame in frames:
-        for slot in _as_list(frame, "visual_slots"):
-            slot_id = _get_value(slot, "slot_id")
-            if isinstance(slot_id, str) and slot_id:
-                result[slot_id] = frame
-    return result
+def _storyboard_slot_audit(
+    frames: list[Any],
+) -> tuple[
+    list[RenderQAIssue],
+    dict[str, list[tuple[int, int, Any, Any]]],
+    set[str],
+]:
+    occurrences: dict[str, list[tuple[int, int, Any, Any]]] = {}
+    for frame_index, frame in enumerate(frames):
+        for slot_index, slot in enumerate(_as_list(frame, "visual_slots")):
+            slot_id = str(_get_value(slot, "slot_id") or "")
+            if not slot_id:
+                continue
+            occurrences.setdefault(slot_id, []).append(
+                (frame_index, slot_index, frame, slot)
+            )
+    duplicate_ids = {
+        slot_id for slot_id, values in occurrences.items() if len(values) > 1
+    }
+    issues = [
+        _issue(
+            "duplicate_storyboard_slot_id",
+            "Storyboard slot IDs must be unique across the carousel before asset mapping.",
+            f"storyboards[{frame_index}].visual_slots[{slot_index}].slot_id",
+            frame_id=str(_get_value(frame, "frame_id") or "") or None,
+        )
+        for slot_id, values in occurrences.items()
+        if slot_id in duplicate_ids
+        for frame_index, slot_index, frame, _slot in values[1:]
+    ]
+    return issues, occurrences, duplicate_ids
+
+
+def _probe_attestation_issues(
+    frame: Any,
+    page: Any,
+    page_index: int,
+    duplicate_storyboard_slot_ids: set[str],
+) -> list[RenderQAIssue]:
+    issues: list[RenderQAIssue] = []
+    frame_id = str(_get_value(frame, "frame_id") or "") or None
+    probe = _get_value(page, "probe")
+    base = f"render_manifest.pages[{page_index}].probe"
+    if probe is None:
+        return [
+            _issue(
+                "page_probe_missing",
+                "Every rendered page requires persisted probe attestation.",
+                base,
+                frame_id=frame_id,
+            )
+        ]
+
+    if (
+        _get_value(probe, "canvas_width") != 1080
+        or _get_value(probe, "canvas_height") != 1440
+    ):
+        issues.append(
+            _issue(
+                "probe_canvas_geometry_mismatch",
+                "Persisted probe canvas must be exactly 1080x1440.",
+                f"{base}.canvas_width",
+                frame_id=frame_id,
+            )
+        )
+    if float(_get_value(probe, "safe_margin") or 0) != 84.0:
+        issues.append(
+            _issue(
+                "probe_safe_margin_mismatch",
+                "Persisted probe safe margin must equal the 84px design token.",
+                f"{base}.safe_margin",
+                frame_id=frame_id,
+            )
+        )
+
+    texts = _as_list(probe, "text_results")
+    actual_text = [
+        (str(_get_value(text, "role") or ""), str(_get_value(text, "text") or ""))
+        for text in texts
+    ]
+    if actual_text != _expected_probe_text(frame):
+        issues.append(
+            _issue(
+                "rendered_visible_text_mismatch",
+                "Persisted rendered visible text must exactly equal storyboard strings.",
+                f"{base}.text_results",
+                frame_id=frame_id,
+            )
+        )
+    for text_index, text in enumerate(texts):
+        text_location = f"{base}.text_results[{text_index}]"
+        role = str(_get_value(text, "role") or "")
+        if (
+            _get_value(text, "visible") is not True
+            or _get_value(text, "overflow") is True
+            or _get_value(text, "ink_clipped") is True
+            or _get_value(text, "layout_clipped") is True
+        ):
+            issues.append(
+                _issue(
+                    "text_overflow",
+                    "Persisted probe found hidden, overflowing, or clipped copy.",
+                    text_location,
+                    frame_id=frame_id,
+                )
+            )
+        expected_family = (
+            "Source Han Serif SC" if role == "headline" else "Source Han Sans SC"
+        )
+        if _get_value(text, "font_family") != expected_family:
+            issues.append(
+                _issue(
+                    "text_font_family_mismatch",
+                    "Persisted text must use the exact role-specific repository font.",
+                    f"{text_location}.font_family",
+                    frame_id=frame_id,
+                )
+            )
+        font_size = float(_get_value(text, "font_size") or 0)
+        if role == "headline" and not 40 <= font_size <= 72:
+            issues.append(
+                _issue(
+                    "text_font_size_token_invalid",
+                    "Headline font size is outside the approved editorial token range.",
+                    f"{text_location}.font_size",
+                    frame_id=frame_id,
+                )
+            )
+        if (role.endswith(".body") or ".items[" in role) and font_size:
+            ratio = float(_get_value(text, "line_height") or 0) / font_size
+            if not 1.4 <= ratio <= 1.5:
+                issues.append(
+                    _issue(
+                        "body_line_height_invalid",
+                        "Body copy line height must remain between 1.4 and 1.5.",
+                        f"{text_location}.line_height",
+                        frame_id=frame_id,
+                    )
+                )
+        if role == "headline" and int(_get_value(text, "line_count") or 0) > 2:
+            issues.append(
+                _issue(
+                    "headline_line_count_invalid",
+                    "Headline must render in at most two lines.",
+                    f"{text_location}.line_count",
+                    frame_id=frame_id,
+                )
+            )
+        x = float(_get_value(text, "x") or 0)
+        y = float(_get_value(text, "y") or 0)
+        width = float(_get_value(text, "width") or 0)
+        height = float(_get_value(text, "height") or 0)
+        if x < 0 or y < 0 or x + width > 1080 or y + height > 1440:
+            issues.append(
+                _issue(
+                    "text_geometry_out_of_canvas",
+                    "Persisted text geometry must remain inside the exact canvas.",
+                    text_location,
+                    frame_id=frame_id,
+                )
+            )
+
+    for issue_index, finding in enumerate(_as_list(probe, "issues")):
+        issues.append(
+            _issue(
+                "render_token_violation",
+                f"Persisted page probe failed: {finding}.",
+                f"{base}.issues[{issue_index}]",
+                frame_id=frame_id,
+            )
+        )
+
+    asset_results = _as_list(probe, "asset_results")
+    result_occurrences: dict[str, list[tuple[int, Any]]] = {}
+    for result_index, result in enumerate(asset_results):
+        slot_id = str(_get_value(result, "slot_id") or "")
+        result_occurrences.setdefault(slot_id, []).append((result_index, result))
+    duplicate_probe_ids = {
+        slot_id
+        for slot_id, values in result_occurrences.items()
+        if len(values) > 1
+    }
+    for slot_id, values in result_occurrences.items():
+        if slot_id not in duplicate_probe_ids:
+            continue
+        for result_index, _result in values[1:]:
+            issues.append(
+                _issue(
+                    "duplicate_probe_asset_slot_id",
+                    "Page probe asset slot IDs must be unique.",
+                    f"{base}.asset_results[{result_index}].slot_id",
+                    frame_id=frame_id,
+                )
+            )
+
+    expected_ids = {
+        str(_get_value(slot, "slot_id") or "")
+        for slot in _as_list(frame, "visual_slots")
+        if str(_get_value(slot, "slot_id") or "")
+        not in duplicate_storyboard_slot_ids
+    }
+    actual_unique_ids = set(result_occurrences) - duplicate_probe_ids
+    for slot_id in sorted(expected_ids - actual_unique_ids - duplicate_probe_ids):
+        issues.append(
+            _issue(
+                "probe_asset_slot_missing",
+                "Page probe is missing the storyboard asset slot.",
+                f"{base}.asset_results.{slot_id}",
+                frame_id=frame_id,
+            )
+        )
+    for result_index, result in enumerate(asset_results):
+        slot_id = str(_get_value(result, "slot_id") or "")
+        if slot_id not in expected_ids and slot_id not in duplicate_storyboard_slot_ids:
+            issues.append(
+                _issue(
+                    "unexpected_probe_asset_slot",
+                    "Page probe contains an asset slot absent from the storyboard frame.",
+                    f"{base}.asset_results[{result_index}].slot_id",
+                    frame_id=frame_id,
+                )
+            )
+
+    for slot_id in sorted(expected_ids & actual_unique_ids):
+        result_index, result = result_occurrences[slot_id][0]
+        result_location = f"{base}.asset_results[{result_index}]"
+        natural_ratio = float(_get_value(result, "natural_width")) / float(
+            _get_value(result, "natural_height")
+        )
+        rendered_ratio = float(_get_value(result, "rendered_width")) / float(
+            _get_value(result, "rendered_height")
+        )
+        recomputed_error = abs(rendered_ratio - natural_ratio) / natural_ratio
+        claimed_error = float(_get_value(result, "aspect_ratio_error") or 0)
+        if abs(claimed_error - recomputed_error) > 1e-6:
+            issues.append(
+                _issue(
+                    "asset_aspect_ratio_attestation_mismatch",
+                    "Persisted aspect-ratio error must match raw measured geometry.",
+                    f"{result_location}.aspect_ratio_error",
+                    frame_id=frame_id,
+                )
+            )
+        expected_cropped = _get_value(result, "object_fit") == "cover"
+        if _get_value(result, "cropped") is not expected_cropped:
+            issues.append(
+                _issue(
+                    "asset_crop_attestation_mismatch",
+                    "Persisted crop flag must match the raw object-fit token.",
+                    f"{result_location}.cropped",
+                    frame_id=frame_id,
+                )
+            )
+        if (
+            recomputed_error > 0.01
+            or _get_value(result, "object_fit") != "contain"
+            or expected_cropped
+        ):
+            issues.append(
+                _issue(
+                    "asset_render_stretched",
+                    "Raw DOM geometry indicates crop or aspect-ratio distortion.",
+                    result_location,
+                    frame_id=frame_id,
+                )
+            )
+    return issues
 
 
 def _manifest_page_issues(
-    frames: list[Any], render_manifest: Any
+    frames: list[Any],
+    render_manifest: Any,
+    duplicate_storyboard_slot_ids: set[str],
 ) -> list[RenderQAIssue]:
     issues: list[RenderQAIssue] = []
     pages = _as_list(render_manifest, "pages")
@@ -213,55 +474,11 @@ def _manifest_page_issues(
                     )
                 )
 
-        probe = _get_value(page, "probe")
-        if probe is None:
-            issues.append(
-                _issue(
-                    "page_probe_missing",
-                    "Every rendered page requires persisted probe attestation.",
-                    f"render_manifest.pages[{index}].probe",
-                    frame_id=frame_id,
-                )
+        issues.extend(
+            _probe_attestation_issues(
+                frame, page, index, duplicate_storyboard_slot_ids
             )
-            continue
-        texts = _as_list(probe, "text_results")
-        actual_text = [
-            (str(_get_value(text, "role") or ""), str(_get_value(text, "text") or ""))
-            for text in texts
-        ]
-        if actual_text != _expected_probe_text(frame):
-            issues.append(
-                _issue(
-                    "rendered_visible_text_mismatch",
-                    "Persisted rendered visible text must exactly equal storyboard strings.",
-                    f"render_manifest.pages[{index}].probe.text_results",
-                    frame_id=frame_id,
-                )
-            )
-        for text_index, text in enumerate(texts):
-            if (
-                _get_value(text, "visible") is not True
-                or _get_value(text, "overflow") is True
-                or _get_value(text, "ink_clipped") is True
-                or _get_value(text, "layout_clipped") is True
-            ):
-                issues.append(
-                    _issue(
-                        "text_overflow",
-                        "Persisted probe found hidden, overflowing, or clipped copy.",
-                        f"render_manifest.pages[{index}].probe.text_results[{text_index}]",
-                        frame_id=frame_id,
-                    )
-                )
-        for issue_index, finding in enumerate(_as_list(probe, "issues")):
-            issues.append(
-                _issue(
-                    "render_token_violation",
-                    f"Persisted page probe failed: {finding}.",
-                    f"render_manifest.pages[{index}].probe.issues[{issue_index}]",
-                    frame_id=frame_id,
-                )
-            )
+        )
 
     if len(pages) > len(frames):
         for index in range(len(frames), len(pages)):
@@ -295,13 +512,26 @@ def _asset_issues(
     asset_manifest: Any,
     render_manifest: Any,
     visual_plan: Any = None,
+    storyboard_slot_occurrences: dict[
+        str, list[tuple[int, int, Any, Any]]
+    ] | None = None,
+    duplicate_storyboard_slot_ids: set[str] | None = None,
 ) -> list[RenderQAIssue]:
     issues: list[RenderQAIssue] = []
     items = _as_list(asset_manifest, "items")
-    seen_slots: set[Any] = set()
-    for index, item in enumerate(items):
-        slot_id = _get_value(item, "slot_id")
-        if slot_id in seen_slots:
+    storyboard_slot_occurrences = storyboard_slot_occurrences or {}
+    duplicate_storyboard_slot_ids = duplicate_storyboard_slot_ids or set()
+    item_occurrences: dict[str, list[tuple[int, Any]]] = {}
+    for item_index, item in enumerate(items):
+        slot_id = str(_get_value(item, "slot_id") or "")
+        item_occurrences.setdefault(slot_id, []).append((item_index, item))
+    duplicate_item_slot_ids = {
+        slot_id for slot_id, values in item_occurrences.items() if len(values) > 1
+    }
+    for slot_id, values in item_occurrences.items():
+        if slot_id not in duplicate_item_slot_ids:
+            continue
+        for index, _item in values[1:]:
             issues.append(
                 _issue(
                     "duplicate_asset_manifest_slot_id",
@@ -309,18 +539,26 @@ def _asset_issues(
                     f"asset_manifest.items[{index}].slot_id",
                 )
             )
-        else:
-            seen_slots.add(slot_id)
-    if issues:
-        return issues
-
-    item_by_slot = {_get_value(item, "slot_id"): item for item in items}
-    frame_by_slot = _frame_by_slot(frames)
+    auditable_items = [
+        values[0]
+        for slot_id, values in item_occurrences.items()
+        if slot_id not in duplicate_item_slot_ids
+    ]
+    item_by_slot = {
+        slot_id: values[0][1]
+        for slot_id, values in item_occurrences.items()
+        if slot_id not in duplicate_item_slot_ids
+    }
+    frame_by_slot = {
+        slot_id: values[0][2]
+        for slot_id, values in storyboard_slot_occurrences.items()
+        if slot_id not in duplicate_storyboard_slot_ids
+    }
     rendered_hashes = _get_value(render_manifest, "source_asset_sha256", {})
     if not isinstance(rendered_hashes, dict):
         rendered_hashes = {}
 
-    for index, item in enumerate(items):
+    for index, item in auditable_items:
         slot_id = str(_get_value(item, "slot_id") or "")
         frame = frame_by_slot.get(slot_id)
         frame_id = str(_get_value(frame, "frame_id") or "") or None
@@ -438,39 +676,34 @@ def _asset_issues(
                         )
                     )
 
-        frame_index = next(
-            (
-                candidate_index
-                for candidate_index, candidate in enumerate(frames)
-                if candidate is frame
-            ),
-            None,
+        frame_index = (
+            storyboard_slot_occurrences[slot_id][0][0]
+            if slot_id in storyboard_slot_occurrences
+            and slot_id not in duplicate_storyboard_slot_ids
+            else None
         )
         pages = _as_list(render_manifest, "pages")
         if frame_index is not None and frame_index < len(pages):
             probe = _get_value(pages[frame_index], "probe")
             probe_assets = [
-                result
-                for result in _as_list(probe, "asset_results")
+                (result_index, result)
+                for result_index, result in enumerate(
+                    _as_list(probe, "asset_results")
+                )
                 if _get_value(result, "slot_id") == slot_id
             ]
             if len(probe_assets) == 1:
-                result = probe_assets[0]
+                result_index, result = probe_assets[0]
                 natural = (
                     _get_value(result, "natural_width"),
                     _get_value(result, "natural_height"),
                 )
-                if (
-                    natural != intrinsic
-                    or _get_value(result, "object_fit") != "contain"
-                    or _get_value(result, "cropped") is not False
-                    or float(_get_value(result, "aspect_ratio_error") or 0) > 0.01
-                ):
+                if natural != intrinsic:
                     issues.append(
                         _issue(
-                            "asset_render_stretched",
-                            "Persisted DOM asset geometry indicates crop or aspect-ratio distortion.",
-                            f"render_manifest.pages[{frame_index}].probe.asset_results",
+                            "asset_probe_natural_dimensions_mismatch",
+                            "Persisted DOM natural dimensions must match decoded source bytes.",
+                            f"render_manifest.pages[{frame_index}].probe.asset_results[{result_index}].natural_width",
                             frame_id=frame_id,
                         )
                     )
@@ -479,6 +712,8 @@ def _asset_issues(
         frame_id = str(_get_value(frame, "frame_id") or "") or None
         item = item_by_slot.get(slot_id)
         if item is None:
+            if slot_id in duplicate_item_slot_ids:
+                continue
             issues.append(
                 _issue(
                     "asset_manifest_slot_missing",
@@ -566,10 +801,28 @@ def validate_render(
 
     raw_frames = package.get("storyboards")
     frames = raw_frames if isinstance(raw_frames, list) else []
-    issues: list[RenderQAIssue] = []
-    issues.extend(_manifest_page_issues(frames, render_manifest))
+    (
+        storyboard_slot_issues,
+        storyboard_slot_occurrences,
+        duplicate_storyboard_slot_ids,
+    ) = _storyboard_slot_audit(frames)
+    issues: list[RenderQAIssue] = list(storyboard_slot_issues)
+    issues.extend(
+        _manifest_page_issues(
+            frames, render_manifest, duplicate_storyboard_slot_ids
+        )
+    )
     issues.extend(_font_issues(render_manifest))
-    issues.extend(_asset_issues(frames, asset_manifest, render_manifest, visual_plan))
+    issues.extend(
+        _asset_issues(
+            frames,
+            asset_manifest,
+            render_manifest,
+            visual_plan,
+            storyboard_slot_occurrences,
+            duplicate_storyboard_slot_ids,
+        )
+    )
     issues.extend(_contact_sheet_issues(render_manifest))
     render_error = package.get("render_error")
     if render_error:
@@ -996,8 +1249,15 @@ def render_qa_node(state: AgentState) -> dict:
             issues = validate_render(
                 package, asset_manifest, render_manifest, visual_plan
             )
-            metrics = _quality_proxy_metrics(
-                package, asset_manifest, render_manifest, visual_plan
+            metrics = (
+                {
+                    "metrics_available": True,
+                    **_quality_proxy_metrics(
+                        package, asset_manifest, render_manifest, visual_plan
+                    ),
+                }
+                if not issues
+                else {}
             )
         else:
             metrics = {}

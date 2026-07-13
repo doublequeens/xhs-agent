@@ -447,7 +447,9 @@ def test_quality_proxy_hierarchy_is_not_a_relabelled_hard_failure_count(tmp_path
     degraded = render_qa_node(state)["render_qa_result"]
 
     assert degraded.passed is False
-    assert degraded.visual_hierarchy == baseline.visual_hierarchy
+    assert baseline.metrics_available is True
+    assert degraded.metrics_available is False
+    assert degraded.visual_hierarchy is None
 
 
 def test_render_qa_rejects_truncated_png_with_valid_ihdr_prefix(tmp_path):
@@ -800,6 +802,11 @@ def _metric_result(package, assets, manifest, plan=None):
     )["render_qa_result"]
 
 
+def _assert_proxy_available(*results):
+    assert all(result.passed is True for result in results)
+    assert all(result.metrics_available is True for result in results)
+
+
 def test_proxy_editorial_quality_rewards_lower_measured_text_density(tmp_path):
     package, assets, manifest = _fixtures(tmp_path)
     manifest = _manifest_with_probes(manifest, package)
@@ -810,6 +817,7 @@ def test_proxy_editorial_quality_rewards_lower_measured_text_density(tmp_path):
     dense_manifest = _manifest_with_probes(manifest, dense_package)
     dense = _metric_result(dense_package, assets, dense_manifest)
 
+    _assert_proxy_available(concise, dense)
     assert concise.editorial_quality > dense.editorial_quality
 
 
@@ -839,6 +847,7 @@ def test_proxy_beauty_category_fit_rewards_asset_dimension_headroom(tmp_path):
         package, assets, _manifest_with_probes(manifest, package, assets=assets)
     )
 
+    _assert_proxy_available(baseline, headroom)
     assert headroom.beauty_category_fit > baseline.beauty_category_fit
 
 
@@ -855,6 +864,7 @@ def test_proxy_visual_hierarchy_rewards_headline_body_scale_separation(tmp_path)
         _manifest_with_probes(manifest, package, headline_size=64.0, body_size=29.0),
     )
 
+    _assert_proxy_available(flat, hierarchical)
     assert hierarchical.visual_hierarchy > flat.visual_hierarchy
 
 
@@ -876,6 +886,7 @@ def test_proxy_saveability_rewards_more_actionable_checklist_items(tmp_path):
         rich_package, assets, _manifest_with_probes(manifest, rich_package)
     )
 
+    _assert_proxy_available(sparse, rich)
     assert rich.saveability > sparse.saveability
 
 
@@ -891,6 +902,7 @@ def test_proxy_cross_page_consistency_penalizes_measured_type_scale_variance(tmp
     consistent = _metric_result(package, assets, consistent_manifest)
     varied = _metric_result(package, assets, varied_manifest)
 
+    _assert_proxy_available(consistent, varied)
     assert consistent.cross_page_consistency > varied.cross_page_consistency
 
 
@@ -898,12 +910,39 @@ def test_proxy_template_stiffness_penalizes_nonadjacent_layout_reuse(tmp_path):
     package, assets, manifest = _fixtures(tmp_path)
     diverse = _metric_result(package, assets, _manifest_with_probes(manifest, package))
     repeated_package = deepcopy(package)
-    repeated_package["storyboards"][4]["layout"] = repeated_package["storyboards"][1]["layout"]
+    repeated_plan = deepcopy(_plan())
+    repeated_package["storyboards"][1]["layout"] = "three_state_diagnostic"
+    repeated_package["storyboards"][1]["visual_slots"][0]["role"] = "comparison"
+    repeated_plan.frame_plan[1].layout = "three_state_diagnostic"
+    repeated_plan.frame_plan[1].asset_roles = ["comparison"]
+    slot_id = repeated_package["storyboards"][1]["visual_slots"][0]["slot_id"]
+    requirement = next(
+        item for item in repeated_plan.required_assets if item.slot_id == slot_id
+    )
+    requirement.layout = "three_state_diagnostic"
+    requirement.role = "skin_detail"
+    repeated_items = list(assets.items)
+    item_index = next(
+        index for index, item in enumerate(repeated_items) if item.slot_id == slot_id
+    )
+    repeated_items[item_index] = repeated_items[item_index].model_copy(
+        update={"layout": "three_state_diagnostic", "role": "skin_detail"}
+    )
+    repeated_assets = assets.model_copy(update={"items": repeated_items})
+    repeated_pages = list(manifest.pages)
+    repeated_pages[1] = repeated_pages[1].model_copy(
+        update={"layout": "three_state_diagnostic"}
+    )
+    repeated_manifest = manifest.model_copy(update={"pages": repeated_pages})
 
     repeated = _metric_result(
-        repeated_package, assets, _manifest_with_probes(manifest, repeated_package)
+        repeated_package,
+        repeated_assets,
+        _manifest_with_probes(repeated_manifest, repeated_package),
+        repeated_plan,
     )
 
+    _assert_proxy_available(diverse, repeated)
     assert repeated.template_stiffness > diverse.template_stiffness
 
 
@@ -963,3 +1002,174 @@ def test_render_qa_uses_persisted_dom_geometry_for_stretch_detection(tmp_path):
     assert any(
         issue.rule_id == "asset_render_stretched" for issue in result.issues
     )
+
+
+def _probe_dict(page):
+    probe = page.probe
+    return probe.model_dump(mode="python") if hasattr(probe, "model_dump") else deepcopy(probe)
+
+
+def test_probe_assets_must_match_each_frame_slots_exactly_once(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    pages = list(manifest.pages)
+
+    missing_probe = _probe_dict(pages[0])
+    missing_probe["asset_results"] = []
+    pages[0] = pages[0].model_copy(update={"probe": missing_probe})
+
+    duplicate_probe = _probe_dict(pages[1])
+    duplicate_probe["asset_results"].append(
+        deepcopy(duplicate_probe["asset_results"][0])
+    )
+    pages[1] = pages[1].model_copy(update={"probe": duplicate_probe})
+
+    extra_probe = _probe_dict(pages[2])
+    extra_probe["asset_results"].append(
+        {
+            **deepcopy(extra_probe["asset_results"][0]),
+            "slot_id": "unexpected-probe-slot",
+        }
+    )
+    pages[2] = pages[2].model_copy(update={"probe": extra_probe})
+    manifest = manifest.model_copy(update={"pages": pages})
+
+    issues = validate_render(package, assets, manifest, _plan())
+    probe_identity = [
+        (issue.rule_id, issue.location_hint)
+        for issue in issues
+        if issue.rule_id
+        in {
+            "probe_asset_slot_missing",
+            "duplicate_probe_asset_slot_id",
+            "unexpected_probe_asset_slot",
+        }
+    ]
+
+    assert probe_identity == [
+        (
+            "probe_asset_slot_missing",
+            "render_manifest.pages[0].probe.asset_results.cover-beauty-subject",
+        ),
+        (
+            "duplicate_probe_asset_slot_id",
+            "render_manifest.pages[1].probe.asset_results[1].slot_id",
+        ),
+        (
+            "unexpected_probe_asset_slot",
+            "render_manifest.pages[2].probe.asset_results[1].slot_id",
+        ),
+    ]
+
+
+def test_render_qa_recomputes_aspect_and_crop_from_raw_dom_geometry(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    pages = list(manifest.pages)
+    probe = _probe_dict(pages[0])
+    geometry = probe["asset_results"][0]
+    geometry.update(
+        rendered_width=500.0,
+        rendered_height=500.0,
+        object_fit="cover",
+        cropped=False,
+        aspect_ratio_error=0.0,
+    )
+    pages[0] = pages[0].model_copy(update={"probe": probe})
+    manifest = manifest.model_copy(update={"pages": pages})
+
+    issues = validate_render(package, assets, manifest, _plan())
+
+    assert "asset_aspect_ratio_attestation_mismatch" in _rule_ids(issues)
+    assert "asset_crop_attestation_mismatch" in _rule_ids(issues)
+    assert "asset_render_stretched" in _rule_ids(issues)
+
+
+def test_render_qa_rechecks_canvas_safe_margin_fonts_and_text_tokens(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    pages = list(manifest.pages)
+    probe = _probe_dict(pages[0])
+    probe["canvas_width"] = 1079
+    probe["safe_margin"] = 80
+    headline = next(
+        item for item in probe["text_results"] if item["role"] == "headline"
+    )
+    headline["font_family"] = "Arial"
+    headline["line_count"] = 3
+    body = next(
+        item for item in probe["text_results"] if item["role"].endswith(".body")
+    )
+    body["line_height"] = body["font_size"] * 1.2
+    pages[0] = pages[0].model_copy(update={"probe": probe})
+    manifest = manifest.model_copy(update={"pages": pages})
+
+    issues = validate_render(package, assets, manifest, _plan())
+
+    assert {
+        "probe_canvas_geometry_mismatch",
+        "probe_safe_margin_mismatch",
+        "text_font_family_mismatch",
+        "headline_line_count_invalid",
+        "body_line_height_invalid",
+    } <= set(_rule_ids(issues))
+
+
+def test_duplicate_storyboard_slot_does_not_overwrite_or_hide_unrelated_asset_issue(
+    tmp_path,
+):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    package["storyboards"][1]["visual_slots"][0]["slot_id"] = package[
+        "storyboards"
+    ][0]["visual_slots"][0]["slot_id"]
+    Path(assets.items[-1].path).write_bytes(b"corrupt asset")
+
+    issues = validate_render(package, assets, manifest, _plan())
+
+    assert "duplicate_storyboard_slot_id" in _rule_ids(issues)
+    assert any(
+        issue.rule_id == "asset_file_corrupt" and issue.frame_id == "save"
+        for issue in issues
+    )
+
+
+def test_duplicate_asset_group_does_not_hide_unconflicted_item_audit(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    duplicate = assets.items[0].model_copy()
+    unrelated = assets.items[2].model_copy(update={"license": ""})
+    assets = assets.model_copy(
+        update={"items": [assets.items[0], assets.items[1], unrelated, *assets.items[3:], duplicate]}
+    )
+
+    issues = validate_render(package, assets, manifest, _plan())
+
+    assert "duplicate_asset_manifest_slot_id" in _rule_ids(issues)
+    assert any(
+        issue.rule_id == "asset_license_provenance_missing"
+        and issue.frame_id == "applicable-case"
+        for issue in issues
+    )
+
+
+def test_failed_render_qa_does_not_publish_proxy_metrics(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    broken = manifest.pages[0].model_copy(update={"sha256": "f" * 64})
+    manifest = manifest.model_copy(update={"pages": [broken, *manifest.pages[1:]]})
+
+    result = _metric_result(package, assets, manifest)
+
+    assert result.passed is False
+    assert result.metrics_available is False
+    assert result.editorial_quality is None
+    assert result.beauty_category_fit is None
+    assert result.visual_hierarchy is None
+    assert result.saveability is None
+    assert result.cross_page_consistency is None
+    assert result.template_stiffness is None

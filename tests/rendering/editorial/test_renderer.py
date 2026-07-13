@@ -487,12 +487,18 @@ def test_renderer_rejects_duplicate_visual_slot_ids_within_one_frame_before_brow
         EditorialCarouselRenderError,
         render_carousel,
     )
-    from src.schemas.storyboard import CarouselPayload
-
-    storyboard_data = storyboard.model_dump(mode="python")
-    duplicate_slot = dict(storyboard_data["storyboards"][0]["visual_slots"][0])
-    storyboard_data["storyboards"][0]["visual_slots"].append(duplicate_slot)
-    duplicate_storyboard = CarouselPayload.model_validate(storyboard_data)
+    duplicate_slot = storyboard.storyboards[0].visual_slots[0].model_copy()
+    duplicate_frame = storyboard.storyboards[0].model_copy(
+        update={
+            "visual_slots": [
+                storyboard.storyboards[0].visual_slots[0],
+                duplicate_slot,
+            ]
+        }
+    )
+    duplicate_storyboard = storyboard.model_copy(
+        update={"storyboards": [duplicate_frame, *storyboard.storyboards[1:]]}
+    )
 
     with pytest.raises(EditorialCarouselRenderError, match="duplicate visual slot_id"):
         render_carousel(

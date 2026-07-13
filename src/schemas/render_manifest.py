@@ -1,6 +1,6 @@
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .visual_plan import LayoutName
 
@@ -45,6 +45,13 @@ class PageProbeAttestation(StrictModel):
     asset_results: list[AssetProbeResult]
     issues: list[str]
 
+    @model_validator(mode="after")
+    def require_unique_asset_slots(self):
+        slot_ids = [result.slot_id for result in self.asset_results]
+        if len(slot_ids) != len(set(slot_ids)):
+            raise ValueError("page probe asset slot IDs must be unique")
+        return self
+
 
 class RenderedPage(StrictModel):
     frame_id: str = Field(min_length=1, max_length=64)
@@ -67,5 +74,7 @@ class RenderManifest(StrictModel):
     fonts: FontLoadReport
     contact_sheet_path: str = Field(min_length=1)
     contact_sheet_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    contact_sheet_page_sha256: list[str] = Field(min_length=5, max_length=7)
+    contact_sheet_page_sha256: list[
+        Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    ] = Field(min_length=5, max_length=7)
     source_asset_sha256: dict[str, str]

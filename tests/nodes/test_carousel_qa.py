@@ -440,3 +440,125 @@ def test_authoritative_topic_contract_cannot_be_overridden_by_package_contract()
         "content_contract_mismatch",
         "first_screen_promise_mismatch",
     ]
+
+
+def test_storyboard_slot_ids_are_unique_across_the_entire_carousel():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    package["storyboards"][1]["visual_slots"][0]["slot_id"] = package[
+        "storyboards"
+    ][0]["visual_slots"][0]["slot_id"]
+    package["storyboards"][0]["headline"] = "independent cover failure"
+
+    issues = validate_carousel(package, _contract(), _plan())
+
+    assert (
+        "duplicate_storyboard_slot_id",
+        "storyboards[1].visual_slots[0].slot_id",
+    ) in [(issue.rule_id, issue.location_hint) for issue in issues]
+    assert "first_screen_promise_mismatch" in _rule_ids(issues)
+    assert not any(
+        issue.rule_id.startswith("asset_requirement_")
+        and issue.frame_id in {"cover", "baseline"}
+        for issue in issues
+    )
+
+
+def test_length_mismatch_does_not_hide_independent_cover_failure():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    package["storyboards"].append(deepcopy(package["storyboards"][-1]))
+    package["storyboards"][-1]["frame_id"] = "extra"
+    package["storyboards"][0]["headline"] = "independent cover failure"
+
+    issues = validate_carousel(package, _contract(), _plan())
+
+    assert "frame_plan_count_mismatch" in _rule_ids(issues)
+    assert "first_screen_promise_mismatch" in _rule_ids(issues)
+
+
+def test_duplicate_identity_does_not_hide_unrelated_frame_failure():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    plan = _plan().model_dump(mode="python")
+    plan["frame_plan"][1]["frame_id"] = plan["frame_plan"][0]["frame_id"]
+    package = _package()
+    package["storyboards"][4]["role"] = "unrelated-wrong-role"
+
+    issues = validate_carousel(package, _contract(), plan)
+
+    assert "duplicate_plan_frame_id" in _rule_ids(issues)
+    assert any(
+        issue.rule_id == "frame_role_mismatch"
+        and issue.frame_id == "feedback-diagnosis"
+        for issue in issues
+    )
+
+
+def test_invalid_frame_does_not_hide_independent_valid_frame_composition_issue():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    package["storyboards"][2]["free_css"] = "position:absolute"
+    package["storyboards"][5]["layout"] = package["storyboards"][4]["layout"]
+
+    issues = validate_carousel(package, _contract(), _plan())
+
+    invalid_frame_rules = [
+        issue.rule_id for issue in issues if issue.frame_id == "applicable-case"
+    ]
+    assert invalid_frame_rules == ["storyboard_schema_invalid"]
+    assert any(
+        issue.rule_id == "consecutive_layout_repeat" and issue.frame_id == "save"
+        for issue in issues
+    )
+
+
+def test_asset_requirement_role_and_layout_drift_are_atomic():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    plan = _plan().model_dump(mode="python")
+    plan["required_assets"][0]["role"] = "wrong-role"
+    plan["required_assets"][0]["layout"] = "texture_baseline"
+
+    issues = validate_carousel(_package(), _contract(), plan)
+    drift = [
+        (issue.rule_id, issue.location_hint)
+        for issue in issues
+        if issue.rule_id
+        in {"asset_requirement_role_mismatch", "asset_requirement_layout_mismatch"}
+    ]
+
+    assert drift == [
+        ("asset_requirement_role_mismatch", "visual_plan.required_assets[0].role"),
+        (
+            "asset_requirement_layout_mismatch",
+            "visual_plan.required_assets[0].layout",
+        ),
+    ]
+
+
+def test_each_missing_semantic_slot_gets_a_unique_stable_task_id():
+    from src.nodes.node_p_carousel_qa import _build_r1_tasks, validate_carousel
+
+    plan = _plan().model_dump(mode="python")
+    plan["frame_plan"][0]["asset_roles"] = [
+        "beauty_subject",
+        "beauty_subject",
+        "beauty_subject",
+    ]
+    package = _package()
+    package["storyboards"][0]["visual_slots"] = []
+
+    missing = [
+        issue
+        for issue in validate_carousel(package, _contract(), plan)
+        if issue.rule_id == "semantic_slot_role_mismatch"
+        and ".missing_role[" in issue.location_hint
+    ]
+    task_ids = [task.task_id for task in _build_r1_tasks(missing).mandatory]
+
+    assert len(missing) == 3
+    assert len(task_ids) == len(set(task_ids)) == 3

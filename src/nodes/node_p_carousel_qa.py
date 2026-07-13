@@ -120,6 +120,8 @@ def _duplicate_identity_issues(
     ) -> None:
         seen: set[Any] = set()
         for value, location, owner in values:
+            if value in {None, ""}:
+                continue
             if value in seen:
                 issues.append(
                     _issue(
@@ -158,19 +160,19 @@ def _duplicate_identity_issues(
         "duplicate_storyboard_frame_id",
         "Storyboard frame IDs must be unique.",
     )
-    for frame_index, frame in enumerate(frames):
-        audit(
-            [
-                (
-                    _get_value(slot, "slot_id"),
-                    _location(frame_index, f"visual_slots[{slot_index}].slot_id"),
-                    frame,
-                )
-                for slot_index, slot in enumerate(_as_list(frame, "visual_slots"))
-            ],
-            "duplicate_storyboard_slot_id",
-            "Storyboard visual-slot IDs must be unique within a frame.",
-        )
+    audit(
+        [
+            (
+                _get_value(slot, "slot_id"),
+                _location(frame_index, f"visual_slots[{slot_index}].slot_id"),
+                frame,
+            )
+            for frame_index, frame in enumerate(frames)
+            for slot_index, slot in enumerate(_as_list(frame, "visual_slots"))
+        ],
+        "duplicate_storyboard_slot_id",
+        "Storyboard visual-slot IDs must be unique across the carousel.",
+    )
     audit(
         [
             (
@@ -188,6 +190,19 @@ def _duplicate_identity_issues(
     return issues
 
 
+def _duplicates(values: list[Any]) -> set[Any]:
+    seen: set[Any] = set()
+    duplicates: set[Any] = set()
+    for value in values:
+        if value in {None, ""}:
+            continue
+        if value in seen:
+            duplicates.add(value)
+        else:
+            seen.add(value)
+    return duplicates
+
+
 def _frame_count_issues(frames: list[Any]) -> list[CarouselQAIssue]:
     if 5 <= len(frames) <= 7:
         return []
@@ -202,10 +217,15 @@ def _frame_count_issues(frames: list[Any]) -> list[CarouselQAIssue]:
     ]
 
 
-def _composition_issues(frames: list[Any]) -> list[CarouselQAIssue]:
+def _composition_issues(
+    frames: list[Any], invalid_indexes: set[int]
+) -> list[CarouselQAIssue]:
     issues: list[CarouselQAIssue] = []
     layouts = [str(_get_value(frame, "layout") or "") for frame in frames]
-    if len(set(layouts)) < 3:
+    valid_layouts = [
+        layout for index, layout in enumerate(layouts) if index not in invalid_indexes
+    ]
+    if not invalid_indexes and len(set(valid_layouts)) < 3:
         issues.append(
             _issue(
                 "insufficient_layout_variety",
@@ -217,7 +237,12 @@ def _composition_issues(frames: list[Any]) -> list[CarouselQAIssue]:
         )
 
     for index in range(1, len(layouts)):
-        if layouts[index] and layouts[index] == layouts[index - 1]:
+        if (
+            index not in invalid_indexes
+            and index - 1 not in invalid_indexes
+            and layouts[index]
+            and layouts[index] == layouts[index - 1]
+        ):
             issues.append(
                 _issue(
                     "consecutive_layout_repeat",
@@ -229,7 +254,7 @@ def _composition_issues(frames: list[Any]) -> list[CarouselQAIssue]:
                 )
             )
 
-    if not SAVEABLE_LAYOUTS.intersection(layouts):
+    if not invalid_indexes and not SAVEABLE_LAYOUTS.intersection(valid_layouts):
         issues.append(
             _issue(
                 "missing_saveable_frame",
@@ -242,7 +267,11 @@ def _composition_issues(frames: list[Any]) -> list[CarouselQAIssue]:
 
 
 def _plan_contract_issues(
-    frames: list[Any], visual_plan: Any, invalid_indexes: set[int]
+    frames: list[Any],
+    visual_plan: Any,
+    invalid_indexes: set[int],
+    duplicate_plan_frame_ids: set[Any],
+    duplicate_storyboard_frame_ids: set[Any],
 ) -> list[CarouselQAIssue]:
     issues: list[CarouselQAIssue] = []
     planned_frames = _as_list(visual_plan, "frame_plan")
@@ -267,10 +296,16 @@ def _plan_contract_issues(
                 )
             )
 
-        if index in invalid_indexes:
+        if index >= len(frames) or index in invalid_indexes:
             continue
         frame = frames[index]
-        if _get_value(frame, "frame_id") != _get_value(planned, "frame_id"):
+        actual_frame_id = _get_value(frame, "frame_id")
+        planned_frame_id = _get_value(planned, "frame_id")
+        if (
+            actual_frame_id not in duplicate_storyboard_frame_ids
+            and planned_frame_id not in duplicate_plan_frame_ids
+            and actual_frame_id != planned_frame_id
+        ):
             issues.append(
                 _issue(
                     "frame_id_mismatch",
@@ -319,7 +354,11 @@ def _plan_contract_issues(
 
 
 def _slot_contract_issues(
-    frames: list[Any], visual_plan: Any, invalid_indexes: set[int]
+    frames: list[Any],
+    visual_plan: Any,
+    invalid_indexes: set[int],
+    duplicate_storyboard_slot_ids: set[Any],
+    duplicate_requirement_slot_ids: set[Any],
 ) -> list[CarouselQAIssue]:
     issues: list[CarouselQAIssue] = []
     planned_frames = _as_list(visual_plan, "frame_plan")
@@ -327,9 +366,11 @@ def _slot_contract_issues(
     requirements_by_slot = {
         _get_value(requirement, "slot_id"): (index, requirement)
         for index, requirement in enumerate(requirements)
+        if _get_value(requirement, "slot_id")
+        not in duplicate_requirement_slot_ids
     }
 
-    for frame_index in range(len(frames)):
+    for frame_index in range(min(len(frames), len(planned_frames))):
         if frame_index in invalid_indexes:
             continue
         frame = frames[frame_index]
@@ -374,6 +415,11 @@ def _slot_contract_issues(
                 continue
 
             slot_id = _get_value(slot, "slot_id")
+            if (
+                slot_id in duplicate_storyboard_slot_ids
+                or slot_id in duplicate_requirement_slot_ids
+            ):
+                continue
             indexed_requirement = requirements_by_slot.get(slot_id)
             if indexed_requirement is None:
                 issues.append(
@@ -389,10 +435,7 @@ def _slot_contract_issues(
 
             requirement_index, requirement = indexed_requirement
             expected_concrete_role = adapter[0]
-            if (
-                _get_value(requirement, "role") != expected_concrete_role
-                or _get_value(requirement, "layout") != layout
-            ):
+            if _get_value(requirement, "role") != expected_concrete_role:
                 issues.append(
                     _issue(
                         "asset_requirement_role_mismatch",
@@ -403,6 +446,17 @@ def _slot_contract_issues(
                         after_hint=expected_concrete_role,
                     )
                 )
+            if _get_value(requirement, "layout") != layout:
+                issues.append(
+                    _issue(
+                        "asset_requirement_layout_mismatch",
+                        "The plan requirement layout must match its storyboard frame layout.",
+                        f"visual_plan.required_assets[{requirement_index}].layout",
+                        frame_id=frame_id,
+                        before=str(_get_value(requirement, "layout") or ""),
+                        after_hint=str(layout or ""),
+                    )
+                )
 
         if len(actual_roles) < len(expected_roles):
             for missing_index in range(len(actual_roles), len(expected_roles)):
@@ -410,7 +464,10 @@ def _slot_contract_issues(
                     _issue(
                         "semantic_slot_role_mismatch",
                         "Storyboard frame is missing a planned semantic visual slot.",
-                        _location(frame_index, "visual_slots"),
+                        _location(
+                            frame_index,
+                            f"visual_slots[{missing_index}].missing_role[{expected_roles[missing_index]}]",
+                        ),
                         frame_id=frame_id,
                         after_hint=expected_roles[missing_index],
                     )
@@ -440,14 +497,30 @@ def validate_carousel(
                 after_hint=str(len(frames)),
             )
         )
-        return issues
 
     identity_issues = _duplicate_identity_issues(frames, visual_plan)
     issues.extend(identity_issues)
-    if identity_issues:
-        return issues
-    if not invalid_indexes:
-        issues.extend(_composition_issues(frames))
+    issues.extend(_composition_issues(frames, invalid_indexes))
+
+    duplicate_plan_frame_ids = _duplicates(
+        [_get_value(frame, "frame_id") for frame in planned_frames]
+    )
+    duplicate_storyboard_frame_ids = _duplicates(
+        [_get_value(frame, "frame_id") for frame in frames]
+    )
+    duplicate_storyboard_slot_ids = _duplicates(
+        [
+            _get_value(slot, "slot_id")
+            for frame in frames
+            for slot in _as_list(frame, "visual_slots")
+        ]
+    )
+    duplicate_requirement_slot_ids = _duplicates(
+        [
+            _get_value(requirement, "slot_id")
+            for requirement in _as_list(visual_plan, "required_assets")
+        ]
+    )
 
     cover = frames[0] if frames else None
     cover_headline = str(_get_value(cover, "headline") or "")
@@ -463,8 +536,24 @@ def validate_carousel(
             )
         )
 
-    issues.extend(_plan_contract_issues(frames, visual_plan, invalid_indexes))
-    issues.extend(_slot_contract_issues(frames, visual_plan, invalid_indexes))
+    issues.extend(
+        _plan_contract_issues(
+            frames,
+            visual_plan,
+            invalid_indexes,
+            duplicate_plan_frame_ids,
+            duplicate_storyboard_frame_ids,
+        )
+    )
+    issues.extend(
+        _slot_contract_issues(
+            frames,
+            visual_plan,
+            invalid_indexes,
+            duplicate_storyboard_slot_ids,
+            duplicate_requirement_slot_ids,
+        )
+    )
     return issues
 
 

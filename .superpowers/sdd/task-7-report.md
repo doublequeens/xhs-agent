@@ -37,6 +37,17 @@ package-selected contracts, or a broad missing-artifact legacy fallback.
   cascades. External provenance fields have distinct rules and locations.
 - Carousel and render R1 task IDs are hashes of source/rule/frame/location, so they
   remain stable when unrelated issues are inserted or removed.
+- Storyboard slot IDs are now global carousel identities, not merely per-frame
+  identities. Page probe asset IDs are schema-unique and must match that page's
+  storyboard slots exactly once.
+- Identity audits group occurrences before constructing maps. Conflicted groups skip
+  only their own dependent checks; unrelated frames/items and independently provable
+  global composition rules continue to be audited.
+- Duplicate AssetManifest groups no longer return early. QA reports the duplicate
+  occurrence and continues auditing every unconflicted item.
+- Asset requirement role and layout drift have separate rules/locations. Every
+  missing semantic slot location includes its planned index and semantic role, so
+  multiple missing-slot R1 tasks have unique stable IDs.
 
 ### Asset audit
 
@@ -47,6 +58,11 @@ package-selected contracts, or a broad missing-artifact legacy fallback.
 - Actual source dimensions are checked against VisualPlan minimums.
 - Persisted browser geometry is checked for natural dimensions, `object-fit`, crop,
   and aspect-ratio error; distorted/cropped output emits `asset_render_stretched`.
+- QA recomputes aspect-ratio error and crop state from raw natural/rendered dimensions
+  and `object_fit`, then separately checks the persisted derived fields. A caller
+  cannot clear `cropped` or `aspect_ratio_error` to hide contradictory raw geometry.
+- Every page rechecks exact 1080x1440 canvas, exact 84px safe margin, role-specific
+  repository font family, headline line count, body line-height ratio, and text bounds.
 - Local and external provenance fields are audited atomically.
 
 ### Trust boundaries and migration isolation
@@ -67,6 +83,10 @@ All six 0–100 fields remain explicitly labelled `deterministic_proxy` and reta
 warning that they do not replace human aesthetic review. They now vary on measured
 facts rather than relabelled hard-gate counts:
 
+`RenderQAResult.metrics_available` is true only when editorial render QA has zero
+issues. All six values are nullable and remain `None` for failed or legacy QA results;
+the schema rejects publishing values while `metrics_available` is false.
+
 - `editorial_quality`: composite including persisted visible-text density.
 - `beauty_category_fit`: adapter role fit plus measured natural-dimension headroom
   over VisualPlan minimums.
@@ -79,7 +99,9 @@ facts rather than relabelled hard-gate counts:
 
 Direction/variation tests cover every metric, including dense versus concise copy,
 dimension headroom, type-scale separation, checklist richness, cross-page type
-variance, and non-adjacent layout reuse.
+variance, and non-adjacent layout reuse. Both baseline and variant are asserted to be
+passing, internally consistent render artifacts with real decodable PNGs, exact
+storyboard/probe text, and aligned plan/manifest identities.
 
 ## TDD evidence
 
@@ -112,6 +134,32 @@ Fresh final full-repository verification:
 The two skips are opt-in live stock-provider tests. Two warnings are existing legacy
 storyboard fallback warnings and two are non-failing macOS pytest cleanup warnings.
 
+Final re-review RED was then established in five requested areas:
+
+- schema identity/hash element constraints: `2 failed`, followed by one additional
+  schema-level cross-frame storyboard slot uniqueness RED;
+- global carousel identity, aggregation, and task atomicity: `5 failed`;
+- render raw-evidence, conflict-group, and proxy availability selection: `12 failed`
+  (`8` pre-existing direction tests in the same selection already passed).
+
+Final re-review GREEN:
+
+```text
+90 passed, 2 warnings in 2.55s
+```
+
+Focused Task 7 plus renderer/schema/probe verification:
+
+```text
+121 passed, 2 warnings in 6.36s
+```
+
+Fresh full repository verification after the final re-review fixes:
+
+```text
+1038 passed, 2 skipped, 4 warnings in 30.08s
+```
+
 ## Self-review
 
 - Re-read the independent review and mapped every Critical, Important, and Minor
@@ -119,8 +167,17 @@ storyboard fallback warnings and two are non-failing macOS pytest cleanup warnin
 - Confirmed the renderer validates and persists probe evidence before publication.
 - Confirmed page/contact hashes bind current decodable bytes and ordered page output.
 - Confirmed duplicate identities are rejected before dict construction.
+- Confirmed no `_frame_by_slot` last-write-wins mapping remains; occurrence groups are
+  built before any unique mapping.
+- Confirmed duplicate/invalid roots suppress only their own dependent checks and
+  multi-error tests retain unrelated failures.
 - Confirmed asset hash and dimensions come from one source snapshot.
-- Confirmed proxy tests demonstrate within-range directional variation.
+- Confirmed raw DOM geometry recomputes derived aspect/crop facts and page token facts
+  are revalidated from persisted raw measurements.
+- Confirmed all six proxy direction pairs pass hard gates, publish availability, and
+  demonstrate within-range directional variation.
+- Confirmed ordered contact-sheet page bindings enforce strict lowercase 64-hex values
+  per element and `template_stiffness` documents all layout reuse.
 - Confirmed no QA path calls an LLM or attempts automatic repair.
 - Confirmed deterministic failures still route one atomic mandatory task per issue to
   `R1_REFLECTOR`.
