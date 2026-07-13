@@ -99,10 +99,10 @@ class RunRegistry:
                     ON agent_runs(status, updated_at DESC)
                     """
                 )
-        except sqlite3.Error as exc:
+        except (OSError, sqlite3.Error) as exc:
             if hasattr(self, "_connection"):
                 self._connection.close()
-            raise RunRegistryError(str(exc)) from exc
+            raise RunRegistryError(f"local registry {self.path}: {exc}") from exc
 
     def close(self) -> None:
         try:

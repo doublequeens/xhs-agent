@@ -82,3 +82,15 @@ def test_compact_display_keeps_ids_through_33_characters(registry):
     assert f"ID：{short.thread_id}" in format_run(short)
     assert long.thread_id not in format_run(long)
     assert f"ID：{'b' * 30}..." in format_run(long)
+
+
+def test_initialization_wraps_uncreatable_registry_parent(tmp_path):
+    parent_file = tmp_path / "not-a-directory"
+    parent_file.touch()
+    registry_path = parent_file / "agent_runs.sqlite"
+
+    with pytest.raises(RunRegistryError) as exc_info:
+        RunRegistry(registry_path)
+
+    assert str(registry_path) in str(exc_info.value)
+    assert isinstance(exc_info.value.__cause__, OSError)
