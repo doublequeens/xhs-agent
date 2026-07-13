@@ -622,8 +622,9 @@ def test_concurrent_same_requirement_resolves_resume_one_pending_candidate(
     assert len(provider.search_calls) == 1
 
 
-def test_resolution_lock_rejects_in_root_symlink_alias_without_deadlock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("alias_kind", ["symlink", "hardlink"])
+def test_resolution_lock_rejects_in_root_inode_alias_without_deadlock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, alias_kind: str
 ) -> None:
     import os
 
@@ -658,7 +659,10 @@ def test_resolution_lock_rejects_in_root_symlink_alias_without_deadlock(
     first_lock = lock_path(first_requirement)
     second_lock = lock_path(second_requirement)
     first_lock.touch()
-    second_lock.symlink_to(first_lock.name)
+    if alias_kind == "symlink":
+        second_lock.symlink_to(first_lock.name)
+    else:
+        os.link(first_lock, second_lock)
     original_flock = __import__("fcntl").flock
     held_inodes: set[tuple[int, int]] = set()
 
@@ -679,7 +683,10 @@ def test_resolution_lock_rejects_in_root_symlink_alias_without_deadlock(
     )
     provider = FakeProvider("pexels", [candidate("pexels", "p1")])
 
-    with pytest.raises(AssetResolutionError, match="resolution lock.*symlink"):
+    with pytest.raises(
+        AssetResolutionError,
+        match=r"resolution lock.*(symlink|hard.?link|alias)",
+    ):
         resolve_assets(plan, empty_catalog(tmp_path, [provider]))
 
 

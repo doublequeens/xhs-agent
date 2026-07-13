@@ -467,7 +467,10 @@ def _attempt_ledger_path(
 
 @contextmanager
 def _resolution_lock(
-    catalog: AssetCatalog, requirement: AssetRequirement, fingerprint: str
+    catalog: AssetCatalog,
+    requirement: AssetRequirement,
+    fingerprint: str,
+    held_inodes: set[tuple[int, int]],
 ):
     incoming_root = catalog.incoming_root.resolve()
     lock_root = (incoming_root / ".resolution-locks").resolve()
@@ -498,6 +501,15 @@ def _resolution_lock(
             raise AssetResolutionError(
                 "resolution lock symlink is not allowed"
             )
+        if descriptor_stat.st_nlink != 1 or path_stat.st_nlink != 1:
+            raise AssetResolutionError(
+                "resolution lock hard-link alias is not allowed"
+            )
+        inode_identity = (descriptor_stat.st_dev, descriptor_stat.st_ino)
+        if inode_identity in held_inodes:
+            raise AssetResolutionError(
+                "resolution lock inode alias is not allowed"
+            )
         lock_handle = os.fdopen(descriptor, "a+b")
         descriptor = None
     except OSError as error:
@@ -509,9 +521,11 @@ def _resolution_lock(
             os.close(descriptor)
     with lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        held_inodes.add(inode_identity)
         try:
             yield
         finally:
+            held_inodes.discard(inode_identity)
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
@@ -838,12 +852,14 @@ def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManif
         ),
     )
     with ExitStack() as stack:
+        held_resolution_inodes: set[tuple[int, int]] = set()
         for requirement in lock_requirements:
             stack.enter_context(
                 _resolution_lock(
                     catalog,
                     requirement,
                     requirement_fingerprint(requirement),
+                    held_resolution_inodes,
                 )
             )
         return _resolve_assets_unlocked(visual_plan, catalog)

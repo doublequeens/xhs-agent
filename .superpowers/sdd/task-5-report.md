@@ -56,7 +56,7 @@ Final focused GREEN:
 
 ```text
 python -m pytest tests/asset_resolver tests/rendering/test_design_system.py -q
-118 passed, 2 skipped
+119 passed, 2 skipped
 ```
 
 Most recent full-suite GREEN before the final lock-file-only correction:
@@ -166,19 +166,24 @@ Both closing tests failed before implementation: the ledger symlink accepted an 
 write, and a peer resolver exhausted by the owner's reservations raised a terminal error.
 The targeted GREEN passed both, followed by the focused and full-suite counts above.
 
-The final lock-file review found that two lexical resolution-lock names could still alias
-one inode through an in-directory symlink. Because one `resolve_assets` call acquires
-multiple sorted requirement locks, following that alias could self-deadlock on its second
-`flock`. The regression replaces blocking `flock` with an inode guard and first failed with
+The final lock-file reviews found that two lexical resolution-lock names could still alias
+one inode through an in-directory symlink or hard link. Because one `resolve_assets` call
+acquires multiple sorted requirement locks, following either alias could self-deadlock on
+its second `flock`. The non-blocking regression replaces `flock` with an inode guard: the
+symlink case was already rejected, while the new hard-link case first failed with
 `resolution lock alias would self-deadlock` instead of hanging. Resolution locks now:
 
 - reject symlinks and any lexical/resolved path mismatch before opening;
 - open with `O_NOFOLLOW` when the platform provides it; and
 - compare `lstat` and `fstat` device/inode identity to detect fallback-platform and
-  check/open replacement races before taking `flock`.
+  check/open replacement races before taking `flock`;
+- reject files whose link count is not exactly one before taking `flock`; and
+- track held device/inode identities for the current multi-lock `ExitStack`, rejecting a
+  duplicate inode before `flock` and removing it on exit. This set is local to one
+  acquisition, so normal cross-process contention for the same lock still waits.
 
-The final targeted test passed, `test_external_resolution.py` passed 29 tests, and the
-asset-resolver-focused suite passed 113 tests with 2 live-provider skips. The combined
+Both targeted alias cases passed, `test_external_resolution.py` passed 30 tests, and the
+asset-resolver-focused suite passed 114 tests with 2 live-provider skips. The combined
 focused count above includes the design-system tests. The full-suite result shown above is
 the immediately preceding run; the requested final verification scope was focused on the
 external resolver and asset resolver.
