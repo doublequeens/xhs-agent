@@ -237,3 +237,32 @@ The independent reviewer found two final commit-window gaps and one return-attes
 The export lock now stores and continuously verifies the parent pathname inode. Commit and pre-cleanup verification both run while all backups remain available inside the rollback scope. After transaction completion, every committed support payload is securely reopened through the package descriptor and compared byte-for-byte with its expected payload before returning.
 
 The three exact regressions pass, the focused/full results above include them, and the independent re-review concluded: `Ready: Yes`.
+
+## Final Authorization-Type and Cleanup-Window Closure
+
+The last review tightened the trusted checkpoint and destructive-cleanup boundaries further.
+
+### Real StateSnapshot and modern-only gate
+
+Final export now requires an actual `langgraph.types.StateSnapshot`; mappings, `SimpleNamespace`, duck wrappers, and objects missing `next` are not accepted. `next` must have exact type `tuple` and equal `()`. The snapshot must explicitly contain `editorial_workflow_version == "modern_v2"` and `legacy_editorial_checkpoint is False`, so Task 9 will not export legacy or hybrid checkpoints.
+
+`main.export_completed_publish_package` obtains the real object from `graph.get_state(config)` and the high-level path calls the module-private verified writer. Public content-lock, publish-copy, and rescue-prompt builders remain independently testable but cannot authorize or write a final package.
+
+RED evidence covered duck wrappers, missing/malformed/nonempty `next`, `legacy_v1`, and conflicting modern-plus-legacy markers. The six authorization regressions now pass using real `StateSnapshot` instances.
+
+### Backup-unlink and legacy-absence attestation
+
+Every backup unlink performs root/parent/package/lock verification immediately before and after the unlink syscall. The transaction retains the original bytes for every backup until cleanup finishes. If a binding changes after an unlink syscall, rollback can truthfully reconstruct that removed backup and restore all old support artifacts and the legacy prompt rather than reporting a false rollback.
+
+An exact race test rebinds the package from inside the first backup `os.unlink`; it fails closed, restores the old publish copy and legacy prompt in the displaced root, and leaves the replacement root without support files. The sibling lock creation path also uses exclusive create with hardened no-follow fallback open, closing a first-use concurrent-creation race.
+
+Before returning, the exporter now verifies that every transactional delete path is still absent. A test recreates the legacy prompt immediately after transaction cleanup and proves export fails closed.
+
+### Final verification
+
+- Targeted StateSnapshot, cleanup-window, and legacy-absence regressions: `8 passed`.
+- Publishing plus main suite: `151 passed`.
+- Focused Task 9 and workflow suite: `273 passed`.
+- Full repository suite: `1305 passed, 2 skipped`; the skips remain opt-in live stock-provider tests.
+- `python -m compileall` and `git diff --check` passed.
+- Final independent re-review found no Critical, Important, or Minor issues and concluded `Ready: Yes`.

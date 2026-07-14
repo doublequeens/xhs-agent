@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from PIL import Image
+from langgraph.types import StateSnapshot
 
 from src.publishing import artifacts as artifacts_module
 from src.publishing.artifacts import (
@@ -278,8 +279,32 @@ def _completed_state(package: dict) -> SimpleNamespace:
     )
 
 
+def _real_completed_state(
+    package: dict,
+    *,
+    next_nodes: tuple[str, ...] = (),
+    workflow_version: str = "modern_v2",
+    legacy_marker: bool = False,
+) -> StateSnapshot:
+    values = dict(_completed_state(package).values)
+    values.update(
+        editorial_workflow_version=workflow_version,
+        legacy_editorial_checkpoint=legacy_marker,
+    )
+    return StateSnapshot(
+        values=values,
+        next=next_nodes,
+        config={},
+        metadata=None,
+        created_at=None,
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+
+
 def export_publish_package(package: dict):
-    return export_completed_state(_completed_state(package))
+    return export_completed_state(_real_completed_state(package))
 
 
 def test_publish_copy_is_directly_pasteable():
@@ -446,13 +471,58 @@ def test_final_export_rejects_raw_self_authorized_package(tmp_path):
         "focus_keyword": package["focus_keyword"],
     }
 
-    with pytest.raises(TypeError, match="completed graph state|package dict"):
+    with pytest.raises(TypeError, match="StateSnapshot"):
         export_completed_state(package)
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        SimpleNamespace(values={}, next=()),
+        SimpleNamespace(values={}),
+    ],
+)
+def test_final_export_rejects_duck_typed_state_wrappers(state):
+    with pytest.raises(TypeError, match="StateSnapshot"):
+        export_completed_state(state)
+
+
+@pytest.mark.parametrize(
+    ("workflow_version", "legacy_marker"),
+    [
+        ("legacy_v1", True),
+        ("modern_v2", True),
+        ("legacy_v1", False),
+    ],
+)
+def test_final_export_rejects_legacy_and_hybrid_snapshots(
+    tmp_path, workflow_version, legacy_marker
+):
+    package, _ = exportable_package(tmp_path)
+    state = _real_completed_state(
+        package,
+        workflow_version=workflow_version,
+        legacy_marker=legacy_marker,
+    )
+
+    with pytest.raises(ValueError, match="modern_v2|legacy"):
+        export_completed_state(state)
+
+
+def test_final_export_requires_exact_empty_tuple_next(tmp_path):
+    package, _ = exportable_package(tmp_path)
+    active = _real_completed_state(package, next_nodes=("content_writer",))
+    malformed = _real_completed_state(package)._replace(next=[])
+
+    with pytest.raises(ValueError, match="terminal.*next|empty tuple"):
+        export_completed_state(active)
+    with pytest.raises(ValueError, match="terminal.*next|empty tuple"):
+        export_completed_state(malformed)
 
 
 def test_final_export_recomputes_guard_and_rejects_stale_render_qa(tmp_path):
     package, _ = exportable_package(tmp_path)
-    state = _completed_state(package)
+    state = _real_completed_state(package)
     package["storyboards"][0]["headline"] = "QA 后改写但伪装已授权"
 
     with pytest.raises(ValueError, match="recomputed Final Guard"):
@@ -463,7 +533,7 @@ def test_attestation_is_result_only_and_binds_current_inputs(tmp_path):
     package, _ = exportable_package(tmp_path)
     package["publish_attestation"] = {"canonical_sha256": "forged"}
 
-    result = export_completed_state(_completed_state(package))
+    result = export_completed_state(_real_completed_state(package))
     audit = json.loads(result.audit_json_path.read_text(encoding="utf-8"))
 
     assert result.publish_attestation.canonical_sha256 != "forged"
@@ -937,6 +1007,42 @@ def test_rebind_after_fsync_before_backup_cleanup_still_rolls_back(
     assert not list(displaced.glob(".*.backup"))
 
 
+def test_rebind_inside_backup_unlink_rolls_back_old_artifacts_and_legacy(
+    monkeypatch, tmp_path
+):
+    package, package_dir = exportable_package(tmp_path)
+    first = export_publish_package(package)
+    legacy = package_dir / artifacts_module.LEGACY_IMAGE_PROMPT_FILENAME
+    legacy.write_text("legacy survives unlink race", encoding="utf-8")
+    old_copy = first.publish_copy_path.read_bytes()
+    changed = deepcopy(package)
+    changed["content"] = "must rollback from backup bytes"
+    displaced = package_dir.with_name(f"{package_dir.name}-displaced")
+    original_unlink = artifacts_module.os.unlink
+    rebound = False
+
+    def unlink_backup_then_rebind(path, **kwargs):
+        nonlocal rebound
+        result = original_unlink(path, **kwargs)
+        if not rebound and Path(path).name.endswith(".backup"):
+            rebound = True
+            package_dir.rename(displaced)
+            package_dir.mkdir()
+        return result
+
+    monkeypatch.setattr(artifacts_module.os, "unlink", unlink_backup_then_rebind)
+
+    with pytest.raises(ValueError, match="package directory binding changed"):
+        export_publish_package(changed)
+
+    assert not (package_dir / artifacts_module.PUBLISH_COPY_FILENAME).exists()
+    assert (displaced / artifacts_module.PUBLISH_COPY_FILENAME).read_bytes() == old_copy
+    assert (displaced / artifacts_module.LEGACY_IMAGE_PROMPT_FILENAME).read_text(
+        encoding="utf-8"
+    ) == "legacy survives unlink race"
+    assert not list(displaced.glob(".*.backup"))
+
+
 def test_return_reattestation_reopens_committed_support_bytes(monkeypatch, tmp_path):
     package, package_dir = exportable_package(tmp_path)
     original_transaction = artifacts_module._transactional_replace_artifacts
@@ -954,6 +1060,26 @@ def test_return_reattestation_reopens_committed_support_bytes(monkeypatch, tmp_p
     )
 
     with pytest.raises(ValueError, match="support artifact.*changed"):
+        export_publish_package(package)
+
+
+def test_return_reattestation_rejects_recreated_legacy_prompt(monkeypatch, tmp_path):
+    package, package_dir = exportable_package(tmp_path)
+    original_transaction = artifacts_module._transactional_replace_artifacts
+
+    def commit_then_recreate_legacy(*args, **kwargs):
+        original_transaction(*args, **kwargs)
+        (package_dir / artifacts_module.LEGACY_IMAGE_PROMPT_FILENAME).write_text(
+            "recreated after cleanup", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_transactional_replace_artifacts",
+        commit_then_recreate_legacy,
+    )
+
+    with pytest.raises(ValueError, match="legacy.*recreated|delete path"):
         export_publish_package(package)
 
 
@@ -986,8 +1112,8 @@ def test_concurrent_exports_are_serialized_without_a_mixed_package(tmp_path):
         except ValueError as exc:
             errors.append(exc)
 
+    assert not errors, [str(error) for error in errors]
     assert len(results) == 2
-    assert not errors
     assert {result.artifact_generation for result in results} == {1, 2}
     audit = json.loads(results[-1].audit_json_path.read_text(encoding="utf-8"))
     copy = results[-1].publish_copy_path.read_text(encoding="utf-8")

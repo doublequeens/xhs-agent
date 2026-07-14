@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import get_args
 from uuid import uuid4
 
-from langgraph.types import Command
+from langgraph.types import Command, StateSnapshot
 from memory.memory_manager import XHSMemoryManager
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
@@ -23,7 +23,7 @@ from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
 from src.publishing.artifacts import (
     PublishArtifacts,
-    export_publish_package as export_publish_artifacts,
+    _export_verified_state_snapshot,
 )
 from src.schemas import RenderManifest
 from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
@@ -362,16 +362,18 @@ def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list
     return package_dir, resolved_paths
 
 
-def export_publish_package(completed_state) -> PublishArtifacts:
+def export_publish_package(completed_state: StateSnapshot) -> PublishArtifacts:
     """Validate and export one immutable terminal graph checkpoint."""
-    values = getattr(completed_state, "values", None)
+    if type(completed_state) is not StateSnapshot:
+        raise TypeError("final export requires a real langgraph.types.StateSnapshot")
+    values = completed_state.values
     if not isinstance(values, Mapping):
         raise TypeError("final export requires completed graph state")
     publish_package = values.get("publish_package")
     if not isinstance(publish_package, Mapping):
         raise ValueError("completed graph state requires publish_package")
     _resolve_publish_package_profile(publish_package)
-    return export_publish_artifacts(completed_state)
+    return _export_verified_state_snapshot(completed_state)
 
 
 def read_multiline_json() -> dict:
@@ -558,7 +560,8 @@ def export_completed_publish_package(graph, config) -> bool:
         publish_package = completed_state.values["publish_package"]
         print("The final publish package title is:")
         print(publish_package["title"])
-        export_publish_package(completed_state)
+        _resolve_publish_package_profile(publish_package)
+        _export_verified_state_snapshot(completed_state)
     except (KeyError, TypeError, ValueError):
         return False
     return True

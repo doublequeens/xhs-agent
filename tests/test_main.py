@@ -8,6 +8,7 @@ from typing import get_args
 
 import pytest
 from PIL import Image
+from langgraph.types import StateSnapshot
 
 from src.domain import DomainName
 from src.run_registry import RunRegistry
@@ -821,10 +822,23 @@ def valid_publish_package_with_rendered_images(
     }
 
 
-def completed_state_for_package(package: dict) -> SimpleNamespace:
+def _state_snapshot(values: dict, *, next_nodes: tuple[str, ...] = ()) -> StateSnapshot:
+    return StateSnapshot(
+        values=values,
+        next=next_nodes,
+        config={},
+        metadata=None,
+        created_at=None,
+        parent_config=None,
+        tasks=(),
+        interrupts=(),
+    )
+
+
+def completed_state_for_package(package: dict) -> StateSnapshot:
     authorization = package.get("publish_authorization") or {}
-    return SimpleNamespace(
-        values={
+    return _state_snapshot(
+        {
             "publish_package": package,
             "visual_plan": package.get("visual_plan"),
             "asset_manifest": package.get("asset_manifest"),
@@ -836,8 +850,9 @@ def completed_state_for_package(package: dict) -> SimpleNamespace:
                 "focus_keyword_cli_present"
             ),
             "focus_keyword": authorization.get("focus_keyword"),
+            "editorial_workflow_version": "modern_v2",
+            "legacy_editorial_checkpoint": False,
         },
-        next=(),
     )
 
 
@@ -1025,8 +1040,8 @@ def test_completed_export_injects_state_manifests_before_delegating(
 
     class CompletedGraph:
         def get_state(self, _config):
-            return SimpleNamespace(
-                values={
+            return _state_snapshot(
+                {
                     "review_status": "approved",
                     "final_policy_issues": [],
                     "carousel_qa_result": {"passed": True, "issues": []},
@@ -1035,13 +1050,14 @@ def test_completed_export_injects_state_manifests_before_delegating(
                     "focus_keyword": "通勤底妆",
                     "publish_package": package,
                     **state_manifests,
+                    "editorial_workflow_version": "modern_v2",
+                    "legacy_editorial_checkpoint": False,
                 },
-                next=(),
             )
 
     monkeypatch.setattr(
         main,
-        "export_publish_package",
+        "_export_verified_state_snapshot",
         lambda completed_state: captured.update(completed_state=completed_state),
     )
 
@@ -1078,12 +1094,14 @@ def test_completed_export_requires_explicit_publishability_state(
         "visual_plan": package["visual_plan"],
         "asset_manifest": package["asset_manifest"],
         "render_manifest": package["render_manifest"],
+        "editorial_workflow_version": "modern_v2",
+        "legacy_editorial_checkpoint": False,
     }
     values.pop(missing_or_invalid)
 
     class CompletedGraph:
         def get_state(self, _config):
-            return SimpleNamespace(values=values, next=())
+            return _state_snapshot(values)
 
     assert main.export_completed_publish_package(CompletedGraph(), {}) is False
 
@@ -1107,11 +1125,13 @@ def test_completed_checkpoint_export_retry_uses_current_artifact_generation(
         "visual_plan": package["visual_plan"],
         "asset_manifest": package["asset_manifest"],
         "render_manifest": package["render_manifest"],
+        "editorial_workflow_version": "modern_v2",
+        "legacy_editorial_checkpoint": False,
     }
 
     class CompletedGraph:
         def get_state(self, _config):
-            return SimpleNamespace(values=values, next=())
+            return _state_snapshot(values)
 
     assert main.export_completed_publish_package(CompletedGraph(), {}) is True
     assert main.export_completed_publish_package(CompletedGraph(), {}) is True

@@ -18,6 +18,7 @@ from types import MappingProxyType
 from typing import Any
 
 from PIL import Image, UnidentifiedImageError
+from langgraph.types import StateSnapshot
 
 from src.rendering.editorial.design_system import ASSET_ROOT
 from src.schemas import (
@@ -31,6 +32,11 @@ from src.schemas.carousel_qa import CarouselQAResult
 from src.schemas.content_contract import ContentContract
 from src.schemas.render_qa import RenderQAResult
 from src.nodes.node_q_01_final_policy_guard import validate_final_policy
+from src.editorial_carousel.legacy import (
+    EDITORIAL_WORKFLOW_VERSION_KEY,
+    LEGACY_EDITORIAL_CHECKPOINT_KEY,
+    MODERN_EDITORIAL_V2,
+)
 
 
 LOCK_FIELDS = (
@@ -386,13 +392,17 @@ def validate_publishability(package: dict) -> None:
 
 
 def _completed_state_snapshot(completed_state: Any) -> tuple[dict, Mapping[str, Any]]:
-    if isinstance(completed_state, Mapping):
-        raise TypeError("final export requires a frozen completed graph state, not a package dict")
-    values = getattr(completed_state, "values", None)
+    if type(completed_state) is not StateSnapshot:
+        raise TypeError("final export requires a real langgraph.types.StateSnapshot")
+    if type(completed_state.next) is not tuple or completed_state.next != ():
+        raise ValueError("final export requires terminal StateSnapshot next to be ()")
+    values = completed_state.values
     if not isinstance(values, Mapping):
         raise TypeError("final export requires completed_state.values")
-    if tuple(getattr(completed_state, "next", ()) or ()):
-        raise ValueError("final export requires a terminal completed graph state")
+    if values.get(EDITORIAL_WORKFLOW_VERSION_KEY) != MODERN_EDITORIAL_V2:
+        raise ValueError("final export requires editorial_workflow_version == modern_v2")
+    if values.get(LEGACY_EDITORIAL_CHECKPOINT_KEY) is not False:
+        raise ValueError("final export rejects legacy or hybrid editorial checkpoints")
 
     detached = _json_value(copy.deepcopy(dict(values)))
     if not isinstance(detached, dict) or not isinstance(detached.get("publish_package"), dict):
@@ -709,12 +719,19 @@ def _package_export_lock(package_directory: Path):
         raise ValueError("publish package directory binding changed")
     try:
         try:
-            lock_fd = os.open(
-                lock_name,
-                os.O_RDWR | os.O_CREAT | _OPEN_NOFOLLOW,
-                0o600,
-                dir_fd=parent_fd,
-            )
+            try:
+                lock_fd = os.open(
+                    lock_name,
+                    os.O_RDWR | os.O_CREAT | os.O_EXCL | _OPEN_NOFOLLOW,
+                    0o600,
+                    dir_fd=parent_fd,
+                )
+            except FileExistsError:
+                lock_fd = os.open(
+                    lock_name,
+                    os.O_RDWR | _OPEN_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
         except OSError as exc:
             raise ValueError("publish package lock must be a canonical regular file") from exc
         metadata = os.fstat(lock_fd)
@@ -846,8 +863,17 @@ def _replace_at(
     )
 
 
-def _unlink_at(package_fd: int, path: Path) -> None:
+def _unlink_at(
+    package_fd: int,
+    path: Path,
+    *,
+    verify: Callable[[], None] | None = None,
+) -> None:
+    if verify is not None:
+        verify()
     os.unlink(path.name, dir_fd=package_fd)
+    if verify is not None:
+        verify()
 
 
 def _exists_at(package_fd: int, path: Path) -> bool:
@@ -870,44 +896,26 @@ def _transactional_replace_artifacts(
 ) -> None:
     staged: dict[Path, Path] = {}
     backups: dict[Path, Path] = {}
+    backup_payloads: dict[Path, bytes] = {}
     committed: set[Path] = set()
-    try:
-        for destination, payload in payloads.items():
-            if verify is not None:
-                verify()
-            staged[destination] = _stage_bytes(
-                package_fd, package_directory, destination.name, payload
-            )
 
-        for destination in (*payloads.keys(), *delete_paths):
-            if verify is not None:
-                verify()
-            if _exists_at(package_fd, destination):
-                backup = package_directory / (
-                    f".{destination.name}.{uuid.uuid4().hex}.backup"
-                )
-                _replace_at(package_fd, destination, backup, verify=verify)
-                backups[destination] = backup
-
-        for destination, temp_path in staged.items():
-            _replace_at(package_fd, temp_path, destination, verify=verify)
-            committed.add(destination)
-        if verify is not None:
-            verify()
-        _fsync_directory_fd(package_fd)
-        if verify is not None:
-            verify()
-            # Keep all backups until the final pathname/input preflight passes.
-            # A binding failure here still enters the rollback block below.
-            verify()
-    except BaseException as original_error:
+    def rollback(original_error: BaseException) -> None:
         recovery_paths: list[Path] = []
         for destination in reversed((*payloads.keys(), *delete_paths)):
             backup = backups.get(destination)
             if backup is not None:
                 try:
-                    _replace_at(package_fd, backup, destination)
-                except (OSError, ValueError):
+                    if _exists_at(package_fd, backup):
+                        _replace_at(package_fd, backup, destination)
+                    else:
+                        recovery_temp = _stage_bytes(
+                            package_fd,
+                            package_directory,
+                            destination.name,
+                            backup_payloads[destination],
+                        )
+                        _replace_at(package_fd, recovery_temp, destination)
+                except (KeyError, OSError, ValueError):
                     recovery_paths.append(backup)
                     if destination in committed:
                         try:
@@ -934,18 +942,61 @@ def _transactional_replace_artifacts(
             recovery_paths.append(package_directory)
         if recovery_paths:
             raise ArtifactRollbackError(recovery_paths) from original_error
-        raise
+        raise original_error
+
+    try:
+        for destination, payload in payloads.items():
+            if verify is not None:
+                verify()
+            staged[destination] = _stage_bytes(
+                package_fd, package_directory, destination.name, payload
+            )
+
+        for destination in (*payloads.keys(), *delete_paths):
+            if verify is not None:
+                verify()
+            if _exists_at(package_fd, destination):
+                existing_payload = _secure_existing_file_bytes(
+                    package_fd, destination.name
+                )
+                if existing_payload is None:
+                    raise ValueError("existing support artifact disappeared")
+                backup_payloads[destination] = existing_payload
+                backup = package_directory / (
+                    f".{destination.name}.{uuid.uuid4().hex}.backup"
+                )
+                _replace_at(package_fd, destination, backup, verify=verify)
+                backups[destination] = backup
+
+        for destination, temp_path in staged.items():
+            _replace_at(package_fd, temp_path, destination, verify=verify)
+            committed.add(destination)
+        if verify is not None:
+            verify()
+        _fsync_directory_fd(package_fd)
+        if verify is not None:
+            verify()
+            # Keep all backups until the final pathname/input preflight passes.
+            # A binding failure here still enters the rollback block below.
+            verify()
+    except BaseException as original_error:
+        rollback(original_error)
 
     cleanup_failures: list[Path] = []
-    for backup in backups.values():
-        try:
-            _unlink_at(package_fd, backup)
-        except OSError:
-            cleanup_failures.append(backup)
     try:
-        _fsync_directory_fd(package_fd)
-    except OSError:
-        cleanup_failures.append(package_directory)
+        for backup in backups.values():
+            try:
+                _unlink_at(package_fd, backup, verify=verify)
+            except OSError:
+                cleanup_failures.append(backup)
+        try:
+            _fsync_directory_fd(package_fd)
+        except OSError:
+            cleanup_failures.append(package_directory)
+        if verify is not None:
+            verify()
+    except ValueError as binding_error:
+        rollback(binding_error)
     if cleanup_failures:
         raise ArtifactCleanupError(cleanup_failures)
 
@@ -989,6 +1040,18 @@ def _verify_committed_payloads(
         actual = _secure_existing_file_bytes(package_fd, path.name)
         if actual != expected:
             raise ValueError(f"committed support artifact changed: {path.name}")
+
+
+def _verify_deleted_paths_absent(
+    package_fd: int,
+    delete_paths: Sequence[Path],
+) -> None:
+    for path in delete_paths:
+        try:
+            os.stat(path.name, dir_fd=package_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            continue
+        raise ValueError(f"legacy delete path was recreated: {path.name}")
 
 
 def current_artifact_generation(package: dict) -> int:
@@ -1143,15 +1206,17 @@ def _export_publish_package_snapshot(
                 + "\n"
             ).encode("utf-8"),
         }
+        delete_paths = (package_directory / LEGACY_IMAGE_PROMPT_FILENAME,)
         _transactional_replace_artifacts(
             package_fd,
             package_directory,
             payloads,
-            delete_paths=(package_directory / LEGACY_IMAGE_PROMPT_FILENAME,),
+            delete_paths=delete_paths,
             verify=verify_export_inputs,
         )
         verify_export_inputs()
         _verify_committed_payloads(package_fd, payloads)
+        _verify_deleted_paths_absent(package_fd, delete_paths)
 
     return PublishArtifacts(
         package_directory=package_directory,
@@ -1165,7 +1230,12 @@ def _export_publish_package_snapshot(
     )
 
 
-def export_publish_package(completed_state: Any) -> PublishArtifacts:
+def _export_verified_state_snapshot(completed_state: StateSnapshot) -> PublishArtifacts:
     """Export only a frozen terminal graph state after recomputing Final Guard."""
     completed_values, snapshot = _completed_state_snapshot(completed_state)
     return _export_publish_package_snapshot(snapshot, completed_values)
+
+
+def export_publish_package(completed_state: StateSnapshot) -> PublishArtifacts:
+    """Public final exporter; accepts only a real modern terminal StateSnapshot."""
+    return _export_verified_state_snapshot(completed_state)
