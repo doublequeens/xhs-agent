@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from src.domain import get_domain_profile
+from src.editorial_carousel.publish_profile import resolve_publish_package_profile
 from src.rendering.editorial import render_carousel
 from src.schemas import AgentState, AssetManifest, CarouselPayload, VisualPlan
 
@@ -12,26 +12,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PUBLISH_ROOT = REPOSITORY_ROOT / "outputs" / "publish"
 
 
-def _resolve_publish_package_profile(package: dict):
-    domain = package.get("domain")
-    profile_version = package.get("profile_version")
-    if not domain or not profile_version:
-        raise ValueError(
-            "publish_package requires valid domain and profile_version metadata"
-        )
-    try:
-        return get_domain_profile(domain, version=profile_version)
-    except ValueError as exc:
-        raise ValueError(
-            "publish_package requires valid domain and profile_version metadata: "
-            f"{exc}"
-        ) from exc
-
-
 def render_output_directory(package: dict) -> Path:
     """Create a profile-scoped directory below the modern publish root."""
 
-    profile = _resolve_publish_package_profile(package)
+    profile = resolve_publish_package_profile(package)
     domain = package["domain"]
     subdomain = package.get("subdomain") or profile.default_subdomain
     title = package.get("title")

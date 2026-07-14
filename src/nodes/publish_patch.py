@@ -2,14 +2,7 @@ from __future__ import annotations
 
 
 STORYBOARD_VISIBLE_FIELDS = ("kicker", "headline", "footer")
-STORYBOARD_VISIBLE_LIST_FIELDS = (
-    "wrong_items",
-    "right_items",
-    "checklist_items",
-    "emphasis",
-)
-STORYBOARD_VISIBLE_NESTED_LIST_FIELDS = ("steps", "conditions")
-STORYBOARD_VISIBLE_SCALAR_FIELDS = ("question",)
+STORYBOARD_VISIBLE_LIST_FIELDS = ("emphasis",)
 CONTENT_BLOCK_VISIBLE_FIELDS = ("heading", "body")
 TITLE_MAX_LENGTH = 20
 ASSEMBLER_AUTHORITATIVE_FIELDS = {
@@ -106,18 +99,6 @@ def extract_storyboard_visible_text(storyboards) -> list[dict]:
         for field_name in STORYBOARD_VISIBLE_LIST_FIELDS:
             for index, value in enumerate(frame.get(field_name) or []):
                 text_blocks[f"{field_name}[{index}]"] = str(value or "")
-        for index, step in enumerate(frame.get("steps") or []):
-            if not isinstance(step, dict):
-                continue
-            for field_name in ("name", "hint"):
-                if field_name in step:
-                    text_blocks[f"steps[{index}].{field_name}"] = str(step.get(field_name) or "")
-        for index, condition in enumerate(frame.get("conditions") or []):
-            if not isinstance(condition, dict):
-                continue
-            for field_name in ("situation", "recommendation"):
-                if field_name in condition:
-                    text_blocks[f"conditions[{index}].{field_name}"] = str(condition.get(field_name) or "")
         for block_index, block in enumerate(frame.get("content_blocks") or []):
             if not isinstance(block, dict):
                 continue
@@ -130,12 +111,10 @@ def extract_storyboard_visible_text(storyboards) -> list[dict]:
                 text_blocks[
                     f"content_blocks[{block_index}].items[{item_index}]"
                 ] = str(item or "")
-        for field_name in STORYBOARD_VISIBLE_SCALAR_FIELDS:
-            if field_name in frame:
-                text_blocks[field_name] = str(frame.get(field_name) or "")
         visible_text.append({
             "frame_id": str(frame.get("frame_id") or ""),
-            "template": str(frame.get("template") or ""),
+            "role": str(frame.get("role") or ""),
+            "layout": str(frame.get("layout") or ""),
             "text_blocks": text_blocks,
         })
     return visible_text
@@ -157,8 +136,6 @@ def storyboard_patch_without_visible_text(publish_patch: dict) -> dict:
             if key not in (
                 *STORYBOARD_VISIBLE_FIELDS,
                 *STORYBOARD_VISIBLE_LIST_FIELDS,
-                *STORYBOARD_VISIBLE_NESTED_LIST_FIELDS,
-                *STORYBOARD_VISIBLE_SCALAR_FIELDS,
                 "content_blocks",
             )
         }
@@ -214,8 +191,6 @@ def merge_storyboard_visible_text(prior_visible_text, revised_visible_text) -> l
                 f"unknown frame_id in storyboard visible-text merge: {frame_id}"
             )
         target = merged[target_index]
-        if revised_frame.get("template"):
-            target["template"] = revised_frame["template"]
         target["text_blocks"].update(
             dict(revised_frame.get("text_blocks") or {})
         )
@@ -244,7 +219,7 @@ def apply_storyboard_visible_text_patch(storyboards, visible_text) -> list:
             continue
         frame = patched[target_index]
         for location, value in dict(visible_frame.get("text_blocks") or {}).items():
-            if location in STORYBOARD_VISIBLE_FIELDS or location in STORYBOARD_VISIBLE_SCALAR_FIELDS:
+            if location in STORYBOARD_VISIBLE_FIELDS:
                 frame[location] = value
                 continue
             if "[" not in location:
@@ -282,11 +257,6 @@ def apply_storyboard_visible_text_patch(storyboards, visible_text) -> list:
                 if item_index < len(items):
                     items[item_index] = value
                     frame[root] = items
-            elif root in STORYBOARD_VISIBLE_NESTED_LIST_FIELDS and child_field.startswith("."):
-                nested_items = [dict(item) if isinstance(item, dict) else item for item in list(frame.get(root) or [])]
-                if item_index < len(nested_items) and isinstance(nested_items[item_index], dict):
-                    nested_items[item_index][child_field[1:]] = value
-                    frame[root] = nested_items
     return patched
 
 

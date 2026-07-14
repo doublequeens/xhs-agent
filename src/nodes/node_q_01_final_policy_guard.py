@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -36,6 +37,7 @@ _REQUIRED_PUBLISH_FIELDS = (
     "content",
     "hashtags",
 )
+_URL_PATTERN = re.compile(r"https?://[^\s，。！？、；：)\]}>\"']+")
 
 
 def _coerce_text(value) -> str:
@@ -925,7 +927,7 @@ def validate_final_policy(state: AgentState) -> list[dict]:
 
     issues = _required_field_issues(publish_package)
     issues.extend(_editorial_artifact_issues(state, publish_package))
-    combined_text = "\n".join(
+    combined_text = _URL_PATTERN.sub("", "\n".join(
         [
             _coerce_text(publish_package.get("title")),
             _coerce_text(publish_package.get("content")),
@@ -933,7 +935,7 @@ def validate_final_policy(state: AgentState) -> list[dict]:
             _coerce_text(publish_package.get("hashtags")),
             *_storyboard_visible_text(publish_package.get("storyboards")),
         ]
-    )
+    ))
     issues.extend(
         [
             issue.model_copy(update={"location": "publish_package"}).model_dump(mode="json")

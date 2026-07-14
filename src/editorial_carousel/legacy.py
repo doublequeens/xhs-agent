@@ -126,12 +126,24 @@ def persisted_checkpoint_nodes(
     config: Mapping[str, Any],
     visible_nodes: tuple[str, ...],
 ) -> tuple[str, ...]:
-    """Recover a deleted successor hidden by the newly compiled graph.
+    """Recover one allowlisted retired successor hidden from visible state.
 
     LangGraph omits a persisted branch from ``StateSnapshot.next`` when that
-    node no longer exists in the compiled graph. The raw checkpoint retains a
-    ``branch:to:<node>`` channel, so the migration adapter reads only the one
-    documented retired successor and otherwise leaves terminal state alone.
+    node no longer exists in the compiled graph; the raw checkpoint retains the
+    ``branch:to:<node>`` channel this adapter reads. Recovery is gated by four
+    safety conditions:
+
+    - Raw checkpoint channels are consulted only when visible
+      ``StateSnapshot.next`` is empty; a non-empty ``next`` is returned
+      untouched so modern checkpoints resume normally.
+    - Only ``branch:to:<node>`` channels whose node is in the legacy successor
+      allowlist are considered; every other channel is ignored.
+    - Recovery occurs only when the filtered result is unique.
+    - Missing, ambiguous, or empty filtered values leave terminal state
+      unchanged (the visible ``next`` is returned as-is).
+
+    The allowlist is the fixed retired-successor set; this documentation does
+    not broaden it.
     """
 
     if visible_nodes:

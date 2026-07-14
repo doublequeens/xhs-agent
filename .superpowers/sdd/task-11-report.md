@@ -204,3 +204,136 @@ temporary-directory cleanup warning after its successful summary.
   obsolete assembler state seam before final verification.
 - The root agent will perform the separate whole-branch review requested after
   this task commit.
+
+---
+
+## Independent Review Fix (review handoff `task11-to-fix.md`)
+
+An independent review of commit `d55d1c5` reported
+`Critical 0 / Important 3 / Minor 2 / Ready: No`. A follow-up fix agent began
+the review fixes and was interrupted mid-patch. This section records the
+resumed fix: it preserves that dirty patch, repairs it, and adds the missing
+regression coverage. The original implementation history above is unchanged.
+
+### Interrupted-patch baseline
+
+The worktree was dirty at handoff. The focused suite (Final Guard, legacy
+resume, publish profile) was run before any edit to establish what the
+interrupted agent left:
+
+```text
+1 failed, 74 passed
+```
+
+The single failure was `test_human_review_can_explicitly_replace_storyboards`.
+Root cause (systematic-debugging): the interrupted patch's
+`_validate_modern_storyboards` re-serialized human edits through
+`CarouselPayload.model_dump()`, which injects default slots
+(`composition=None`, `palette_tags=[]`) and so broke exact-equality with the
+human's replacement. Because `CarouselPayload` already uses `extra="forbid"`,
+re-serialization was unnecessary for rejecting retired keys.
+
+### Important 1 — `legacy.py` is the only fixed-card seam
+
+- `StoryboardVisibleText` (`src/schemas/decision.py`) now carries `role` +
+  `layout` with `extra="forbid"` and no `template`.
+- `publish_patch.py` extracts/merges only modern frame identity and
+  `content_blocks` visible text; the retired `wrong_items` / `right_items` /
+  `checklist_items` / `steps` / `conditions` / `question` / `template` atoms
+  are gone from `STORYBOARD_VISIBLE_*`.
+- Human Review storyboard edits cross a strict `CarouselPayload` boundary via
+  `_validate_modern_storyboards`, changed to **validate-only** so the human
+  edit is enforced but not mutated. Retired keys are rejected by
+  `extra="forbid"` and never reach the publish package.
+- Prompts (`decision_engine.txt`, `r1_reflector.txt`) stopped asking for
+  retired fields: `template`→`role`/`layout`, and the stale
+  `checklist_items[1]` example became the modern `content_blocks[0].items[1]`
+  location key.
+
+RED→GREEN: `test_human_review_can_explicitly_replace_storyboards` failed before
+the validate-only change and passes after. The rejection test was parametrized
+over all seven retired fields (`template`, `wrong_items`, `right_items`,
+`checklist_items`, `steps`, `conditions`, `question`); all seven are rejected
+(`7 passed`).
+
+### Important 2 — Final Guard behavior matrix rebuilt with modern artifacts
+
+The interrupted patch had already rebuilt the behavior matrix around a complete
+modern state fixture. Two gaps remained versus the review brief and are now
+closed:
+
+- Missing/empty required fields: parametrized over every
+  `_REQUIRED_PUBLISH_FIELDS` member plus the `hashtags` empty-string-item case
+  (`10 cases`).
+- URL exclusion teeth: added
+  `test_complete_final_guard_url_exclusion_keeps_unsafe_prose_outside_url`,
+  which places unsafe prose *outside* a URL and asserts it is still flagged.
+  This directly answers the review concern that "both can return the same
+  broken result if policy scanning is disabled" — if scanning were disabled or
+  the URL pattern over-matched, this test would fail.
+
+No production change was needed; the existing `_URL_PATTERN` and recursive
+`_storyboard_visible_text` already cover title, body, `content_blocks[*]`,
+and `content_blocks[*].items[*]`. The full matrix (`19 passed`): missing
+required fields, unsafe title, unsafe body, unsafe content-block body, unsafe
+content-block items, URL false-positive exclusion, URL-prose teeth, clean
+package success route, post-Human-Review unsafe-edit recheck, and the
+supplementary validator↔node equivalence test.
+
+### Important 3 — `final_policy_guard -> content_writer` successor
+
+`tests/integration/test_legacy_editorial_resume.py` was extended with the exact
+case `("final_policy_guard", "content_writer")`. The shared parametrized test
+proves recovery recognizes the persisted successor, migrates to
+`MODERN_EDITORIAL_V2` with a fresh `visual_plan`, invalidates old
+storyboard/render artifacts, re-enters at `storyboard_generator` via
+`visual_strategy_planner`, runs `content_writer` only *after* full modern
+regeneration, and never persists the old package (`1 passed`).
+
+### Minor 1 — single publish-profile resolution
+
+`src/editorial_carousel/publish_profile.resolve_publish_package_profile` is now
+the one helper used by both `main.py` (export entry points) and
+`node_p_editorial_carousel_renderer.py`. Tests cover valid resolution, missing
+domain, missing profile version, unknown domain, unknown profile version, and
+consistent `ValueError` behavior from both the renderer and the export entry
+point (`6 passed`).
+
+### Minor 2 — raw-checkpoint documentation
+
+`persisted_checkpoint_nodes` docstring now states all four safety conditions
+explicitly: raw checkpoint channels are consulted only when visible
+`StateSnapshot.next` is empty; only allowlisted legacy successors are
+considered; recovery occurs only when the filtered result is unique; missing
+or ambiguous values leave terminal state unchanged. The runtime allowlist is
+unchanged.
+
+### Final verification
+
+```text
+/opt/anaconda3/envs/xhs-agent/bin/python -m compileall -q src main.py   # exit 0
+git diff --check                                                        # clean
+```
+
+Forbidden-reference scan: one allowed, documented persisted migration key:
+
+```text
+src/editorial_carousel/legacy.py:29:        "text_card_renderer",
+```
+
+Retired-field scan outside `legacy.py`: every remaining hit is part of the
+modern domain contract — CSS `grid-template-*` properties, LangChain
+`PromptTemplate` locals, the `template_stiffness` render-QA metric, the
+publishing-artifact file-template directory, and the prose "conditions to
+decisions" in the decision-tree strategy description. No hit implements
+fixed-card compatibility.
+
+```text
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest -q
+1330 passed, 2 skipped, 1 warning in 80.91s
+```
+
+The two skips are the explicit opt-in live asset-provider tests
+(`RUN_LIVE_ASSET_PROVIDER_TESTS`). The single warning is the known LangGraph
+serializer pending-deprecation warning. No remaining Minor concerns. The fix
+is not complete until an independent reviewer rechecks the new commit range.

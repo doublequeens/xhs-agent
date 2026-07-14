@@ -73,6 +73,7 @@ def _legacy_package(*, with_storyboards=True, with_render=False):
         ("storyboard_generator", "carousel_qa", _legacy_package()),
         ("render_qa", "human_review", _legacy_package(with_render=True)),
         ("human_review", "final_policy_guard", _legacy_package(with_render=True)),
+        ("final_policy_guard", "content_writer", _legacy_package(with_render=True)),
     ],
 )
 def test_pre_task8_exact_successor_migrates_to_modern_storyboard_seam(

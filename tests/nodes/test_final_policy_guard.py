@@ -219,19 +219,6 @@ def _editorial_guard_state(tmp_path: Path):
     }, active_root
 
 
-def _storyboard_frame(frame_id, **overrides):
-    frame = {
-        "frame_id": frame_id,
-        "template": "cover_statement",
-        "theme": "warm_neutral",
-        "kicker": "封面",
-        "headline": f"标题 {frame_id}",
-        "footer": "按需调整",
-    }
-    frame.update(overrides)
-    return frame
-
-
 def _modern_storyboard_frame(frame_id="frame_001", **overrides):
     frame = {
         "frame_id": frame_id,
@@ -263,15 +250,33 @@ def _modern_storyboard_frame(frame_id="frame_001", **overrides):
     return frame
 
 
-def _structured_storyboards():
-    common = {"theme": "warm_neutral", "footer": "按需调整"}
+def _modern_storyboards():
+    layouts = (
+        "editorial_cover",
+        "texture_baseline",
+        "step_timeline",
+        "saveable_checklist",
+        "texture_baseline",
+    )
     return [
-        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": "作息调整"},
-        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["熬夜硬扛", "随意加量"], "right_items": ["记录诱因", "逐步调整"]},
-        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "逐步调整", "steps": [{"name": "记录", "hint": "观察诱因"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
-        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "睡前检查", "checklist_items": ["记录睡眠", "每天250毫克", "减少屏幕"]},
-        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "先小步调整", "conditions": [{"situation": "连续疲惫", "recommendation": "优先规律作息"}, {"situation": "难以坚持", "recommendation": "缩小调整范围"}]},
-        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你会怎么做", "question": "你最想调整哪一步？"},
+        _modern_storyboard_frame(
+            frame_id=f"frame_{index:03d}",
+            role="cover" if index == 1 else "detail",
+            layout=layout,
+            headline=f"现代卡片 {index}",
+            visual_slots=(
+                [
+                    {
+                        "slot_id": f"frame_{index:03d}-visual",
+                        "role": "product_texture",
+                        "semantic_tags": ["routine"],
+                    }
+                ]
+                if index == 1
+                else []
+            ),
+        )
+        for index, layout in enumerate(layouts, start=1)
     ]
 
 
@@ -717,19 +722,14 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
 
     monkeypatch.setattr("src.nodes.node_q_human_review.interrupt", fake_interrupt)
 
+    storyboards = _modern_storyboards()
+    storyboards[0].update(
+        {"kicker": "旧标签", "headline": "旧标题", "footer": "旧页脚"}
+    )
     result = human_review_node(
         {
             "publish_package": _publish_package(
-                storyboards=[
-                    {
-                        "frame_id": "frame_001",
-                        "template": "cover_statement",
-                        "theme": "warm_neutral",
-                        "kicker": "旧标签",
-                        "headline": "旧标题",
-                        "footer": "旧页脚",
-                    }
-                ]
+                storyboards=storyboards
             ),
             "review_round": 0,
             "final_policy_issues": [{"rule_id": "guaranteed_outcome"}],
@@ -754,28 +754,23 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
     assert route_after_human_review(result) == "r2_compliance"
     assert result["decision_output"].normalized_input.r2_input.content_snapshot.revised_title == "更新后的标题"
     assert result["decision_output"].normalized_input.r2_input.content_snapshot.revised_md == "先记录晚睡诱因，再逐步调整节奏。"
-    assert result["decision_output"].normalized_input.r2_input.content_snapshot.model_dump() == {
-        "draft_id": "draft_001",
-        "revised_title": "更新后的标题",
-        "revised_md": "先记录晚睡诱因，再逐步调整节奏。",
-        "topic_id": "tp_001",
-        "topic": "睡眠改善",
-        "angle_id": "ag_001",
-        "angle": "作息调整",
-        "target_group": "上班族",
-        "core_pain": "熬夜后疲惫",
-        "best_cover_copy": "作息调整记录",
-        "storyboard_visible_text": [
-                {
-                    "frame_id": "frame_001",
-                    "template": "cover_statement",
-                    "text_blocks": {
-                        "kicker": "旧标签",
-                        "headline": "新标题",
-                        "footer": "旧页脚",
-                    },
-            }
-        ],
+    visible = result["decision_output"].normalized_input.r2_input.content_snapshot.storyboard_visible_text
+    assert len(visible) == 5
+    assert visible[0].model_dump() == {
+        "frame_id": "frame_001",
+        "role": "cover",
+        "layout": "editorial_cover",
+        "text_blocks": {
+            "kicker": "旧标签",
+            "headline": "新标题",
+            "footer": "旧页脚",
+            "content_blocks[0].heading": "先看诱因",
+            "content_blocks[0].body": "记录每天的作息变化",
+            "content_blocks[0].items[0]": "项目一",
+            "content_blocks[0].items[1]": "项目二",
+            "emphasis[0]": "作息",
+            "emphasis[1]": "记录",
+        },
     }
     assert result["decision_output"].normalized_input.r2_input.revision_meta.round == 2
     assert result["decision_output"].normalized_input.r2_input.decision_trace.source_node == "HUMAN_REVIEW"
@@ -795,7 +790,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
                 }
             ],
         },
-        {"frame_id": "frame_001", "layout": "decision_tree"},
+        {"frame_id": "frame_002", "layout": "decision_tree"},
         {
             "frame_id": "frame_001",
             "visual_slots": [
@@ -824,7 +819,7 @@ def test_human_review_modern_storyboard_edit_invalidates_downstream_artifacts(
     result = human_review_node(
         {
             "publish_package": _publish_package(
-                storyboards=[_modern_storyboard_frame()]
+                storyboards=_modern_storyboards()
             ),
             "review_round": 0,
             "final_policy_issues": [],
@@ -923,71 +918,9 @@ def test_human_review_enforces_title_max_length_including_punctuation(monkeypatc
     )
 
 
-def test_human_review_storyboard_patch_without_frame_id_merges_by_index(monkeypatch):
-    monkeypatch.setattr(
-        "src.nodes.node_q_human_review.interrupt",
-        lambda _payload: {
-            "approved": True,
-            "edited_publish_package": {
-                "storyboards": [{"theme": "cool_sage"}],
-            },
-        },
-    )
-    original_frames = [_storyboard_frame("frame_001"), _storyboard_frame("frame_002")]
-
-    result = human_review_node(
-        {
-            "publish_package": _publish_package(storyboards=original_frames),
-            "review_round": 0,
-            "final_policy_issues": [],
-        }
-    )
-
-    merged_frames = result["publish_package"]["storyboards"]
-    assert merged_frames[0] == {
-        **original_frames[0],
-        "theme": "cool_sage",
-    }
-    assert merged_frames[1] == original_frames[1]
-
-
-def test_human_review_storyboard_patch_merges_by_frame_id_and_appends_new_frame(monkeypatch):
-    monkeypatch.setattr(
-        "src.nodes.node_q_human_review.interrupt",
-        lambda _payload: {
-            "approved": True,
-            "edited_publish_package": {
-                "storyboards": [
-                    {"frame_id": "frame_002", "theme": "cool_sage"},
-                    _storyboard_frame("frame_003"),
-                ],
-            },
-        },
-    )
-    original_frames = [_storyboard_frame("frame_001"), _storyboard_frame("frame_002")]
-
-    result = human_review_node(
-        {
-            "publish_package": _publish_package(storyboards=original_frames),
-            "review_round": 0,
-            "final_policy_issues": [],
-        }
-    )
-
-    merged_frames = result["publish_package"]["storyboards"]
-    assert [frame["frame_id"] for frame in merged_frames] == [
-        "frame_001",
-        "frame_002",
-        "frame_003",
-    ]
-    assert merged_frames[1] == {
-        **original_frames[1],
-        "theme": "cool_sage",
-    }
-
-
 def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
-    replacement = [_storyboard_frame("replacement")]
+    replacement = _modern_storyboards()
+    replacement[0]["headline"] = "人工替换的封面"
     monkeypatch.setattr(
         "src.nodes.node_q_human_review.interrupt",
         lambda _payload: {
@@ -1000,7 +933,7 @@ def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
     result = human_review_node(
         {
             "publish_package": _publish_package(
-                storyboards=[_storyboard_frame("frame_001"), _storyboard_frame("frame_002")]
+                storyboards=_modern_storyboards()
             ),
             "review_round": 0,
             "final_policy_issues": [],
@@ -1010,8 +943,9 @@ def test_human_review_can_explicitly_replace_storyboards(monkeypatch):
     assert result["publish_package"]["storyboards"] == replacement
 
 
-def test_checklist_policy_task_uses_precise_location_and_patch_updates_card():
-    storyboards = _structured_storyboards()
+def test_content_block_policy_task_uses_precise_location_and_patch_updates_card():
+    storyboards = _modern_storyboards()
+    storyboards[3]["content_blocks"][0]["items"][1] = "每天250毫克"
     snapshot = SimpleNamespace(
         revised_title="作息记录",
         revised_md="分享个人体验",
@@ -1025,30 +959,24 @@ def test_checklist_policy_task_uses_precise_location_and_patch_updates_card():
     )
 
     task = decision_module._build_blocked_r2_tasks(r2_output)["mandatory"][0]
-    assert task["location_hint"] == "storyboard_visible_text[3].text_blocks.checklist_items[1]"
+    assert task["location_hint"] == (
+        "storyboard_visible_text[3].text_blocks.content_blocks[0].items[1]"
+    )
 
     patched = storyboard_module.apply_storyboard_visible_text_patch(
         storyboards,
-        [{"frame_id": "frame_004", "template": "saveable_checklist", "text_blocks": {"checklist_items[1]": "咨询专业人士"}}],
+        [
+            {
+                "frame_id": "frame_004",
+                "role": "detail",
+                "layout": "saveable_checklist",
+                "text_blocks": {
+                    "content_blocks[0].items[1]": "咨询专业人士"
+                },
+            }
+        ],
     )
-    assert patched[3]["checklist_items"][1] == "咨询专业人士"
-
-
-def test_decision_condition_visible_atoms_are_extracted_and_reapplied_by_frame_id():
-    storyboards = _structured_storyboards()
-    visible = extract_storyboard_visible_text(storyboards)
-
-    assert visible[4]["text_blocks"]["conditions[1].situation"] == "难以坚持"
-    assert visible[4]["text_blocks"]["conditions[1].recommendation"] == "缩小调整范围"
-
-    patched = storyboard_module.apply_storyboard_visible_text_patch(
-        storyboards,
-        [{"frame_id": "frame_005", "template": "decision_rule", "text_blocks": {
-            "conditions[1].recommendation": "改成更小目标"
-        }}],
-    )
-
-    assert patched[4]["conditions"][1]["recommendation"] == "改成更小目标"
+    assert patched[3]["content_blocks"][0]["items"][1] == "咨询专业人士"
 
 
 def test_modern_content_blocks_and_emphasis_are_visible_text_atoms_and_reapplied():
@@ -1056,6 +984,9 @@ def test_modern_content_blocks_and_emphasis_are_visible_text_atoms_and_reapplied
 
     visible = extract_storyboard_visible_text(storyboards)
 
+    assert visible[0]["role"] == "cover"
+    assert visible[0]["layout"] == "editorial_cover"
+    assert "template" not in visible[0]
     assert visible[0]["text_blocks"] == {
         "kicker": "封面",
         "headline": "作息调整",
@@ -1083,11 +1014,59 @@ def test_modern_content_blocks_and_emphasis_are_visible_text_atoms_and_reapplied
     assert patched[0]["emphasis"][1] == "调整"
 
 
+@pytest.mark.parametrize(
+    "retired_field, value",
+    [
+        ("template", "cover_statement"),
+        ("wrong_items", ["错误项"]),
+        ("right_items", ["正确项"]),
+        ("checklist_items", ["条目一", "条目二"]),
+        ("steps", [{"name": "步骤", "hint": "提示"}]),
+        ("conditions", [{"situation": "情况", "recommendation": "建议"}]),
+        ("question", "还有什么疑问？"),
+    ],
+)
+def test_human_review_rejects_carousel_forbidden_fields_in_storyboard_patch(
+    monkeypatch,
+    retired_field,
+    value,
+):
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {
+                "storyboards": [
+                    {"frame_id": "frame_001", retired_field: value}
+                ]
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="valid modern CarouselPayload"):
+        human_review_node(
+            {
+                "publish_package": _publish_package(
+                    storyboards=_modern_storyboards()
+                ),
+                "review_round": 0,
+                "final_policy_issues": [],
+            }
+        )
+
+
 def test_visible_text_patch_rejects_unknown_nonempty_frame_id():
     with pytest.raises(ValueError, match="unknown frame_id"):
         storyboard_module.apply_storyboard_visible_text_patch(
-            _structured_storyboards(),
-            [{"frame_id": "stale_frame", "template": "cover_statement", "text_blocks": {"headline": "错误目标"}}],
+            _modern_storyboards(),
+            [
+                {
+                    "frame_id": "stale_frame",
+                    "role": "cover",
+                    "layout": "editorial_cover",
+                    "text_blocks": {"headline": "错误目标"},
+                }
+            ],
         )
 
 
@@ -1095,7 +1074,8 @@ def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "template": "cover_statement",
+            "role": "cover",
+            "layout": "editorial_cover",
             "text_blocks": {"headline": "保证立即见效"},
         }
     ]
@@ -1145,7 +1125,8 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "template": "cover_statement",
+            "role": "cover",
+            "layout": "editorial_cover",
             "text_blocks": {"headline": "作息调整记录"},
         }
     ]
@@ -1192,7 +1173,8 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
     storyboard_visible_text = [
         {
             "frame_id": "frame_001",
-            "template": "cover_statement",
+            "role": "cover",
+            "layout": "editorial_cover",
             "text_blocks": {"headline": "作息调整记录"},
         }
     ]
@@ -1241,7 +1223,7 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
 
 
 def test_visible_text_merge_rejects_unknown_frame_id_and_ignores_empty_frame_id():
-    prior_visible_text = extract_storyboard_visible_text(_structured_storyboards())
+    prior_visible_text = extract_storyboard_visible_text(_modern_storyboards())
 
     with pytest.raises(ValueError, match="unknown frame_id"):
         storyboard_module.merge_storyboard_visible_text(
@@ -1249,7 +1231,8 @@ def test_visible_text_merge_rejects_unknown_frame_id_and_ignores_empty_frame_id(
             [
                 {
                     "frame_id": "stale_frame",
-                    "template": "cover_statement",
+                    "role": "cover",
+                    "layout": "editorial_cover",
                     "text_blocks": {"headline": "错误目标"},
                 }
             ],
@@ -1277,7 +1260,12 @@ def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkey
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
                     "storyboard_visible_text": [
-                        {"frame_id": "frame_001", "template": "cover_statement", "text_blocks": {"headline": "R2标题"}}
+                        {
+                            "frame_id": "frame_001",
+                            "role": "cover",
+                            "layout": "editorial_cover",
+                            "text_blocks": {"headline": "R2标题"},
+                        }
                     ],
                 },
                 "compliance_audit": {"compliance_status": "fully_compliant"},
@@ -1286,14 +1274,19 @@ def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkey
 
     monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
     state = _r2_state()
-    state["publish_package"] = _publish_package(storyboards=_structured_storyboards())
+    storyboards = _modern_storyboards()
+    storyboards[3]["content_blocks"][0]["items"][1] = "每天250毫克"
+    state["publish_package"] = _publish_package(storyboards=storyboards)
 
     result = r2_module.r2_compliance_node(state)
 
     visible_text = result["r2_output"].content_snapshot.storyboard_visible_text
-    assert len(visible_text) == 6
+    assert len(visible_text) == 5
     assert visible_text[0].text_blocks["headline"] == "R2标题"
-    assert visible_text[3].text_blocks["checklist_items[1]"] == "每天250毫克"
+    assert (
+        visible_text[3].text_blocks["content_blocks[0].items[1]"]
+        == "每天250毫克"
+    )
     assert "supplement_dosage" in result["r2_output"].compliance_audit.matched_policy_rules
 
 
@@ -1377,6 +1370,163 @@ def test_final_policy_guard_accepts_complete_approved_editorial_artifacts(
 
     assert result["final_policy_issues"] == []
     assert route_after_final_guard(result) == "content_writer"
+
+
+def _run_complete_editorial_guard(monkeypatch, tmp_path, mutate=None):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    if mutate is not None:
+        mutate(state)
+    return state, final_policy_guard_node(state)
+
+
+@pytest.mark.parametrize(
+    "field_name,empty_value",
+    [
+        ("topic_id", ""),
+        ("topic", ""),
+        ("angle_id", ""),
+        ("angle", ""),
+        ("target_group", ""),
+        ("core_pain", ""),
+        ("title", ""),
+        ("content", ""),
+        ("hashtags", []),
+        ("hashtags", [""]),
+    ],
+)
+def test_complete_final_guard_rejects_missing_required_publish_field(
+    monkeypatch, tmp_path, field_name, empty_value
+):
+    _state, result = _run_complete_editorial_guard(
+        monkeypatch,
+        tmp_path,
+        lambda state: state["publish_package"].__setitem__(field_name, empty_value),
+    )
+
+    assert any(
+        issue["rule_id"] == "missing_required_field"
+        and issue["location"] == f"publish_package.{field_name}"
+        for issue in result["final_policy_issues"]
+    )
+    assert route_after_final_guard(result) == "human_review"
+
+
+@pytest.mark.parametrize(
+    "field_name,value,expected_rule",
+    [
+        ("title", "保证立即见效", "guaranteed_outcome"),
+        ("content", "这个方法可以治疗失眠。", "medical_treatment"),
+    ],
+)
+def test_complete_final_guard_scans_unsafe_title_and_content(
+    monkeypatch, tmp_path, field_name, value, expected_rule
+):
+    _state, result = _run_complete_editorial_guard(
+        monkeypatch,
+        tmp_path,
+        lambda state: state["publish_package"].__setitem__(field_name, value),
+    )
+
+    assert expected_rule in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+    assert route_after_final_guard(result) == "human_review"
+
+
+@pytest.mark.parametrize(
+    "location",
+    ("body", "items"),
+)
+def test_complete_final_guard_scans_modern_content_block_body_and_items(
+    monkeypatch, tmp_path, location
+):
+    def mutate(state):
+        block = state["publish_package"]["storyboards"][1]["content_blocks"]
+        block.append(
+            {
+                "block_type": "text",
+                "heading": "提醒",
+                "body": "保证立即见效" if location == "body" else "个人记录",
+                "items": ["每天250毫克"] if location == "items" else [],
+            }
+        )
+
+    _state, result = _run_complete_editorial_guard(
+        monkeypatch, tmp_path, mutate
+    )
+
+    expected = "guaranteed_outcome" if location == "body" else "supplement_dosage"
+    assert expected in {issue["rule_id"] for issue in result["final_policy_issues"]}
+    assert route_after_final_guard(result) == "human_review"
+
+
+def test_complete_final_guard_excludes_urls_from_policy_text(monkeypatch, tmp_path):
+    _state, result = _run_complete_editorial_guard(
+        monkeypatch,
+        tmp_path,
+        lambda state: state["publish_package"].__setitem__(
+            "content", "资料链接：https://example.com/治疗，正文仅为个人记录。"
+        ),
+    )
+
+    assert "medical_treatment" not in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+    assert route_after_final_guard(result) == "content_writer"
+
+
+def test_complete_final_guard_url_exclusion_keeps_unsafe_prose_outside_url(
+    monkeypatch, tmp_path
+):
+    """URL removal must not suppress unsafe prose that sits outside the URL."""
+
+    _state, result = _run_complete_editorial_guard(
+        monkeypatch,
+        tmp_path,
+        lambda state: state["publish_package"].__setitem__(
+            "content",
+            "参考 https://example.com/notes 这个方法可以治疗失眠。",
+        ),
+    )
+
+    assert "medical_treatment" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+    assert route_after_final_guard(result) == "human_review"
+
+
+def test_complete_final_guard_rechecks_unsafe_human_edit(
+    monkeypatch, tmp_path
+):
+    state, _clean = _run_complete_editorial_guard(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {"content": "这个方法保证立即见效。"},
+        },
+    )
+    reviewed = human_review_node(
+        {
+            "publish_package": state["publish_package"],
+            "review_status": "approved",
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+    state["publish_package"] = reviewed["publish_package"]
+
+    result = final_policy_guard_node(state)
+
+    assert "guaranteed_outcome" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+    assert route_after_final_guard(result) == "human_review"
 
 
 def test_final_policy_guard_rejects_catalog_asset_inappropriate_for_requirement(

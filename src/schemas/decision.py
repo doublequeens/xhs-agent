@@ -1,8 +1,9 @@
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.domain.models import ContentIntent, DomainName, RiskLevel
+from src.schemas.assets import LayoutName
 
 class SingleTask(BaseModel):
     task_id: str
@@ -47,8 +48,11 @@ class DecisionTrace(BaseModel):
 
 
 class StoryboardVisibleText(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     frame_id: str
-    template: str
+    role: str
+    layout: LayoutName
     text_blocks: dict[str, str] = Field(default_factory=dict)
 
 

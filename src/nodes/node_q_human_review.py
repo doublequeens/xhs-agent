@@ -7,6 +7,7 @@ from src.asset_resolver import (
 from src.nodes.node_p_asset_resolver import load_asset_catalog_for_state
 from src.schemas import (
     AssetManifest,
+    CarouselPayload,
     DecisionOutput,
     DecisionTrace,
     NormalizedInput,
@@ -90,7 +91,6 @@ def _storyboard_render_structure_signature(storyboards) -> list[dict]:
                 "frame_id": frame.get("frame_id"),
                 "role": frame.get("role"),
                 "layout": frame.get("layout"),
-                "template": frame.get("template"),
                 "content_block_types": [
                     block.get("block_type") if isinstance(block, dict) else block
                     for block in list(frame.get("content_blocks") or [])
@@ -122,6 +122,27 @@ def _has_render_structure_edits(previous_package: dict, current_package: dict) -
         }
 
     return signature(previous_package) != signature(current_package)
+
+
+def _validate_modern_storyboards(publish_package: dict) -> dict:
+    """Enforce the strict modern CarouselPayload boundary without mutating edits.
+
+    ``CarouselPayload`` forbids extra fields, so any retired fixed-card key
+    raises here and never reaches the publish package. Validation alone is
+    enough; re-serializing through ``model_dump`` would inject default slots
+    and silently rewrite the human edit, so the validated storyboards are
+    returned unchanged.
+    """
+
+    try:
+        CarouselPayload.model_validate(
+            {"storyboards": publish_package.get("storyboards")}
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "human storyboard edits must produce a valid modern CarouselPayload"
+        ) from exc
+    return publish_package
 
 
 def _invalidated_editorial_artifacts() -> dict:
@@ -350,6 +371,8 @@ def human_review_node(state: AgentState) -> AgentState:
                 edited_publish_package,
                 replace_storyboards=replace_storyboards,
             )
+            if "storyboards" in edited_publish_package:
+                publish_package = _validate_modern_storyboards(publish_package)
             publish_package = enforce_publish_package_title_length(publish_package)
             pending_patch = merge_publish_package(
                 pending_patch,

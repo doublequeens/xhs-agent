@@ -17,6 +17,7 @@ from src.editorial_carousel.legacy import (
     migration_reentry_predecessor,
     persisted_checkpoint_nodes,
 )
+from src.editorial_carousel.publish_profile import resolve_publish_package_profile
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.nodes import node_p_editorial_carousel_renderer
@@ -259,20 +260,6 @@ def backfill_legacy_run(registry: RunRegistry, thread_id: str, current_state) ->
     registry.upsert_run(thread_id, status="running", **extract_run_updates(values))
 
 
-def _resolve_publish_package_profile(publish_package: dict):
-    domain = publish_package.get("domain")
-    profile_version = publish_package.get("profile_version")
-    if not domain or not profile_version:
-        raise ValueError("publish_package requires valid domain and profile_version metadata")
-
-    try:
-        return get_domain_profile(domain, version=profile_version)
-    except ValueError as exc:
-        raise ValueError(
-            f"publish_package requires valid domain and profile_version metadata: {exc}"
-        ) from exc
-
-
 def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list[Path]]:
     """Validate the ordered RenderManifest output before publishing artifacts."""
     manifest = RenderManifest.model_validate(publish_package.get("render_manifest"))
@@ -365,7 +352,7 @@ def export_publish_package(completed_state: StateSnapshot) -> PublishArtifacts:
     publish_package = values.get("publish_package")
     if not isinstance(publish_package, Mapping):
         raise ValueError("completed graph state requires publish_package")
-    _resolve_publish_package_profile(publish_package)
+    resolve_publish_package_profile(publish_package)
     return _export_verified_state_snapshot(completed_state)
 
 
@@ -553,7 +540,7 @@ def export_completed_publish_package(graph, config) -> bool:
         publish_package = completed_state.values["publish_package"]
         print("The final publish package title is:")
         print(publish_package["title"])
-        _resolve_publish_package_profile(publish_package)
+        resolve_publish_package_profile(publish_package)
         _export_verified_state_snapshot(completed_state)
     except (KeyError, TypeError, ValueError):
         return False

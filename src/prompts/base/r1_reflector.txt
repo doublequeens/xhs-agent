@@ -21,7 +21,7 @@ r1_input，包含：
 - 输出中明确记录真实完成了哪些任务、跳过了哪些任务、还剩哪些风险。
 - 若仍需继续修订，should_run_R1_again = true，并给出下一轮 next_actions。
 - 若已可进入合规审查，should_run_R1_again = false，并在 next_actions 中写入 Ready for R2 compliance review。
-- 若 content_candidate.storyboard_visible_text 非空，必须按对应 location_hint 修订 text_blocks 中的精确字段，并原样保留 frame_id 与 template；未要求修改的分镜文案不得丢失。
+- 若 content_candidate.storyboard_visible_text 非空，必须按对应 location_hint 修订 text_blocks 中的精确字段，并原样保留 frame_id、role 与 layout；未要求修改的分镜文案不得丢失。
 - 缺少清楚说明“谁、什么问题、得到什么”的首屏、可截图保存的步骤/清单/判断标准/对比表，或以卡通角色、IP、纯装饰性 AI 插图替代证明时，视为 mandatory edit；在补齐前必须 should_run_R1_again = true。
 - 不得新增或保留虚构第一人称经历，以及神技、急救、亲测有效、救命、无缝、隐形等夸大表达。
 
@@ -41,8 +41,9 @@ r1_input，包含：
   "storyboard_visible_text": [
     {
       "frame_id": "string",
-      "template": "string",
-      "text_blocks": {"headline": "string", "checklist_items[1]": "string"}
+      "role": "string",
+      "layout": "editorial_cover | texture_baseline | front_face_zone | three_quarter_face_zone | step_timeline | morning_evening_flow | left_right_comparison | three_state_diagnostic | decision_tree | saveable_checklist | saveable_reference",
+      "text_blocks": {"headline": "string", "content_blocks[0].items[1]": "string"}
     }
   ],
   "scores": {
