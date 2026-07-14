@@ -41,6 +41,24 @@ def _as_list(payload: Any, key: str) -> list[Any]:
     return list(value) if isinstance(value, (list, tuple)) else []
 
 
+def _safety_review_is_resolved(item: Any) -> bool:
+    checks = [str(check) for check in _as_list(item, "unresolved_safety_checks")]
+    decisions = _get_value(item, "safety_review_decisions", {})
+    if (
+        not checks
+        or len(checks) != len(set(checks))
+        or not isinstance(decisions, dict)
+        or set(decisions) != set(checks)
+        or not _get_value(item, "safety_reviewed_at")
+    ):
+        return False
+    return all(
+        type(decisions[check]) is bool
+        and decisions[check] is (check == "allowed_for_publishing")
+        for check in checks
+    )
+
+
 def _issue(
     rule_id: str,
     message: str,
@@ -626,6 +644,7 @@ def _asset_issues(
         if (
             not is_reviewable_pending
             and _as_list(item, "unresolved_safety_checks")
+            and not _safety_review_is_resolved(item)
         ):
             issues.append(
                 _issue(

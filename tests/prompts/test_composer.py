@@ -94,6 +94,44 @@ def test_storyboard_prompt_requires_semantic_carousel_contract():
     assert "固定六张" not in prompt
 
 
+@pytest.mark.parametrize(
+    "fixture_name",
+    (
+        "zone_diagnosis",
+        "ordered_routine",
+        "multi_option_decision",
+        "reference_checklist",
+    ),
+)
+def test_task10_golden_fixture_names_and_copy_never_enter_production_prompts(
+    fixture_name,
+):
+    import json
+
+    from src.prompts.composer import compose_prompt_for_state
+
+    fixture_path = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures/editorial_carousel"
+        / f"{fixture_name}.json"
+    )
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    production_prompt = "\n".join(
+        compose_prompt_for_state(task, _profile_bound_state())
+        for task in TASK_FILES
+    )
+
+    isolated_copy = {
+        fixture_name,
+        fixture["synthetic_title"],
+        fixture["package"]["focus_keyword"],
+        fixture["package"]["topic"],
+        fixture["package"]["cover_copy"],
+        *(frame["headline"] for frame in fixture["frame_copy"].values()),
+    }
+    assert all(value not in production_prompt for value in isolated_copy)
+
+
 def test_legacy_storyboard_prompt_is_isolated_from_semantic_contract():
     from src.prompts.composer import compose_prompt
 

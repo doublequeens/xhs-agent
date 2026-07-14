@@ -459,9 +459,11 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
         },
         next=("carousel_qa",),
     )
+    config = main.build_run_config("modern")
 
     class FakeGraph:
-        def get_state(self, _config):
+        def get_state(self, received_config):
+            assert received_config == config
             return state
 
         def update_state(self, _config, _updates):
@@ -473,11 +475,15 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
     )
 
     current_state, run_input = main.load_run_state(
-        FakeGraph(), main.build_run_config("modern"), {}
+        FakeGraph(), config, {}
     )
 
     assert current_state is state
     assert current_state.next == ("carousel_qa",)
+    assert current_state.values["asset_manifest"] == {
+        "items": [{"status": "pending_external"}]
+    }
+    assert current_state.values["render_manifest"] is None
     assert run_input is None
 
 

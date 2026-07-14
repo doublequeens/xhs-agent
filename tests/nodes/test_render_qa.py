@@ -599,6 +599,40 @@ def test_pre_review_render_qa_allows_audited_pending_external_asset(tmp_path):
     assert preview_issues == []
 
 
+def test_approved_external_asset_accepts_fully_resolved_safety_review(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    first = assets.items[0].model_copy(
+        update={
+            "source_type": "stock_photo",
+            "provider": "unsplash",
+            "provider_asset_id": "approved-42",
+            "source_url": "https://unsplash.com/photos/approved-42",
+            "source_file_url": "https://images.unsplash.com/approved-42",
+            "author": "Photographer",
+            "review_status": "approved",
+            "review_disposition": "approved_for_publishing",
+            "unresolved_safety_checks": [
+                "has_logo",
+                "has_watermark",
+                "allowed_for_publishing",
+            ],
+            "safety_review_decisions": {
+                "has_logo": False,
+                "has_watermark": False,
+                "allowed_for_publishing": True,
+            },
+            "safety_reviewed_at": "2026-07-14T12:00:00+00:00",
+        }
+    )
+    assets = assets.model_copy(update={"items": [first, *assets.items[1:]]})
+
+    issues = validate_render(package, assets, manifest, _plan())
+
+    assert "asset_safety_checks_unresolved" not in _rule_ids(issues)
+
+
 def test_editorial_state_missing_render_manifest_never_falls_back_to_legacy(tmp_path):
     from src.nodes.node_p_render_qa import render_qa_node
 

@@ -137,12 +137,19 @@ body { background: var(--ivory); color: var(--ink); font-family: "Source Han San
 .evening-panel { background: rgba(120,128,94,.10); }
 .flow-divider { background: rgba(41,38,37,.22); }
 .flow-label { color: var(--mauve); font-size: 40px; }
-.flow-visual { display: none; }
+.flow-visual {
+  position: absolute; right: 22px; bottom: 22px; width: 170px; height: 170px;
+  z-index: 1; padding: 14px; border-radius: 50%; background: rgba(247,242,234,.92);
+}
 .layout-left-right-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; position: relative; }
 .comparison-panel { min-width: 0; padding: 30px; display: grid; gap: 20px; align-content: center; border: 2px solid rgba(154,112,123,.45); }
 .comparison-right { border-color: rgba(120,128,94,.58); background: rgba(120,128,94,.07); }
 .panel-label { color: var(--mauve); font-size: 23px; font-weight: 500; letter-spacing: .16em; }
-.comparison-visual { display: none; }
+.comparison-visual {
+  position: absolute; left: 50%; bottom: 22px; width: 170px; height: 170px;
+  z-index: 1; transform: translateX(-50%); padding: 14px; border-radius: 50%;
+  background: rgba(247,242,234,.94); border: 1px solid rgba(154,112,123,.32);
+}
 .layout-three-state-diagnostic { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 32px; }
 .state-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-content: center; }
 .state-grid .content-block { min-height: 330px; padding: 24px 18px; border-top: 9px solid var(--mauve); background: rgba(255,255,255,.34); }

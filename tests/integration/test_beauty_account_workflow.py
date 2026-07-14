@@ -193,7 +193,7 @@ def _install_controlled_upstream_nodes(monkeypatch, reached_nodes, captured):
         def node(state):
             if node_name == "human_review":
                 paths = [Path(path) for path in state["publish_package"]["rendered_image_paths"]]
-                assert len(paths) == 6
+                assert 5 <= len(paths) <= 7
                 assert all(path.is_file() for path in paths)
                 captured["human_review_package"] = state["publish_package"]
             reached_nodes.append(node_name)
@@ -292,7 +292,7 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert state["creator_profile"].profile_id == "commuting_beauty_women_v1"
     assert state["topic_signals"][0].domain == "beauty"
     assert state["topic_signals"][0].subdomain == "skincare"
-    assert len(_schema_valid_storyboards(contract)) == 6
+    assert 5 <= len(_schema_valid_storyboards(contract)) <= 7
 
     reached_nodes, captured = _run_carousel_path(
         monkeypatch,
@@ -309,7 +309,7 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert contract.first_screen_promise in captured["storyboard_prompt"]
 
 
-def test_beauty_workflow_reaches_review_with_six_locally_rendered_carousel_pages(
+def test_beauty_workflow_reaches_review_with_all_locally_rendered_carousel_pages(
     beauty_account_workflow,
     monkeypatch,
     tmp_path,
@@ -326,7 +326,9 @@ def test_beauty_workflow_reaches_review_with_six_locally_rendered_carousel_pages
     render_root = tmp_path / "renderer-repository" / "outputs" / "publish"
     assert Path(package["rendered_image_paths"][0]).name == "01-cover.png"
     assert all(Path(path).suffix == ".png" for path in package["rendered_image_paths"])
-    assert len(list(render_root.glob("*/images/*.png"))) == 6
+    assert len(list(render_root.glob("*/images/*.png"))) == len(
+        package["rendered_image_paths"]
+    )
 
 
 def test_final_guard_failure_never_writes_audit_or_export_after_human_approval(monkeypatch, tmp_path):

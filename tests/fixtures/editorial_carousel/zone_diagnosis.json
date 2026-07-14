@@ -1,0 +1,59 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "zone_diagnosis",
+  "synthetic_title": "合成回归甲分区诊断",
+  "expected_primary_family": "face_zone_map",
+  "expected_frame_signature": [
+    ["cover", "editorial_cover"],
+    ["baseline", "texture_baseline"],
+    ["applicable_case", "front_face_zone"],
+    ["zone_adjustment", "three_quarter_face_zone"],
+    ["feedback_diagnosis", "three_state_diagnostic"],
+    ["save", "saveable_reference"]
+  ],
+  "content_contract": {
+    "audience": "合成测试人群甲",
+    "trigger_situation": "测试分区判断流程时",
+    "decision_problem": "如何验证分区与反馈顺序",
+    "first_screen_promise": "六页完成合成分区判断验证",
+    "screenshot_asset": "合成分区参考卡",
+    "proof_asset": "合成质地与分区图",
+    "visual_mode": "text_plus_real_proof",
+    "content_job": "diagnose_and_adjust",
+    "primary_visual_family": "face_zone_map",
+    "primary_visual_subject": "face_map",
+    "proof_mode": "diagram",
+    "recommended_frame_count": 6
+  },
+  "package": {
+    "focus_keyword": "合成分区验证甲",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-zone-topic",
+    "topic": "合成分区回归输入",
+    "angle_id": "synthetic-zone-angle",
+    "angle": "按区域逐项核对",
+    "target_group": "合成测试人群甲",
+    "core_pain": "测试路径缺少分区证据",
+    "title": "合成回归甲分区诊断",
+    "cover_copy": "六页完成合成分区判断验证",
+    "content": "仅用于验证本地编辑套图工作流。",
+    "hashtags": ["#合成回归", "#分区验证"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v1"
+  },
+  "frame_copy": {
+    "cover": {"headline": "六页完成合成分区判断验证", "body": "先确认测试目标与顺序。", "items": ["读取约束", "锁定顺序", "记录结果"]},
+    "baseline": {"headline": "先建立合成基线", "body": "用同一组输入建立可比较基线。", "items": ["确认输入", "保存快照", "核对哈希"]},
+    "applicable_case": {"headline": "标出适用区域", "body": "逐个区域核对语义与素材角色。", "items": ["区域一", "区域二", "区域三"]},
+    "zone_adjustment": {"headline": "按区域微调", "body": "每次只调整一个测试变量。", "items": ["保持主题", "保持文案", "改变布局"]},
+    "feedback_diagnosis": {"headline": "比较三种反馈", "body": "把通过、待查与失败分别记录。", "items": ["通过", "待查", "失败"]},
+    "save": {"headline": "保存分区核对卡", "body": "留存本次回归所需的核对项。", "items": ["页序一致", "素材一致", "哈希一致"]}
+  }
+}

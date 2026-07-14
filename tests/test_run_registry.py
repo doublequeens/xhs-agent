@@ -41,6 +41,31 @@ def test_resumable_filter_order_and_completed_history(registry):
     assert [run.thread_id for run in registry.list_recent()] == ["thread-second", "thread-first"]
 
 
+def test_same_thread_resume_updates_one_registry_record_through_completion(registry):
+    created = registry.create_run("thread-resume", "合成回归")
+    registry.update_run(
+        "thread-resume",
+        status="awaiting_review",
+        last_node="ASSET_RESOLVER",
+    )
+    registry.update_run(
+        "thread-resume",
+        status="interrupted",
+        last_node="EDITORIAL_CAROUSEL_RENDERER",
+    )
+    completed = registry.update_run(
+        "thread-resume",
+        status="completed",
+        last_node="MEMORY_UPDATER",
+    )
+
+    recent = registry.list_recent()
+    assert len(recent) == 1
+    assert completed.run_id == created.run_id == recent[0].run_id
+    assert recent[0].status == "completed"
+    assert recent[0].last_node == "MEMORY_UPDATER"
+
+
 def test_unique_thread_id_and_legacy_upsert_keep_existing_fields(registry):
     registry.create_run("legacy-thread", "旧关键词")
 

@@ -1,0 +1,57 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "ordered_routine",
+  "synthetic_title": "合成回归乙顺序流程",
+  "expected_primary_family": "step_flow",
+  "expected_frame_signature": [
+    ["cover", "editorial_cover"],
+    ["sequence", "step_timeline"],
+    ["routine", "morning_evening_flow"],
+    ["decision", "decision_tree"],
+    ["save", "saveable_checklist"]
+  ],
+  "content_contract": {
+    "audience": "合成测试人群乙",
+    "trigger_situation": "测试有序流程时",
+    "decision_problem": "如何验证步骤与分支顺序",
+    "first_screen_promise": "五页走完合成顺序流程验证",
+    "screenshot_asset": "合成步骤清单",
+    "proof_asset": "合成流程线",
+    "visual_mode": "text_card",
+    "content_job": "follow_steps",
+    "primary_visual_family": "step_flow",
+    "primary_visual_subject": "process",
+    "proof_mode": "diagram",
+    "recommended_frame_count": 5
+  },
+  "package": {
+    "focus_keyword": "合成顺序验证乙",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-routine-topic",
+    "topic": "合成顺序回归输入",
+    "angle_id": "synthetic-routine-angle",
+    "angle": "按步骤推进核对",
+    "target_group": "合成测试人群乙",
+    "core_pain": "测试路径发生步骤重放",
+    "title": "合成回归乙顺序流程",
+    "cover_copy": "五页走完合成顺序流程验证",
+    "content": "仅用于验证顺序、断点与幂等输出。",
+    "hashtags": ["#合成回归", "#顺序验证"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v1"
+  },
+  "frame_copy": {
+    "cover": {"headline": "五页走完合成顺序流程验证", "body": "从入口到保存逐项前进。", "items": ["入口", "执行", "完成"]},
+    "sequence": {"headline": "按编号依次执行", "body": "后一步只读取前一步的确定结果。", "items": ["建立计划", "解析素材", "执行渲染"]},
+    "routine": {"headline": "分开两条流程", "body": "分别验证两条并行语义路径。", "items": ["路径甲", "路径乙", "共同收口"]},
+    "decision": {"headline": "在条件点分支", "body": "根据确定条件选择唯一下一步。", "items": ["条件成立", "条件不成立", "记录选择"]},
+    "save": {"headline": "保存顺序核对表", "body": "用清单确认步骤没有跳过或重放。", "items": ["没有漏步", "没有重放", "只有一版"]}
+  }
+}

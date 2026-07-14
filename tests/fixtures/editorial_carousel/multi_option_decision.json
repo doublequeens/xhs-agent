@@ -1,0 +1,57 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "multi_option_decision",
+  "synthetic_title": "合成回归丙多项决策",
+  "expected_primary_family": "comparison_decision",
+  "expected_frame_signature": [
+    ["cover", "editorial_cover"],
+    ["comparison", "left_right_comparison"],
+    ["feedback_diagnosis", "three_state_diagnostic"],
+    ["decision", "decision_tree"],
+    ["save", "saveable_reference"]
+  ],
+  "content_contract": {
+    "audience": "合成测试人群丙",
+    "trigger_situation": "测试多项选择时",
+    "decision_problem": "如何验证比较与选择分支",
+    "first_screen_promise": "五页完成合成多项决策验证",
+    "screenshot_asset": "合成决策参考卡",
+    "proof_asset": "合成左右对照",
+    "visual_mode": "comparison_table",
+    "content_job": "compare_and_choose",
+    "primary_visual_family": "comparison_decision",
+    "primary_visual_subject": "skin_macro",
+    "proof_mode": "comparison",
+    "recommended_frame_count": 5
+  },
+  "package": {
+    "focus_keyword": "合成决策验证丙",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-decision-topic",
+    "topic": "合成决策回归输入",
+    "angle_id": "synthetic-decision-angle",
+    "angle": "按证据比较选择",
+    "target_group": "合成测试人群丙",
+    "core_pain": "测试分支缺少确定选择",
+    "title": "合成回归丙多项决策",
+    "cover_copy": "五页完成合成多项决策验证",
+    "content": "仅用于验证比较布局与决策分支。",
+    "hashtags": ["#合成回归", "#决策验证"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v1"
+  },
+  "frame_copy": {
+    "cover": {"headline": "五页完成合成多项决策验证", "body": "先明确比较轴与选择规则。", "items": ["固定输入", "明确选项", "绑定结果"]},
+    "comparison": {"headline": "左右对照两个选项", "body": "用同一组维度比较两侧。", "items": ["左侧事实", "右侧事实", "共同维度"]},
+    "feedback_diagnosis": {"headline": "归类三种状态", "body": "将观测结果放入三个确定状态。", "items": ["状态甲", "状态乙", "状态丙"]},
+    "decision": {"headline": "沿决策树选择", "body": "每个条件只指向一个结果。", "items": ["检查条件", "选择分支", "保存依据"]},
+    "save": {"headline": "保存决策参考卡", "body": "复核比较轴、分支与最终选择。", "items": ["比较一致", "分支唯一", "结果可追溯"]}
+  }
+}
