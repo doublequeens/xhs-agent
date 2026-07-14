@@ -97,8 +97,16 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("r1_reflector", nodes.r1_reflector_node)
     builder.add_node("r2_compliance", nodes.r2_compliance_node)
     builder.add_node("hashtag", nodes.hashtag_node)
+    builder.add_node("visual_strategy_planner", nodes.visual_strategy_planner_node)
     builder.add_node("storyboard_generator", nodes.storyboards_generator_node)
+    builder.add_node("asset_resolver", nodes.asset_resolver_node)
     builder.add_node("carousel_qa", nodes.carousel_qa_node)
+    builder.add_node(
+        "editorial_carousel_renderer",
+        nodes.editorial_carousel_renderer_node,
+    )
+    # Kept only so a persisted pre-Task-8 checkpoint whose exact successor is
+    # this node can resume. New graph edges never enter it.
     builder.add_node("text_card_renderer", nodes.text_card_renderer_node)
     builder.add_node("render_qa", nodes.render_qa_node)
     # builder.add_node("visual_director", visual_director_node)
@@ -134,13 +142,19 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_edge("visual_director", "image_sourcing")
     # builder.add_edge("image_sourcing", "image_qa")
     # builder.add_edge("image_qa", "assembler")
-    builder.add_edge("assembler", "storyboard_generator")
-    builder.add_edge("storyboard_generator", "carousel_qa")
+    builder.add_edge("assembler", "visual_strategy_planner")
+    builder.add_edge("visual_strategy_planner", "storyboard_generator")
+    builder.add_edge("storyboard_generator", "asset_resolver")
+    builder.add_edge("asset_resolver", "carousel_qa")
     builder.add_conditional_edges(
         "carousel_qa",
         route_after_carousel_qa,
-        {"r1_reflector": "r1_reflector", "text_card_renderer": "text_card_renderer"},
+        {
+            "r1_reflector": "r1_reflector",
+            "editorial_carousel_renderer": "editorial_carousel_renderer",
+        },
     )
+    builder.add_edge("editorial_carousel_renderer", "render_qa")
     builder.add_edge("text_card_renderer", "render_qa")
     builder.add_conditional_edges(
         "render_qa",
@@ -153,6 +167,8 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
         {
             "r2_compliance": "r2_compliance",
             "final_policy_guard": "final_policy_guard",
+            "editorial_carousel_renderer": "editorial_carousel_renderer",
+            "render_qa": "render_qa",
         },
     )
     builder.add_conditional_edges(

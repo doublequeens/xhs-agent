@@ -256,6 +256,305 @@ def test_human_review_interrupt_payload_has_kind():
     assert result["review_status"] == "approved"
 
 
+def test_human_review_exposes_images_contact_sheet_qa_proxy_and_pending_assets(
+    monkeypatch,
+):
+    module = importlib.import_module("src.nodes.node_q_human_review")
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {
+            "approved": False,
+            "asset_decisions": {"pending-1": "rejected"},
+            "feedback": "reject candidate",
+        }
+
+    replacement_manifest = {"items": [{"status": "fallback", "slot_id": "slot-1"}]}
+    monkeypatch.setattr(module, "interrupt", fake_interrupt)
+    monkeypatch.setattr(
+        module,
+        "_apply_asset_decisions",
+        lambda _state, _manifest, decisions, _feedback: (
+            replacement_manifest,
+            "editorial_carousel_renderer",
+        ),
+    )
+
+    result = module.human_review_node(
+        {
+            "publish_package": {"title": "x", "rendered_image_paths": ["01-cover.png"]},
+            "visual_plan": {"design_system": "beauty_editorial_v1"},
+            "asset_manifest": {
+                "items": [
+                    {
+                        "status": "pending_external",
+                        "pending_id": "pending-1",
+                        "provider": "pexels",
+                        "provider_asset_id": "42",
+                        "unresolved_safety_checks": ["allowed_for_publishing"],
+                    }
+                ]
+            },
+            "render_manifest": {
+                "pages": [{"path": "01-cover.png"}],
+                "contact_sheet_path": "contact-sheet.png",
+            },
+            "carousel_qa_result": {"passed": True, "issues": []},
+            "render_qa_result": {
+                "passed": True,
+                "issues": [],
+                "metric_kind": "deterministic_proxy",
+                "metric_note": "measured proxy; human review still required",
+            },
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    payload = captured["payload"]
+    assert payload["images"] == ["01-cover.png"]
+    assert payload["render_manifest"]["contact_sheet_path"] == "contact-sheet.png"
+    assert payload["asset_manifest"]["items"]
+    assert payload["carousel_qa_result"]["passed"] is True
+    assert payload["render_qa_result"]["passed"] is True
+    assert payload["proxy_metric_label"] == "deterministic_proxy"
+    assert payload["pending_assets"][0]["decision_id"] == "pending-1"
+    assert result["asset_manifest"] == replacement_manifest
+    assert result["review_route"] == "editorial_carousel_renderer"
+    assert result["review_status"] == "pending"
+
+
+def test_asset_approval_promotes_pending_and_rechecks_render_qa(monkeypatch):
+    module = importlib.import_module("src.nodes.node_q_human_review")
+    pending_item = SimpleNamespace(
+        status="pending_external",
+        pending_id="run-42-slot-pexels-1",
+        asset_id=None,
+        provider="pexels",
+        provider_asset_id="1",
+        run_id="run-42",
+        metadata_path="/tmp/pending-1.json",
+    )
+    candidate = SimpleNamespace(
+        pending_id=pending_item.pending_id,
+        unresolved_safety_checks=("has_logo", "allowed_for_publishing"),
+    )
+    catalogs = iter(["review-catalog", "refreshed-catalog"])
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "AssetManifest",
+        SimpleNamespace(
+            model_validate=lambda _value: SimpleNamespace(items=[pending_item])
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_asset_catalog_for_state",
+        lambda _state, **kwargs: calls.append(("catalog", kwargs))
+        or next(catalogs),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_pending_asset",
+        lambda path, catalog: calls.append(("load", path, catalog)) or candidate,
+    )
+    monkeypatch.setattr(
+        module,
+        "approve_external_asset",
+        lambda loaded, catalog, **kwargs: calls.append(
+            ("approve", loaded, catalog, kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        module.VisualPlan,
+        "model_validate",
+        lambda value: calls.append(("plan", value)) or "validated-plan",
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_assets",
+        lambda plan, catalog: calls.append(("resolve", plan, catalog))
+        or "approved-manifest",
+    )
+    state = {"visual_plan": {"frame_plan": []}}
+
+    manifest, route = module._apply_asset_decisions(
+        state,
+        {"items": []},
+        {pending_item.pending_id: "approved"},
+        None,
+    )
+
+    assert manifest == "approved-manifest"
+    assert route == "render_qa"
+    assert ("approve", candidate, "review-catalog", {
+        "safety_decisions": {
+            "has_logo": False,
+            "allowed_for_publishing": True,
+        }
+    }) in calls
+    assert [call for call in calls if call[0] == "catalog"] == [
+        ("catalog", {"run_id": "run-42", "allow_external": False}),
+        ("catalog", {"run_id": "run-42", "allow_external": False}),
+    ]
+
+
+def test_asset_rejection_reresolves_without_external_provider_calls(monkeypatch):
+    module = importlib.import_module("src.nodes.node_q_human_review")
+    pending_item = SimpleNamespace(
+        status="pending_external",
+        pending_id="run-42-slot-pexels-1",
+        asset_id=None,
+        provider="pexels",
+        provider_asset_id="1",
+        run_id="run-42",
+        metadata_path="/tmp/pending-1.json",
+    )
+    candidate = SimpleNamespace(
+        pending_id=pending_item.pending_id,
+        unresolved_safety_checks=(),
+    )
+    catalogs = iter(["review-catalog", "no-provider-catalog"])
+    calls = []
+    monkeypatch.setattr(
+        module,
+        "AssetManifest",
+        SimpleNamespace(
+            model_validate=lambda _value: SimpleNamespace(items=[pending_item])
+        ),
+    )
+    monkeypatch.setattr(
+        module,
+        "load_asset_catalog_for_state",
+        lambda _state, **kwargs: calls.append(("catalog", kwargs))
+        or next(catalogs),
+    )
+    monkeypatch.setattr(module, "load_pending_asset", lambda *_args: candidate)
+    monkeypatch.setattr(
+        module,
+        "reject_external_asset",
+        lambda loaded, **kwargs: calls.append(("reject", loaded, kwargs)),
+    )
+    monkeypatch.setattr(module.VisualPlan, "model_validate", lambda _value: "plan")
+    monkeypatch.setattr(
+        module,
+        "resolve_assets",
+        lambda plan, catalog: calls.append(("resolve", plan, catalog))
+        or "next-downloaded-or-fallback-manifest",
+    )
+
+    manifest, route = module._apply_asset_decisions(
+        {"visual_plan": {"frame_plan": []}},
+        {"items": []},
+        {pending_item.pending_id: "rejected"},
+        "visible logo",
+    )
+
+    assert manifest == "next-downloaded-or-fallback-manifest"
+    assert route == "editorial_carousel_renderer"
+    assert ("resolve", "plan", "no-provider-catalog") in calls
+    assert [call for call in calls if call[0] == "catalog"] == [
+        ("catalog", {"run_id": "run-42", "allow_external": False}),
+        ("catalog", {"run_id": "run-42", "allow_external": False}),
+    ]
+
+
+def test_asset_resolver_node_is_a_thin_validating_adapter(monkeypatch):
+    module = importlib.import_module("src.nodes.node_p_asset_resolver")
+    calls = []
+    monkeypatch.setattr(
+        module.VisualPlan,
+        "model_validate",
+        lambda value: calls.append(("validate", value)) or "validated-plan",
+    )
+    monkeypatch.setattr(
+        module,
+        "load_asset_catalog_for_state",
+        lambda state: calls.append(("catalog", state)) or "catalog",
+    )
+    monkeypatch.setattr(
+        module,
+        "resolve_assets",
+        lambda plan, catalog: calls.append(("resolve", plan, catalog))
+        or "manifest",
+    )
+    state = {"visual_plan": {"design_system": "beauty_editorial_v1"}}
+
+    result = module.asset_resolver_node(state)
+
+    assert result == {
+        "asset_manifest": "manifest",
+        "current_node": "ASSET_RESOLVER",
+    }
+    assert calls == [
+        ("validate", state["visual_plan"]),
+        ("catalog", state),
+        ("resolve", "validated-plan", "catalog"),
+    ]
+
+
+def test_editorial_renderer_node_calls_deep_renderer_once_and_persists_page_paths(
+    monkeypatch,
+):
+    module = importlib.import_module(
+        "src.nodes.node_p_editorial_carousel_renderer"
+    )
+    calls = []
+    monkeypatch.setattr(
+        module.VisualPlan,
+        "model_validate",
+        lambda value: calls.append(("plan", value)) or "plan",
+    )
+    monkeypatch.setattr(
+        module.CarouselPayload,
+        "model_validate",
+        lambda value: calls.append(("storyboard", value)) or "storyboard",
+    )
+    monkeypatch.setattr(
+        module.AssetManifest,
+        "model_validate",
+        lambda value: calls.append(("assets", value)) or "assets",
+    )
+    monkeypatch.setattr(
+        module,
+        "render_output_directory",
+        lambda package: calls.append(("output", package)) or "output-dir",
+    )
+    rendered = SimpleNamespace(
+        pages=[SimpleNamespace(path="01-cover.png"), SimpleNamespace(path="02-save.png")]
+    )
+    monkeypatch.setattr(
+        module,
+        "render_carousel",
+        lambda plan, storyboard, assets, output: calls.append(
+            ("render", plan, storyboard, assets, output)
+        )
+        or rendered,
+    )
+    state = {
+        "visual_plan": {"frame_plan": []},
+        "asset_manifest": {"items": []},
+        "publish_package": {"title": "carousel", "storyboards": []},
+    }
+
+    result = module.editorial_carousel_renderer_node(state)
+
+    assert result["render_manifest"] is rendered
+    assert result["publish_package"]["rendered_image_paths"] == [
+        "01-cover.png",
+        "02-save.png",
+    ]
+    assert [call[0] for call in calls] == [
+        "plan",
+        "storyboard",
+        "assets",
+        "output",
+        "render",
+    ]
+
+
 def test_graph_builder_wires_domain_nodes(monkeypatch):
     graph_module = importlib.import_module("src.graph")
     added_nodes = []
@@ -311,7 +610,10 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
             final_policy_guard_node=fake_node,
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
+            visual_strategy_planner_node=fake_node,
+            asset_resolver_node=fake_node,
             carousel_qa_node=fake_node,
+            editorial_carousel_renderer_node=fake_node,
             text_card_renderer_node=fake_node,
             render_qa_node=fake_node,
         ),
@@ -327,13 +629,19 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("virality_score", "evidence_brief") in added_edges
     assert ("evidence_brief", "outline_architect") in added_edges
     assert ("virality_score", "outline_architect") not in added_edges
-    assert ("storyboard_generator", "carousel_qa") in added_edges
+    assert ("assembler", "visual_strategy_planner") in added_edges
+    assert ("visual_strategy_planner", "storyboard_generator") in added_edges
+    assert ("storyboard_generator", "asset_resolver") in added_edges
+    assert ("asset_resolver", "carousel_qa") in added_edges
     assert ("storyboard_generator", "human_review") not in added_edges
     assert (
         "carousel_qa",
-        (("r1_reflector", "r1_reflector"), ("text_card_renderer", "text_card_renderer")),
+        (
+            ("editorial_carousel_renderer", "editorial_carousel_renderer"),
+            ("r1_reflector", "r1_reflector"),
+        ),
     ) in added_edges
-    assert ("text_card_renderer", "render_qa") in added_edges
+    assert ("editorial_carousel_renderer", "render_qa") in added_edges
     assert (
         "render_qa",
         (("human_review", "human_review"), ("r1_reflector", "r1_reflector")),
@@ -341,7 +649,12 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("human_review", "final_policy_guard") not in added_edges
     assert (
         "human_review",
-        (("final_policy_guard", "final_policy_guard"), ("r2_compliance", "r2_compliance")),
+        (
+            ("editorial_carousel_renderer", "editorial_carousel_renderer"),
+            ("final_policy_guard", "final_policy_guard"),
+            ("r2_compliance", "r2_compliance"),
+            ("render_qa", "render_qa"),
+        ),
     ) in added_edges
     assert (
         "final_policy_guard",
@@ -405,7 +718,10 @@ def test_create_graph_uses_cached_real_sqlite_checkpointer(tmp_path, monkeypatch
             final_policy_guard_node=fake_node,
             content_writer_node=fake_node,
             storyboards_generator_node=fake_node,
+            visual_strategy_planner_node=fake_node,
+            asset_resolver_node=fake_node,
             carousel_qa_node=fake_node,
+            editorial_carousel_renderer_node=fake_node,
             text_card_renderer_node=fake_node,
             render_qa_node=fake_node,
         ),

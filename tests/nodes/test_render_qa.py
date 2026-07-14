@@ -566,6 +566,39 @@ def test_external_provenance_fields_are_atomic_and_nonduplicated(tmp_path):
     ]
 
 
+def test_pre_review_render_qa_allows_audited_pending_external_asset(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    first = assets.items[0].model_copy(
+        update={
+            "status": "pending_external",
+            "source_type": "stock_photo",
+            "provider": "pexels",
+            "provider_asset_id": "42",
+            "source_url": "https://www.pexels.com/photo/42",
+            "source_file_url": "https://images.pexels.com/photos/42/image.jpeg",
+            "author": "Photographer",
+            "pending_id": "run-slot-pexels-42",
+            "metadata_path": str(tmp_path / "pending.json"),
+            "run_id": "run",
+            "unresolved_safety_checks": ["allowed_for_publishing"],
+        }
+    )
+    assets = assets.model_copy(update={"items": [first, *assets.items[1:]]})
+
+    strict_issues = validate_render(package, assets, manifest)
+    preview_issues = validate_render(
+        package,
+        assets,
+        manifest,
+        allow_pending_external=True,
+    )
+
+    assert "asset_publishing_review_not_approved" in _rule_ids(strict_issues)
+    assert preview_issues == []
+
+
 def test_editorial_state_missing_render_manifest_never_falls_back_to_legacy(tmp_path):
     from src.nodes.node_p_render_qa import render_qa_node
 

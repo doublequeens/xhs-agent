@@ -1,3 +1,5 @@
+import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -52,6 +54,72 @@ def _publish_package(**overrides):
     }
     package.update(overrides)
     return package
+
+
+def _legacy_guard_state(package):
+    return {
+        "publish_package": package,
+        "legacy_editorial_checkpoint": True,
+    }
+
+
+def _editorial_guard_state(tmp_path: Path):
+    active_root = tmp_path / "assets" / "active"
+    active_root.mkdir(parents=True)
+    asset_path = active_root / "asset.svg"
+    asset_path.write_bytes(b"active asset")
+    asset_sha = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+
+    image_dir = tmp_path / "images"
+    image_dir.mkdir()
+    pages = []
+    for index in range(5):
+        page_path = image_dir / f"{index + 1:02d}-page.png"
+        page_path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index]))
+        pages.append(
+            SimpleNamespace(
+                frame_id=f"frame-{index + 1}",
+                path=str(page_path),
+                sha256=hashlib.sha256(page_path.read_bytes()).hexdigest(),
+            )
+        )
+    contact_sheet = image_dir / "contact-sheet.png"
+    contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\ncontact")
+
+    package = _publish_package(
+        rendered_image_paths=[page.path for page in pages],
+        storyboards=[{"frame_id": page.frame_id} for page in pages],
+    )
+    asset_manifest = SimpleNamespace(
+        items=[
+            SimpleNamespace(
+                slot_id="slot-1",
+                status="active",
+                path=str(asset_path),
+                sha256=asset_sha,
+            )
+        ]
+    )
+    render_manifest = SimpleNamespace(
+        pages=pages,
+        source_asset_sha256={"slot-1": asset_sha},
+        contact_sheet_path=str(contact_sheet),
+        contact_sheet_sha256=hashlib.sha256(contact_sheet.read_bytes()).hexdigest(),
+        contact_sheet_page_sha256=[page.sha256 for page in pages],
+    )
+    return {
+        "publish_package": package,
+        "review_status": "approved",
+        "visual_plan": SimpleNamespace(
+            frame_plan=[
+                SimpleNamespace(frame_id=page.frame_id) for page in pages
+            ]
+        ),
+        "asset_manifest": asset_manifest,
+        "render_manifest": render_manifest,
+        "carousel_qa_result": {"passed": True},
+        "render_qa_result": {"passed": True},
+    }, active_root
 
 
 def _storyboard_frame(frame_id, **overrides):
@@ -1095,7 +1163,7 @@ def test_final_policy_guard_requires_publish_package():
 
 
 def test_final_policy_guard_routes_empty_publish_package_to_review():
-    result = final_policy_guard_node({"publish_package": {}})
+    result = final_policy_guard_node(_legacy_guard_state({}))
 
     assert route_after_final_guard(result) == "human_review"
     assert [issue["matched_text"] for issue in result["final_policy_issues"]] == [
@@ -1113,12 +1181,12 @@ def test_final_policy_guard_routes_empty_publish_package_to_review():
 
 def test_final_policy_guard_routes_unsafe_package_back_to_human_review():
     result = final_policy_guard_node(
-        {
-            "publish_package": _publish_package(
+        _legacy_guard_state(
+            _publish_package(
                 title="保证立即见效",
                 content="这种方案可以治疗失眠。",
             )
-        }
+        )
     )
 
     assert route_after_final_guard(result) == "human_review"
@@ -1130,13 +1198,13 @@ def test_final_policy_guard_routes_unsafe_package_back_to_human_review():
 
 def test_final_policy_guard_blocks_missing_required_fields_before_writer():
     result = final_policy_guard_node(
-        {
-            "publish_package": _publish_package(
+        _legacy_guard_state(
+            _publish_package(
                 topic_id="",
                 title="",
                 hashtags=None,
             )
-        }
+        )
     )
 
     assert route_after_final_guard(result) == "human_review"
@@ -1149,12 +1217,12 @@ def test_final_policy_guard_blocks_missing_required_fields_before_writer():
 
 def test_final_policy_guard_blocks_required_fields_with_writer_unsafe_types():
     result = final_policy_guard_node(
-        {
-            "publish_package": _publish_package(
+        _legacy_guard_state(
+            _publish_package(
                 topic=["not", "text"],
                 hashtags=["#valid", None],
             )
-        }
+        )
     )
 
     assert route_after_final_guard(result) == "human_review"
@@ -1165,9 +1233,7 @@ def test_final_policy_guard_blocks_required_fields_with_writer_unsafe_types():
 
 
 def test_final_policy_guard_blocks_empty_required_hashtags():
-    result = final_policy_guard_node(
-        {"publish_package": _publish_package(hashtags=[])}
-    )
+    result = final_policy_guard_node(_legacy_guard_state(_publish_package(hashtags=[])))
 
     assert route_after_final_guard(result) == "human_review"
     assert result["final_policy_issues"][0]["matched_text"] == "hashtags"
@@ -1175,8 +1241,8 @@ def test_final_policy_guard_blocks_empty_required_hashtags():
 
 def test_final_policy_guard_scans_storyboard_visible_text():
     result = final_policy_guard_node(
-        {
-            "publish_package": _publish_package(
+        _legacy_guard_state(
+            _publish_package(
                 storyboards=[
                     {
                         "frame_id": "frame_004",
@@ -1189,7 +1255,7 @@ def test_final_policy_guard_scans_storyboard_visible_text():
                     }
                 ]
             )
-        }
+        )
     )
 
     assert route_after_final_guard(result) == "human_review"
@@ -1202,8 +1268,8 @@ def test_final_policy_guard_scans_storyboard_visible_text():
 
 def test_final_policy_guard_does_not_scan_storyboard_urls():
     result = final_policy_guard_node(
-        {
-            "publish_package": _publish_package(
+        _legacy_guard_state(
+            _publish_package(
                 storyboards=[
                     {
                         "frame_title": "作息记录",
@@ -1213,7 +1279,7 @@ def test_final_policy_guard_does_not_scan_storyboard_urls():
                     }
                 ]
             )
-        }
+        )
     )
 
     assert result["final_policy_issues"] == []
@@ -1221,7 +1287,7 @@ def test_final_policy_guard_does_not_scan_storyboard_urls():
 
 
 def test_final_policy_guard_routes_clean_package_to_content_writer():
-    result = final_policy_guard_node({"publish_package": _publish_package()})
+    result = final_policy_guard_node(_legacy_guard_state(_publish_package()))
 
     assert result["final_policy_issues"] == []
     assert route_after_final_guard(result) == "content_writer"
@@ -1264,7 +1330,9 @@ def test_edited_unsafe_package_loops_until_clean(monkeypatch):
             "domain_context": {"profile_version": "wellness-v1"},
         }
     )
-    first_guard = final_policy_guard_node(first_review)
+    first_guard = final_policy_guard_node(
+        {**first_review, "legacy_editorial_checkpoint": True}
+    )
 
     assert route_after_final_guard(first_guard) == "human_review"
 
@@ -1276,7 +1344,123 @@ def test_edited_unsafe_package_loops_until_clean(monkeypatch):
             "domain_context": {"profile_version": "wellness-v1"},
         }
     )
-    second_guard = final_policy_guard_node(second_review)
+    second_guard = final_policy_guard_node(
+        {**second_review, "legacy_editorial_checkpoint": True}
+    )
 
     assert calls[1]["final_policy_issues"] == first_guard["final_policy_issues"]
     assert route_after_final_guard(second_guard) == "content_writer"
+
+
+def test_final_policy_guard_accepts_complete_approved_editorial_artifacts(
+    monkeypatch, tmp_path
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+
+    result = final_policy_guard_node(state)
+
+    assert result["final_policy_issues"] == []
+    assert route_after_final_guard(result) == "content_writer"
+
+
+@pytest.mark.parametrize(
+    "mutation,expected_rule",
+    [
+        (
+            lambda state: setattr(
+                state["asset_manifest"].items[0], "status", "pending_external"
+            ),
+            "pending_asset_not_approved",
+        ),
+        (
+            lambda state: state["asset_manifest"].items[0].path
+            and Path(state["asset_manifest"].items[0].path).write_bytes(b"tampered"),
+            "asset_file_hash_mismatch",
+        ),
+        (
+            lambda state: state["render_manifest"].pages[0].path
+            and Path(state["render_manifest"].pages[0].path).write_bytes(b"tampered"),
+            "rendered_page_hash_mismatch",
+        ),
+        (
+            lambda state: state["publish_package"].update(
+                {"rendered_image_paths": state["publish_package"]["rendered_image_paths"][:-1]}
+            ),
+            "rendered_image_paths_incomplete",
+        ),
+        (
+            lambda state: (
+                setattr(
+                    state["render_manifest"],
+                    "pages",
+                    list(reversed(state["render_manifest"].pages)),
+                ),
+                setattr(
+                    state["render_manifest"],
+                    "contact_sheet_page_sha256",
+                    list(
+                        reversed(
+                            state["render_manifest"].contact_sheet_page_sha256
+                        )
+                    ),
+                ),
+                state["publish_package"].update(
+                    {
+                        "rendered_image_paths": list(
+                            reversed(
+                                state["publish_package"]["rendered_image_paths"]
+                            )
+                        )
+                    }
+                ),
+            ),
+            "rendered_page_order_mismatch",
+        ),
+        (
+            lambda state: state.update({"render_qa_result": {"passed": False}}),
+            "render_qa_not_passed",
+        ),
+    ],
+)
+def test_final_policy_guard_blocks_pending_tampered_or_incomplete_artifacts(
+    monkeypatch, tmp_path, mutation, expected_rule
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    mutation(state)
+
+    result = final_policy_guard_node(state)
+
+    assert expected_rule in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+    assert route_after_final_guard(result) == "human_review"
+
+
+def test_final_policy_guard_requires_distinct_complete_rendered_page_paths(
+    monkeypatch, tmp_path
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    pages = state["render_manifest"].pages
+    pages[1].path = pages[0].path
+    pages[1].sha256 = pages[0].sha256
+    state["publish_package"]["rendered_image_paths"][1] = pages[0].path
+    state["render_manifest"].contact_sheet_page_sha256[1] = pages[0].sha256
+
+    result = final_policy_guard_node(state)
+
+    assert "rendered_image_paths_incomplete" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+    assert route_after_final_guard(result) == "human_review"

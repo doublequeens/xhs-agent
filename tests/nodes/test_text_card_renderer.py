@@ -33,6 +33,7 @@ def _frames():
 
 def valid_state():
     return {
+        "legacy_editorial_checkpoint": True,
         "publish_package": {
             "topic_id": "tp_001",
             "title": "通勤底妆不搓泥",

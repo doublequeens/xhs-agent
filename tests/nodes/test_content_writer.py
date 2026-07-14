@@ -43,6 +43,7 @@ def _publish_package(**overrides):
         "hashtags": ["#睡眠"],
         "storyboards": ["frame-1"],
         "images": [{"image_url": "/tmp/image-1.png"}],
+        "rendered_image_paths": ["/tmp/legacy-rendered.png"],
         "domain": "wellness",
         "subdomain": "sleep",
         "content_intent": "how_to",
@@ -195,6 +196,12 @@ def test_content_writer_uses_state_topic_metadata_over_editable_package_fields(m
             "r2_output": SimpleNamespace(
                 compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
             ),
+            "render_manifest": SimpleNamespace(
+                pages=[
+                    SimpleNamespace(path="/tmp/01-cover.png"),
+                    SimpleNamespace(path="/tmp/02-reference.png"),
+                ]
+            ),
         }
     )
 
@@ -205,6 +212,10 @@ def test_content_writer_uses_state_topic_metadata_over_editable_package_fields(m
     assert record.profile_version == "wellness-v1"
     assert record.risk_level == "medium"
     assert record.compliance_status == "high_risk_detected"
+    assert record.image_paths == [
+        "/tmp/01-cover.png",
+        "/tmp/02-reference.png",
+    ]
     assert record.metadata == {
         "domain": "wellness",
         "subdomain": "sleep",
@@ -256,6 +267,7 @@ def test_content_writer_compensates_when_vector_write_fails(monkeypatch):
                 "r2_output": SimpleNamespace(
                     compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
                 ),
+                "legacy_editorial_checkpoint": True,
             }
         )
 
@@ -300,6 +312,7 @@ def test_content_writer_surfaces_compensation_failure(monkeypatch):
                 "r2_output": SimpleNamespace(
                     compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
                 ),
+                "legacy_editorial_checkpoint": True,
             }
         )
 

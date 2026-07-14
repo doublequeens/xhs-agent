@@ -11,6 +11,7 @@ from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
+from src.editorial_carousel.legacy import hydrate_legacy_editorial_state
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
@@ -69,7 +70,15 @@ def hydrate_legacy_domain_state(values: dict) -> dict:
 def load_run_state(graph, config: dict, initial_state: dict):
     current_state = graph.get_state(config)
     if current_state.values:
-        hydration_updates = hydrate_legacy_domain_state(current_state.values)
+        editorial_updates = (
+            hydrate_legacy_editorial_state(current_state.values)
+            if current_state.next
+            else {}
+        )
+        hydration_updates = {
+            **hydrate_legacy_domain_state(current_state.values),
+            **editorial_updates,
+        }
         if hydration_updates:
             graph.update_state(config, hydration_updates)
             current_state = graph.get_state(config)
@@ -141,10 +150,14 @@ def create_initial_state(args: argparse.Namespace) -> dict:
         "image_scripts": None,
         "image_candidates": None,
         "final_images": None,
+        "visual_plan": None,
+        "asset_manifest": None,
+        "render_manifest": None,
         "publish_package": None,
         "review_status": None,
         "review_feedback": None,
         "review_round": 0,
+        "review_route": None,
         "data_writed": None,
     }
 
@@ -320,9 +333,25 @@ def read_multiline_json() -> dict:
 
 def collect_human_review(interrupt_value: dict) -> dict:
     publish_package = interrupt_value["publish_package"]
+    pending_assets = list(interrupt_value.get("pending_assets") or [])
+    asset_decisions = {}
     print("\n===== Human Review Required =====")
     print(interrupt_value["message"])
     print(json.dumps(publish_package, ensure_ascii=False, indent=2))
+
+    for asset in pending_assets:
+        decision_id = asset.get("decision_id")
+        if not isinstance(decision_id, str) or not decision_id:
+            raise ValueError("Pending review asset is missing decision_id.")
+        while True:
+            decision = input(
+                f"资产 {decision_id} ({asset.get('provider') or 'external'})："
+                "输入 approved 或 rejected: "
+            ).strip().lower()
+            if decision in {"approved", "rejected"}:
+                asset_decisions[decision_id] = decision
+                break
+            print("无效输入，请输入 approved / rejected。")
 
     while True:
         action = input("\n输入 yes 继续；输入 edit 修改 JSON；输入 no 提建议并继续 review: ").strip().lower()
@@ -332,6 +361,7 @@ def collect_human_review(interrupt_value: dict) -> dict:
                 "approved": True,
                 "edited_publish_package": None,
                 "feedback": "approved by user",
+                "asset_decisions": asset_decisions,
             }
 
         if action == "edit":
@@ -347,6 +377,7 @@ def collect_human_review(interrupt_value: dict) -> dict:
                 "approved": approve == "yes",
                 "edited_publish_package": edited_publish_package,
                 "feedback": feedback or "edited by user",
+                "asset_decisions": asset_decisions,
             }
 
         if action == "no":
@@ -355,6 +386,7 @@ def collect_human_review(interrupt_value: dict) -> dict:
                 "approved": False,
                 "edited_publish_package": None,
                 "feedback": feedback,
+                "asset_decisions": asset_decisions,
             }
 
         print("无效输入，请输入 yes / edit / no。")

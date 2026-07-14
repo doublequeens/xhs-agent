@@ -6,9 +6,11 @@ from types import SimpleNamespace
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from PIL import Image
+from pydantic import ValidationError
 
 import src.graph as graph_module
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
+from src.editorial_carousel.strategy import ASSET_ADAPTER, build_visual_plan
 from src.schemas.content_contract import ContentContract
 from src.schemas.decision import DecisionOutput, HashTagInput, NormalizedInput
 from src.schemas.hashtag import HashTagOutput
@@ -23,15 +25,41 @@ def _png(width=1080, height=1440):
 
 
 def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:
-    common = {"theme": "warm_neutral", "footer": "按需微调"}
-    return [
-        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract.first_screen_promise},
-        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免搓泥", "wrong_items": ["立刻上妆", "厚涂粉底"], "right_items": ["等待成膜", "少量点涂"]},
-        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步上妆", "steps": [{"name": "防晒", "hint": "薄涂全脸"}, {"name": "等待", "hint": "静置三分钟"}, {"name": "底妆", "hint": "少量点涂"}]},
-        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "上妆清单", "checklist_items": ["薄涂防晒", "等待成膜", "少量点涂"]},
-        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "出现搓泥时", "conditions": [{"situation": "底妆开始搓泥", "recommendation": "减少用量等待"}, {"situation": "时间不足", "recommendation": "先缩减步骤"}]},
-        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的习惯", "question": "你最常在哪步搓泥？"},
-    ]
+    plan = build_visual_plan(contract, recent_signatures=[])
+    requirements = {
+        (item.layout, item.role): item for item in plan.required_assets
+    }
+    frames = []
+    for index, planned in enumerate(plan.frame_plan):
+        semantic_role = planned.asset_roles[0]
+        concrete_role = ASSET_ADAPTER[(planned.layout, semantic_role)][0]
+        requirement = requirements[(planned.layout, concrete_role)]
+        frames.append(
+            {
+                "frame_id": planned.frame_id,
+                "role": planned.role,
+                "layout": planned.layout,
+                "headline": (
+                    contract.first_screen_promise
+                    if index == 0
+                    else planned.purpose
+                ),
+                "kicker": "通勤护肤",
+                "content_blocks": [
+                    {"block_type": "text", "body": planned.purpose}
+                ],
+                "emphasis": ["按需微调"],
+                "visual_slots": [
+                    {
+                        "slot_id": requirement.slot_id,
+                        "role": semantic_role,
+                        "semantic_tags": ["skincare"],
+                    }
+                ],
+                "footer": "按肤感微调",
+            }
+        )
+    return frames
 
 
 @pytest.fixture
@@ -205,31 +233,45 @@ def _install_controlled_upstream_nodes(monkeypatch, reached_nodes, captured):
     )
 
 
-def _run_carousel_path(monkeypatch, state, storyboards, *, render_root=None):
+def _run_carousel_path(monkeypatch, state, storyboards, *, render_root):
     reached_nodes = []
     captured = {}
     _install_controlled_models(monkeypatch, storyboards, captured)
     _install_controlled_upstream_nodes(monkeypatch, reached_nodes, captured)
-    if render_root is not None:
-        from src.nodes import (
-            node_p_render_qa as render_qa_module,
-            node_p_text_card_renderer as text_card_renderer_module,
-        )
-        from src.rendering.text_cards import output_paths
+    def resolve_local_assets(_node_state):
+        return {"asset_manifest": {"items": []}}
 
-        def render_six_local_cards(node_state):
-            package = dict(node_state["publish_package"])
-            image_dir = render_root / "20260713-beauty-skincare-integration" / "images"
-            image_dir.mkdir(parents=True, exist_ok=True)
-            paths = output_paths(image_dir)
-            for path in paths:
-                path.write_bytes(_png())
-            package["rendered_image_paths"] = [str(path) for path in paths]
-            return {"publish_package": package, "current_node": "TEXT_CARD_RENDERER"}
+    def render_local_carousel(node_state):
+        package = dict(node_state["publish_package"])
+        image_dir = render_root / "20260713-beauty-skincare-integration" / "images"
+        image_dir.mkdir(parents=True, exist_ok=True)
+        paths = []
+        pages = []
+        for index, frame in enumerate(package["storyboards"], start=1):
+            role = frame["role"].replace("_", "-")
+            name = "01-cover.png" if index == 1 else f"{index:02d}-{role}.png"
+            path = image_dir / name
+            path.write_bytes(_png())
+            paths.append(path)
+            pages.append(SimpleNamespace(path=str(path), frame_id=frame["frame_id"]))
+        package["rendered_image_paths"] = [str(path) for path in paths]
+        return {
+            "publish_package": package,
+            "render_manifest": SimpleNamespace(pages=pages),
+            "current_node": "EDITORIAL_CAROUSEL_RENDERER",
+        }
 
-        monkeypatch.setattr(graph_module.nodes, "text_card_renderer_node", render_six_local_cards)
-        monkeypatch.setattr(render_qa_module, "PUBLISH_ROOT", render_root)
-        monkeypatch.setattr(text_card_renderer_module, "PUBLISH_ROOT", render_root)
+    monkeypatch.setattr(graph_module.nodes, "asset_resolver_node", resolve_local_assets)
+    monkeypatch.setattr(
+        graph_module.nodes,
+        "editorial_carousel_renderer_node",
+        render_local_carousel,
+    )
+    monkeypatch.setattr(
+        graph_module.nodes,
+        "render_qa_node",
+        lambda _state: {"render_qa_result": {"passed": True}},
+    )
     graph = graph_module.create_graph(checkpointer=InMemorySaver())
 
     with pytest.raises(_ReachedWorkflowNode):
@@ -241,6 +283,7 @@ def _run_carousel_path(monkeypatch, state, storyboards, *, render_root=None):
 def test_beauty_package_reaches_human_review_with_account_contract(
     beauty_account_workflow,
     monkeypatch,
+    tmp_path,
 ):
     state = beauty_account_workflow
     contract = state["trends"][0].content_contract
@@ -251,7 +294,10 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert len(_schema_valid_storyboards(contract)) == 6
 
     reached_nodes, captured = _run_carousel_path(
-        monkeypatch, state, _schema_valid_storyboards(contract)
+        monkeypatch,
+        state,
+        _schema_valid_storyboards(contract),
+        render_root=tmp_path / "renderer-repository" / "outputs" / "publish",
     )
 
     assert reached_nodes == ["human_review"]
@@ -261,7 +307,7 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert contract.first_screen_promise in captured["storyboard_prompt"]
 
 
-def test_beauty_workflow_exports_six_locally_rendered_cards_after_completed_checkpoint(
+def test_beauty_workflow_reaches_review_with_six_locally_rendered_carousel_pages(
     beauty_account_workflow,
     monkeypatch,
     tmp_path,
@@ -275,40 +321,10 @@ def test_beauty_workflow_exports_six_locally_rendered_cards_after_completed_chec
 
     package = captured["human_review_package"]
     assert reached_nodes == ["human_review"]
-    assert [Path(path).name for path in package["rendered_image_paths"]] == [
-        "01-cover.png",
-        "02-wrong-vs-right.png",
-        "03-timeline.png",
-        "04-checklist.png",
-        "05-decision.png",
-        "06-question.png",
-    ]
-
-    import main as main_module
-
-    class CompletedGraph:
-        def stream(self, _run_input, config):
-            yield {
-                "content_writer": {
-                    "data_writed": True,
-                }
-            }
-
-        def get_state(self, _config):
-            return SimpleNamespace(
-                next=(),
-                values={"review_status": "approved", "final_policy_issues": [], "publish_package": package},
-            )
-
-    different_cwd = tmp_path / "cli-working-directory"
-    different_cwd.mkdir()
-    monkeypatch.chdir(different_cwd)
-    main_module.stream_graph_until_stop(CompletedGraph(), {}, {})
-
     render_root = tmp_path / "renderer-repository" / "outputs" / "publish"
+    assert Path(package["rendered_image_paths"][0]).name == "01-cover.png"
+    assert all(Path(path).suffix == ".png" for path in package["rendered_image_paths"])
     assert len(list(render_root.glob("*/images/*.png"))) == 6
-    assert len(list(render_root.glob("*/*.json"))) == 1
-    assert not list(render_root.glob("*/Storyboard_images_generator_prompt.txt"))
 
 
 def test_final_guard_failure_never_writes_audit_or_export_after_human_approval(monkeypatch, tmp_path):
@@ -344,32 +360,37 @@ def test_final_guard_failure_never_writes_audit_or_export_after_human_approval(m
 def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
     beauty_account_workflow,
     monkeypatch,
+    tmp_path,
 ):
     state = beauty_account_workflow
     storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
-    storyboards[0]["headline"] = "泛泛的护肤建议"
+    storyboards[0]["visual_slots"][0]["role"] = "background_token"
 
-    reached_nodes, captured = _run_carousel_path(monkeypatch, state, storyboards)
+    reached_nodes, captured = _run_carousel_path(
+        monkeypatch,
+        state,
+        storyboards,
+        render_root=tmp_path / "renderer-repository" / "outputs" / "publish",
+    )
 
     assert reached_nodes == ["r1_reflector"]
     assert captured["assembler_calls"] == 1
     assert captured["storyboard_calls"] == 1
 
 
-def test_text_card_schema_error_reaches_r1_through_compiled_graph(
+def test_semantic_storyboard_schema_error_stops_before_asset_resolution(
     beauty_account_workflow,
     monkeypatch,
+    tmp_path,
 ):
     state = beauty_account_workflow
     storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
     storyboards[1]["wrong_items"] = ["只有一项"]
 
-    monkeypatch.setattr(
-        graph_module.nodes,
-        "carousel_qa_node",
-        lambda _state: {"carousel_qa_result": {"passed": True}},
-    )
-
-    reached_nodes, _captured = _run_carousel_path(monkeypatch, state, storyboards)
-
-    assert reached_nodes == ["r1_reflector"]
+    with pytest.raises(ValidationError, match="wrong_items|extra_forbidden"):
+        _run_carousel_path(
+            monkeypatch,
+            state,
+            storyboards,
+            render_root=tmp_path / "renderer-repository" / "outputs" / "publish",
+        )

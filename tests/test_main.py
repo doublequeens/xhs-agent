@@ -70,6 +70,29 @@ def test_supported_domains_come_from_domain_name(monkeypatch):
     assert main.SUPPORTED_DOMAINS == get_args(DomainName)
 
 
+def test_collect_human_review_returns_explicit_pending_asset_decisions(monkeypatch):
+    main = _load_main(monkeypatch)
+    answers = iter(["approved", "rejected", "yes"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    result = main.collect_human_review(
+        {
+            "message": "review",
+            "publish_package": {"title": "carousel"},
+            "pending_assets": [
+                {"decision_id": "pending-1", "provider": "pexels"},
+                {"decision_id": "pending-2", "provider": "unsplash"},
+            ],
+        }
+    )
+
+    assert result["approved"] is True
+    assert result["asset_decisions"] == {
+        "pending-1": "approved",
+        "pending-2": "rejected",
+    }
+
+
 def test_fresh_thread_keeps_new_routing_initial_state(monkeypatch):
     main = _load_main(monkeypatch)
     old_thread_id = "xhs_conversation_database_20260517_01"
@@ -218,6 +241,89 @@ def test_load_run_state_hydrates_legacy_checkpoint_via_graph_update(monkeypatch)
     assert passed_config == config
     assert updates["domain_context"].profile_version == "beauty-v1"
     assert updates["content_policy"].risk_level == "low"
+
+
+def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypatch):
+    main = _load_main(monkeypatch)
+    config = main.build_run_config("legacy-editorial")
+    old_contract = {
+        "audience": "通勤女性",
+        "trigger_situation": "早上",
+        "decision_problem": "怎么护肤",
+        "first_screen_promise": "三步完成",
+        "screenshot_asset": "清单",
+        "proof_asset": "对照",
+        "visual_mode": "text_card",
+    }
+    old_values = {
+        "domain_context": {"domain": "beauty"},
+        "publish_package": {
+            "content_contract": old_contract,
+            "storyboards": [
+                {"frame_id": "frame-1", "template": "cover_statement"}
+            ],
+        },
+    }
+    old_state = SimpleNamespace(values=old_values, next=("carousel_qa",))
+    calls = []
+
+    class FakeGraph:
+        def get_state(self, _config):
+            if not calls:
+                return old_state
+            return SimpleNamespace(
+                values={**old_values, **calls[-1]}, next=("carousel_qa",)
+            )
+
+        def update_state(self, _config, updates):
+            calls.append(updates)
+
+    current_state, run_input = main.load_run_state(
+        FakeGraph(), config, {"visual_plan": None}
+    )
+
+    assert run_input is None
+    assert current_state.next == ("carousel_qa",)
+    assert calls[0]["legacy_editorial_checkpoint"] is True
+    assert calls[0]["visual_plan"] is None
+    assert calls[0]["asset_manifest"] is None
+    assert calls[0]["render_manifest"] is None
+    assert calls[0]["publish_package"]["content_contract"]["content_job"] == "save_and_check"
+
+
+def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
+    monkeypatch,
+):
+    main = _load_main(monkeypatch)
+    state = SimpleNamespace(
+        values={
+            "domain_context": {"domain": "beauty"},
+            "visual_plan": {"frame_plan": []},
+            "asset_manifest": {"items": [{"status": "pending_external"}]},
+            "render_manifest": None,
+        },
+        next=("carousel_qa",),
+    )
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return state
+
+        def update_state(self, _config, _updates):
+            raise AssertionError("modern checkpoint must not be rewritten")
+
+    monkeypatch.setattr(
+        "src.asset_resolver.resolver.resolve_assets",
+        lambda *_args: pytest.fail("resume must not repeat external resolution"),
+    )
+
+    current_state, run_input = main.load_run_state(
+        FakeGraph(), main.build_run_config("modern"), {}
+    )
+
+    assert current_state is state
+    assert current_state.next == ("carousel_qa",)
+    assert run_input is None
 
 
 def test_load_run_state_does_not_replace_present_malformed_domain_context(monkeypatch):
@@ -494,6 +600,9 @@ def test_main_initial_state_defaults_to_interactive(monkeypatch, tmp_path):
     main.main()
 
     assert captured["initial_state"]["interactive"] is True
+    assert captured["initial_state"]["visual_plan"] is None
+    assert captured["initial_state"]["asset_manifest"] is None
+    assert captured["initial_state"]["render_manifest"] is None
     assert (
         captured["initial_state"]["creator_profile"].profile_id
         == "commuting_beauty_women_v1"

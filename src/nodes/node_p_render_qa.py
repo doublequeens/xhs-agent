@@ -11,6 +11,7 @@ from PIL import Image
 from pydantic import ValidationError
 
 from src.editorial_carousel.strategy import ASSET_ADAPTER
+from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
 from src.nodes.node_p_text_card_renderer import PUBLISH_ROOT
 from src.nodes.publish_patch import extract_storyboard_visible_text
@@ -516,6 +517,8 @@ def _asset_issues(
         str, list[tuple[int, int, Any, Any]]
     ] | None = None,
     duplicate_storyboard_slot_ids: set[str] | None = None,
+    *,
+    allow_pending_external: bool = False,
 ) -> list[RenderQAIssue]:
     issues: list[RenderQAIssue] = []
     items = _as_list(asset_manifest, "items")
@@ -574,6 +577,12 @@ def _asset_issues(
                 )
             )
         source_type = str(_get_value(item, "source_type") or "")
+        is_reviewable_pending = (
+            allow_pending_external
+            and _get_value(item, "status") == "pending_external"
+            and bool(_get_value(item, "pending_id"))
+            and bool(_get_value(item, "metadata_path"))
+        )
         if source_type and source_type not in {"local", "local_catalog"}:
             for field, rule_id in (
                 ("provider", "asset_provider_provenance_missing"),
@@ -589,7 +598,10 @@ def _asset_issues(
                             frame_id=frame_id,
                         )
                     )
-            if _get_value(item, "review_status") != "approved":
+            if (
+                not is_reviewable_pending
+                and _get_value(item, "review_status") != "approved"
+            ):
                 issues.append(
                     _issue(
                         "asset_publishing_review_not_approved",
@@ -598,7 +610,11 @@ def _asset_issues(
                         frame_id=frame_id,
                     )
                 )
-            if _get_value(item, "review_disposition") != "approved_for_publishing":
+            if (
+                not is_reviewable_pending
+                and _get_value(item, "review_disposition")
+                != "approved_for_publishing"
+            ):
                 issues.append(
                     _issue(
                         "asset_publishing_disposition_not_approved",
@@ -607,7 +623,10 @@ def _asset_issues(
                         frame_id=frame_id,
                     )
                 )
-        if _as_list(item, "unresolved_safety_checks"):
+        if (
+            not is_reviewable_pending
+            and _as_list(item, "unresolved_safety_checks")
+        ):
             issues.append(
                 _issue(
                     "asset_safety_checks_unresolved",
@@ -836,6 +855,8 @@ def validate_render(
     asset_manifest: Any,
     render_manifest: Any,
     visual_plan: Any = None,
+    *,
+    allow_pending_external: bool = False,
 ) -> list[RenderQAIssue]:
     """Return atomic deterministic editorial render violations."""
 
@@ -861,6 +882,7 @@ def validate_render(
             visual_plan,
             storyboard_slot_occurrences,
             duplicate_storyboard_slot_ids,
+            allow_pending_external=allow_pending_external,
         )
     )
     issues.extend(_contact_sheet_issues(render_manifest))
@@ -1244,7 +1266,8 @@ def render_qa_node(state: AgentState) -> dict:
     visual_plan = state.get("visual_plan")
     raw_frames = package.get("storyboards")
     is_explicit_legacy = (
-        isinstance(raw_frames, list)
+        is_legacy_editorial_checkpoint(state)
+        and isinstance(raw_frames, list)
         and bool(raw_frames)
         and all(
             isinstance(frame, dict)
@@ -1287,7 +1310,11 @@ def render_qa_node(state: AgentState) -> dict:
             )
         if not issues:
             issues = validate_render(
-                package, asset_manifest, render_manifest, visual_plan
+                package,
+                asset_manifest,
+                render_manifest,
+                visual_plan,
+                allow_pending_external=state.get("review_status") != "approved",
             )
             metrics = (
                 {

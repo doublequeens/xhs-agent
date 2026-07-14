@@ -283,7 +283,7 @@ def test_carousel_qa_node_preserves_success_and_failure_routes():
 
     passed = carousel_qa_node(_state())
     assert passed["carousel_qa_result"].passed is True
-    assert route_after_carousel_qa(passed) == "text_card_renderer"
+    assert route_after_carousel_qa(passed) == "editorial_carousel_renderer"
 
     broken = deepcopy(_package())
     broken["storyboards"][0]["headline"] = "错误承诺"

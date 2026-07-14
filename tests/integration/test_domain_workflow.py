@@ -1,10 +1,14 @@
+import hashlib
 import sqlite3
+from pathlib import Path
 
 import pytest
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
 import src.graph as graph_module
+import src.nodes.node_q_01_final_policy_guard as final_guard_module
+from src.editorial_carousel.strategy import ASSET_ADAPTER
 from src.nodes.node_a_00_domain_confirmation import domain_confirmation_node
 from src.nodes.node_a_00_domain_router import domain_router_node
 from src.nodes.node_c_01_evidence_brief import evidence_brief_node
@@ -35,16 +39,41 @@ def _creative_seed():
     }
 
 
-def _structured_storyboards(contract):
-    common = {"theme": "warm_neutral", "footer": "按需微调"}
-    return [
-        {"frame_id": "frame_001", **common, "template": "cover_statement", "kicker": "封面", "headline": contract.first_screen_promise},
-        {"frame_id": "frame_002", **common, "template": "wrong_vs_right", "kicker": "对照", "headline": "避免误区", "wrong_items": ["立刻执行", "一次太多"], "right_items": ["逐步记录", "按需调整"]},
-        {"frame_id": "frame_003", **common, "template": "step_timeline", "kicker": "步骤", "headline": "三步执行", "steps": [{"name": "记录", "hint": "观察现状"}, {"name": "调整", "hint": "每次一项"}, {"name": "复盘", "hint": "每周总结"}]},
-        {"frame_id": "frame_004", **common, "template": "saveable_checklist", "kicker": "保存", "headline": "执行清单", "checklist_items": ["记录现状", "每次一项", "每周复盘"]},
-        {"frame_id": "frame_005", **common, "template": "decision_rule", "kicker": "判断", "headline": "遇到阻碍时", "conditions": [{"situation": "执行受阻", "recommendation": "缩小调整范围"}, {"situation": "时间紧张", "recommendation": "先做关键步骤"}]},
-        {"frame_id": "frame_006", **common, "template": "question_closer", "kicker": "讨论", "headline": "你的选择", "question": "你会先调整哪一步？"},
-    ]
+def _structured_storyboards(contract, visual_plan):
+    requirements = {
+        (item.layout, item.role): item for item in visual_plan.required_assets
+    }
+    frames = []
+    for index, planned in enumerate(visual_plan.frame_plan):
+        semantic_role = planned.asset_roles[0]
+        concrete_role = ASSET_ADAPTER[(planned.layout, semantic_role)][0]
+        requirement = requirements[(planned.layout, concrete_role)]
+        frames.append(
+            {
+                "frame_id": planned.frame_id,
+                "role": planned.role,
+                "layout": planned.layout,
+                "headline": (
+                    contract.first_screen_promise
+                    if index == 0
+                    else planned.purpose
+                ),
+                "kicker": "日常清单",
+                "content_blocks": [
+                    {"block_type": "text", "body": planned.purpose}
+                ],
+                "emphasis": ["按需调整"],
+                "visual_slots": [
+                    {
+                        "slot_id": requirement.slot_id,
+                        "role": semantic_role,
+                        "semantic_tags": ["daily-routine"],
+                    }
+                ],
+                "footer": "逐步记录",
+            }
+        )
+    return frames
 
 
 class _EvidenceProvider:
@@ -105,6 +134,7 @@ def _install_graph_doubles(
     monkeypatch,
     events,
     *,
+    artifact_root: Path,
     evidence_results=True,
     force_r2_block=False,
 ):
@@ -305,6 +335,7 @@ def _install_graph_doubles(
 
     def assembler_node(state):
         content = state["final_content"]
+        contract = state["trends"][0].content_contract
         return {
             "publish_package": {
                 "topic_id": content.topic_id,
@@ -324,18 +355,76 @@ def _install_graph_doubles(
                 "risk_level": content.risk_level,
                 "risk_flags": content.risk_flags,
                 "profile_version": state["domain_context"].profile_version,
+                "content_contract": contract.model_dump(mode="json"),
             }
         }
 
     def storyboard_generator_node(state):
         contract = state["trends"][0].content_contract
-        storyboards = _structured_storyboards(contract)
+        storyboards = _structured_storyboards(contract, state["visual_plan"])
         return {
             "publish_package": {
                 **state["publish_package"],
                 "storyboards": storyboards,
             }
         }
+
+    active_root = artifact_root / "active"
+    active_root.mkdir(parents=True, exist_ok=True)
+    asset_path = active_root / "integration-asset.svg"
+    asset_path.write_bytes(b"domain integration active asset")
+    asset_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+    monkeypatch.setattr(final_guard_module, "ASSET_ACTIVE_ROOT", active_root)
+
+    def asset_resolver_node(_state):
+        return {
+            "asset_manifest": {
+                "items": [
+                    {
+                        "slot_id": "integration-slot",
+                        "status": "active",
+                        "path": str(asset_path),
+                        "sha256": asset_sha256,
+                    }
+                ]
+            }
+        }
+
+    def editorial_renderer_node(state):
+        package = dict(state["publish_package"])
+        image_root = artifact_root / "images"
+        image_root.mkdir(parents=True, exist_ok=True)
+        pages = []
+        for index, frame in enumerate(package["storyboards"], start=1):
+            path = image_root / f"{index:02d}-page.png"
+            path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index]))
+            pages.append(
+                {
+                    "frame_id": frame["frame_id"],
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            )
+        contact_sheet = image_root / "contact-sheet.png"
+        contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\ndomain-contact")
+        package["rendered_image_paths"] = [page["path"] for page in pages]
+        return {
+            "publish_package": package,
+            "render_manifest": {
+                "pages": pages,
+                "source_asset_sha256": {"integration-slot": asset_sha256},
+                "contact_sheet_path": str(contact_sheet),
+                "contact_sheet_sha256": hashlib.sha256(
+                    contact_sheet.read_bytes()
+                ).hexdigest(),
+                "contact_sheet_page_sha256": [
+                    page["sha256"] for page in pages
+                ],
+            },
+        }
+
+    def render_qa_node(_state):
+        return {"render_qa_result": {"passed": True, "issues": []}}
 
     def writer_node(_state):
         events["writer_calls"] += 1
@@ -366,7 +455,10 @@ def _install_graph_doubles(
         "r2_compliance_node": r2_node,
         "hashtag_node": hashtag_node,
         "assembler_node": assembler_node,
+        "asset_resolver_node": asset_resolver_node,
         "storyboards_generator_node": storyboard_generator_node,
+        "editorial_carousel_renderer_node": editorial_renderer_node,
+        "render_qa_node": render_qa_node,
         "human_review_node": human_review_node,
         "final_policy_guard_node": final_policy_guard_node,
         "content_writer_node": writer_node,
@@ -393,6 +485,7 @@ def graph_factory(monkeypatch, tmp_path):
         _install_graph_doubles(
             monkeypatch,
             events,
+            artifact_root=tmp_path / f"artifacts-{len(connections)}",
             evidence_results=evidence_results,
             force_r2_block=force_r2_block,
         )

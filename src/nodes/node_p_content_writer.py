@@ -4,6 +4,7 @@ from src.domain.topic_metadata import get_topic_metadata
 from memory.memory_manager import XHSMemoryManager, utc_now_iso
 from memory.models import ContentRecord
 from src.schemas.agent_state import AgentState
+from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 
 
 def _get_value(payload, key, default=None):
@@ -46,6 +47,26 @@ def _require_r2_compliance_status(state: AgentState) -> str:
     return compliance_status
 
 
+def _final_rendered_paths(state: AgentState, publish_package: dict) -> list[str]:
+    if is_legacy_editorial_checkpoint(state):
+        paths = list(publish_package.get("rendered_image_paths") or [])
+    else:
+        render_manifest = state.get("render_manifest")
+        if render_manifest is None:
+            raise ValueError(
+                "content_writer_node requires render_manifest before persistence."
+            )
+        paths = [
+            _get_value(page, "path")
+            for page in list(_get_value(render_manifest, "pages") or [])
+        ]
+    if not paths or any(not isinstance(path, str) or not path for path in paths):
+        raise ValueError(
+            "content_writer_node requires complete final rendered image paths."
+        )
+    return paths
+
+
 def content_writer_node(state: AgentState) -> AgentState:
     """
     A node that writes the final content to the database after assembly.
@@ -70,7 +91,7 @@ def content_writer_node(state: AgentState) -> AgentState:
     profile_version = _require_value(domain_context, "profile_version")
     content_contract = _require_content_contract(publish_package)
     storyboards = list(_get_value(publish_package, "storyboards") or [])
-    images = list(_get_value(publish_package, "images") or [])
+    rendered_image_paths = _final_rendered_paths(state, publish_package)
 
     record = ContentRecord(
         content_id=make_content_id(),
@@ -95,7 +116,7 @@ def content_writer_node(state: AgentState) -> AgentState:
         visual_style=publish_package.get("visual_style", "domain_editorial"),
         card_count=len(storyboards),
         storyboards=storyboards,
-        image_paths=[img["image_url"] for img in images],
+        image_paths=rendered_image_paths,
         compliance_status=compliance_status,
         embedding_text=" ".join([
             publish_package["topic"],

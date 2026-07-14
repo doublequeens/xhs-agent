@@ -1,6 +1,24 @@
+from pathlib import Path
+
 from langgraph.types import interrupt
 
-from src.schemas import DecisionOutput, DecisionTrace, NormalizedInput, R2ContentSnapShoot, R2Input, RevisionMeta
+from src.asset_resolver import (
+    approve_external_asset,
+    load_pending_asset,
+    reject_external_asset,
+    resolve_assets,
+)
+from src.nodes.node_p_asset_resolver import load_asset_catalog_for_state
+from src.schemas import (
+    AssetManifest,
+    DecisionOutput,
+    DecisionTrace,
+    NormalizedInput,
+    R2ContentSnapShoot,
+    R2Input,
+    RevisionMeta,
+    VisualPlan,
+)
 from src.schemas import AgentState
 from src.nodes.publish_patch import (
     enforce_publish_package_title_length,
@@ -64,6 +82,141 @@ def _has_visible_text_edits(previous_package: dict, current_package: dict) -> bo
     return _visible_text_signature(previous_package) != _visible_text_signature(current_package)
 
 
+def _json_value(value):
+    if value is None:
+        return None
+    if hasattr(value, "model_dump"):
+        return value.model_dump(mode="json")
+    if isinstance(value, dict):
+        return dict(value)
+    return value
+
+
+def _pending_asset_payload(asset_manifest) -> list[dict]:
+    manifest = _json_value(asset_manifest) or {}
+    pending = []
+    for item in list(manifest.get("items") or []):
+        if item.get("status") != "pending_external":
+            continue
+        decision_id = item.get("pending_id") or item.get("asset_id")
+        pending.append({**item, "decision_id": decision_id})
+    return pending
+
+
+def _review_artifacts(state: AgentState, publish_package: dict) -> dict:
+    render_manifest = _json_value(state.get("render_manifest"))
+    asset_manifest = _json_value(state.get("asset_manifest"))
+    carousel_qa = _json_value(state.get("carousel_qa_result"))
+    render_qa = _json_value(state.get("render_qa_result"))
+    pages = list((render_manifest or {}).get("pages") or [])
+    images = [page.get("path") for page in pages if page.get("path")]
+    if not images:
+        images = list(publish_package.get("rendered_image_paths") or [])
+    return {
+        "images": images,
+        "render_manifest": render_manifest,
+        "asset_manifest": asset_manifest,
+        "carousel_qa_result": carousel_qa,
+        "render_qa_result": render_qa,
+        "proxy_metric_label": (render_qa or {}).get("metric_kind"),
+        "proxy_metric_note": (render_qa or {}).get("metric_note"),
+        "pending_assets": _pending_asset_payload(asset_manifest),
+    }
+
+
+def _decision_aliases(item) -> set[str]:
+    aliases = {
+        str(value)
+        for value in (
+            item.pending_id,
+            item.asset_id,
+            item.provider_asset_id,
+            (
+                f"{item.provider}:{item.provider_asset_id}"
+                if item.provider and item.provider_asset_id
+                else None
+            ),
+        )
+        if value
+    }
+    return aliases
+
+
+def _apply_asset_decisions(
+    state: AgentState,
+    asset_manifest,
+    decisions: dict,
+    feedback: str | None,
+):
+    manifest = AssetManifest.model_validate(asset_manifest)
+    pending = [item for item in manifest.items if item.status == "pending_external"]
+    if not pending:
+        if decisions:
+            raise ValueError("asset_decisions contains no pending asset IDs.")
+        return manifest, "final_policy_guard"
+    if not isinstance(decisions, dict):
+        raise ValueError("asset_decisions must be a dict.")
+
+    matched: dict[str, str] = {}
+    for raw_id, decision in decisions.items():
+        if decision not in {"approved", "rejected"}:
+            raise ValueError(
+                "asset_decisions values must be 'approved' or 'rejected'."
+            )
+        key = str(raw_id)
+        candidates = [item for item in pending if key in _decision_aliases(item)]
+        if len(candidates) != 1:
+            raise ValueError(f"Unknown or ambiguous pending asset decision ID: {key}")
+        pending_id = candidates[0].pending_id
+        if pending_id in matched:
+            raise ValueError(f"Duplicate decision for pending asset: {pending_id}")
+        matched[pending_id] = decision
+    expected = {item.pending_id for item in pending}
+    if set(matched) != expected:
+        raise ValueError("Every pending asset requires one explicit asset_decision.")
+
+    any_rejected = False
+    run_ids = {item.run_id for item in pending}
+    if len(run_ids) != 1 or None in run_ids:
+        raise ValueError("Pending assets must belong to one persisted resolver run.")
+    run_id = next(iter(run_ids))
+    catalog = load_asset_catalog_for_state(
+        state, run_id=run_id, allow_external=False
+    )
+    for item in pending:
+        if not item.metadata_path:
+            raise ValueError(f"Pending asset {item.pending_id} is missing metadata_path.")
+        candidate = load_pending_asset(Path(item.metadata_path), catalog)
+        decision = matched[item.pending_id]
+        if decision == "approved":
+            safety_decisions = {
+                name: name == "allowed_for_publishing"
+                for name in candidate.unresolved_safety_checks
+            }
+            approve_external_asset(
+                candidate,
+                catalog,
+                safety_decisions=safety_decisions,
+            )
+        else:
+            any_rejected = True
+            reject_external_asset(
+                candidate,
+                reason=(feedback or "rejected during human review"),
+                catalog=catalog,
+            )
+
+    refreshed_catalog = load_asset_catalog_for_state(
+        state, run_id=run_id, allow_external=False
+    )
+    refreshed_manifest = resolve_assets(
+        VisualPlan.model_validate(state.get("visual_plan")),
+        refreshed_catalog,
+    )
+    route = "editorial_carousel_renderer" if any_rejected else "render_qa"
+    return refreshed_manifest, route
+
+
 def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_round: int) -> DecisionOutput:
     r2_output = state.get("r2_output")
     previous_snapshot = getattr(r2_output, "content_snapshot", None)
@@ -120,6 +273,9 @@ def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_
 
 
 def route_after_human_review(state: AgentState) -> str:
+    review_route = state.get("review_route")
+    if review_route in {"editorial_carousel_renderer", "render_qa"}:
+        return review_route
     review_status = state.get("review_status")
     if review_status == "needs_r2_recheck":
         return "r2_compliance"
@@ -156,6 +312,7 @@ def human_review_node(state: AgentState) -> AgentState:
                 "matched_policy_rules": _matched_policy_rules(state),
                 "evidence_items": _serialized_evidence_items(state),
                 "review_round": review_round + 1,
+                **_review_artifacts(state, publish_package),
             }
         )
 
@@ -189,11 +346,52 @@ def human_review_node(state: AgentState) -> AgentState:
         feedback = review_result.get("feedback")
         review_round += 1
 
+        asset_decisions = review_result.get("asset_decisions")
+        pending_assets = _pending_asset_payload(state.get("asset_manifest"))
+        if asset_decisions is not None or pending_assets:
+            if asset_decisions is None:
+                raise ValueError(
+                    "Every pending asset requires an explicit asset_decision."
+                )
+            refreshed_manifest, asset_route = _apply_asset_decisions(
+                state,
+                state.get("asset_manifest"),
+                asset_decisions,
+                feedback,
+            )
+            if visible_text_edited:
+                return {
+                    "publish_package": publish_package,
+                    "asset_manifest": refreshed_manifest,
+                    "review_status": "needs_r2_recheck",
+                    "review_route": "r2_compliance",
+                    "review_feedback": feedback,
+                    "review_round": review_round,
+                    "final_policy_issues": [],
+                    "pending_human_publish_patch": pending_patch,
+                    "pending_human_replace_storyboards": pending_replace_storyboards,
+                    "decision_output": _build_r2_recheck_decision(
+                        state, publish_package, review_round
+                    ),
+                    "current_node": "HUMAN_REVIEW",
+                }
+            return {
+                "publish_package": publish_package,
+                "asset_manifest": refreshed_manifest,
+                "review_status": "pending",
+                "review_route": asset_route,
+                "review_feedback": feedback,
+                "review_round": review_round,
+                "final_policy_issues": [],
+                "current_node": "HUMAN_REVIEW",
+            }
+
         if approved:
             if visible_text_edited:
                 return {
                     "publish_package": publish_package,
                     "review_status": "needs_r2_recheck",
+                    "review_route": "r2_compliance",
                     "review_feedback": feedback,
                     "review_round": review_round,
                     "final_policy_issues": [],
@@ -205,6 +403,7 @@ def human_review_node(state: AgentState) -> AgentState:
             return {
                 "publish_package": publish_package,
                 "review_status": "approved",
+                "review_route": "final_policy_guard",
                 "review_feedback": feedback,
                 "review_round": review_round,
                 "current_node": "HUMAN_REVIEW",

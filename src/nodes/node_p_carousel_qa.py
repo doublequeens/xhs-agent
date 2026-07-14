@@ -6,6 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.editorial_carousel.strategy import ASSET_ADAPTER, LAYOUT_FAMILY
+from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas.agent_state import AgentState
 from src.schemas.carousel_qa import CarouselQAIssue, CarouselQAResult
@@ -722,7 +723,8 @@ def carousel_qa_node(state: AgentState) -> dict:
     visual_plan = state.get("visual_plan")
     raw_frames = package.get("storyboards")
     is_explicit_legacy = (
-        isinstance(raw_frames, list)
+        is_legacy_editorial_checkpoint(state)
+        and isinstance(raw_frames, list)
         and bool(raw_frames)
         and all(
             isinstance(frame, dict)
@@ -777,7 +779,7 @@ def route_after_carousel_qa(state: AgentState) -> str:
     result = state.get("carousel_qa_result")
     passed = _get_value(result, "passed")
     if passed is True:
-        return "text_card_renderer"
+        return "editorial_carousel_renderer"
     if passed is False:
         return "r1_reflector"
     raise ValueError("route_after_carousel_qa requires carousel_qa_result.")
