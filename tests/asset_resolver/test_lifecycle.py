@@ -2153,6 +2153,391 @@ def test_expected_absent_atomic_write_never_clobbers_last_moment_creator(
     assert destination.read_bytes() == b"concurrent creator"
 
 
+def test_public_retry_recovers_crash_between_move_link_and_source_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    target_event = f"{candidate.pending_id}.move.linked"
+
+    def crash_after_link(event: str) -> None:
+        if event == target_event:
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_after_link)
+    with pytest.raises(SimulatedProcessCrash, match="move.linked"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.samefile(destination)
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert not candidate.path.exists()
+    assert destination.is_file()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
+    assert list((tmp_path / ".asset-review-recovery").rglob("*.json")) == []
+
+
+def test_mid_move_recovery_rejects_unbound_third_hardlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    target_event = f"{candidate.pending_id}.move.linked"
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == target_event
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+    os.link(candidate.path, tmp_path / "unbound-third-link.webp")
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="mid-move"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+
+def test_mid_move_rollback_rechecks_link_count_before_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    target_event = f"{candidate.pending_id}.move.linked"
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == target_event
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    original_unlink = lifecycle._durable_unlink
+    third_link = tmp_path / "concurrent-third-link.webp"
+    injected = False
+
+    def add_link_before_unlink(path: Path, **kwargs) -> None:
+        nonlocal injected
+        if path == destination and not injected:
+            injected = True
+            os.link(candidate.path, third_link)
+        original_unlink(path, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    monkeypatch.setattr(lifecycle, "_durable_unlink", add_link_before_unlink)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="durable unlink target is unsafe"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.exists()
+    assert destination.exists()
+    assert third_link.exists()
+
+
+def test_mid_move_rollback_rechecks_link_count_after_hashing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import os
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    target_event = f"{candidate.pending_id}.move.linked"
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == target_event
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    original_descriptor_sha256 = lifecycle._descriptor_sha256
+    third_link = tmp_path / "late-third-link.webp"
+    asset_metadata = candidate.path.stat()
+    asset_identity = (asset_metadata.st_dev, asset_metadata.st_ino)
+    injected = False
+
+    def add_link_after_initial_nlink_snapshot(descriptor: int) -> str:
+        nonlocal injected
+        digest = original_descriptor_sha256(descriptor)
+        opened = os.fstat(descriptor)
+        if not injected and (opened.st_dev, opened.st_ino) == asset_identity:
+            injected = True
+            os.link(candidate.path, third_link)
+        return digest
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    monkeypatch.setattr(
+        lifecycle,
+        "_descriptor_sha256",
+        add_link_after_initial_nlink_snapshot,
+    )
+    with pytest.raises(lifecycle.AssetLifecycleError, match="durable unlink target is unsafe"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.exists()
+    assert destination.exists()
+    assert third_link.exists()
+
+
+def test_source_parent_fsync_failure_never_deletes_last_asset_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    source_parent = candidate.path.parent.stat()
+    original_fsync = lifecycle.os.fsync
+    failed = False
+
+    def fail_source_parent_after_unlink(descriptor: int) -> None:
+        nonlocal failed
+        opened = lifecycle.os.fstat(descriptor)
+        if (
+            not failed
+            and (opened.st_dev, opened.st_ino)
+            == (source_parent.st_dev, source_parent.st_ino)
+            and not candidate.path.exists()
+            and destination.exists()
+        ):
+            failed = True
+            raise OSError("source parent fsync failed")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(lifecycle.os, "fsync", fail_source_parent_after_unlink)
+    with pytest.raises(
+        lifecycle.AssetLifecycleError,
+        match="parent fsync failed|trusted parent",
+    ):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.exists() or destination.exists()
+    remaining = candidate.path if candidate.path.exists() else destination
+    assert hashlib.sha256(remaining.read_bytes()).hexdigest() == candidate.sha256
+
+    monkeypatch.setattr(lifecycle.os, "fsync", original_fsync)
+    lifecycle.approve_external_asset(candidate, asset_catalog)
+    assert destination.is_file() and not candidate.path.exists()
+
+
+def test_prepared_transaction_missing_journal_blocks_later_api(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    first = pending_asset(tmp_path, asset_id="a")
+    asset_catalog = catalog(tmp_path)
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == "manifest.applied"
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(first, asset_catalog)
+    journal_path = next((tmp_path / ".asset-review-recovery").rglob("*.json"))
+    journal_path.unlink()
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    second = pending_asset(tmp_path, asset_id="b")
+    with pytest.raises(lifecycle.AssetLifecycleError, match="missing.*journal|needs recovery"):
+        lifecycle.approve_external_asset(second, asset_catalog)
+
+    registry = json.loads(
+        (tmp_path / ".asset-review-recovery" / "transactions.registry").read_text()
+    )
+    assert any(entry["state"] == "prepared" for entry in registry["transactions"].values())
+    assert second.path.is_file()
+
+
+def test_corrupt_prepared_journal_remains_blocking_after_quarantine(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    first = pending_asset(tmp_path, asset_id="a")
+    asset_catalog = catalog(tmp_path)
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == "manifest.applied"
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(first, asset_catalog)
+    journal_path = next((tmp_path / ".asset-review-recovery").rglob("*.json"))
+    journal_path.write_text("{}")
+    second = pending_asset(tmp_path, asset_id="b")
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="journal"):
+        lifecycle.approve_external_asset(second, asset_catalog)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="missing.*journal|needs recovery"):
+        lifecycle.approve_external_asset(second, asset_catalog)
+    assert second.path.is_file()
+
+
+def test_registered_journal_is_promoted_and_recovered_on_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == "transaction.journaled"
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash, match="transaction.journaled"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    registry = json.loads(
+        (tmp_path / ".asset-review-recovery" / "transactions.registry").read_text()
+    )
+    assert {entry["state"] for entry in registry["transactions"].values()} == {
+        "registered"
+    }
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    lifecycle.approve_external_asset(candidate, asset_catalog)
+    assert (tmp_path / "active" / "stock" / "serum-p1.webp").is_file()
+
+
+@pytest.mark.parametrize("first_uses_anchor", [False, True])
+def test_global_recovery_uses_registry_manifest_not_current_api_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    first_uses_anchor: bool,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    persistent = catalog(tmp_path)
+    transient = replace(persistent, manifest_path=None)
+    first = pending_asset(tmp_path, asset_id="a")
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == f"{first.pending_id}.audit.applied"
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        if first_uses_anchor:
+            lifecycle.reject_external_asset(
+                first,
+                reason="not selected",
+                catalog=transient,
+            )
+        else:
+            lifecycle.approve_external_asset(first, persistent)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    second = pending_asset(tmp_path, asset_id="b")
+    if first_uses_anchor:
+        lifecycle.approve_external_asset(second, persistent)
+    else:
+        lifecycle.reject_external_asset(
+            second,
+            reason="not selected",
+            catalog=transient,
+        )
+
+    assert first.path.is_file()
+    assert json.loads(first.metadata_path.read_text())["review_status"] == "pending"
+
+
+@pytest.mark.parametrize("attack", ["symlink", "mode"])
+def test_global_recovery_validates_hashed_run_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == "transaction.prepared"
+        else None,
+    )
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    recovery_root = tmp_path / ".asset-review-recovery"
+    run_root = next(path for path in recovery_root.iterdir() if path.is_dir())
+    if attack == "symlink":
+        detached = tmp_path / "detached-run-root"
+        run_root.rename(detached)
+        run_root.symlink_to(detached, target_is_directory=True)
+    else:
+        run_root.chmod(0o755)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="run recovery journal directory"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+
 def test_lock_replacement_stops_before_next_durable_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

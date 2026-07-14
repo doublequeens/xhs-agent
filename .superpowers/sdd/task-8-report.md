@@ -33,11 +33,17 @@
   - `modern_v2` is decisive over old shapes and spoofed legacy markers. Unknown versions fail closed; versionless legacy inference requires a strict old shape at one exact old successor; partial modern checkpoints remain modern and surface missing-artifact issues.
   - Final Guard opens the absolute trusted root from `/` one component at a time with `O_DIRECTORY | O_NOFOLLOW`, retains every directory descriptor, and rechecks each parent/name inode after reading. It also verifies every final asset against the canonical active catalog; licensed stock additionally requires one matching strict approved audit with exact run/review/safety/reviewed-at/hash bindings. Project-original seed assets follow an explicit local canonical-catalog rule.
 - Closed the catalog-global recovery and shared-eligibility review:
-  - Before any run prepares new work, the catalog lock now drives recovery from every registry `prepared` entry. Each journal is located through the entry's exact raw `run_id`, validated with a run-bound catalog view, and fully rolled back before the current run snapshots or mutates the manifest. A registry prepare with no journal is durably aborted and compacted as a post-crash orphan.
+  - Before any run prepares new work, the catalog lock now drives recovery from every registry `prepared` entry. Each journal is located through the entry's exact raw `run_id`, validated with a run-bound catalog view, and fully rolled back before the current run snapshots or mutates the manifest. A journal-less `registered` entry is durably aborted and compacted as a pre-mutation crash orphan; a journal-less `prepared` entry blocks recovery.
   - Run recovery directories use `sha256(run_id UTF-8)` keys, so case-insensitive filesystems cannot alias distinct `Run`/`run` identifiers while journal and registry payloads retain the exact raw run ID.
   - The catalog review lock retains the authenticated catalog-root directory descriptor for the entire critical section. Durable mkdir, atomic write, hard-link move, quarantine, and unlink operations resolve catalog-relative paths from that descriptor; pathname identity remains a checkpoint, not the operation anchor.
   - Absent-destination promotion uses `linkat` no-clobber semantics, verifies the destination inode/hash, rechecks the source name, and then unlinks the expected source inode/hash. A source swap after link removes only the newly linked destination and fails closed; a preexisting hardlink destination is never overwritten. Atomic writes verify the committed pathname inode and payload hash after rename.
   - Resolver and Final Guard share one `entry_satisfies_requirement` deep module for base, exact, and explicit-fallback rules. Fallbacks must be named by `fallback_asset_ids` and authorized by a production primary-role catalog entry declaring the target role; Guard also rejects every pending-workflow field on project-original local items.
+- Closed the final link/unlink and registry-state recovery review:
+  - Registry transactions now durably transition `registered -> prepared -> committed|aborted`: registration precedes the journal, the validated journal precedes `prepared`, and mutations never begin before `prepared`. Only a journal-less `registered` entry is an abortable orphan; a journal-less `prepared` entry blocks all later APIs as recovery-required, while `registered` plus a valid journal is promoted and recovered.
+  - Registry entries bind the exact manifest/anchor path, initial manifest inode, and original manifest hash. Global recovery reconstructs each run-specific catalog from that durable binding, so persistent-manifest and rejection-anchor transactions recover correctly regardless of the caller API's current manifest.
+  - The global scanner resolves every journal through the same hashed run-directory validator used by writers, including no-symlink, owner, and `0700` checks plus the journal's raw-run binding.
+  - Asset promotion fsyncs the destination link before removing the source and exposes a precise `move.linked` crash point. Recovery accepts both paths only when they are exactly two hardlinks to the journal-bound inode/hash, rechecks that exact link count immediately before unlink, removes the destination, fsyncs its parent, and continues the prepared-transaction rollback. A concurrent third link or identity/hash mismatch fails closed.
+  - Durable unlink records `source_removed=True` when unlink succeeds but parent fsync fails. Move cleanup removes its new destination only while the original source name still resolves to the expected inode; once the source is gone, the destination remains as the recoverable last link.
 
 ## TDD evidence
 
@@ -90,6 +96,7 @@
 - Durable move/root binding: the post-link source-swap test was RED because the old rename path never reached a no-clobber link seam; the checkpoint-then-root-replacement test was RED because the replacement root manifest was overwritten. Both are GREEN with verified link+unlink and the held root descriptor. A preexisting hardlink-destination regression additionally proves no-clobber behavior.
 - Shared Guard eligibility: four local pending-workflow fields were accepted, a legal non-symmetric resolver fallback was rejected, and an unlisted fallback was not classified as a requirement violation. All six regressions are GREEN through the shared exact/fallback helper and complete local-field exclusion.
 - Pre-commit filesystem review: an open/restore race proved the retained root descriptor was not compared with the pre-open root inode, and an expected-absent atomic write could overwrite a last-moment creator. Both were RED. The lock now authenticates the opened root descriptor before lock-file creation and at every checkpoint; expected-absent writes use hard-link no-clobber commit. Expected unlink retains its verified descriptor through a final name/lock check and the unlink syscall.
+- Final recovery-state review: eight of the first nine regressions were RED. There was no post-link crash seam; source-parent fsync failure deleted the last link; prepared missing journals were silently compacted; registered+journal could not be represented; persistent/anchor recovery inherited the wrong caller manifest; and global scanning bypassed the canonical run-directory validator. The initial nine plus an exact third-hardlink rejection are GREEN under the four-state registry and journal-bound move recovery.
 
 ## Final verification
 
@@ -131,6 +138,18 @@
   `pytest -q`
   -> `1156 passed, 2 skipped` (`1158 tests collected`).
 - Latest bytecode/diff verification:
+  `python -m compileall -q main.py src tests` and `git diff --check`
+  -> passed/clean.
+- Final link/registry precise crash suite:
+  `pytest -q tests/asset_resolver/test_lifecycle.py -k 'between_move_link or unbound_third_hardlink or rechecks_link_count or source_parent_fsync or prepared_transaction_missing or corrupt_prepared_journal or registered_journal or registry_manifest_not_current or validates_hashed_run_directory'`
+  -> `12 passed`.
+- Final lifecycle suite:
+  `pytest -q tests/asset_resolver/test_lifecycle.py`
+  -> `135 passed`.
+- Final full suite:
+  `pytest -q`
+  -> `1198 passed, 2 skipped, 4 warnings` (`1200 tests collected`).
+- Final bytecode/diff verification:
   `python -m compileall -q main.py src tests` and `git diff --check`
   -> passed/clean.
 - Final multi-run/quota/identity lifecycle suite:

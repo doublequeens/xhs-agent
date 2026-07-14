@@ -43,6 +43,14 @@ class AssetLifecycleError(RuntimeError):
     """Raised when a pending external asset cannot be safely reviewed."""
 
 
+class DurableUnlinkError(AssetLifecycleError):
+    """Reports whether unlink completed before durability confirmation failed."""
+
+    def __init__(self, message: str, *, source_removed: bool) -> None:
+        super().__init__(message)
+        self.source_removed = source_removed
+
+
 @dataclass(frozen=True, slots=True)
 class BatchAssetReviewResult:
     any_rejected: bool
@@ -284,6 +292,8 @@ class AssetReviewRecoveryJournal(BaseModel):
     catalog_root: NonEmptyStrictString
     run_id: NonEmptyStrictString
     manifest_path: NonEmptyStrictString
+    manifest_device: Annotated[StrictInt, Field(ge=0)]
+    manifest_inode: Annotated[StrictInt, Field(ge=1)]
     state: Literal[
         "prepared",
         "applying",
@@ -318,7 +328,11 @@ class TransactionRegistryEntry(BaseModel):
         StrictStr,
         Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
     ]
-    state: Literal["prepared", "committed", "aborted"]
+    manifest_path: NonEmptyStrictString
+    manifest_device: Annotated[StrictInt, Field(ge=0)]
+    manifest_inode: Annotated[StrictInt, Field(ge=1)]
+    original_manifest_sha256: Hash64
+    state: Literal["registered", "prepared", "committed", "aborted"]
     created_at: NonEmptyStrictString
 
     @field_validator("created_at")
@@ -769,7 +783,8 @@ def reject_external_asset(
     if catalog.manifest_path is None:
         anchor = catalog.root.resolve() / ".asset-review-rejection-anchor.json"
         expected = _json_bytes({"catalog_id": catalog.catalog_id, "assets": []})
-        with catalog_review_lock(catalog.root):
+        with _batch_lifecycle_lock(catalog):
+            _recover_asset_review_journals_locked(catalog)
             if anchor.exists():
                 if anchor.read_bytes() != expected:
                     raise AssetLifecycleError(
@@ -990,6 +1005,7 @@ def _durable_replace(
     expected_source_identity: tuple[int, int] | None = None,
     expected_source_sha256: str | None = None,
     destination_must_be_absent: bool = True,
+    linked_event: str | None = None,
 ) -> None:
     _verify_catalog_lock()
     with _held_parent_directory(source) as (source_parent, source_name):
@@ -1072,6 +1088,9 @@ def _durable_replace(
                             )
                     finally:
                         os.close(destination_descriptor)
+                    os.fsync(destination_parent)
+                    if linked_event is not None:
+                        _crash_point(linked_event)
                     named_source = os.stat(
                         source_name,
                         dir_fd=source_parent,
@@ -1087,8 +1106,25 @@ def _durable_replace(
                         expected_sha256=expected_source_sha256,
                     )
                     linked = False
-                except Exception:
-                    if linked:
+                except Exception as error:
+                    source_is_still_bound = False
+                    if linked and not (
+                        isinstance(error, DurableUnlinkError)
+                        and error.source_removed
+                    ):
+                        try:
+                            current_source = os.stat(
+                                source_name,
+                                dir_fd=source_parent,
+                                follow_symlinks=False,
+                            )
+                            source_is_still_bound = (
+                                current_source.st_dev,
+                                current_source.st_ino,
+                            ) == source_identity
+                        except FileNotFoundError:
+                            pass
+                    if linked and source_is_still_bound:
                         try:
                             _durable_unlink(
                                 destination,
@@ -1112,6 +1148,7 @@ def _durable_unlink(
     *,
     expected_identity: tuple[int, int] | None = None,
     expected_sha256: str | None = None,
+    expected_nlink: int | None = None,
 ) -> None:
     _verify_catalog_lock()
     with _held_parent_directory(path) as (parent_descriptor, name):
@@ -1141,6 +1178,10 @@ def _durable_unlink(
                         expected_sha256 is not None
                         and _descriptor_sha256(descriptor) != expected_sha256
                     )
+                    or (
+                        expected_nlink is not None
+                        and opened.st_nlink != expected_nlink
+                    )
                 ):
                     raise AssetLifecycleError("durable unlink target is unsafe")
                 current = os.stat(
@@ -1151,12 +1192,23 @@ def _durable_unlink(
                 if (current.st_dev, current.st_ino) != identity:
                     raise AssetLifecycleError("durable unlink target is unsafe")
                 _verify_catalog_lock()
+                if (
+                    expected_nlink is not None
+                    and os.fstat(descriptor).st_nlink != expected_nlink
+                ):
+                    raise AssetLifecycleError("durable unlink target is unsafe")
                 os.unlink(name, dir_fd=parent_descriptor)
             finally:
                 os.close(descriptor)
         except FileNotFoundError:
             return
-        os.fsync(parent_descriptor)
+        try:
+            os.fsync(parent_descriptor)
+        except OSError as error:
+            raise DurableUnlinkError(
+                "durable unlink removed the source but parent fsync failed",
+                source_removed=True,
+            ) from error
 
 
 def _durable_mkdir(
@@ -1265,6 +1317,8 @@ def _journal_plan_payload(journal: AssetReviewRecoveryJournal) -> dict[str, obje
         "catalog_root": journal.catalog_root,
         "run_id": journal.run_id,
         "manifest_path": journal.manifest_path,
+        "manifest_device": journal.manifest_device,
+        "manifest_inode": journal.manifest_inode,
         "original_manifest_bytes_b64": journal.original_manifest_bytes_b64,
         "original_manifest_sha256": journal.original_manifest_sha256,
         "target_manifest_bytes_b64": journal.target_manifest_bytes_b64,
@@ -1319,13 +1373,12 @@ def _load_registry(catalog: AssetCatalog, *, create: bool) -> TransactionRegistr
     ):
         raise AssetLifecycleError("asset review transaction registry binding is invalid")
     compacted = False
-    recovery_root = _recovery_root(catalog, create=False)
     for transaction_id, entry in list(registry.transactions.items()):
-        journal_path = (
-            recovery_root
-            / _run_directory_key(entry.run_id)
-            / f"{transaction_id}.json"
-        )
+        entry_catalog = _catalog_for_registry_entry(catalog, entry)
+        journal_path = _run_recovery_root(
+            entry_catalog,
+            create=False,
+        ) / f"{transaction_id}.json"
         if entry.state in {"committed", "aborted"} and not journal_path.exists():
             del registry.transactions[transaction_id]
             compacted = True
@@ -1341,7 +1394,24 @@ def _write_registry(catalog: AssetCatalog, registry: TransactionRegistry) -> Non
     _atomic_write_bytes(_registry_path(catalog), payload)
 
 
-def _registry_prepare(
+def _catalog_for_registry_entry(
+    catalog: AssetCatalog,
+    entry: TransactionRegistryEntry,
+) -> AssetCatalog:
+    catalog_root = Path(os.path.abspath(catalog.root))
+    manifest_path = Path(os.path.abspath(entry.manifest_path))
+    if manifest_path.parent != catalog_root:
+        raise AssetLifecycleError(
+            "asset review transaction manifest binding is invalid"
+        )
+    return replace(
+        catalog,
+        run_id=entry.run_id,
+        manifest_path=manifest_path,
+    )
+
+
+def _registry_register(
     catalog: AssetCatalog,
     journal: AssetReviewRecoveryJournal,
 ) -> None:
@@ -1351,10 +1421,47 @@ def _registry_prepare(
     registry.transactions[journal.transaction_id] = TransactionRegistryEntry(
         plan_sha256=journal.plan_sha256,
         run_id=journal.run_id,
-        state="prepared",
+        manifest_path=journal.manifest_path,
+        manifest_device=journal.manifest_device,
+        manifest_inode=journal.manifest_inode,
+        original_manifest_sha256=journal.original_manifest_sha256,
+        state="registered",
         created_at=journal.created_at,
     )
     _write_registry(catalog, registry)
+
+
+def _registry_mark_prepared(
+    catalog: AssetCatalog,
+    journal: AssetReviewRecoveryJournal,
+) -> None:
+    registry = _load_registry(catalog, create=False)
+    entry = registry.transactions.get(journal.transaction_id)
+    if not _registry_matches_journal(entry, journal) or entry.state not in {
+        "registered",
+        "prepared",
+    }:
+        raise AssetLifecycleError(
+            "asset review transaction registry binding is invalid"
+        )
+    if entry.state == "registered":
+        entry.state = "prepared"
+        _write_registry(catalog, registry)
+
+
+def _registry_matches_journal(
+    entry: TransactionRegistryEntry | None,
+    journal: AssetReviewRecoveryJournal,
+) -> bool:
+    return bool(
+        entry is not None
+        and entry.plan_sha256 == journal.plan_sha256
+        and entry.run_id == journal.run_id
+        and entry.manifest_path == journal.manifest_path
+        and entry.manifest_device == journal.manifest_device
+        and entry.manifest_inode == journal.manifest_inode
+        and entry.original_manifest_sha256 == journal.original_manifest_sha256
+    )
 
 
 def _registry_entry(
@@ -1364,10 +1471,9 @@ def _registry_entry(
     registry = _load_registry(catalog, create=False)
     entry = registry.transactions.get(journal.transaction_id)
     if (
-        entry is None
-        or entry.plan_sha256 != journal.plan_sha256
-        or entry.run_id != journal.run_id
+        not _registry_matches_journal(entry, journal)
         or entry.run_id != catalog.run_id
+        or entry.manifest_path != str(Path(os.path.abspath(catalog.manifest_path)))
     ):
         raise AssetLifecycleError("recovery journal transaction registry binding is invalid")
     try:
@@ -1378,7 +1484,7 @@ def _registry_entry(
     now = datetime.now(UTC)
     if entry.created_at != journal.created_at:
         raise AssetLifecycleError("recovery journal transaction is stale or invalid")
-    if entry.state == "prepared" and (
+    if entry.state in {"registered", "prepared"} and (
         created_at > now
         or journal_created_at > now
         or (now - created_at).total_seconds() > MAX_TRANSACTION_AGE_SECONDS
@@ -1395,9 +1501,7 @@ def _registry_set_state(
     registry = _load_registry(catalog, create=False)
     entry = registry.transactions.get(journal.transaction_id)
     if (
-        entry is None
-        or entry.plan_sha256 != journal.plan_sha256
-        or entry.run_id != journal.run_id
+        not _registry_matches_journal(entry, journal)
         or entry.run_id != catalog.run_id
     ):
         raise AssetLifecycleError("asset review transaction registry binding is invalid")
@@ -1544,7 +1648,10 @@ def _validated_recovery_journal(
             or manifest_path.parent != catalog_root
         ):
             raise AssetLifecycleError("recovery journal transaction binding is invalid")
-        _regular_file_metadata(manifest_path, label="catalog manifest")
+        manifest_metadata = _regular_file_metadata(
+            manifest_path,
+            label="catalog manifest",
+        )
 
         original_manifest = _decode_bound_bytes(
             journal.original_manifest_bytes_b64,
@@ -1671,13 +1778,49 @@ def _validated_recovery_journal(
 
             pending_exists = pending_path.exists()
             destination_exists = destination.exists()
-            if record.disposition == "approved" and pending_exists == destination_exists:
+            if (
+                record.disposition == "approved"
+                and pending_exists
+                and destination_exists
+            ):
+                pending_metadata = _regular_file_metadata(
+                    pending_path,
+                    label="pending asset path",
+                )
+                destination_metadata = _regular_file_metadata(
+                    destination,
+                    label="destination asset path",
+                )
+                expected_identity = (
+                    record.source_device,
+                    record.source_inode,
+                )
+                if (
+                    (pending_metadata.st_dev, pending_metadata.st_ino)
+                    != expected_identity
+                    or (destination_metadata.st_dev, destination_metadata.st_ino)
+                    != expected_identity
+                    or pending_metadata.st_nlink != 2
+                    or destination_metadata.st_nlink != 2
+                    or _bytes_digest(pending_path.read_bytes())
+                    != record.asset_sha256
+                    or _bytes_digest(destination.read_bytes())
+                    != record.asset_sha256
+                ):
+                    raise AssetLifecycleError(
+                        "recovery journal mid-move asset identity is unbound"
+                    )
+                existing_path = pending_path
+            elif record.disposition == "approved" and not (
+                pending_exists or destination_exists
+            ):
                 raise AssetLifecycleError("recovery journal asset paths are ambiguous")
             if record.disposition == "rejected" and (
                 not pending_exists or destination_exists
             ):
                 raise AssetLifecycleError("recovery journal rejected asset path is invalid")
-            existing_path = pending_path if pending_exists else destination
+            else:
+                existing_path = pending_path if pending_exists else destination
             file_metadata = _regular_file_metadata(existing_path, label="asset path")
             if (
                 _bytes_digest(existing_path.read_bytes()) != record.asset_sha256
@@ -1716,6 +1859,23 @@ def _validated_recovery_journal(
             raise AssetLifecycleError("recovery journal manifest operations are invalid")
         if _journal_plan_sha256(journal) != journal.plan_sha256:
             raise AssetLifecycleError("recovery journal plan hash is invalid")
+        current_manifest_sha256 = _bytes_digest(manifest_path.read_bytes())
+        if current_manifest_sha256 not in {
+            journal.original_manifest_sha256,
+            journal.target_manifest_sha256,
+        }:
+            raise AssetLifecycleError(
+                "recovery journal manifest bytes are unbound"
+            )
+        if (
+            current_manifest_sha256 == journal.original_manifest_sha256
+            and journal.rollback_manifest_phase == "pending"
+            and (manifest_metadata.st_dev, manifest_metadata.st_ino)
+            != (journal.manifest_device, journal.manifest_inode)
+        ):
+            raise AssetLifecycleError(
+                "recovery journal manifest identity is unbound"
+            )
     except (ValidationError, OSError, ValueError, TypeError, AssetLifecycleError) as error:
         _quarantine_journal(path)
         if isinstance(error, AssetLifecycleError):
@@ -1788,7 +1948,17 @@ def _rollback_from_journal(
                         ),
                         expected_source_sha256=record.asset_sha256,
                     )
-                elif not pending_path.exists() or destination.exists():
+                elif destination.exists() and pending_path.exists():
+                    _durable_unlink(
+                        destination,
+                        expected_identity=(
+                            record.source_device,
+                            record.source_inode,
+                        ),
+                        expected_sha256=record.asset_sha256,
+                        expected_nlink=2,
+                    )
+                elif not pending_path.exists():
                     raise AssetLifecycleError("asset rollback paths are inconsistent")
                 _crash_point(f"{record.pending_id}.rollback_move.applied")
                 _set_journal_phase(
@@ -1845,25 +2015,31 @@ def _recover_asset_review_journals_locked(catalog: AssetCatalog) -> None:
         return
     registry = _load_registry(catalog, create=False)
     for transaction_id, snapshot_entry in sorted(registry.transactions.items()):
-        run_catalog = replace(catalog, run_id=snapshot_entry.run_id)
-        path = (
-            recovery_root
-            / _run_directory_key(snapshot_entry.run_id)
-            / f"{transaction_id}.json"
-        )
+        run_catalog = _catalog_for_registry_entry(catalog, snapshot_entry)
+        path = _run_recovery_root(
+            run_catalog,
+            create=False,
+        ) / f"{transaction_id}.json"
         if not path.exists():
-            if snapshot_entry.state == "prepared":
+            if snapshot_entry.state == "registered":
                 current = _load_registry(catalog, create=False)
                 entry = current.transactions.get(transaction_id)
-                if entry is not None and entry.state == "prepared":
+                if entry is not None and entry.state == "registered":
                     entry.state = "aborted"
                     _write_registry(catalog, current)
                 current = _load_registry(catalog, create=False)
                 current.transactions.pop(transaction_id, None)
                 _write_registry(catalog, current)
+            elif snapshot_entry.state == "prepared":
+                raise AssetLifecycleError(
+                    "prepared asset review transaction is missing its journal and needs recovery"
+                )
             continue
         journal = _validated_recovery_journal(run_catalog, path)
         registry_entry = _registry_entry(run_catalog, journal)
+        if registry_entry.state == "registered":
+            _registry_mark_prepared(run_catalog, journal)
+            registry_entry = _registry_entry(run_catalog, journal)
         if registry_entry.state in {"committed", "aborted"}:
             _durable_unlink(path)
             continue
@@ -1958,6 +2134,10 @@ def _prepare_batch_journal(
         catalog.manifest_path,
         limit=MAX_RECOVERY_SNAPSHOT_BYTES,
         label="catalog manifest snapshot",
+    )
+    manifest_metadata = _regular_file_metadata(
+        catalog.manifest_path,
+        label="catalog manifest",
     )
     try:
         target_manifest_payload = json.loads(original_manifest.decode("utf-8"))
@@ -2065,6 +2245,8 @@ def _prepare_batch_journal(
         catalog_root=str(catalog_root),
         run_id=catalog.run_id,
         manifest_path=str(Path(os.path.abspath(catalog.manifest_path))),
+        manifest_device=manifest_metadata.st_dev,
+        manifest_inode=manifest_metadata.st_ino,
         state="prepared",
         original_manifest_bytes_b64=base64.b64encode(original_manifest).decode(
             "ascii"
@@ -2078,9 +2260,11 @@ def _prepare_batch_journal(
     if len(_json_bytes(journal.model_dump(mode="json"))) > MAX_RECOVERY_FILE_BYTES:
         raise AssetLifecycleError("asset review recovery journal is too large")
     journal_path = _journal_path(catalog, transaction_id)
-    _registry_prepare(catalog, journal)
+    _registry_register(catalog, journal)
     _crash_point("transaction.registered")
     _write_recovery_journal(journal_path, journal)
+    _crash_point("transaction.journaled")
+    _registry_mark_prepared(catalog, journal)
     _crash_point("transaction.prepared")
     return journal_path, journal
 
@@ -2152,6 +2336,7 @@ def _apply_batch_journal(
                         ),
                         expected_source_sha256=record.asset_sha256,
                         destination_must_be_absent=record.destination_expected_absent,
+                        linked_event=f"{record.pending_id}.move.linked",
                     )
                 elif not destination.exists() or pending_path.exists():
                     raise AssetLifecycleError("asset apply paths are inconsistent")
