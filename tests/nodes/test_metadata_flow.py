@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
-from src.schemas import CarouselPayload, TextCardPayload
+from src.schemas import CarouselPayload
 from src.schemas.topic import TopicItem
 
 
@@ -484,8 +484,11 @@ def test_decision_engine_raises_before_model_on_duplicate_topic(monkeypatch):
 def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     from src.nodes import node_o_assembler as module
 
+    captured = {}
+
     class FakeModel:
         def execute(self, messages):
+            captured["human_prompt"] = messages[1].content
             return {
                 "title": "睡眠改善指南",
                 "content": "body",
@@ -525,8 +528,6 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
                 risk_flags=["medical-adjacent", "sleep-adjacent"],
             ),
             "hashtags": SimpleNamespace(hashtags=["#x"]),
-            "image_candidates": [],
-            "final_images": SimpleNamespace(image_final_choices=[]),
             "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
@@ -552,6 +553,7 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["content"] == "body"
     assert publish_package["profile_version"] == "wellness-v1"
     assert publish_package["content_contract"] == _content_contract()
+    assert "image_final_choices" not in captured["human_prompt"]
 
 
 def test_assembler_rejects_explicit_cli_keyword_that_was_lost(monkeypatch):
@@ -585,7 +587,6 @@ def test_assembler_rejects_explicit_cli_keyword_that_was_lost(monkeypatch):
                     risk_flags=[],
                 ),
                 "hashtags": SimpleNamespace(hashtags=["#x"]),
-                "final_images": SimpleNamespace(image_final_choices=[]),
                 "trends": [_topic()],
                 "domain_context": _domain_context(),
                 "content_policy": _content_policy(),
@@ -626,7 +627,6 @@ def test_assembler_enforces_title_max_length_including_punctuation(monkeypatch):
                 risk_flags=["medical-adjacent"],
             ),
             "hashtags": SimpleNamespace(hashtags=["#x"]),
-            "final_images": SimpleNamespace(image_final_choices=[]),
             "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
@@ -670,7 +670,6 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
                 risk_flags=["medical-adjacent"],
             ),
             "hashtags": SimpleNamespace(hashtags=["#generated"]),
-            "final_images": SimpleNamespace(image_final_choices=[]),
             "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
@@ -769,33 +768,24 @@ def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(mo
     assert "Structured Text Card Generator" not in captured["system_prompt"]
 
 
-def test_storyboard_generator_without_plan_uses_legacy_prompt_and_payload(monkeypatch):
+def test_storyboard_generator_without_plan_fails_before_model_or_prompt(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
 
-    captured = {}
-
-    class FakeModel:
-        def execute(self, messages):
-            captured["system_prompt"] = messages[0].content
-            return {"storyboards": _legacy_storyboard_frames()}
-
-    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
-
-    result = module.storyboards_generator_node(
-        {
-            "publish_package": {"topic_id": "tp_001"},
-            "trends": [_topic()],
-            "domain_context": _domain_context(),
-            "content_policy": _content_policy(),
-        }
+    monkeypatch.setattr(
+        module,
+        "get_model",
+        lambda: pytest.fail("missing modern plan must fail before model lookup"),
     )
 
-    legacy_payload = TextCardPayload.model_validate(
-        {"storyboards": result["publish_package"]["storyboards"]}
-    )
-    assert len(legacy_payload.storyboards) == 6
-    assert "Structured Text Card Generator" in captured["system_prompt"]
-    assert "Semantic Editorial Carousel Storyboard Generator" not in captured["system_prompt"]
+    with pytest.raises(ValueError, match="requires visual_plan"):
+        module.storyboards_generator_node(
+            {
+                "publish_package": {"topic_id": "tp_001"},
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+            }
+        )
 
 
 def test_semantic_storyboard_uses_final_package_contract_when_trend_is_stale(monkeypatch):

@@ -39,6 +39,6 @@ Semantic Editorial Carousel Storyboard Generator
 - 每页只完成 VisualPlan 对应 role/purpose 的一个信息任务，不得改变 topic、angle、受众、首屏承诺或正文结论。
 - content_blocks 只能使用 CarouselPayload 允许的结构化类型；visual_slots 只描述素材的语义职责，不选择具体素材。
 - 只输出 JSON 数据。禁止 HTML、CSS、自由坐标、字体路径、文件路径、网络 URL、image-generation prompt、image_prompt、negative_prompt 或任何图像生成指令。
-- 新合同没有 theme 字段；不得输出旧版 warm_neutral 或 cool_sage 主题值。
+- 新合同没有 theme 字段；不得输出任何自由主题值。
 - 不得输出 publish_package 的 title、content、hashtags、images、notes 等其他元数据。
 - 不得把整段正文复制到页面，不得添加无意义互动结尾，不得生成 schema 之外的字段。

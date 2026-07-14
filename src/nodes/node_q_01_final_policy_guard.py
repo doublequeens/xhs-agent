@@ -14,12 +14,11 @@ from src.asset_resolver.eligibility import entry_satisfies_requirement
 from src.asset_resolver.lifecycle import PendingAuditRecord
 from src.asset_resolver.resolver import requirement_fingerprint
 from src.domain import find_policy_violations
-from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.rendering.editorial.design_system import ASSET_ROOT
 from src.schemas import AgentState
 from src.schemas.assets import AssetRequirement
 from src.nodes.publish_patch import extract_storyboard_visible_text
-from src.nodes.node_p_text_card_renderer import PUBLISH_ROOT
+from src.nodes.node_p_editorial_carousel_renderer import PUBLISH_ROOT
 from src.editorial_carousel.strategy import ASSET_ADAPTER
 
 
@@ -925,8 +924,7 @@ def validate_final_policy(state: AgentState) -> list[dict]:
         raise ValueError("validate_final_policy requires `publish_package` in state.")
 
     issues = _required_field_issues(publish_package)
-    if not is_legacy_editorial_checkpoint(state):
-        issues.extend(_editorial_artifact_issues(state, publish_package))
+    issues.extend(_editorial_artifact_issues(state, publish_package))
     combined_text = "\n".join(
         [
             _coerce_text(publish_package.get("title")),

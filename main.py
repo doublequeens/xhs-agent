@@ -13,14 +13,13 @@ from memory.memory_manager import XHSMemoryManager
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
 from src.editorial_carousel.legacy import (
-    EDITORIAL_WORKFLOW_VERSION_KEY,
-    LEGACY_EDITORIAL_V1,
-    LEGACY_RESUME_PREDECESSOR_BY_SUCCESSOR,
     hydrate_legacy_editorial_state,
+    migration_reentry_predecessor,
+    persisted_checkpoint_nodes,
 )
 from src.graph import create_graph
 from src.models import set_default_provider
-from src.nodes import node_p_text_card_renderer
+from src.nodes import node_p_editorial_carousel_renderer
 from src.publishing.artifacts import (
     PublishArtifacts,
     _export_verified_state_snapshot,
@@ -79,12 +78,17 @@ def hydrate_legacy_domain_state(values: dict) -> dict:
 def load_run_state(graph, config: dict, initial_state: dict):
     current_state = graph.get_state(config)
     if current_state.values:
+        checkpoint_nodes = persisted_checkpoint_nodes(
+            graph,
+            config,
+            tuple(current_state.next),
+        )
         editorial_updates = (
             hydrate_legacy_editorial_state(
                 current_state.values,
-                checkpoint_nodes=tuple(current_state.next),
+                checkpoint_nodes=checkpoint_nodes,
             )
-            if current_state.next
+            if checkpoint_nodes
             else {}
         )
         hydration_updates = {
@@ -92,17 +96,9 @@ def load_run_state(graph, config: dict, initial_state: dict):
             **editorial_updates,
         }
         if hydration_updates:
-            exact_successor = (
-                current_state.next[0]
-                if (
-                    editorial_updates.get(EDITORIAL_WORKFLOW_VERSION_KEY)
-                    == LEGACY_EDITORIAL_V1
-                    and len(current_state.next) == 1
-                )
-                else None
-            )
-            predecessor = LEGACY_RESUME_PREDECESSOR_BY_SUCCESSOR.get(
-                exact_successor
+            predecessor = migration_reentry_predecessor(
+                editorial_updates,
+                checkpoint_nodes,
             )
             if predecessor is None:
                 graph.update_state(config, hydration_updates)
@@ -181,9 +177,6 @@ def create_initial_state(args: argparse.Namespace) -> dict:
         "r2_output": None,
         "final_content": None,
         "hashtags": None,
-        "image_scripts": None,
-        "image_candidates": None,
-        "final_images": None,
         "visual_plan": None,
         "asset_manifest": None,
         "render_manifest": None,
@@ -290,7 +283,7 @@ def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list
             "publish_package rendered_image_paths must match the 5-7 RenderManifest pages"
         )
 
-    publish_root = node_p_text_card_renderer.PUBLISH_ROOT.resolve()
+    publish_root = node_p_editorial_carousel_renderer.PUBLISH_ROOT.resolve()
     package_dir: Path | None = None
     resolved_paths: list[Path] = []
     for index, (raw_path, manifest_path) in enumerate(

@@ -145,7 +145,6 @@ def beauty_account_workflow():
         },
         "final_content": final_content,
         "hashtags": HashTagOutput(hashtags=["#通勤底妆"]),
-        "final_images": SimpleNamespace(image_final_choices=[]),
     }
 
 
@@ -333,14 +332,26 @@ def test_beauty_workflow_reaches_review_with_all_locally_rendered_carousel_pages
 
 def test_final_guard_failure_never_writes_audit_or_export_after_human_approval(monkeypatch, tmp_path):
     import main as main_module
-    from src.nodes import node_p_text_card_renderer
-    from src.rendering.text_cards import output_paths
+    from src.nodes import node_p_editorial_carousel_renderer
 
     publish_root = tmp_path / "outputs" / "publish"
-    monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", publish_root)
+    monkeypatch.setattr(
+        node_p_editorial_carousel_renderer,
+        "PUBLISH_ROOT",
+        publish_root,
+    )
     image_dir = publish_root / "20260713-beauty-skincare-守门失败" / "images"
     image_dir.mkdir(parents=True)
-    image_paths = output_paths(image_dir)
+    image_paths = [
+        image_dir / name
+        for name in (
+            "01-cover.png",
+            "02-checklist.png",
+            "03-decision.png",
+            "04-comparison.png",
+            "05-save.png",
+        )
+    ]
     for path in image_paths:
         path.write_bytes(_png())
     package = {

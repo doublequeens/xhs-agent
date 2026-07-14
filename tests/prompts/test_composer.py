@@ -121,19 +121,17 @@ def test_task10_golden_fixture_names_and_copy_never_enter_production_prompts(
     assert all(value not in production_prompt for value in isolated_copy)
 
 
-def test_legacy_storyboard_prompt_is_isolated_from_semantic_contract():
+def test_legacy_storyboard_prompt_task_is_retired():
     from src.prompts.composer import compose_prompt
 
-    prompt = compose_prompt(
-        "storyboards_generator_legacy",
-        get_domain_profile("beauty"),
-    )
-
-    assert "Structured Text Card Generator" in prompt
-    assert "必须恰好输出六张卡" in prompt
-    assert "cover_statement" in prompt
-    assert "question_closer" in prompt
-    assert "CarouselPayload" not in prompt
+    with pytest.raises(
+        ValueError,
+        match="Unknown prompt task: storyboards_generator_legacy",
+    ):
+        compose_prompt(
+            "storyboards_generator_legacy",
+            get_domain_profile("beauty"),
+        )
 
 
 def test_virality_prompt_requires_integer_breakdown_scores():

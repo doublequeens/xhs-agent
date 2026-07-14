@@ -17,9 +17,6 @@ from .r2_output import R2Output
 from .title_ranker import TitleWinner
 from .decision import DecisionOutput, HashTagInput
 from .hashtag import HashTagOutput
-from .visual_director import ImageScriptList
-from .image_sourcing import ImageCandidates
-from .image_qa import FinalImages
 from .carousel_qa import CarouselQAResult
 from .render_qa import RenderQAResult
 from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
@@ -59,9 +56,6 @@ class AgentState(TypedDict):
     r2_output: R2Output
     final_content: HashTagInput
     hashtags: HashTagOutput
-    image_scripts: ImageScriptList
-    image_candidates: ImageCandidates
-    final_images: FinalImages
     visual_plan: NotRequired[Optional[VisualPlan]]
     asset_manifest: NotRequired[Optional[AssetManifest]]
     render_manifest: NotRequired[Optional[RenderManifest]]

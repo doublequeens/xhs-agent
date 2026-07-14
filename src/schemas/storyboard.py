@@ -2,7 +2,6 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .text_card import TextCardFrame, TextCardPayload
 from .visual_plan import LayoutName, _validate_editorial_frame_layouts
 
 
@@ -57,8 +56,3 @@ class CarouselPayload(StrictModel):
         if len(slot_ids) != len(set(slot_ids)):
             raise ValueError("storyboard visual slot IDs must be globally unique")
         return self
-
-
-# Compatibility names remain on the legacy contract until the graph migration.
-StoryboardFrame = TextCardFrame
-StoryboardPayload = TextCardPayload

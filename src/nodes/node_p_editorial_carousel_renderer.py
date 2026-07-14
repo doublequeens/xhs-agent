@@ -1,20 +1,57 @@
 from __future__ import annotations
 
-from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
-from src.nodes.node_p_text_card_renderer import (
-    render_output_directory,
-    text_card_renderer_node,
-)
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from src.domain import get_domain_profile
 from src.rendering.editorial import render_carousel
 from src.schemas import AgentState, AssetManifest, CarouselPayload, VisualPlan
 
 
+REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+PUBLISH_ROOT = REPOSITORY_ROOT / "outputs" / "publish"
+
+
+def _resolve_publish_package_profile(package: dict):
+    domain = package.get("domain")
+    profile_version = package.get("profile_version")
+    if not domain or not profile_version:
+        raise ValueError(
+            "publish_package requires valid domain and profile_version metadata"
+        )
+    try:
+        return get_domain_profile(domain, version=profile_version)
+    except ValueError as exc:
+        raise ValueError(
+            "publish_package requires valid domain and profile_version metadata: "
+            f"{exc}"
+        ) from exc
+
+
+def render_output_directory(package: dict) -> Path:
+    """Create a profile-scoped directory below the modern publish root."""
+
+    profile = _resolve_publish_package_profile(package)
+    domain = package["domain"]
+    subdomain = package.get("subdomain") or profile.default_subdomain
+    title = package.get("title")
+    if not isinstance(title, str) or not title:
+        raise ValueError(
+            "publish_package requires a non-empty title for local rendering"
+        )
+    date_str = datetime.now(timezone(timedelta(hours=8))).strftime("%Y%m%d")
+    root = PUBLISH_ROOT.resolve()
+    output_dir = (
+        root / f"{date_str}-{domain}-{subdomain}-{title}" / "images"
+    ).resolve()
+    if not output_dir.is_relative_to(root):
+        raise ValueError("render output path must remain inside outputs/publish")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
+
+
 def editorial_carousel_renderer_node(state: AgentState) -> dict:
     """Validate graph state and delegate one render to the deep renderer."""
-
-    if is_legacy_editorial_checkpoint(state) and state.get("visual_plan") is None:
-        result = text_card_renderer_node(state)
-        return {**result, "current_node": "EDITORIAL_CAROUSEL_RENDERER"}
 
     package = state.get("publish_package")
     if not isinstance(package, dict):

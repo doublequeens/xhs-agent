@@ -6,7 +6,6 @@ from typing import Any
 from pydantic import ValidationError
 
 from src.editorial_carousel.strategy import ASSET_ADAPTER, LAYOUT_FAMILY
-from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas.agent_state import AgentState
 from src.schemas.carousel_qa import CarouselQAIssue, CarouselQAResult
@@ -21,8 +20,7 @@ from src.schemas.decision import (
     RevisionMeta,
     SingleTask,
 )
-from src.schemas.storyboard import CarouselFrame, StoryboardPayload
-from src.schemas.text_card import REQUIRED_TEXT_CARD_TEMPLATES
+from src.schemas.storyboard import CarouselFrame
 
 
 SAVEABLE_LAYOUTS = frozenset({"saveable_checklist", "saveable_reference"})
@@ -558,68 +556,6 @@ def validate_carousel(
     return issues
 
 
-def _legacy_schema_issues(raw_frames: Any) -> list[CarouselQAIssue]:
-    try:
-        StoryboardPayload.model_validate({"storyboards": raw_frames})
-    except ValidationError as exc:
-        return [
-            _issue(
-                "storyboard_schema_invalid",
-                f"Storyboard schema validation failed: {error['msg']}",
-                "storyboards",
-            )
-            for error in exc.errors()
-            if error["type"] not in {"too_short", "too_long"}
-        ]
-    return []
-
-
-def _validate_legacy_carousel(
-    package: dict, contract: ContentContract
-) -> list[CarouselQAIssue]:
-    """Narrow checkpoint bridge until Task 8 removes the old graph path."""
-
-    raw_frames = package.get("storyboards")
-    frames = raw_frames if isinstance(raw_frames, list) else []
-    issues = _legacy_schema_issues(raw_frames)
-    templates = [_get_value(frame, "template") for frame in frames]
-    if len(frames) != len(REQUIRED_TEXT_CARD_TEMPLATES):
-        issues.append(
-            _issue(
-                "card_count_out_of_range",
-                "A legacy text-card checkpoint must contain exactly six cards.",
-                "storyboards",
-            )
-        )
-    if templates != list(REQUIRED_TEXT_CARD_TEMPLATES):
-        issues.append(
-            _issue(
-                "template_order_mismatch",
-                "Legacy text-card templates must remain in their checkpoint order.",
-                "storyboards[0].template",
-            )
-        )
-    cover = frames[0] if frames else None
-    if str(_get_value(cover, "headline") or "") != contract.first_screen_promise:
-        issues.append(
-            _issue(
-                "first_screen_promise_mismatch",
-                "The cover headline must exactly equal the first-screen promise.",
-                "storyboards[0].headline",
-                frame=cover,
-            )
-        )
-    if "saveable_checklist" not in templates:
-        issues.append(
-            _issue(
-                "missing_saveable_checklist",
-                "The legacy checkpoint must retain its saveable checklist.",
-                "storyboards[3].template",
-            )
-        )
-    return issues
-
-
 def _selected_content_contract(state: AgentState, package: dict) -> ContentContract:
     topic_id = package.get("topic_id")
     matches = [
@@ -721,24 +657,7 @@ def carousel_qa_node(state: AgentState) -> dict:
 
     contract = _selected_content_contract(state, package)
     visual_plan = state.get("visual_plan")
-    raw_frames = package.get("storyboards")
-    is_explicit_legacy = (
-        is_legacy_editorial_checkpoint(state)
-        and isinstance(raw_frames, list)
-        and bool(raw_frames)
-        and all(
-            isinstance(frame, dict)
-            and "template" in frame
-            and not {"layout", "content_blocks", "visual_slots"}.intersection(frame)
-            for frame in raw_frames
-        )
-        and visual_plan is None
-        and state.get("asset_manifest") is None
-        and state.get("render_manifest") is None
-    )
-    if is_explicit_legacy:
-        issues = _validate_legacy_carousel(package, contract)
-    elif visual_plan is None:
+    if visual_plan is None:
         issues = [
             _issue(
                 "visual_plan_missing",

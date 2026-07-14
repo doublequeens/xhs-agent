@@ -39,10 +39,17 @@ def _load_main(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def renderer_publish_root(monkeypatch, tmp_path):
-    from src.nodes import node_p_text_card_renderer, node_q_01_final_policy_guard
+    from src.nodes import (
+        node_p_editorial_carousel_renderer,
+        node_q_01_final_policy_guard,
+    )
 
     root = tmp_path / "outputs" / "publish"
-    monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", root)
+    monkeypatch.setattr(
+        node_p_editorial_carousel_renderer,
+        "PUBLISH_ROOT",
+        root,
+    )
     monkeypatch.setattr(node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", root)
 
 
@@ -403,7 +410,7 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
         "audience": "通勤女性",
         "trigger_situation": "早上",
         "decision_problem": "怎么护肤",
-        "first_screen_promise": "三步完成",
+        "first_screen_promise": "通勤前快速完成三步",
         "screenshot_asset": "清单",
         "proof_asset": "对照",
         "visual_mode": "text_card",
@@ -425,11 +432,12 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
             if not calls:
                 return old_state
             return SimpleNamespace(
-                values={**old_values, **calls[-1]}, next=("carousel_qa",)
+                values={**old_values, **calls[-1]},
+                next=("storyboard_generator",),
             )
 
         def update_state(self, _config, updates, *, as_node=None):
-            assert as_node == "asset_resolver"
+            assert as_node == "visual_strategy_planner"
             calls.append(updates)
 
     current_state, run_input = main.load_run_state(
@@ -437,13 +445,14 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
     )
 
     assert run_input is None
-    assert current_state.next == ("carousel_qa",)
-    assert calls[0]["legacy_editorial_checkpoint"] is True
-    assert calls[0]["editorial_workflow_version"] == "legacy_v1"
-    assert calls[0]["visual_plan"] is None
+    assert current_state.next == ("storyboard_generator",)
+    assert calls[0]["legacy_editorial_checkpoint"] is False
+    assert calls[0]["editorial_workflow_version"] == "modern_v2"
+    assert calls[0]["visual_plan"] is not None
     assert calls[0]["asset_manifest"] is None
     assert calls[0]["render_manifest"] is None
     assert calls[0]["publish_package"]["content_contract"]["content_job"] == "save_and_check"
+    assert "storyboards" not in calls[0]["publish_package"]
 
 
 def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
@@ -887,10 +896,17 @@ def test_export_publish_package_uses_renderer_root_from_another_cwd_and_removes_
     tmp_path,
 ):
     main = _load_main(monkeypatch)
-    from src.nodes import node_p_text_card_renderer, node_q_01_final_policy_guard
+    from src.nodes import (
+        node_p_editorial_carousel_renderer,
+        node_q_01_final_policy_guard,
+    )
 
     renderer_root = tmp_path / "repository" / "outputs" / "publish"
-    monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", renderer_root)
+    monkeypatch.setattr(
+        node_p_editorial_carousel_renderer,
+        "PUBLISH_ROOT",
+        renderer_root,
+    )
     monkeypatch.setattr(
         node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", renderer_root
     )

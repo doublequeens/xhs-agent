@@ -1,1 +1,0 @@
-根据 storyboards JSON 逐帧生成 6–8 张竖版高对比文字卡。每张遵循 on_image_copy、narration、card_role、visual_mode、proof_asset_usage 和 is_screenshot_asset；需要时使用真实截图、实物局部或对比表。不要使用卡通角色、角色参考、虚构吉祥物或固定三段式布局。

@@ -37,16 +37,15 @@ def _selected_content_contract(state: AgentState, topic_id: str) -> dict:
 
 def assembler_node(state: AgentState) -> AgentState:
     """
-    A node that assembles the final content by combining the draft, title, and images based on the visual direction using Gemini models.
+    A node that assembles final copy and metadata before editorial planning.
 
     Args:
-        state (AgentState): The current state of the agent containing draft content, title options, and final image choices.
+        state (AgentState): The current state containing final copy and metadata.
     Returns:
         AgentState: Updated agent state with the final assembled content.
     """
     final_content = state.get("final_content", [])
     hashtag_output = state.get("hashtags", [])
-    image_final_choices = state.get("final_images", [])
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", [])
@@ -64,7 +63,6 @@ def assembler_node(state: AgentState) -> AgentState:
         input_variables=[
             "final_content",
             "hashtag_output",
-            "image_final_choices",
             "domain_context",
             "content_policy",
             "evidence_briefs",
@@ -73,7 +71,6 @@ def assembler_node(state: AgentState) -> AgentState:
             "输入参数如下：\n"
             "- final_content:\n{final_content}\n"
             "- hashtag_output:\n{hashtag_output}\n"
-            "- image_final_choices:\n{image_final_choices}\n"
             "- domain_context:\n{domain_context}\n"
             "- content_policy:\n{content_policy}\n"
             "- evidence_briefs:\n{evidence_briefs}\n"
@@ -83,7 +80,6 @@ def assembler_node(state: AgentState) -> AgentState:
     human_prompt = template.format(
         final_content=serialize_prompt_value(final_content),
         hashtag_output=serialize_prompt_value(hashtag_output),
-        image_final_choices=serialize_prompt_value(image_final_choices),
         domain_context=serialize_prompt_value(domain_context),
         content_policy=serialize_prompt_value(content_policy),
         evidence_briefs=serialize_prompt_value(evidence_briefs),

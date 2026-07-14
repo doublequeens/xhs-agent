@@ -12,12 +12,9 @@ from pydantic import ValidationError
 
 from src.asset_resolver.lifecycle import ApprovedSafetyReview
 from src.editorial_carousel.strategy import ASSET_ADAPTER
-from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
-from src.nodes.node_p_text_card_renderer import PUBLISH_ROOT
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.rendering.editorial.probes import EXPECTED_FONT_FAMILIES
-from src.rendering.text_cards import CANVAS, output_paths
 from src.schemas.agent_state import AgentState
 from src.schemas.decision import (
     ContentCandidate,
@@ -30,10 +27,6 @@ from src.schemas.decision import (
     SingleTask,
 )
 from src.schemas.render_qa import RenderQAIssue, RenderQAResult
-from src.schemas.text_card import TextCardPayload
-
-
-EXPECTED_FILENAMES = tuple(path.name for path in output_paths(Path(".")))
 SAVEABLE_LAYOUTS = frozenset({"saveable_checklist", "saveable_reference"})
 
 
@@ -1102,123 +1095,6 @@ def _quality_proxy_metrics(
     }
 
 
-def _legacy_payload_issues(package: dict, state: AgentState) -> list[RenderQAIssue]:
-    issues: list[RenderQAIssue] = []
-    raw_storyboards = package.get("storyboards")
-    try:
-        TextCardPayload.model_validate({"storyboards": raw_storyboards})
-    except ValidationError as exc:
-        issues.append(
-            _issue(
-                "text_card_schema_invalid",
-                f"Rendered cards require schema-valid text-card storyboards: {exc.errors()[0]['msg']}",
-                "publish_package.storyboards",
-            )
-        )
-    frames = raw_storyboards if isinstance(raw_storyboards, list) else []
-    cover = frames[0] if frames else None
-    contract = _selected_content_contract(state, package)
-    if str(_get_value(cover, "headline") or "") != contract.first_screen_promise:
-        issues.append(
-            _issue(
-                "first_screen_promise_mismatch",
-                "The cover headline must exactly equal the selected first-screen promise.",
-                "publish_package.storyboards[0].headline",
-            )
-        )
-    return issues
-
-
-def validate_rendered_images(package: dict, state: AgentState) -> list[RenderQAIssue]:
-    """Checkpoint-only validation for the pre-Task-8 fixed-card graph."""
-
-    issues = _legacy_payload_issues(package, state)
-    if package.get("render_error"):
-        issues.append(
-            _issue(
-                "local_render_failed",
-                f"Local text-card rendering failed: {package['render_error']}",
-                "publish_package.rendered_image_paths",
-            )
-        )
-    raw_paths = package.get("rendered_image_paths")
-    paths = raw_paths if isinstance(raw_paths, list) else []
-    if len(paths) != len(EXPECTED_FILENAMES):
-        issues.append(
-            _issue(
-                "rendered_image_count_invalid",
-                "Legacy local rendering must produce exactly six PNG files.",
-                "publish_package.rendered_image_paths",
-            )
-        )
-    publish_root = PUBLISH_ROOT.resolve()
-    for index, expected_name in enumerate(EXPECTED_FILENAMES):
-        if index >= len(paths):
-            issues.append(
-                _issue(
-                    "png_missing",
-                    f"Missing generated PNG {expected_name}.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-            continue
-        try:
-            path = Path(paths[index]).resolve()
-        except (OSError, TypeError, ValueError):
-            issues.append(
-                _issue(
-                    "png_path_invalid",
-                    "Generated PNG path cannot be resolved.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-            continue
-        if not path.is_relative_to(publish_root):
-            issues.append(
-                _issue(
-                    "png_outside_publish_root",
-                    "Generated PNG must remain inside outputs/publish.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-            continue
-        if path.name != expected_name:
-            issues.append(
-                _issue(
-                    "png_filename_order_invalid",
-                    f"Generated PNG {index + 1} must be named {expected_name}.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-        if not path.is_file():
-            issues.append(
-                _issue(
-                    "png_missing",
-                    f"Generated PNG is missing: {expected_name}.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-            continue
-        dimensions = _png_dimensions(path)
-        if dimensions is None:
-            issues.append(
-                _issue(
-                    "png_signature_or_ihdr_invalid",
-                    f"Generated file {path.name} is not a valid PNG.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-        elif dimensions != (CANVAS["width"], CANVAS["height"]):
-            issues.append(
-                _issue(
-                    "png_dimensions_invalid",
-                    f"Generated PNG {path.name} has invalid dimensions.",
-                    f"publish_package.rendered_image_paths[{index}]",
-                )
-            )
-    return issues
-
-
 def _build_r1_decision(package: dict, issues: list[RenderQAIssue]) -> DecisionOutput:
     draft_id = str(package.get("draft_id") or package.get("topic_id") or "render_qa")
     def task_id(issue: RenderQAIssue) -> str:
@@ -1293,70 +1169,51 @@ def render_qa_node(state: AgentState) -> dict:
     asset_manifest = state.get("asset_manifest")
     render_manifest = state.get("render_manifest")
     visual_plan = state.get("visual_plan")
-    raw_frames = package.get("storyboards")
-    is_explicit_legacy = (
-        is_legacy_editorial_checkpoint(state)
-        and isinstance(raw_frames, list)
-        and bool(raw_frames)
-        and all(
-            isinstance(frame, dict)
-            and "template" in frame
-            and not {"layout", "content_blocks", "visual_slots"}.intersection(frame)
-            for frame in raw_frames
+    issues = []
+    if visual_plan is None:
+        issues.append(
+            _issue(
+                "visual_plan_missing",
+                "Editorial render QA requires the persisted VisualPlan.",
+                "visual_plan",
+            )
         )
-        and visual_plan is None
-        and asset_manifest is None
-        and render_manifest is None
-    )
-    if is_explicit_legacy:
-        issues = validate_rendered_images(package, state)
-        metrics = {}
+    if asset_manifest is None:
+        issues.append(
+            _issue(
+                "asset_manifest_missing",
+                "Editorial render QA requires the persisted AssetManifest.",
+                "asset_manifest",
+            )
+        )
+    if render_manifest is None:
+        issues.append(
+            _issue(
+                "render_manifest_missing",
+                "Editorial render QA requires the persisted RenderManifest.",
+                "render_manifest",
+            )
+        )
+    if not issues:
+        issues = validate_render(
+            package,
+            asset_manifest,
+            render_manifest,
+            visual_plan,
+            allow_pending_external=state.get("review_status") != "approved",
+        )
+        metrics = (
+            {
+                "metrics_available": True,
+                **_quality_proxy_metrics(
+                    package, asset_manifest, render_manifest, visual_plan
+                ),
+            }
+            if not issues
+            else {}
+        )
     else:
-        issues = []
-        if visual_plan is None:
-            issues.append(
-                _issue(
-                    "visual_plan_missing",
-                    "Editorial render QA requires the persisted VisualPlan.",
-                    "visual_plan",
-                )
-            )
-        if asset_manifest is None:
-            issues.append(
-                _issue(
-                    "asset_manifest_missing",
-                    "Editorial render QA requires the persisted AssetManifest.",
-                    "asset_manifest",
-                )
-            )
-        if render_manifest is None:
-            issues.append(
-                _issue(
-                    "render_manifest_missing",
-                    "Editorial render QA requires the persisted RenderManifest.",
-                    "render_manifest",
-                )
-            )
-        if not issues:
-            issues = validate_render(
-                package,
-                asset_manifest,
-                render_manifest,
-                visual_plan,
-                allow_pending_external=state.get("review_status") != "approved",
-            )
-            metrics = (
-                {
-                    "metrics_available": True,
-                    **_quality_proxy_metrics(
-                        package, asset_manifest, render_manifest, visual_plan
-                    ),
-                }
-                if not issues
-                else {}
-            )
-        else:
-            metrics = {}
+        metrics = {}
     result = RenderQAResult(passed=not issues, issues=issues, **metrics)
     output = {"render_qa_result": result, "current_node": "RENDER_QA"}
     if issues:

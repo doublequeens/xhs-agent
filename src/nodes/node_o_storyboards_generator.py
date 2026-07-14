@@ -115,31 +115,26 @@ def _human_prompt(
 
 
 def storyboards_generator_node(state: AgentState) -> AgentState:
-    """Generate either legacy text cards or a strict semantic carousel."""
+    """Generate a strict semantic carousel from the persisted modern plan."""
 
     publish_package = state.get("publish_package", {})
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     evidence_briefs = state.get("evidence_briefs", {})
     visual_plan_value = state.get("visual_plan")
-    semantic_storyboard_contract = visual_plan_value is not None
-
-    if semantic_storyboard_contract:
-        visual_plan = VisualPlan.model_validate(visual_plan_value)
-        validated_contract = _final_content_contract(
-            publish_package,
-            visual_plan,
-        )
-        content_contract = validated_contract.model_dump(mode="json")
-        prompt_task = "storyboards_generator"
-    else:
-        visual_plan = None
-        validated_contract = None
-        content_contract = _selected_content_contract(state, publish_package)
-        prompt_task = "storyboards_generator_legacy"
+    if visual_plan_value is None:
+        raise ValueError("storyboards_generator_node requires visual_plan")
+    visual_plan = VisualPlan.model_validate(visual_plan_value)
+    validated_contract = _final_content_contract(
+        publish_package,
+        visual_plan,
+    )
+    content_contract = validated_contract.model_dump(mode="json")
 
     messages = [
-        SystemMessage(content=compose_prompt_for_state(prompt_task, state)),
+        SystemMessage(
+            content=compose_prompt_for_state("storyboards_generator", state)
+        ),
         HumanMessage(
             content=_human_prompt(
                 publish_package=publish_package,
@@ -153,21 +148,12 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
     ]
 
     storyboard_json = get_model().execute(messages)
-    if semantic_storyboard_contract:
-        payload = _semantic_payload(
-            storyboard_json,
-            visual_plan,
-            validated_contract,
-        )
-        generated_storyboards = payload.model_dump(mode="json")["storyboards"]
-    else:
-        # Preserve the old node's raw handoff so existing carousel QA owns
-        # legacy TextCardPayload validation and R1 routing until graph rewiring.
-        generated_storyboards = (
-            storyboard_json.get("storyboards")
-            if isinstance(storyboard_json, dict)
-            else None
-        )
+    payload = _semantic_payload(
+        storyboard_json,
+        visual_plan,
+        validated_contract,
+    )
+    generated_storyboards = payload.model_dump(mode="json")["storyboards"]
 
     merged_publish_package = dict(publish_package)
     merged_publish_package["content_contract"] = content_contract
@@ -203,15 +189,14 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
                 )
             )
 
-    if semantic_storyboard_contract:
-        final_payload = _semantic_payload(
-            {"storyboards": merged_publish_package.get("storyboards")},
-            visual_plan,
-            validated_contract,
-        )
-        merged_publish_package["storyboards"] = final_payload.model_dump(
-            mode="json"
-        )["storyboards"]
+    final_payload = _semantic_payload(
+        {"storyboards": merged_publish_package.get("storyboards")},
+        visual_plan,
+        validated_contract,
+    )
+    merged_publish_package["storyboards"] = final_payload.model_dump(
+        mode="json"
+    )["storyboards"]
 
     return {
         "publish_package": merged_publish_package,

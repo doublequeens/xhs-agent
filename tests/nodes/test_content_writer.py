@@ -267,7 +267,9 @@ def test_content_writer_compensates_when_vector_write_fails(monkeypatch):
                 "r2_output": SimpleNamespace(
                     compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
                 ),
-                "legacy_editorial_checkpoint": True,
+                "render_manifest": {
+                    "pages": [{"path": "/tmp/01-cover.png"}]
+                },
             }
         )
 
@@ -312,7 +314,9 @@ def test_content_writer_surfaces_compensation_failure(monkeypatch):
                 "r2_output": SimpleNamespace(
                     compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
                 ),
-                "legacy_editorial_checkpoint": True,
+                "render_manifest": {
+                    "pages": [{"path": "/tmp/01-cover.png"}]
+                },
             }
         )
 

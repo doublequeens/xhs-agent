@@ -66,6 +66,7 @@ def test_golden_fixture_is_absent_from_production_sources_and_seed_data(
         REPOSITORY_ROOT / relative
         for relative in tracked
         if relative
+        and (REPOSITORY_ROOT / relative).is_file()
         and not relative.startswith(
             ("tests/", "docs/", ".superpowers/", ".worktrees/", "outputs/")
         )
@@ -201,7 +202,6 @@ def _initial_state(fixture: dict) -> dict:
             best_cover_copy=package["cover_copy"],
         ),
         "hashtags": HashTagOutput(hashtags=package["hashtags"]),
-        "final_images": {"image_final_choices": []},
         "r2_output": {
             "compliance_audit": {
                 "compliance_status": "passed",
@@ -295,7 +295,7 @@ def _install_real_workflow_harness(
     from src.nodes import node_p_asset_resolver as resolver_node_module
     from src.nodes import node_p_content_writer as writer_module
     from src.nodes import node_p_editorial_carousel_renderer as renderer_node_module
-    from src.nodes import node_p_text_card_renderer as output_module
+    from src.nodes import node_p_editorial_carousel_renderer as output_module
     from src.nodes import node_q_01_final_policy_guard as guard_module
 
     plan, storyboards = _storyboards(fixture)
