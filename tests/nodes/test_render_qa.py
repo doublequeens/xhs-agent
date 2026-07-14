@@ -633,6 +633,91 @@ def test_approved_external_asset_accepts_fully_resolved_safety_review(tmp_path):
     assert "asset_safety_checks_unresolved" not in _rule_ids(issues)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        (
+            "safety_review_decisions",
+            {
+                "has_logo": False,
+                "has_watermark": False,
+                "allowed_for_publishing": True,
+                "unknown_check": False,
+            },
+        ),
+        (
+            "safety_review_decisions",
+            {
+                "has_logo": "false",
+                "has_watermark": False,
+                "allowed_for_publishing": True,
+            },
+        ),
+        (
+            "safety_review_decisions",
+            {
+                "has_logo": False,
+                "allowed_for_publishing": True,
+            },
+        ),
+        ("safety_reviewed_at", None),
+        ("safety_reviewed_at", "not-an-iso8601-timestamp"),
+        ("safety_reviewed_at", "2026-07-14T12:00:00"),
+        ("review_status", "pending"),
+        ("review_disposition", "rejected"),
+        (
+            "unresolved_safety_checks",
+            [
+                "has_logo",
+                "has_logo",
+                "has_watermark",
+                "allowed_for_publishing",
+            ],
+        ),
+        (
+            "unresolved_safety_checks",
+            ["has_logo", "unknown_check", "allowed_for_publishing"],
+        ),
+    ),
+)
+def test_approved_external_asset_rejects_noncanonical_safety_review(
+    tmp_path,
+    field,
+    value,
+):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    review = {
+        "source_type": "stock_photo",
+        "provider": "unsplash",
+        "provider_asset_id": "approved-42",
+        "source_url": "https://unsplash.com/photos/approved-42",
+        "source_file_url": "https://images.unsplash.com/approved-42",
+        "author": "Photographer",
+        "review_status": "approved",
+        "review_disposition": "approved_for_publishing",
+        "unresolved_safety_checks": [
+            "has_logo",
+            "has_watermark",
+            "allowed_for_publishing",
+        ],
+        "safety_review_decisions": {
+            "has_logo": False,
+            "has_watermark": False,
+            "allowed_for_publishing": True,
+        },
+        "safety_reviewed_at": "2026-07-14T12:00:00+00:00",
+        field: value,
+    }
+    first = assets.items[0].model_copy(update=review)
+    assets = assets.model_copy(update={"items": [first, *assets.items[1:]]})
+
+    issues = validate_render(package, assets, manifest, _plan())
+
+    assert "asset_safety_checks_unresolved" in _rule_ids(issues)
+
+
 def test_editorial_state_missing_render_manifest_never_falls_back_to_legacy(tmp_path):
     from src.nodes.node_p_render_qa import render_qa_node
 

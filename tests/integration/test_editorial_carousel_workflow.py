@@ -4,6 +4,8 @@ import hashlib
 import json
 import shutil
 import sqlite3
+import subprocess
+from contextlib import ExitStack
 from io import BytesIO
 from pathlib import Path
 
@@ -26,16 +28,13 @@ from src.schemas.decision import DecisionOutput, HashTagInput, NormalizedInput
 from src.schemas.hashtag import HashTagOutput
 from src.schemas.topic import TopicItem
 from src.schemas.topic_signal import CreativeSeed
-
-
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-FIXTURE_ROOT = REPOSITORY_ROOT / "tests/fixtures/editorial_carousel"
-GOLDEN_FIXTURE_NAMES = (
-    "zone_diagnosis",
-    "ordered_routine",
-    "multi_option_decision",
-    "reference_checklist",
+from tests.editorial_carousel.golden_fixtures import (
+    GOLDEN_FIXTURE_NAMES,
+    REPOSITORY_ROOT,
+    load_golden_fixture,
 )
+
+
 SAVEABLE_LAYOUTS = {"saveable_checklist", "saveable_reference"}
 EXPECTED_FONT_FAMILIES = {
     "Source Han Serif SC",
@@ -44,36 +43,56 @@ EXPECTED_FONT_FAMILIES = {
 }
 
 
-def load_golden(name: str) -> dict:
-    fixture = json.loads(
-        (FIXTURE_ROOT / f"{name}.json").read_text(encoding="utf-8")
-    )
-    assert fixture["fixture_id"] == name
-    assert fixture["test_only"] is True
-    assert fixture["intended_use"].startswith("synthetic regression input only")
-    return fixture
+@pytest.fixture
+def resource_cleanup():
+    cleanup = ExitStack()
+    yield cleanup
+    cleanup.close()
 
 
 @pytest.mark.parametrize("fixture_name", GOLDEN_FIXTURE_NAMES)
 def test_golden_fixture_is_absent_from_production_sources_and_seed_data(
     fixture_name,
 ):
-    fixture = load_golden(fixture_name)
-    production_text = "\n".join(
-        path.read_text(encoding="utf-8")
-        for root in (
-            REPOSITORY_ROOT / "src",
-            REPOSITORY_ROOT / "memory",
-            REPOSITORY_ROOT / "assets/visual",
+    fixture = load_golden_fixture(fixture_name)
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.split("\0")
+    production_files = [
+        REPOSITORY_ROOT / relative
+        for relative in tracked
+        if relative
+        and not relative.startswith(
+            ("tests/", "docs/", ".superpowers/", ".worktrees/", "outputs/")
         )
-        for path in root.rglob("*")
-        if path.is_file() and path.suffix in {".py", ".txt", ".json", ".md"}
-    )
+    ]
+    production_text_parts = []
+    for path in production_files:
+        try:
+            production_text_parts.append(path.read_text(encoding="utf-8"))
+        except UnicodeDecodeError:
+            continue
+    production_text = "\n".join(production_text_parts)
+    isolated_values = {
+        fixture_name,
+        fixture["synthetic_title"],
+        fixture["package"]["topic_id"],
+        fixture["package"]["topic"],
+        fixture["package"]["focus_keyword"],
+        fixture["package"]["cover_copy"],
+        *(frame["headline"] for frame in fixture["frame_copy"].values()),
+    }
 
-    assert fixture_name not in production_text
-    assert fixture["synthetic_title"] not in production_text
-    assert fixture["package"]["topic_id"] not in production_text
-    assert fixture["package"]["topic"] not in production_text
+    assert any(path.name == "main.py" for path in production_files)
+    assert any(
+        "config/" in path.relative_to(REPOSITORY_ROOT).as_posix()
+        for path in production_files
+    )
+    assert all(value not in production_text for value in isolated_values)
 
 
 def _storyboards(fixture: dict) -> tuple[object, list[dict]]:
@@ -201,7 +220,6 @@ class _StructuredDatabaseHarness:
 
     def __init__(self, db_path: Path) -> None:
         self.manager = XHSMemoryManager(db_path)
-        self.saved_records = []
         self.embedding_ids: set[str] = set()
 
     def init_db(self, schema_path) -> None:
@@ -209,13 +227,21 @@ class _StructuredDatabaseHarness:
 
     def save_generated_content(self, record) -> None:
         self.manager.save_generated_content(record)
-        self.saved_records.append(record)
 
     def save_embedding_content(self, record) -> None:
         self.embedding_ids.add(record.content_id)
 
     def get_content_by_id(self, content_id):
         return self.manager.get_content_by_id(content_id)
+
+    def stored_content_ids(self) -> list[str]:
+        with self.manager.connect() as connection:
+            return [
+                str(row[0])
+                for row in connection.execute(
+                    "SELECT content_id FROM contents ORDER BY created_at, content_id"
+                ).fetchall()
+            ]
 
     def get_embedding_content_by_id(self, content_id):
         return content_id if content_id in self.embedding_ids else None
@@ -397,13 +423,130 @@ def _approve_pending_payload(payload: dict) -> dict:
     return {"approved": True, "asset_decisions": decisions}
 
 
+class _SyntheticProcessStop(RuntimeError):
+    pass
+
+
+class _StopAfterNodeGraph:
+    def __init__(self, graph, node_name: str) -> None:
+        self.graph = graph
+        self.node_name = node_name
+
+    def __getattr__(self, name):
+        return getattr(self.graph, name)
+
+    def stream(self, *args, **kwargs):
+        for event in self.graph.stream(*args, **kwargs):
+            yield event
+            if self.node_name in event:
+                raise _SyntheticProcessStop(
+                    f"synthetic process stop after {self.node_name}"
+                )
+
+
+def _registry_rows(path: Path):
+    registry = RunRegistry(path)
+    try:
+        return registry.list_recent()
+    finally:
+        registry.close()
+
+
+def _run_main_interrupted_then_resume(
+    monkeypatch,
+    *,
+    graph,
+    initial_state: dict,
+    registry_path: Path,
+    thread_id: str,
+    stop_after: str,
+):
+    import main as main_module
+
+    class NoopMemoryManager:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def init_db(self, *_args, **_kwargs):
+            pass
+
+    captured_artifacts = []
+    real_export = main_module._export_verified_state_snapshot
+
+    def capture_export(state):
+        artifacts = real_export(state)
+        captured_artifacts.append(artifacts)
+        return artifacts
+
+    graph_sequence = iter([_StopAfterNodeGraph(graph, stop_after), graph])
+    monkeypatch.setattr(main_module, "RUN_REGISTRY_PATH", registry_path)
+    monkeypatch.setattr(main_module, "XHSMemoryManager", NoopMemoryManager)
+    monkeypatch.setattr(main_module, "create_graph", lambda: next(graph_sequence))
+    monkeypatch.setattr(
+        main_module,
+        "create_initial_state",
+        lambda _args: initial_state,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "build_thread_id",
+        lambda explicit_id, now=None: explicit_id or thread_id,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "collect_interrupt_response",
+        lambda payload: (
+            _approve_pending_payload(payload)
+            if payload.get("pending_assets")
+            else {"approved": True}
+        ),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_export_verified_state_snapshot",
+        capture_export,
+    )
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "--new",
+            "--focus_keyword",
+            initial_state["focus_keyword"],
+        ],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main()
+    assert exc_info.value.code == 1
+    interrupted_rows = _registry_rows(registry_path)
+    assert len(interrupted_rows) == 1
+    assert interrupted_rows[0].thread_id == thread_id
+    assert interrupted_rows[0].status == "interrupted"
+    interrupted_state = graph.get_state(
+        {"configurable": {"thread_id": thread_id}}
+    )
+
+    monkeypatch.setattr("sys.argv", ["main.py", "--resume", thread_id])
+    main_module.main()
+    completed_rows = _registry_rows(registry_path)
+
+    assert len(completed_rows) == 1
+    assert completed_rows[0].run_id == interrupted_rows[0].run_id
+    assert completed_rows[0].thread_id == thread_id
+    assert completed_rows[0].status == "completed"
+    assert len(captured_artifacts) == 1
+    return captured_artifacts[0], interrupted_state
+
+
 @pytest.mark.parametrize("fixture_name", GOLDEN_FIXTURE_NAMES)
 def test_golden_fixture_runs_real_local_editorial_workflow_end_to_end(
     fixture_name,
     monkeypatch,
     tmp_path,
+    resource_cleanup,
 ):
-    fixture = load_golden(fixture_name)
+    fixture = load_golden_fixture(fixture_name)
     pexels = _FakeProvider("pexels")
     unsplash = _FakeProvider("unsplash")
     plan, _storyboard, database, publish_root = _install_real_workflow_harness(
@@ -413,10 +556,17 @@ def test_golden_fixture_runs_real_local_editorial_workflow_end_to_end(
         pexels=pexels,
         unsplash=unsplash,
     )
+    resource_cleanup.callback(database.close)
     graph = graph_module.create_graph(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": f"golden-{fixture_name}"}}
+    initial_state = _initial_state(fixture)
 
-    interrupted = graph.invoke(_initial_state(fixture), config=config)
+    assert not database.manager.db_path.exists()
+    assert database.embedding_ids == set()
+    assert initial_state["topic_signals"] == []
+    assert not publish_root.exists()
+
+    interrupted = graph.invoke(initial_state, config=config)
     review_payload = _interrupt_payload(interrupted)
     completed = graph.invoke(Command(resume={"approved": True}), config=config)
     snapshot = graph.get_state(config)
@@ -446,11 +596,23 @@ def test_golden_fixture_runs_real_local_editorial_workflow_end_to_end(
     assert snapshot.values["render_qa_result"].passed is True
     assert completed["data_writed"] is True
 
-    assert len(database.saved_records) == 1
-    record = database.saved_records[0]
-    assert database.get_content_by_id(record.content_id)
-    assert record.image_paths == [str(path) for path in rendered_paths]
-    assert record.title == fixture["synthetic_title"]
+    content_ids = database.stored_content_ids()
+    assert len(content_ids) == 1
+    record = database.get_content_by_id(content_ids[0])
+    assert record is not None
+    assert record["image_paths"] == [str(path) for path in rendered_paths]
+    assert record["topic_id"] == fixture["package"]["topic_id"]
+    assert record["topic"] == fixture["package"]["topic"]
+    assert record["angle_id"] == fixture["package"]["angle_id"]
+    assert record["angle"] == fixture["package"]["angle"]
+    assert record["title"] == fixture["synthetic_title"]
+    assert record["cover_copy"] == fixture["package"]["cover_copy"]
+    assert record["content"] == fixture["package"]["content"]
+    assert record["hashtags"] == fixture["package"]["hashtags"]
+    assert record["card_count"] == len(rendered_paths)
+    assert record["storyboards"] == snapshot.values["publish_package"]["storyboards"]
+    assert record["compliance_status"] == "passed"
+    assert record["metadata"]["content_contract"] == fixture["content_contract"]
 
     assert artifacts.publish_copy_path.is_file()
     assert artifacts.rescue_prompt_path.is_file()
@@ -472,7 +634,6 @@ def test_golden_fixture_runs_real_local_editorial_workflow_end_to_end(
     assert not pexels.download_calls
     assert not unsplash.download_calls
     assert len(list(publish_root.glob("*/images/*.png"))) == len(rendered_paths) + 1
-    database.close()
 
 
 def _external_png() -> bytes:
@@ -524,22 +685,12 @@ def _catalog_with_external_texture_gap(tmp_path: Path) -> Path:
     return root
 
 
-def _stream_until_node(graph, run_input, config, node_name: str) -> None:
-    stream = graph.stream(run_input, config=config)
-    try:
-        for event in stream:
-            if node_name in event:
-                return
-    finally:
-        stream.close()
-    raise AssertionError(f"workflow never reached {node_name}")
-
-
 def test_external_gap_resume_after_download_approves_without_duplicate_work(
     monkeypatch,
     tmp_path,
+    resource_cleanup,
 ):
-    fixture = load_golden("zone_diagnosis")
+    fixture = load_golden_fixture("zone_diagnosis")
     catalog_root = _catalog_with_external_texture_gap(tmp_path)
     pexels = _FakeProvider("pexels")
     candidate = _external_candidate()
@@ -549,7 +700,7 @@ def test_external_gap_resume_after_download_approves_without_duplicate_work(
         {candidate.provider_asset_id: _external_png()},
     )
     render_counter = {}
-    plan, _storyboard, database, _publish_root = _install_real_workflow_harness(
+    plan, _storyboard, database, publish_root = _install_real_workflow_harness(
         monkeypatch,
         fixture,
         tmp_path,
@@ -558,46 +709,27 @@ def test_external_gap_resume_after_download_approves_without_duplicate_work(
         catalog_root=catalog_root,
         render_counter=render_counter,
     )
+    resource_cleanup.callback(database.close)
     connection = sqlite3.connect(tmp_path / "checkpoint.sqlite", check_same_thread=False)
+    resource_cleanup.callback(connection.close)
     checkpointer = SqliteSaver(connection)
     checkpointer.setup()
     graph = graph_module.create_graph(checkpointer=checkpointer)
     thread_id = "same-thread-after-provider-download"
     config = {"configurable": {"thread_id": thread_id}}
-    registry = RunRegistry(tmp_path / "runs.sqlite")
-    registry.create_run(thread_id, fixture["package"]["focus_keyword"])
-
-    _stream_until_node(
-        graph,
-        _initial_state(fixture),
-        config,
-        "carousel_qa",
+    artifacts, interrupted_state = _run_main_interrupted_then_resume(
+        monkeypatch,
+        graph=graph,
+        initial_state=_initial_state(fixture),
+        registry_path=tmp_path / "runs.sqlite",
+        thread_id=thread_id,
+        stop_after="carousel_qa",
     )
-    registry.update_run(thread_id, status="interrupted", last_node="asset_resolver")
-    state_after_download = graph.get_state(config)
-    pending_before_resume = state_after_download.values["asset_manifest"]
-    assert sum(len(provider.search_calls) for provider in (pexels, unsplash)) == 2
-    assert len(unsplash.download_calls) == 1
-    assert any(item.status == "pending_external" for item in pending_before_resume.items)
-
-    resumed_graph = graph_module.create_graph(checkpointer=checkpointer)
-    resumed = resumed_graph.invoke(None, config=config)
-    review_payload = _interrupt_payload(resumed)
-    assert len(unsplash.download_calls) == 1
-    assert render_counter["calls"] == 1
-    assert len(review_payload["pending_assets"]) == 1
-
-    second_review = resumed_graph.invoke(
-        Command(resume=_approve_pending_payload(review_payload)),
-        config=config,
+    snapshot = graph.get_state(config)
+    assert any(
+        item.status == "pending_external"
+        for item in interrupted_state.values["asset_manifest"].items
     )
-    assert _interrupt_payload(second_review)["pending_assets"] == []
-    completed = resumed_graph.invoke(
-        Command(resume={"approved": True}), config=config
-    )
-    registry.update_run(thread_id, status="completed", last_node="content_writer")
-    snapshot = resumed_graph.get_state(config)
-    artifacts = export_publish_package(snapshot)
 
     external_item = next(
         item
@@ -611,23 +743,23 @@ def test_external_gap_resume_after_download_approves_without_duplicate_work(
     assert external_item.status == "active"
     assert external_item.review_status == "approved"
     assert active_sha256 == external_item.sha256 == render_sha256
-    assert completed["data_writed"] is True
+    assert snapshot.values["data_writed"] is True
     assert artifacts.artifact_generation == 1
+    assert len(pexels.search_calls) == 1
+    assert len(unsplash.search_calls) == 1
     assert len(unsplash.download_calls) == 1
     assert render_counter["calls"] == 1
-    assert len(registry.list_recent()) == 1
-    assert registry.get_by_thread_id(thread_id).status == "completed"
+    assert len(list(publish_root.glob("*/images/01-cover.png"))) == 1
+    assert len(list(publish_root.glob("*/.publish-artifacts.version"))) == 1
     assert len(plan.required_assets) == len(snapshot.values["asset_manifest"].items)
-    registry.close()
-    connection.close()
-    database.close()
 
 
 def test_resume_after_render_reuses_output_and_one_registry_entry(
     monkeypatch,
     tmp_path,
+    resource_cleanup,
 ):
-    fixture = load_golden("ordered_routine")
+    fixture = load_golden_fixture("ordered_routine")
     pexels = _FakeProvider("pexels")
     unsplash = _FakeProvider("unsplash")
     render_counter = {}
@@ -639,54 +771,34 @@ def test_resume_after_render_reuses_output_and_one_registry_entry(
         unsplash=unsplash,
         render_counter=render_counter,
     )
+    resource_cleanup.callback(database.close)
     connection = sqlite3.connect(tmp_path / "checkpoint.sqlite", check_same_thread=False)
+    resource_cleanup.callback(connection.close)
     checkpointer = SqliteSaver(connection)
     checkpointer.setup()
     graph = graph_module.create_graph(checkpointer=checkpointer)
     thread_id = "same-thread-after-render"
     config = {"configurable": {"thread_id": thread_id}}
-    registry = RunRegistry(tmp_path / "runs.sqlite")
-    registry.create_run(thread_id, fixture["package"]["focus_keyword"])
-
-    _stream_until_node(
-        graph,
-        _initial_state(fixture),
-        config,
-        "render_qa",
+    artifacts, interrupted_state = _run_main_interrupted_then_resume(
+        monkeypatch,
+        graph=graph,
+        initial_state=_initial_state(fixture),
+        registry_path=tmp_path / "runs.sqlite",
+        thread_id=thread_id,
+        stop_after="render_qa",
     )
-    registry.update_run(
-        thread_id,
-        status="interrupted",
-        last_node="editorial_carousel_renderer",
-    )
-    first_manifest = graph.get_state(config).values["render_manifest"]
+    snapshot = graph.get_state(config)
+    first_manifest = interrupted_state.values["render_manifest"]
     first_paths = [page.path for page in first_manifest.pages]
     first_hashes = [page.sha256 for page in first_manifest.pages]
-    assert render_counter["calls"] == 1
 
-    resumed_graph = graph_module.create_graph(checkpointer=checkpointer)
-    interrupted = resumed_graph.invoke(None, config=config)
-    _interrupt_payload(interrupted)
-    assert render_counter["calls"] == 1
-    completed = resumed_graph.invoke(
-        Command(resume={"approved": True}), config=config
-    )
-    registry.update_run(thread_id, status="completed", last_node="content_writer")
-    snapshot = resumed_graph.get_state(config)
-    artifacts = export_publish_package(snapshot)
-
-    assert completed["data_writed"] is True
+    assert snapshot.values["data_writed"] is True
     assert [page.path for page in snapshot.values["render_manifest"].pages] == first_paths
     assert [page.sha256 for page in snapshot.values["render_manifest"].pages] == first_hashes
     assert render_counter["calls"] == 1
     assert artifacts.artifact_generation == 1
     assert len(list(publish_root.glob("*/images/01-cover.png"))) == 1
     assert len(list(publish_root.glob("*/.publish-artifacts.version"))) == 1
-    assert len(registry.list_recent()) == 1
-    assert registry.get_by_thread_id(thread_id).status == "completed"
     assert len(first_paths) == len(plan.frame_plan)
     assert pexels.search_calls == []
     assert unsplash.search_calls == []
-    registry.close()
-    connection.close()
-    database.close()

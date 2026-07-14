@@ -131,23 +131,29 @@ body { background: var(--ivory); color: var(--ink); font-family: "Source Han San
 .timeline-rail .content-block { position: relative; padding: 17px 20px; background: rgba(255,255,255,.3); }
 .timeline-rail .content-block::before { content: ""; position: absolute; left: -42px; top: 30px; width: 20px; height: 20px; border-radius: 50%; background: var(--coral); }
 .timeline-visual { padding: 38px 10px; }
-.layout-morning-evening-flow { display: grid; grid-template-columns: 1fr 2px 1fr; gap: 28px; position: relative; }
+.layout-morning-evening-flow {
+  display: grid; grid-template-columns: minmax(0, 1fr) 2px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 180px; gap: 24px 28px;
+}
 .flow-panel { min-width: 0; display: grid; gap: 20px; align-content: center; padding: 28px; }
 .morning-panel { background: rgba(212,93,76,.08); }
 .evening-panel { background: rgba(120,128,94,.10); }
 .flow-divider { background: rgba(41,38,37,.22); }
 .flow-label { color: var(--mauve); font-size: 40px; }
 .flow-visual {
-  position: absolute; right: 22px; bottom: 22px; width: 170px; height: 170px;
-  z-index: 1; padding: 14px; border-radius: 50%; background: rgba(247,242,234,.92);
+  grid-column: 1 / -1; grid-row: 2; min-width: 0; min-height: 0;
+  padding: 14px; border-radius: 32px; background: rgba(247,242,234,.92);
 }
-.layout-left-right-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; position: relative; }
+.layout-left-right-comparison {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr) 180px; gap: 24px 28px;
+}
 .comparison-panel { min-width: 0; padding: 30px; display: grid; gap: 20px; align-content: center; border: 2px solid rgba(154,112,123,.45); }
 .comparison-right { border-color: rgba(120,128,94,.58); background: rgba(120,128,94,.07); }
 .panel-label { color: var(--mauve); font-size: 23px; font-weight: 500; letter-spacing: .16em; }
 .comparison-visual {
-  position: absolute; left: 50%; bottom: 22px; width: 170px; height: 170px;
-  z-index: 1; transform: translateX(-50%); padding: 14px; border-radius: 50%;
+  grid-column: 1 / -1; grid-row: 2; min-width: 0; min-height: 0;
+  padding: 14px; border-radius: 32px;
   background: rgba(247,242,234,.94); border: 1px solid rgba(154,112,123,.32);
 }
 .layout-three-state-diagnostic { display: grid; grid-template-columns: minmax(0, 1fr) 230px; gap: 32px; }

@@ -387,6 +387,34 @@ def _safe_review() -> dict[str, bool]:
     }
 
 
+def test_safety_review_contract_exposes_one_strict_canonical_schema() -> None:
+    from src.asset_resolver import lifecycle
+
+    assert lifecycle.SAFETY_CHECK_KEYS == frozenset(
+        {
+            "has_watermark",
+            "has_logo",
+            "has_text",
+            "recognizable_face",
+            "allowed_for_publishing",
+        }
+    )
+    review = lifecycle.ApprovedSafetyReview.model_validate(
+        {
+            "unresolved_safety_checks": ["has_logo", "allowed_for_publishing"],
+            "safety_review_decisions": {
+                "has_logo": False,
+                "allowed_for_publishing": True,
+            },
+            "safety_reviewed_at": "2026-07-14T12:00:00+00:00",
+            "review_status": "approved",
+            "review_disposition": "approved_for_publishing",
+        }
+    )
+
+    assert review.safety_review_decisions["allowed_for_publishing"] is True
+
+
 def test_approval_requires_explicit_resolution_for_every_unknown_safety_check(
     tmp_path: Path,
 ) -> None:

@@ -5,6 +5,10 @@ import pytest
 from src.domain import get_domain_profile
 from src.evidence import EvidenceBrief, EvidenceItem
 from src.prompts.composer import TASK_FILES
+from tests.editorial_carousel.golden_fixtures import (
+    GOLDEN_FIXTURE_NAMES,
+    load_golden_fixture,
+)
 
 
 def _profile_bound_state():
@@ -94,28 +98,13 @@ def test_storyboard_prompt_requires_semantic_carousel_contract():
     assert "固定六张" not in prompt
 
 
-@pytest.mark.parametrize(
-    "fixture_name",
-    (
-        "zone_diagnosis",
-        "ordered_routine",
-        "multi_option_decision",
-        "reference_checklist",
-    ),
-)
+@pytest.mark.parametrize("fixture_name", GOLDEN_FIXTURE_NAMES)
 def test_task10_golden_fixture_names_and_copy_never_enter_production_prompts(
     fixture_name,
 ):
-    import json
-
     from src.prompts.composer import compose_prompt_for_state
 
-    fixture_path = (
-        Path(__file__).resolve().parents[1]
-        / "fixtures/editorial_carousel"
-        / f"{fixture_name}.json"
-    )
-    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    fixture = load_golden_fixture(fixture_name)
     production_prompt = "\n".join(
         compose_prompt_for_state(task, _profile_bound_state())
         for task in TASK_FILES

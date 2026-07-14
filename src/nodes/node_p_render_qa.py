@@ -10,6 +10,7 @@ from typing import Any
 from PIL import Image
 from pydantic import ValidationError
 
+from src.asset_resolver.lifecycle import ApprovedSafetyReview
 from src.editorial_carousel.strategy import ASSET_ADAPTER
 from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
@@ -42,21 +43,23 @@ def _as_list(payload: Any, key: str) -> list[Any]:
 
 
 def _safety_review_is_resolved(item: Any) -> bool:
-    checks = [str(check) for check in _as_list(item, "unresolved_safety_checks")]
-    decisions = _get_value(item, "safety_review_decisions", {})
-    if (
-        not checks
-        or len(checks) != len(set(checks))
-        or not isinstance(decisions, dict)
-        or set(decisions) != set(checks)
-        or not _get_value(item, "safety_reviewed_at")
-    ):
+    try:
+        ApprovedSafetyReview.model_validate(
+            {
+                "unresolved_safety_checks": _get_value(
+                    item, "unresolved_safety_checks", []
+                ),
+                "safety_review_decisions": _get_value(
+                    item, "safety_review_decisions", {}
+                ),
+                "safety_reviewed_at": _get_value(item, "safety_reviewed_at"),
+                "review_status": _get_value(item, "review_status"),
+                "review_disposition": _get_value(item, "review_disposition"),
+            }
+        )
+    except ValidationError:
         return False
-    return all(
-        type(decisions[check]) is bool
-        and decisions[check] is (check == "allowed_for_publishing")
-        for check in checks
-    )
+    return True
 
 
 def _issue(
@@ -643,7 +646,14 @@ def _asset_issues(
                 )
         if (
             not is_reviewable_pending
-            and _as_list(item, "unresolved_safety_checks")
+            and (
+                source_type not in {"", "local", "local_catalog"}
+                or bool(_as_list(item, "unresolved_safety_checks"))
+                or bool(_get_value(item, "safety_review_decisions", {}))
+                or bool(_get_value(item, "safety_reviewed_at"))
+                or bool(_get_value(item, "review_status"))
+                or bool(_get_value(item, "review_disposition"))
+            )
             and not _safety_review_is_resolved(item)
         ):
             issues.append(

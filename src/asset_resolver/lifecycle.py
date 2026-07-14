@@ -116,7 +116,7 @@ class PendingAsset:
 
 
 _PENDING_FIELDS = frozenset(item.name for item in fields(PendingAsset))
-_SAFETY_CHECKS = frozenset(
+SAFETY_CHECK_KEYS = frozenset(
     {
         "has_watermark",
         "has_logo",
@@ -129,6 +129,55 @@ _SAFETY_CHECKS = frozenset(
 NonEmptyStrictString = Annotated[StrictStr, Field(min_length=1)]
 Hash64 = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{64}$")]
 AverageHash = Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{16}$")]
+
+
+class ApprovedSafetyReview(BaseModel):
+    """Canonical strict envelope shared by lifecycle and downstream QA."""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    unresolved_safety_checks: list[NonEmptyStrictString]
+    safety_review_decisions: dict[NonEmptyStrictString, StrictBool]
+    safety_reviewed_at: NonEmptyStrictString
+    review_status: Literal["approved"]
+    review_disposition: Literal["approved_for_publishing"]
+
+    @field_validator("unresolved_safety_checks")
+    @classmethod
+    def validate_safety_checks(cls, value: list[str]) -> list[str]:
+        if (
+            len(value) != len(set(value))
+            or not set(value).issubset(SAFETY_CHECK_KEYS)
+        ):
+            raise ValueError("invalid unresolved safety checks")
+        return value
+
+    @field_validator("safety_reviewed_at")
+    @classmethod
+    def validate_review_timestamp(cls, value: str) -> str:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError as error:
+            raise ValueError("safety review timestamp is invalid") from error
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("safety review timestamp must include timezone")
+        return value
+
+    @model_validator(mode="after")
+    def validate_safe_decisions(self) -> "ApprovedSafetyReview":
+        checks = set(self.unresolved_safety_checks)
+        decisions = self.safety_review_decisions
+        if set(decisions) != checks:
+            raise ValueError("safety review must resolve every declared check")
+        if any(
+            decisions[name] is not False
+            for name in checks - {"allowed_for_publishing"}
+        ) or (
+            "allowed_for_publishing" in checks
+            and decisions["allowed_for_publishing"] is not True
+        ):
+            raise ValueError("safety review did not approve safe publishing")
+        return self
 
 
 class PendingAuditRecord(BaseModel):
@@ -191,7 +240,7 @@ class PendingAuditRecord(BaseModel):
     @field_validator("unresolved_safety_checks")
     @classmethod
     def validate_safety_checks(cls, value: list[str]) -> list[str]:
-        if len(value) != len(set(value)) or not set(value).issubset(_SAFETY_CHECKS):
+        if len(value) != len(set(value)) or not set(value).issubset(SAFETY_CHECK_KEYS):
             raise ValueError("invalid unresolved safety checks")
         return value
 
@@ -228,17 +277,19 @@ class PendingAuditRecord(BaseModel):
             or self.rejection_reason is not None
         ):
             raise ValueError("approved audit is incomplete")
-        if self.review_status == "approved" and self.safety_review_decisions is not None:
-            decisions = self.safety_review_decisions
-            unresolved = set(self.unresolved_safety_checks)
-            if set(decisions) != unresolved or any(
-                decisions[name] is not False
-                for name in unresolved - {"allowed_for_publishing"}
-            ) or (
-                "allowed_for_publishing" in unresolved
-                and decisions["allowed_for_publishing"] is not True
-            ):
-                raise ValueError("approved safety review is invalid")
+        if self.review_status == "approved":
+            try:
+                ApprovedSafetyReview.model_validate(
+                    {
+                        "unresolved_safety_checks": self.unresolved_safety_checks,
+                        "safety_review_decisions": self.safety_review_decisions,
+                        "safety_reviewed_at": self.safety_reviewed_at,
+                        "review_status": self.review_status,
+                        "review_disposition": self.review_disposition,
+                    }
+                )
+            except ValidationError as error:
+                raise ValueError("approved safety review is invalid") from error
         if self.review_status == "rejected" and (
             self.rejection_reason is None
             or self.safety_reviewed_at is None
