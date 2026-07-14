@@ -52,6 +52,12 @@ def assembler_node(state: AgentState) -> AgentState:
     evidence_briefs = state.get("evidence_briefs", [])
     topic_id = _get_value(final_content, "topic_id")
     content_contract = _selected_content_contract(state, topic_id)
+    focus_keyword = str(state.get("focus_keyword") or "")
+    focus_keyword_cli_present = state.get("focus_keyword_cli_present", False)
+    if type(focus_keyword_cli_present) is not bool:
+        raise ValueError("focus_keyword_cli_present must be a bool")
+    if focus_keyword_cli_present and not focus_keyword.strip():
+        raise ValueError("explicit CLI focus_keyword cannot be empty")
 
     system_prompt = compose_prompt_for_state("assembler", state)
     template = PromptTemplate(
@@ -92,7 +98,8 @@ def assembler_node(state: AgentState) -> AgentState:
     publish_package_json = llm.execute(messages)
     publish_package_json.update(
         {
-            "focus_keyword": str(state.get("focus_keyword") or ""),
+            "focus_keyword": focus_keyword,
+            "focus_keyword_cli_present": focus_keyword_cli_present,
             "title": enforce_title_length(_get_value(final_content, "final_title")),
             "content": _get_value(final_content, "final_md"),
             "topic_id": topic_id,

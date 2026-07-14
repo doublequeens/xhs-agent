@@ -506,6 +506,8 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
 
     result = module.assembler_node(
         {
+            "focus_keyword": "改善睡眠",
+            "focus_keyword_cli_present": True,
             "final_content": SimpleNamespace(
                 final_title="睡眠改善指南",
                 final_md="body",
@@ -532,6 +534,8 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     )
 
     publish_package = result["publish_package"]
+    assert publish_package["focus_keyword"] == "改善睡眠"
+    assert publish_package["focus_keyword_cli_present"] is True
     assert publish_package["topic_id"] == "tp_001"
     assert publish_package["angle_id"] == "ag_001"
     assert publish_package["domain"] == "wellness"
@@ -548,6 +552,45 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["content"] == "body"
     assert publish_package["profile_version"] == "wellness-v1"
     assert publish_package["content_contract"] == _content_contract()
+
+
+def test_assembler_rejects_explicit_cli_keyword_that_was_lost(monkeypatch):
+    from src.nodes import node_o_assembler as module
+
+    monkeypatch.setattr(
+        module,
+        "get_model",
+        lambda: SimpleNamespace(execute=lambda _messages: {}),
+    )
+
+    with pytest.raises(ValueError, match="focus_keyword"):
+        module.assembler_node(
+            {
+                "focus_keyword": "",
+                "focus_keyword_cli_present": True,
+                "final_content": SimpleNamespace(
+                    final_title="睡眠改善指南",
+                    final_md="body",
+                    topic_id="tp_001",
+                    topic="睡眠改善",
+                    angle_id="ag_001",
+                    angle="睡眠策略",
+                    target_group="上班族",
+                    core_pain="熬夜后疲惫",
+                    best_cover_copy="cover",
+                    domain="wellness",
+                    subdomain="sleep",
+                    content_intent="how_to",
+                    risk_level="medium",
+                    risk_flags=[],
+                ),
+                "hashtags": SimpleNamespace(hashtags=["#x"]),
+                "final_images": SimpleNamespace(image_final_choices=[]),
+                "trends": [_topic()],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+            }
+        )
 
 
 def test_assembler_enforces_title_max_length_including_punctuation(monkeypatch):

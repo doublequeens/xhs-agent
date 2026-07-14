@@ -22,7 +22,9 @@ from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
 from src.publishing.artifacts import (
     PublishArtifacts,
+    current_artifact_generation,
     export_publish_package as export_publish_artifacts,
+    validate_publishability,
 )
 from src.schemas import RenderManifest
 from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
@@ -134,6 +136,8 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--runs cannot be combined with --new, --resume, or --thread-id")
     if args.subdomain and not args.domain:
         parser.error("--subdomain requires --domain")
+    if args.focus_keyword is not None and not args.focus_keyword.strip():
+        parser.error("--focus_keyword must be non-empty when provided")
     if args.domain and args.subdomain:
         profile = get_domain_profile(args.domain)
         if args.subdomain not in profile.allowed_subdomains:
@@ -157,7 +161,8 @@ def create_initial_state(args: argparse.Namespace) -> dict:
         "evidence_briefs": {},
         "final_policy_issues": [],
         "trends_num": args.topic_num,
-        "focus_keyword": args.focus_keyword if args.focus_keyword else "",
+        "focus_keyword": args.focus_keyword if args.focus_keyword is not None else "",
+        "focus_keyword_cli_present": args.focus_keyword is not None,
         "topic_signals": [],
         "creative_briefs": [],
         "topic_candidates": [],
@@ -361,6 +366,7 @@ def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list
 def export_publish_package(publish_package: dict) -> PublishArtifacts:
     """Validate final local images and delegate deep artifact creation."""
     _resolve_publish_package_profile(publish_package)
+    validate_publishability(publish_package)
     _rendered_image_package_directory(publish_package)
     return export_publish_artifacts(publish_package)
 
@@ -548,21 +554,49 @@ def export_completed_publish_package(graph, config) -> bool:
     values = getattr(completed_state, "values", None) or {}
     if getattr(completed_state, "next", ()):
         return False
-    if values.get("review_status") != "approved" or values.get("final_policy_issues"):
+    if values.get("review_status") != "approved":
+        return False
+    if "final_policy_issues" not in values or values.get("final_policy_issues") != []:
+        return False
+    if "carousel_qa_result" not in values or "render_qa_result" not in values:
+        return False
+    if type(values.get("focus_keyword_cli_present")) is not bool:
         return False
     publish_package = values.get("publish_package")
     if not publish_package:
         return False
+    payload = {
+        **publish_package,
+        "visual_plan": values.get("visual_plan"),
+        "asset_manifest": values.get("asset_manifest"),
+        "render_manifest": values.get("render_manifest"),
+        "publish_authorization": {
+            "workflow_completed": True,
+            "review_status": values.get("review_status"),
+            "final_policy_issues": values.get("final_policy_issues"),
+            "carousel_qa_result": values.get("carousel_qa_result"),
+            "render_qa_result": values.get("render_qa_result"),
+            "focus_keyword_cli_present": values.get(
+                "focus_keyword_cli_present"
+            ),
+            "focus_keyword": values.get("focus_keyword"),
+        },
+    }
+    try:
+        validate_publishability(payload)
+    except (TypeError, ValueError):
+        return False
+    if "expected_artifact_generation" in publish_package:
+        payload["expected_artifact_generation"] = publish_package[
+            "expected_artifact_generation"
+        ]
+    else:
+        payload["expected_artifact_generation"] = current_artifact_generation(
+            payload
+        )
     print("The final publish package title is:")
     print(publish_package["title"])
-    export_publish_package(
-        {
-            **publish_package,
-            "visual_plan": values.get("visual_plan"),
-            "asset_manifest": values.get("asset_manifest"),
-            "render_manifest": values.get("render_manifest"),
-        }
-    )
+    export_publish_package(payload)
     return True
 
 

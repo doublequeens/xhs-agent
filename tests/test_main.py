@@ -1,4 +1,5 @@
 import importlib
+import hashlib
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,6 +7,7 @@ from types import ModuleType, SimpleNamespace
 from typing import get_args
 
 import pytest
+from PIL import Image
 
 from src.domain import DomainName
 from src.run_registry import RunRegistry
@@ -689,9 +691,9 @@ def valid_publish_package_with_rendered_images(
         for index, frame in enumerate(frames, start=1)
     ]
     for path in paths:
-        path.write_bytes(b"\x89PNG\r\n\x1a\nlocally rendered png")
+        Image.new("RGB", (1080, 1440), (1, 2, 3)).save(path, "PNG")
     contact_sheet = image_dir / "contact-sheet.png"
-    contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\ncontact sheet")
+    Image.new("RGB", (540, 720), (3, 2, 1)).save(contact_sheet, "PNG")
     pages = [
         {
             "frame_id": frame["frame_id"],
@@ -700,7 +702,7 @@ def valid_publish_package_with_rendered_images(
             "path": str(path),
             "width": 1080,
             "height": 1440,
-            "sha256": "a" * 64,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
             "probe": {
                 "canvas_width": 1080,
                 "canvas_height": 1440,
@@ -731,6 +733,7 @@ def valid_publish_package_with_rendered_images(
     ]
     return {
         "focus_keyword": "通勤底妆",
+        "focus_keyword_cli_present": True,
         "topic": "通勤底妆不搓泥",
         "topic_id": "topic-commute-base",
         "angle": "按成膜顺序判断",
@@ -797,10 +800,20 @@ def valid_publish_package_with_rendered_images(
                 ],
             },
             "contact_sheet_path": str(contact_sheet),
-            "contact_sheet_sha256": "b" * 64,
-            "contact_sheet_page_sha256": ["a" * 64] * frame_count,
+            "contact_sheet_sha256": hashlib.sha256(contact_sheet.read_bytes()).hexdigest(),
+            "contact_sheet_page_sha256": [page["sha256"] for page in pages],
             "source_asset_sha256": {},
         },
+        "publish_authorization": {
+            "workflow_completed": True,
+            "review_status": "approved",
+            "final_policy_issues": [],
+            "carousel_qa_result": {"passed": True, "issues": []},
+            "render_qa_result": {"passed": True, "issues": []},
+            "focus_keyword_cli_present": True,
+            "focus_keyword": "通勤底妆",
+        },
+        "expected_artifact_generation": 0,
     }
 
 
@@ -873,7 +886,10 @@ def test_export_publish_package_preserves_metadata_with_package_relative_image_p
     assert audit["content_lock"]["focus_keyword"] == package["focus_keyword"]
     assert audit["visual_plan"] == package["visual_plan"]
     assert audit["asset_manifest"] == package["asset_manifest"]
-    assert audit["render_manifest"] == package["render_manifest"]
+    assert [page["path"] for page in audit["render_manifest"]["pages"]] == [
+        f"images/{Path(path).name}" for path in package["rendered_image_paths"]
+    ]
+    assert audit["render_manifest"]["contact_sheet_path"] == "images/contact-sheet.png"
 
 
 def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
@@ -969,6 +985,7 @@ def test_completed_export_injects_state_manifests_before_delegating(
 ):
     main = _load_main(monkeypatch)
     package = valid_publish_package_with_rendered_images(tmp_path)
+    package.pop("publish_authorization")
     state_manifests = {
         name: package.pop(name)
         for name in ("visual_plan", "asset_manifest", "render_manifest")
@@ -981,6 +998,10 @@ def test_completed_export_injects_state_manifests_before_delegating(
                 values={
                     "review_status": "approved",
                     "final_policy_issues": [],
+                    "carousel_qa_result": {"passed": True, "issues": []},
+                    "render_qa_result": {"passed": True, "issues": []},
+                    "focus_keyword_cli_present": True,
+                    "focus_keyword": "通勤底妆",
                     "publish_package": package,
                     **state_manifests,
                 },
@@ -998,6 +1019,88 @@ def test_completed_export_injects_state_manifests_before_delegating(
         captured["payload"][name] is value
         for name, value in state_manifests.items()
     )
+    assert captured["payload"]["publish_authorization"] == {
+        "workflow_completed": True,
+        "review_status": "approved",
+        "final_policy_issues": [],
+        "carousel_qa_result": {"passed": True, "issues": []},
+        "render_qa_result": {"passed": True, "issues": []},
+        "focus_keyword_cli_present": True,
+        "focus_keyword": "通勤底妆",
+    }
+
+
+@pytest.mark.parametrize(
+    "missing_or_invalid",
+    [
+        "final_policy_issues",
+        "carousel_qa_result",
+        "render_qa_result",
+        "focus_keyword_cli_present",
+    ],
+)
+def test_completed_export_requires_explicit_publishability_state(
+    monkeypatch, tmp_path, missing_or_invalid
+):
+    main = _load_main(monkeypatch)
+    package = valid_publish_package_with_rendered_images(tmp_path)
+    values = {
+        "review_status": "approved",
+        "final_policy_issues": [],
+        "carousel_qa_result": {"passed": True, "issues": []},
+        "render_qa_result": {"passed": True, "issues": []},
+        "focus_keyword_cli_present": True,
+        "focus_keyword": "通勤底妆",
+        "publish_package": package,
+        "visual_plan": package["visual_plan"],
+        "asset_manifest": package["asset_manifest"],
+        "render_manifest": package["render_manifest"],
+    }
+    values.pop(missing_or_invalid)
+
+    class CompletedGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(values=values, next=())
+
+    monkeypatch.setattr(
+        main,
+        "export_publish_package",
+        lambda _payload: pytest.fail("non-publishable state reached exporter"),
+    )
+
+    assert main.export_completed_publish_package(CompletedGraph(), {}) is False
+
+
+def test_completed_checkpoint_export_retry_uses_current_artifact_generation(
+    monkeypatch, tmp_path
+):
+    main = _load_main(monkeypatch)
+    monkeypatch.chdir(tmp_path)
+    package = valid_publish_package_with_rendered_images(tmp_path)
+    package.pop("publish_authorization")
+    package.pop("expected_artifact_generation")
+    values = {
+        "review_status": "approved",
+        "final_policy_issues": [],
+        "carousel_qa_result": {"passed": True, "issues": []},
+        "render_qa_result": {"passed": True, "issues": []},
+        "focus_keyword_cli_present": True,
+        "focus_keyword": "通勤底妆",
+        "publish_package": package,
+        "visual_plan": package["visual_plan"],
+        "asset_manifest": package["asset_manifest"],
+        "render_manifest": package["render_manifest"],
+    }
+
+    class CompletedGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(values=values, next=())
+
+    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
+    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
+    audit_path = next(tmp_path.glob("outputs/publish/*/*.json"))
+    audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
+    assert audit["artifact_generation"] == 2
 
 
 def test_main_rejects_subdomain_without_domain(monkeypatch):
@@ -1010,6 +1113,29 @@ def test_main_rejects_subdomain_without_domain(monkeypatch):
 
     with pytest.raises(SystemExit) as exc_info:
         main.main()
+
+    assert exc_info.value.code == 2
+
+
+def test_cli_persists_whether_focus_keyword_was_explicitly_present(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    without_keyword = main.create_initial_state(main.parse_cli_args([]))
+    with_keyword = main.create_initial_state(
+        main.parse_cli_args(["--focus_keyword", "防晒搓泥"])
+    )
+
+    assert without_keyword["focus_keyword"] == ""
+    assert without_keyword["focus_keyword_cli_present"] is False
+    assert with_keyword["focus_keyword"] == "防晒搓泥"
+    assert with_keyword["focus_keyword_cli_present"] is True
+
+
+def test_cli_rejects_an_explicit_empty_focus_keyword(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.parse_cli_args(["--focus_keyword", ""])
 
     assert exc_info.value.code == 2
 

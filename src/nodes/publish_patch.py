@@ -13,6 +13,8 @@ STORYBOARD_VISIBLE_SCALAR_FIELDS = ("question",)
 CONTENT_BLOCK_VISIBLE_FIELDS = ("heading", "body")
 TITLE_MAX_LENGTH = 20
 ASSEMBLER_AUTHORITATIVE_FIELDS = {
+    "focus_keyword",
+    "focus_keyword_cli_present",
     "title",
     "content",
     "topic_id",

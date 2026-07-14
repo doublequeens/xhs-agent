@@ -111,6 +111,10 @@ def _has_render_structure_edits(previous_package: dict, current_package: dict) -
         except (TypeError, ValueError):
             contract = _json_value(raw_contract)
         return {
+            "focus_keyword": package.get("focus_keyword"),
+            "focus_keyword_cli_present": package.get(
+                "focus_keyword_cli_present"
+            ),
             "content_contract": contract,
             "storyboards": _storyboard_render_structure_signature(
                 package.get("storyboards")

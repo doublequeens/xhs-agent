@@ -119,3 +119,48 @@ The audit JSON contains the serialized `content_lock`, `visual_plan`, `asset_man
 ### Concerns
 
 No blocking concerns. As with any filesystem transaction, recovery from a persistent filesystem failure that also prevents rollback cannot be guaranteed; the implemented rollback covers ordinary staged-write and atomic-replace failures and is exercised for both first export and re-export. Live stock-provider tests remain intentionally skipped and are unrelated to this manual-only local exporter.
+
+## Review Closure (2026-07-14)
+
+The independent Task 9 review initially rejected the change with seven Important and four Minor findings. This follow-up closes A-H without changing Task 10, the complete rescue template, the current-package-only rule, the three reference anchors, or the manual/no-API boundary.
+
+### Additional RED evidence
+
+Five RED batches were observed before their corresponding production changes:
+
+- Initial authorization/snapshot/filesystem/transaction/focus/title suite: `43 failed, 132 passed`.
+- Canonical path, read-time replacement, and exact-list authorization follow-up: `3 failed, 8 passed`.
+- Legacy different-title audit migration: `1 failed`.
+- Independent-review fixes for restore failure, terminal retry generation, and symlinked ancestors: `3 failed`.
+- Final package-directory rebinding review: `1 failed`.
+
+The failures were the expected missing behaviors: no explicit export authorization, repeated live-dict reads, signature-only image checks, no generation CAS, unsafe rollback cleanup, absent CLI-keyword authority, weak title/path rules, non-transactional legacy cleanup, and the three independent-review gaps.
+
+### A-H closure
+
+- **A — immutable snapshot:** public export detaches and deep-freezes one package snapshot at entry. ContentLock, publish copy, rescue prompt, audit, authorization, and manifests derive only from that snapshot. A test mutates the caller's live dict during anchor loading and proves every output remains on the frozen version.
+- **B — publishability at the boundary:** one shared validator requires an explicit completed authorization, `review_status == "approved"`, an actual empty list for `final_policy_issues`, passed Carousel QA, passed Render QA, no pending assets, and authoritative focus-keyword binding. Both main and the public artifact exporter apply it.
+- **C — secure final-image snapshot:** page and contact paths must be canonical absolute paths without dot-dot or symlinked components. Package/image directories and files are opened through anchored descriptors with no-follow checks and binding revalidation, including a final package-root inode check before returning pathname-based results. Files must be regular, single-link, inode-distinct PNGs; Pillow fully decodes them; page dimensions are 1080 x 1440; current hashes must match RenderManifest; contact must be the distinct fixed `contact-sheet.png`. Tamper, replacement-during-read, package-directory rebinding, fake PNG, wrong size, symlink, hardlink, alias, and unlisted PNG cases fail closed.
+- **D — lock/version/CAS:** a hardened package lock is flocked and inode-revalidated. A durable version file records generation, audit filename, and ContentLock hash. Every export uses compare-and-swap; terminal checkpoint retries read the current generation under the same hardened lock. Concurrent first exports produce exactly one winner and never a mixed package.
+- **E — rollback safety:** all support artifacts and the version marker participate in one transaction. Existing files become retained backups until commit and directory fsync complete. Restore failure removes the newly committed destination, preserves the only old backup, and raises an error containing recovery paths. Post-commit cleanup failure has an explicit `committed = True` exception and never pretends rollback succeeded.
+- **F — focus-keyword authority:** `focus_keyword_cli_present` is persisted from CLI parsing through state and assembler metadata. Explicit empty CLI values are rejected; an explicit keyword cannot be cleared or changed at export. Human edits to the keyword or presence flag invalidate visual/render artifacts and route through R2; assembler reasserts the state-authoritative value.
+- **G — title and portable audit:** titles must be a single safe component and reject slash, backslash, NUL, CR/LF, controls, dot, and dot-dot. Title-changing re-export is rejected, including a different pre-version legacy audit, so exactly one non-hidden audit JSON remains. Package-owned paths in top-level fields and nested render/asset manifests are package-relative.
+- **H — legacy cleanup:** obsolete prompt removal is part of the same backup/commit/rollback transaction. Failed export restores it; successful backup deletion is followed by directory fsync; cleanup failure reports committed state explicitly.
+
+### Final GREEN evidence
+
+Focused Task 9 plus metadata/human-review integration suite:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/publishing/test_artifacts.py tests/test_main.py tests/nodes/test_metadata_flow.py tests/nodes/test_domain_nodes.py tests/integration/test_beauty_account_workflow.py -q
+```
+
+Result: `187 passed`.
+
+Fresh full repository suite:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest -q
+```
+
+Result: `1290 passed, 2 skipped`. The two skips remain the opt-in live stock-provider tests. The three warnings are the existing LangGraph pending-deprecation warning and two legacy storyboard fallback warnings.

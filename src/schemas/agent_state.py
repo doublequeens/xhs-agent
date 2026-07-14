@@ -34,6 +34,7 @@ class AgentState(TypedDict):
     domain: Optional[DomainName]
     subdomain: Optional[str]
     focus_keyword: Optional[str]
+    focus_keyword_cli_present: NotRequired[bool]
     domain_context: Optional[DomainContext]
     content_policy: Optional[ContentPolicy]
     memory_context: Optional[dict]
