@@ -1,8 +1,10 @@
 import hashlib
+from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from PIL import Image
 
 from src.graph import next_node
 from src.nodes.node_q_human_review import human_review_node
@@ -75,25 +77,50 @@ def _editorial_guard_state(tmp_path: Path):
     pages = []
     for index in range(5):
         page_path = image_dir / f"{index + 1:02d}-page.png"
-        page_path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index]))
+        Image.new("RGB", (16, 16), (index * 20, 20, 40)).save(page_path)
+        role = "cover" if index == 0 else "detail"
+        layout = "editorial_cover" if index == 0 else "texture_baseline"
         pages.append(
             SimpleNamespace(
                 frame_id=f"frame-{index + 1}",
+                role=role,
+                layout=layout,
                 path=str(page_path),
                 sha256=hashlib.sha256(page_path.read_bytes()).hexdigest(),
+                probe=SimpleNamespace(
+                    text_results=[
+                        SimpleNamespace(role="headline", text=f"Frame {index + 1}")
+                    ]
+                ),
             )
         )
     contact_sheet = image_dir / "contact-sheet.png"
-    contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\ncontact")
+    Image.new("RGB", (32, 16), "white").save(contact_sheet)
 
     package = _publish_package(
         rendered_image_paths=[page.path for page in pages],
-        storyboards=[{"frame_id": page.frame_id} for page in pages],
+        storyboards=[
+            {
+                "frame_id": page.frame_id,
+                "role": page.role,
+                "layout": page.layout,
+                "headline": f"Frame {index + 1}",
+                "content_blocks": [],
+                "visual_slots": (
+                    [{"slot_id": "slot-1", "role": "product_texture"}]
+                    if index == 0
+                    else []
+                ),
+            }
+            for index, page in enumerate(pages)
+        ],
     )
     asset_manifest = SimpleNamespace(
         items=[
             SimpleNamespace(
                 slot_id="slot-1",
+                role="product_texture",
+                layout="editorial_cover",
                 status="active",
                 path=str(asset_path),
                 sha256=asset_sha,
@@ -112,8 +139,20 @@ def _editorial_guard_state(tmp_path: Path):
         "review_status": "approved",
         "visual_plan": SimpleNamespace(
             frame_plan=[
-                SimpleNamespace(frame_id=page.frame_id) for page in pages
-            ]
+                SimpleNamespace(
+                    frame_id=page.frame_id,
+                    role=page.role,
+                    layout=page.layout,
+                )
+                for page in pages
+            ],
+            required_assets=[
+                SimpleNamespace(
+                    slot_id="slot-1",
+                    role="product_texture",
+                    layout="editorial_cover",
+                )
+            ],
         ),
         "asset_manifest": asset_manifest,
         "render_manifest": render_manifest,
@@ -129,6 +168,37 @@ def _storyboard_frame(frame_id, **overrides):
         "theme": "warm_neutral",
         "kicker": "封面",
         "headline": f"标题 {frame_id}",
+        "footer": "按需调整",
+    }
+    frame.update(overrides)
+    return frame
+
+
+def _modern_storyboard_frame(frame_id="frame_001", **overrides):
+    frame = {
+        "frame_id": frame_id,
+        "role": "cover",
+        "layout": "editorial_cover",
+        "kicker": "封面",
+        "headline": "作息调整",
+        "content_blocks": [
+            {
+                "block_type": "text",
+                "heading": "先看诱因",
+                "body": "记录每天的作息变化",
+                "items": ["项目一", "项目二"],
+            }
+        ],
+        "emphasis": ["作息", "记录"],
+        "visual_slots": [
+            {
+                "slot_id": f"{frame_id}-visual",
+                "role": "product_texture",
+                "semantic_tags": ["routine"],
+                "composition": "right",
+                "palette_tags": ["warm"],
+            }
+        ],
         "footer": "按需调整",
     }
     frame.update(overrides)
@@ -653,6 +723,70 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
     assert result["decision_output"].normalized_input.r2_input.decision_trace.source_node == "HUMAN_REVIEW"
 
 
+@pytest.mark.parametrize(
+    "storyboard_patch",
+    [
+        {
+            "frame_id": "frame_001",
+            "content_blocks": [
+                {
+                    "block_type": "text",
+                    "heading": "先看诱因",
+                    "body": "人工改过的正文",
+                    "items": ["项目一", "项目二"],
+                }
+            ],
+        },
+        {"frame_id": "frame_001", "layout": "decision_tree"},
+        {
+            "frame_id": "frame_001",
+            "visual_slots": [
+                {
+                    "slot_id": "frame_001-new-visual",
+                    "role": "comparison",
+                    "semantic_tags": ["routine"],
+                }
+            ],
+        },
+    ],
+    ids=("content-block", "layout", "asset-slot-structure"),
+)
+def test_human_review_modern_storyboard_edit_invalidates_downstream_artifacts(
+    monkeypatch,
+    storyboard_patch,
+):
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {"storyboards": [storyboard_patch]},
+        },
+    )
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(
+                storyboards=[_modern_storyboard_frame()]
+            ),
+            "review_round": 0,
+            "final_policy_issues": [],
+            "visual_plan": object(),
+            "asset_manifest": {"items": []},
+            "carousel_qa_result": {"passed": True},
+            "render_manifest": {"pages": []},
+            "render_qa_result": {"passed": True},
+        }
+    )
+
+    assert result["review_status"] == "needs_r2_recheck"
+    assert route_after_human_review(result) == "r2_compliance"
+    assert result["visual_plan"] is None
+    assert result["asset_manifest"] is None
+    assert result["carousel_qa_result"] is None
+    assert result["render_manifest"] is None
+    assert result["render_qa_result"] is None
+
+
 def test_human_review_enforces_title_max_length_including_punctuation(monkeypatch):
     def fake_interrupt(_payload):
         return {
@@ -816,6 +950,38 @@ def test_decision_condition_visible_atoms_are_extracted_and_reapplied_by_frame_i
     )
 
     assert patched[4]["conditions"][1]["recommendation"] == "改成更小目标"
+
+
+def test_modern_content_blocks_and_emphasis_are_visible_text_atoms_and_reapplied():
+    storyboards = [_modern_storyboard_frame()]
+
+    visible = extract_storyboard_visible_text(storyboards)
+
+    assert visible[0]["text_blocks"] == {
+        "kicker": "封面",
+        "headline": "作息调整",
+        "footer": "按需调整",
+        "content_blocks[0].heading": "先看诱因",
+        "content_blocks[0].body": "记录每天的作息变化",
+        "content_blocks[0].items[0]": "项目一",
+        "content_blocks[0].items[1]": "项目二",
+        "emphasis[0]": "作息",
+        "emphasis[1]": "记录",
+    }
+
+    revised = deepcopy(visible)
+    revised[0]["text_blocks"]["content_blocks[0].body"] = "先记录再调整"
+    revised[0]["text_blocks"]["content_blocks[0].items[1]"] = "新的项目"
+    revised[0]["text_blocks"]["emphasis[1]"] = "调整"
+
+    patched = storyboard_module.apply_storyboard_visible_text_patch(
+        storyboards,
+        revised,
+    )
+
+    assert patched[0]["content_blocks"][0]["body"] == "先记录再调整"
+    assert patched[0]["content_blocks"][0]["items"][1] == "新的项目"
+    assert patched[0]["emphasis"][1] == "调整"
 
 
 def test_visible_text_patch_rejects_unknown_nonempty_frame_id():
@@ -1266,6 +1432,39 @@ def test_final_policy_guard_scans_storyboard_visible_text():
     ]
 
 
+@pytest.mark.parametrize(
+    "content_blocks,expected_rule",
+    [
+        (
+            [{"block_type": "text", "body": "这种方案可以治·疗失眠"}],
+            "medical_treatment",
+        ),
+        (
+            [{"block_type": "checklist", "items": ["先记录", "保证立即见效"]}],
+            "guaranteed_outcome",
+        ),
+    ],
+    ids=("body", "item"),
+)
+def test_final_policy_guard_scans_modern_content_block_visible_text(
+    content_blocks,
+    expected_rule,
+):
+    result = final_policy_guard_node(
+        _legacy_guard_state(
+            _publish_package(
+                storyboards=[
+                    _modern_storyboard_frame(content_blocks=content_blocks)
+                ]
+            )
+        )
+    )
+
+    assert expected_rule in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
 def test_final_policy_guard_does_not_scan_storyboard_urls():
     result = final_policy_guard_node(
         _legacy_guard_state(
@@ -1360,6 +1559,7 @@ def test_final_policy_guard_accepts_complete_approved_editorial_artifacts(
     )
     state, active_root = _editorial_guard_state(tmp_path)
     monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
 
     result = final_policy_guard_node(state)
 
@@ -1384,7 +1584,7 @@ def test_final_policy_guard_accepts_complete_approved_editorial_artifacts(
         (
             lambda state: state["render_manifest"].pages[0].path
             and Path(state["render_manifest"].pages[0].path).write_bytes(b"tampered"),
-            "rendered_page_hash_mismatch",
+            "rendered_page_missing",
         ),
         (
             lambda state: state["publish_package"].update(
@@ -1434,6 +1634,7 @@ def test_final_policy_guard_blocks_pending_tampered_or_incomplete_artifacts(
     )
     state, active_root = _editorial_guard_state(tmp_path)
     monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
     mutation(state)
 
     result = final_policy_guard_node(state)
@@ -1452,6 +1653,7 @@ def test_final_policy_guard_requires_distinct_complete_rendered_page_paths(
     )
     state, active_root = _editorial_guard_state(tmp_path)
     monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
     pages = state["render_manifest"].pages
     pages[1].path = pages[0].path
     pages[1].sha256 = pages[0].sha256
@@ -1463,4 +1665,134 @@ def test_final_policy_guard_requires_distinct_complete_rendered_page_paths(
     assert "rendered_image_paths_incomplete" in {
         issue["rule_id"] for issue in result["final_policy_issues"]
     }
+    assert "rendered_page_path_alias" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
     assert route_after_final_guard(result) == "human_review"
+
+
+@pytest.mark.parametrize("path_kind", ["symlink", "hardlink", "outside"])
+def test_final_policy_guard_rejects_untrusted_or_aliased_render_paths(
+    monkeypatch,
+    tmp_path,
+    path_kind,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    trusted_root = tmp_path / "images"
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", trusted_root)
+    pages = state["render_manifest"].pages
+    target = Path(pages[1].path)
+    target.unlink()
+    if path_kind == "symlink":
+        target.symlink_to(Path(pages[0].path))
+    elif path_kind == "hardlink":
+        target.hardlink_to(Path(pages[0].path))
+    else:
+        target = tmp_path / "outside.png"
+        Image.new("RGB", (16, 16), "red").save(target)
+    pages[1].path = str(target)
+    pages[1].sha256 = hashlib.sha256(target.read_bytes()).hexdigest()
+    state["publish_package"]["rendered_image_paths"][1] = str(target)
+    state["render_manifest"].contact_sheet_page_sha256[1] = pages[1].sha256
+
+    result = final_policy_guard_node(state)
+    rules = {issue["rule_id"] for issue in result["final_policy_issues"]}
+
+    assert (
+        "rendered_page_missing" in rules
+        if path_kind in {"symlink", "outside"}
+        else "rendered_page_path_alias" in rules
+    )
+
+
+def test_final_policy_guard_binds_role_layout_visible_text_and_unique_slots(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    state["render_manifest"].pages[1].role = "wrong-role"
+    state["publish_package"]["storyboards"][0]["headline"] = "stale edit"
+    duplicate = deepcopy(state["asset_manifest"].items[0])
+    state["asset_manifest"].items.append(duplicate)
+
+    result = final_policy_guard_node(state)
+    rules = {issue["rule_id"] for issue in result["final_policy_issues"]}
+
+    assert "rendered_page_order_mismatch" in rules
+    assert "rendered_visible_text_binding_mismatch" in rules
+    assert "duplicate_asset_slot_id" in rules
+    assert "asset_slot_binding_mismatch" in rules
+
+
+def test_final_policy_guard_rejects_path_replacement_during_single_open_snapshot(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    target = Path(state["render_manifest"].pages[0].path)
+    replacement = tmp_path / "replacement.png"
+    Image.new("RGB", (16, 16), "blue").save(replacement)
+    original_open = module.os.open
+    original_read = module.os.read
+    replaced = False
+    target_descriptor = None
+
+    def tracking_open(path, flags):
+        nonlocal target_descriptor
+        descriptor = original_open(path, flags)
+        if Path(path) == target:
+            target_descriptor = descriptor
+        return descriptor
+
+    def replacing_read(descriptor, size):
+        nonlocal replaced
+        chunk = original_read(descriptor, size)
+        if chunk and descriptor == target_descriptor and not replaced:
+            replaced = True
+            replacement.replace(target)
+        return chunk
+
+    monkeypatch.setattr(module.os, "open", tracking_open)
+    monkeypatch.setattr(module.os, "read", replacing_read)
+
+    result = final_policy_guard_node(state)
+
+    assert "rendered_page_missing" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def test_final_policy_guard_rejects_symlinked_active_asset(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    asset_path = Path(state["asset_manifest"].items[0].path)
+    outside = tmp_path / "outside-asset.svg"
+    asset_path.replace(outside)
+    asset_path.symlink_to(outside)
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_file_missing" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }

@@ -80,17 +80,170 @@ def test_collect_human_review_returns_explicit_pending_asset_decisions(monkeypat
             "message": "review",
             "publish_package": {"title": "carousel"},
             "pending_assets": [
-                {"decision_id": "pending-1", "provider": "pexels"},
-                {"decision_id": "pending-2", "provider": "unsplash"},
+                {
+                    "decision_id": "pending-1",
+                    "provider": "pexels",
+                    "decision_binding": {"pending_id": "pending-1", "sha256": "a" * 64},
+                },
+                {
+                    "decision_id": "pending-2",
+                    "provider": "unsplash",
+                    "decision_binding": {"pending_id": "pending-2", "sha256": "b" * 64},
+                },
             ],
         }
     )
 
     assert result["approved"] is True
     assert result["asset_decisions"] == {
-        "pending-1": "approved",
-        "pending-2": "rejected",
+        "pending-1": {
+            "decision": "approved",
+            "binding": {"pending_id": "pending-1", "sha256": "a" * 64},
+            "safety_decisions": {},
+        },
+        "pending-2": {
+            "decision": "rejected",
+            "binding": {"pending_id": "pending-2", "sha256": "b" * 64},
+            "safety_decisions": {},
+        },
     }
+
+
+def test_collect_human_review_records_each_unknown_safety_decision(monkeypatch):
+    main = _load_main(monkeypatch)
+    answers = iter(["approved", "no", "yes", "yes"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    binding = {
+        "pending_id": "pending-1",
+        "slot_id": "slot-1",
+        "provider": "pexels",
+        "provider_asset_id": "42",
+        "requirement_fingerprint": "a" * 64,
+        "sha256": "b" * 64,
+        "metadata_path": "/tmp/pending-1.json",
+    }
+
+    result = main.collect_human_review(
+        {
+            "message": "review",
+            "publish_package": {"title": "carousel"},
+            "pending_assets": [
+                {
+                    "decision_id": "pending-1",
+                    "decision_binding": binding,
+                    "provider": "pexels",
+                    "provider_asset_id": "42",
+                    "unresolved_safety_checks": [
+                        "has_logo",
+                        "allowed_for_publishing",
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert result["asset_decisions"]["pending-1"] == {
+        "decision": "approved",
+        "binding": binding,
+        "safety_decisions": {
+            "has_logo": False,
+            "allowed_for_publishing": True,
+        },
+    }
+
+
+def test_cli_review_without_pending_assets_routes_directly_to_final_guard(
+    monkeypatch,
+):
+    main = _load_main(monkeypatch)
+    review_module = importlib.import_module("src.nodes.node_q_human_review")
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "yes")
+    resume_payload = main.collect_human_review(
+        {
+            "message": "review",
+            "publish_package": {"title": "carousel"},
+            "pending_assets": [],
+        }
+    )
+    monkeypatch.setattr(review_module, "interrupt", lambda _payload: resume_payload)
+
+    result = review_module.human_review_node(
+        {
+            "publish_package": {"title": "carousel"},
+            "asset_manifest": {"items": []},
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    assert "asset_decisions" not in resume_payload
+    assert result["review_status"] == "approved"
+    assert review_module.route_after_human_review(result) == "final_policy_guard"
+
+
+def test_cli_review_routes_after_pending_then_allows_second_final_approval(
+    monkeypatch,
+):
+    main = _load_main(monkeypatch)
+    review_module = importlib.import_module("src.nodes.node_q_human_review")
+    first_answers = iter(["approved", "yes"])
+    monkeypatch.setattr(
+        "builtins.input", lambda _prompt="": next(first_answers)
+    )
+    first_resume = main.collect_human_review(
+        {
+            "message": "review",
+            "publish_package": {"title": "carousel"},
+            "pending_assets": [
+                {"decision_id": "pending-1", "provider": "pexels"}
+            ],
+        }
+    )
+    active_manifest = {"items": [{"slot_id": "slot-1", "status": "active"}]}
+    monkeypatch.setattr(review_module, "interrupt", lambda _payload: first_resume)
+    monkeypatch.setattr(
+        review_module,
+        "_apply_asset_decisions",
+        lambda *_args: (active_manifest, "render_qa"),
+    )
+    first_result = review_module.human_review_node(
+        {
+            "publish_package": {"title": "carousel"},
+            "asset_manifest": {
+                "items": [
+                    {
+                        "status": "pending_external",
+                        "pending_id": "pending-1",
+                    }
+                ]
+            },
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    assert review_module.route_after_human_review(first_result) == "render_qa"
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "yes")
+    second_resume = main.collect_human_review(
+        {
+            "message": "review",
+            "publish_package": {"title": "carousel"},
+            "pending_assets": [],
+        }
+    )
+    monkeypatch.setattr(review_module, "interrupt", lambda _payload: second_resume)
+    second_result = review_module.human_review_node(
+        {
+            **first_result,
+            "asset_manifest": active_manifest,
+            "review_round": first_result["review_round"],
+        }
+    )
+
+    assert "asset_decisions" not in second_resume
+    assert second_result["review_status"] == "approved"
+    assert review_module.route_after_human_review(second_result) == "final_policy_guard"
 
 
 def test_fresh_thread_keeps_new_routing_initial_state(monkeypatch):
@@ -324,6 +477,72 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
     assert current_state is state
     assert current_state.next == ("carousel_qa",)
     assert run_input is None
+
+
+@pytest.mark.parametrize("storyboards", [[], [{}], [{"frame_id": "frame-1"}]])
+def test_partial_or_corrupt_modern_checkpoint_is_not_hydrated_as_legacy(
+    monkeypatch,
+    storyboards,
+):
+    main = _load_main(monkeypatch)
+    state = SimpleNamespace(
+        values={
+            "domain_context": {},
+            "publish_package": {"storyboards": storyboards},
+        },
+        next=("carousel_qa",),
+    )
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return state
+
+        def update_state(self, _config, _updates):
+            raise AssertionError("modern partial state must not be legacy hydrated")
+
+    current_state, run_input = main.load_run_state(
+        FakeGraph(), {"configurable": {"thread_id": "partial"}}, {}
+    )
+
+    assert current_state is state
+    assert run_input is None
+
+
+def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
+    main = _load_main(monkeypatch)
+    values = {
+        "domain_context": {},
+        "legacy_editorial_checkpoint": True,
+        "publish_package": {
+            "storyboards": [
+                {
+                    "frame_id": "frame-1",
+                    "role": "cover",
+                    "layout": "editorial_cover",
+                    "content_blocks": [],
+                    "visual_slots": [],
+                }
+            ]
+        },
+    }
+    calls = []
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(
+                values={**values, **(calls[-1] if calls else {})},
+                next=("carousel_qa",),
+            )
+
+        def update_state(self, _config, updates):
+            calls.append(updates)
+
+    current_state, _ = main.load_run_state(
+        FakeGraph(), {"configurable": {"thread_id": "modern"}}, {}
+    )
+
+    assert calls == [{"legacy_editorial_checkpoint": False}]
+    assert current_state.values["legacy_editorial_checkpoint"] is False
 
 
 def test_load_run_state_does_not_replace_present_malformed_domain_context(monkeypatch):

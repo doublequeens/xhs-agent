@@ -1,11 +1,7 @@
-from pathlib import Path
-
 from langgraph.types import interrupt
 
 from src.asset_resolver import (
-    approve_external_asset,
-    load_pending_asset,
-    reject_external_asset,
+    review_pending_asset_batch,
     resolve_assets,
 )
 from src.nodes.node_p_asset_resolver import load_asset_catalog_for_state
@@ -82,6 +78,44 @@ def _has_visible_text_edits(previous_package: dict, current_package: dict) -> bo
     return _visible_text_signature(previous_package) != _visible_text_signature(current_package)
 
 
+def _storyboard_render_structure_signature(storyboards) -> list[dict]:
+    signature = []
+    for frame in list(storyboards or []):
+        if not isinstance(frame, dict):
+            signature.append({"value": frame})
+            continue
+        signature.append(
+            {
+                "frame_id": frame.get("frame_id"),
+                "role": frame.get("role"),
+                "layout": frame.get("layout"),
+                "template": frame.get("template"),
+                "content_block_types": [
+                    block.get("block_type") if isinstance(block, dict) else block
+                    for block in list(frame.get("content_blocks") or [])
+                ],
+                "visual_slots": list(frame.get("visual_slots") or []),
+            }
+        )
+    return signature
+
+
+def _has_render_structure_edits(previous_package: dict, current_package: dict) -> bool:
+    return _storyboard_render_structure_signature(
+        previous_package.get("storyboards")
+    ) != _storyboard_render_structure_signature(current_package.get("storyboards"))
+
+
+def _invalidated_editorial_artifacts() -> dict:
+    return {
+        "visual_plan": None,
+        "asset_manifest": None,
+        "carousel_qa_result": None,
+        "render_manifest": None,
+        "render_qa_result": None,
+    }
+
+
 def _json_value(value):
     if value is None:
         return None
@@ -99,7 +133,24 @@ def _pending_asset_payload(asset_manifest) -> list[dict]:
         if item.get("status") != "pending_external":
             continue
         decision_id = item.get("pending_id") or item.get("asset_id")
-        pending.append({**item, "decision_id": decision_id})
+        pending.append(
+            {
+                **item,
+                "decision_id": decision_id,
+                "decision_binding": {
+                    field_name: item.get(field_name)
+                    for field_name in (
+                        "pending_id",
+                        "slot_id",
+                        "provider",
+                        "provider_asset_id",
+                        "requirement_fingerprint",
+                        "sha256",
+                        "metadata_path",
+                    )
+                },
+            }
+        )
     return pending
 
 
@@ -124,24 +175,6 @@ def _review_artifacts(state: AgentState, publish_package: dict) -> dict:
     }
 
 
-def _decision_aliases(item) -> set[str]:
-    aliases = {
-        str(value)
-        for value in (
-            item.pending_id,
-            item.asset_id,
-            item.provider_asset_id,
-            (
-                f"{item.provider}:{item.provider_asset_id}"
-                if item.provider and item.provider_asset_id
-                else None
-            ),
-        )
-        if value
-    }
-    return aliases
-
-
 def _apply_asset_decisions(
     state: AgentState,
     asset_manifest,
@@ -157,25 +190,6 @@ def _apply_asset_decisions(
     if not isinstance(decisions, dict):
         raise ValueError("asset_decisions must be a dict.")
 
-    matched: dict[str, str] = {}
-    for raw_id, decision in decisions.items():
-        if decision not in {"approved", "rejected"}:
-            raise ValueError(
-                "asset_decisions values must be 'approved' or 'rejected'."
-            )
-        key = str(raw_id)
-        candidates = [item for item in pending if key in _decision_aliases(item)]
-        if len(candidates) != 1:
-            raise ValueError(f"Unknown or ambiguous pending asset decision ID: {key}")
-        pending_id = candidates[0].pending_id
-        if pending_id in matched:
-            raise ValueError(f"Duplicate decision for pending asset: {pending_id}")
-        matched[pending_id] = decision
-    expected = {item.pending_id for item in pending}
-    if set(matched) != expected:
-        raise ValueError("Every pending asset requires one explicit asset_decision.")
-
-    any_rejected = False
     run_ids = {item.run_id for item in pending}
     if len(run_ids) != 1 or None in run_ids:
         raise ValueError("Pending assets must belong to one persisted resolver run.")
@@ -183,38 +197,27 @@ def _apply_asset_decisions(
     catalog = load_asset_catalog_for_state(
         state, run_id=run_id, allow_external=False
     )
-    for item in pending:
-        if not item.metadata_path:
-            raise ValueError(f"Pending asset {item.pending_id} is missing metadata_path.")
-        candidate = load_pending_asset(Path(item.metadata_path), catalog)
-        decision = matched[item.pending_id]
-        if decision == "approved":
-            safety_decisions = {
-                name: name == "allowed_for_publishing"
-                for name in candidate.unresolved_safety_checks
-            }
-            approve_external_asset(
-                candidate,
-                catalog,
-                safety_decisions=safety_decisions,
-            )
-        else:
-            any_rejected = True
-            reject_external_asset(
-                candidate,
-                reason=(feedback or "rejected during human review"),
-                catalog=catalog,
-            )
+    plan = VisualPlan.model_validate(state.get("visual_plan"))
 
-    refreshed_catalog = load_asset_catalog_for_state(
-        state, run_id=run_id, allow_external=False
+    def refresh_manifest():
+        refreshed_catalog = load_asset_catalog_for_state(
+            state, run_id=run_id, allow_external=False
+        )
+        return resolve_assets(plan, refreshed_catalog)
+
+    batch_result = review_pending_asset_batch(
+        catalog,
+        list(manifest.items),
+        decisions,
+        rejection_reason=(feedback or "rejected during human review"),
+        finalize=refresh_manifest,
     )
-    refreshed_manifest = resolve_assets(
-        VisualPlan.model_validate(state.get("visual_plan")),
-        refreshed_catalog,
+    route = (
+        "editorial_carousel_renderer"
+        if batch_result.any_rejected
+        else "render_qa"
     )
-    route = "editorial_carousel_renderer" if any_rejected else "render_qa"
-    return refreshed_manifest, route
+    return batch_result.finalized_value, route
 
 
 def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_round: int) -> DecisionOutput:
@@ -298,6 +301,7 @@ def human_review_node(state: AgentState) -> AgentState:
     final_policy_issues = list(state.get("final_policy_issues") or [])
     risk_context = _build_risk_context(state, publish_package)
     visible_text_edited = False
+    render_structure_edited = False
     pending_patch = dict(state.get("pending_human_publish_patch") or {})
     pending_replace_storyboards = bool(state.get("pending_human_replace_storyboards"))
 
@@ -340,15 +344,22 @@ def human_review_node(state: AgentState) -> AgentState:
                 prior_publish_package,
                 publish_package,
             )
+            render_structure_edited = (
+                render_structure_edited
+                or _has_render_structure_edits(
+                    prior_publish_package,
+                    publish_package,
+                )
+            )
             risk_context = _build_risk_context(state, publish_package)
 
         approved = review_result.get("approved", False)
         feedback = review_result.get("feedback")
         review_round += 1
 
-        asset_decisions = review_result.get("asset_decisions")
+        asset_decisions = review_result.get("asset_decisions") or None
         pending_assets = _pending_asset_payload(state.get("asset_manifest"))
-        if asset_decisions is not None or pending_assets:
+        if asset_decisions or pending_assets:
             if asset_decisions is None:
                 raise ValueError(
                     "Every pending asset requires an explicit asset_decision."
@@ -359,10 +370,10 @@ def human_review_node(state: AgentState) -> AgentState:
                 asset_decisions,
                 feedback,
             )
-            if visible_text_edited:
+            if visible_text_edited or render_structure_edited:
                 return {
                     "publish_package": publish_package,
-                    "asset_manifest": refreshed_manifest,
+                    **_invalidated_editorial_artifacts(),
                     "review_status": "needs_r2_recheck",
                     "review_route": "r2_compliance",
                     "review_feedback": feedback,
@@ -387,9 +398,10 @@ def human_review_node(state: AgentState) -> AgentState:
             }
 
         if approved:
-            if visible_text_edited:
+            if visible_text_edited or render_structure_edited:
                 return {
                     "publish_package": publish_package,
+                    **_invalidated_editorial_artifacts(),
                     "review_status": "needs_r2_recheck",
                     "review_route": "r2_compliance",
                     "review_feedback": feedback,

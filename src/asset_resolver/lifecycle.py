@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, Mapping
+from typing import Annotated, Any, Callable, Literal, Mapping
 
 from pydantic import (
     BaseModel,
@@ -31,6 +31,12 @@ from .providers import candidate_urls_are_allowed
 
 class AssetLifecycleError(RuntimeError):
     """Raised when a pending external asset cannot be safely reviewed."""
+
+
+@dataclass(frozen=True, slots=True)
+class BatchAssetReviewResult:
+    any_rejected: bool
+    finalized_value: Any = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -230,6 +236,24 @@ def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2, sort_keys=True)
             handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_name, path)
+    finally:
+        try:
+            os.unlink(temporary_name)
+        except FileNotFoundError:
+            pass
+
+
+def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_name, path)
@@ -548,3 +572,212 @@ def reject_external_asset(
         ),
         None,
     )
+
+
+_DECISION_BINDING_FIELDS = (
+    "pending_id",
+    "slot_id",
+    "provider",
+    "provider_asset_id",
+    "requirement_fingerprint",
+    "sha256",
+    "metadata_path",
+)
+
+
+def _payload_value(payload, key: str):
+    if isinstance(payload, dict):
+        return payload.get(key)
+    return getattr(payload, key, None)
+
+
+def pending_asset_decision_binding(candidate: PendingAsset) -> dict[str, str]:
+    return {
+        "pending_id": candidate.pending_id,
+        "slot_id": candidate.slot_id,
+        "provider": candidate.provider,
+        "provider_asset_id": candidate.provider_asset_id,
+        "requirement_fingerprint": candidate.requirement_fingerprint,
+        "sha256": candidate.sha256,
+        "metadata_path": str(candidate.metadata_path.resolve()),
+    }
+
+
+def _validate_explicit_safety_review(
+    candidate: PendingAsset,
+    decisions: Mapping[str, bool] | None,
+) -> dict[str, bool]:
+    reviewed = dict(decisions or {})
+    unresolved = set(candidate.unresolved_safety_checks)
+    if set(reviewed) != unresolved or any(type(value) is not bool for value in reviewed.values()):
+        raise AssetLifecycleError(
+            "safety review must explicitly resolve every unresolved safety check"
+        )
+    if any(
+        reviewed[name] is not False
+        for name in unresolved - {"allowed_for_publishing"}
+    ) or (
+        "allowed_for_publishing" in unresolved
+        and reviewed["allowed_for_publishing"] is not True
+    ):
+        raise AssetLifecycleError("safety review did not approve safe publishing")
+    return reviewed
+
+
+@contextmanager
+def _batch_lifecycle_lock(catalog: AssetCatalog):
+    lock_path = catalog.root.resolve() / ".asset-review-batch.lock"
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def review_pending_asset_batch(
+    catalog: AssetCatalog,
+    manifest_items: list[object],
+    decisions: Mapping[str, object],
+    *,
+    rejection_reason: str,
+    finalize: Callable[[], Any] | None = None,
+) -> BatchAssetReviewResult:
+    """Atomically review a complete pending-asset batch.
+
+    Every decision carries the exact provenance binding shown to the human.
+    Audit files, incoming bytes, promoted bytes, and the catalog manifest are
+    restored together if any review operation or the caller's final resolver
+    refresh fails.
+    """
+    pending_items = [
+        item for item in manifest_items
+        if _payload_value(item, "status") == "pending_external"
+    ]
+    if not pending_items:
+        if decisions:
+            raise AssetLifecycleError("asset decisions contain no pending assets")
+        return BatchAssetReviewResult(False, finalize() if finalize else None)
+    if not isinstance(decisions, Mapping):
+        raise AssetLifecycleError("asset decisions must be a mapping")
+
+    with _batch_lifecycle_lock(catalog):
+        canonical_by_id: dict[str, PendingAsset] = {}
+        aliases: dict[str, set[str]] = {}
+        for item in pending_items:
+            metadata_path = _payload_value(item, "metadata_path")
+            if not metadata_path:
+                raise AssetLifecycleError("pending asset is missing metadata_path")
+            candidate = load_pending_asset(metadata_path, catalog)
+            if candidate.pending_id in canonical_by_id:
+                raise AssetLifecycleError(
+                    f"duplicate pending asset in manifest: {candidate.pending_id}"
+                )
+            binding = pending_asset_decision_binding(candidate)
+            for field_name in _DECISION_BINDING_FIELDS:
+                manifest_value = _payload_value(item, field_name)
+                expected = binding[field_name]
+                if field_name == "metadata_path" and manifest_value:
+                    manifest_value = str(Path(str(manifest_value)).resolve())
+                if str(manifest_value or "") != expected:
+                    raise AssetLifecycleError(
+                        f"manifest does not match canonical pending asset: {field_name}"
+                    )
+            canonical_by_id[candidate.pending_id] = candidate
+            for alias in {
+                candidate.pending_id,
+                candidate.provider_asset_id,
+                f"{candidate.provider}:{candidate.provider_asset_id}",
+            }:
+                aliases.setdefault(alias, set()).add(candidate.pending_id)
+
+        normalized: dict[str, tuple[str, dict[str, bool]]] = {}
+        for raw_alias, raw_decision in decisions.items():
+            matching = aliases.get(str(raw_alias), set())
+            if len(matching) != 1:
+                raise AssetLifecycleError(
+                    f"unknown or ambiguous pending asset decision ID: {raw_alias}"
+                )
+            pending_id = next(iter(matching))
+            if pending_id in normalized:
+                raise AssetLifecycleError(f"duplicate decision for pending asset: {pending_id}")
+            if not isinstance(raw_decision, Mapping):
+                raise AssetLifecycleError("asset decision must include binding and safety review")
+            disposition = raw_decision.get("decision")
+            if disposition not in {"approved", "rejected"}:
+                raise AssetLifecycleError("asset decision must be approved or rejected")
+            candidate = canonical_by_id[pending_id]
+            if dict(raw_decision.get("binding") or {}) != pending_asset_decision_binding(candidate):
+                raise AssetLifecycleError("asset decision binding does not match canonical audit")
+            safety = dict(raw_decision.get("safety_decisions") or {})
+            if disposition == "approved":
+                safety = _validate_explicit_safety_review(candidate, safety)
+            elif safety:
+                raise AssetLifecycleError("rejected asset must not carry approval safety decisions")
+            normalized[pending_id] = (str(disposition), safety)
+        if set(normalized) != set(canonical_by_id):
+            raise AssetLifecycleError("every pending asset requires one explicit decision")
+        if any(value[0] == "rejected" for value in normalized.values()) and not rejection_reason.strip():
+            raise AssetLifecycleError("rejection reason is required")
+
+        if catalog.manifest_path is None or not catalog.manifest_path.is_file():
+            raise AssetLifecycleError("asset review requires a persistent catalog manifest")
+        approved_destinations: set[Path] = set()
+        for pending_id, (disposition, _safety) in normalized.items():
+            candidate = canonical_by_id[pending_id]
+            if candidate.review_status not in {"pending", disposition}:
+                raise AssetLifecycleError("canonical audit conflicts with requested decision")
+            if candidate.review_status == "approved":
+                completed_audit = PendingAuditRecord.model_validate_json(
+                    candidate.metadata_path.read_text(encoding="utf-8"),
+                    strict=True,
+                )
+                if completed_audit.safety_review_decisions != _safety:
+                    raise AssetLifecycleError(
+                        "completed approval safety review conflicts with retry"
+                    )
+            if disposition == "approved" and candidate.review_status == "pending":
+                destination = (catalog.active_root / candidate.production_relative_path).resolve()
+                if destination in approved_destinations or destination.exists():
+                    raise AssetLifecycleError("approved destination is not available")
+                approved_destinations.add(destination)
+
+        manifest_bytes = catalog.manifest_path.read_bytes()
+        audit_bytes = {
+            item.pending_id: item.metadata_path.read_bytes()
+            for item in canonical_by_id.values()
+        }
+        any_rejected = any(value[0] == "rejected" for value in normalized.values())
+        try:
+            for pending_id, (disposition, safety) in normalized.items():
+                candidate = canonical_by_id[pending_id]
+                if candidate.review_status == disposition:
+                    continue
+                if disposition == "approved":
+                    approve_external_asset(
+                        candidate,
+                        catalog,
+                        safety_decisions=safety,
+                    )
+                else:
+                    reject_external_asset(
+                        candidate,
+                        reason=rejection_reason,
+                        catalog=catalog,
+                    )
+            finalized = finalize() if finalize else None
+        except Exception:
+            for candidate in canonical_by_id.values():
+                destination = (
+                    catalog.active_root / candidate.production_relative_path
+                ).resolve()
+                if destination.exists() and not candidate.path.exists():
+                    candidate.path.parent.mkdir(parents=True, exist_ok=True)
+                    destination.replace(candidate.path)
+                _atomic_write_bytes(
+                    candidate.metadata_path,
+                    audit_bytes[candidate.pending_id],
+                )
+            _atomic_write_bytes(catalog.manifest_path, manifest_bytes)
+            raise
+        return BatchAssetReviewResult(any_rejected, finalized)

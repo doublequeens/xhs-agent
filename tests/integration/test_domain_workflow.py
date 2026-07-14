@@ -3,6 +3,7 @@ import sqlite3
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
@@ -371,23 +372,28 @@ def _install_graph_doubles(
 
     active_root = artifact_root / "active"
     active_root.mkdir(parents=True, exist_ok=True)
-    asset_path = active_root / "integration-asset.svg"
-    asset_path.write_bytes(b"domain integration active asset")
-    asset_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
     monkeypatch.setattr(final_guard_module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(final_guard_module, "RENDER_OUTPUT_ROOT", artifact_root)
 
-    def asset_resolver_node(_state):
+    def asset_resolver_node(state):
+        items = []
+        for requirement in state["visual_plan"].required_assets:
+            asset_path = active_root / f"{requirement.slot_id}.svg"
+            asset_path.write_bytes(
+                f"domain integration asset {requirement.slot_id}".encode()
+            )
+            items.append(
+                {
+                    "slot_id": requirement.slot_id,
+                    "role": requirement.role,
+                    "layout": requirement.layout,
+                    "status": "active",
+                    "path": str(asset_path),
+                    "sha256": hashlib.sha256(asset_path.read_bytes()).hexdigest(),
+                }
+            )
         return {
-            "asset_manifest": {
-                "items": [
-                    {
-                        "slot_id": "integration-slot",
-                        "status": "active",
-                        "path": str(asset_path),
-                        "sha256": asset_sha256,
-                    }
-                ]
-            }
+            "asset_manifest": {"items": items}
         }
 
     def editorial_renderer_node(state):
@@ -397,22 +403,37 @@ def _install_graph_doubles(
         pages = []
         for index, frame in enumerate(package["storyboards"], start=1):
             path = image_root / f"{index:02d}-page.png"
-            path.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes([index]))
+            Image.new("RGB", (16, 16), (index * 20, 30, 40)).save(path)
+            text_results = [
+                {"role": "kicker", "text": frame["kicker"]},
+                {"role": "headline", "text": frame["headline"]},
+                {
+                    "role": "content_blocks[0].body",
+                    "text": frame["content_blocks"][0]["body"],
+                },
+                {"role": "footer", "text": frame["footer"]},
+            ]
             pages.append(
                 {
                     "frame_id": frame["frame_id"],
+                    "role": frame["role"],
+                    "layout": frame["layout"],
                     "path": str(path),
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "probe": {"text_results": text_results},
                 }
             )
         contact_sheet = image_root / "contact-sheet.png"
-        contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\ndomain-contact")
+        Image.new("RGB", (32, 16), "white").save(contact_sheet)
         package["rendered_image_paths"] = [page["path"] for page in pages]
         return {
             "publish_package": package,
             "render_manifest": {
                 "pages": pages,
-                "source_asset_sha256": {"integration-slot": asset_sha256},
+                "source_asset_sha256": {
+                    item["slot_id"]: item["sha256"]
+                    for item in state["asset_manifest"]["items"]
+                },
                 "contact_sheet_path": str(contact_sheet),
                 "contact_sheet_sha256": hashlib.sha256(
                     contact_sheet.read_bytes()

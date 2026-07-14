@@ -2,9 +2,15 @@ from __future__ import annotations
 
 
 STORYBOARD_VISIBLE_FIELDS = ("kicker", "headline", "footer")
-STORYBOARD_VISIBLE_LIST_FIELDS = ("wrong_items", "right_items", "checklist_items")
+STORYBOARD_VISIBLE_LIST_FIELDS = (
+    "wrong_items",
+    "right_items",
+    "checklist_items",
+    "emphasis",
+)
 STORYBOARD_VISIBLE_NESTED_LIST_FIELDS = ("steps", "conditions")
 STORYBOARD_VISIBLE_SCALAR_FIELDS = ("question",)
+CONTENT_BLOCK_VISIBLE_FIELDS = ("heading", "body")
 TITLE_MAX_LENGTH = 20
 ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "title",
@@ -110,6 +116,18 @@ def extract_storyboard_visible_text(storyboards) -> list[dict]:
             for field_name in ("situation", "recommendation"):
                 if field_name in condition:
                     text_blocks[f"conditions[{index}].{field_name}"] = str(condition.get(field_name) or "")
+        for block_index, block in enumerate(frame.get("content_blocks") or []):
+            if not isinstance(block, dict):
+                continue
+            for field_name in CONTENT_BLOCK_VISIBLE_FIELDS:
+                if field_name in block:
+                    text_blocks[f"content_blocks[{block_index}].{field_name}"] = str(
+                        block.get(field_name) or ""
+                    )
+            for item_index, item in enumerate(block.get("items") or []):
+                text_blocks[
+                    f"content_blocks[{block_index}].items[{item_index}]"
+                ] = str(item or "")
         for field_name in STORYBOARD_VISIBLE_SCALAR_FIELDS:
             if field_name in frame:
                 text_blocks[field_name] = str(frame.get(field_name) or "")
@@ -131,18 +149,29 @@ def storyboard_patch_without_visible_text(publish_patch: dict) -> dict:
         if not isinstance(frame, dict):
             stripped_storyboards.append(frame)
             continue
-        stripped_storyboards.append(
-            {
-                key: value
-                for key, value in frame.items()
-                if key not in (
-                    *STORYBOARD_VISIBLE_FIELDS,
-                    *STORYBOARD_VISIBLE_LIST_FIELDS,
-                    *STORYBOARD_VISIBLE_NESTED_LIST_FIELDS,
-                    *STORYBOARD_VISIBLE_SCALAR_FIELDS,
-                )
-            }
-        )
+        stripped_frame = {
+            key: value
+            for key, value in frame.items()
+            if key not in (
+                *STORYBOARD_VISIBLE_FIELDS,
+                *STORYBOARD_VISIBLE_LIST_FIELDS,
+                *STORYBOARD_VISIBLE_NESTED_LIST_FIELDS,
+                *STORYBOARD_VISIBLE_SCALAR_FIELDS,
+                "content_blocks",
+            )
+        }
+        if isinstance(frame.get("content_blocks"), list):
+            stripped_frame["content_blocks"] = [
+                {
+                    key: value
+                    for key, value in block.items()
+                    if key not in (*CONTENT_BLOCK_VISIBLE_FIELDS, "items")
+                }
+                if isinstance(block, dict)
+                else block
+                for block in frame["content_blocks"]
+            ]
+        stripped_storyboards.append(stripped_frame)
     return {"storyboards": stripped_storyboards}
 
 
@@ -223,6 +252,29 @@ def apply_storyboard_visible_text_patch(storyboards, visible_text) -> list:
             if not index_text.isdigit():
                 continue
             item_index = int(index_text)
+            if root == "content_blocks" and child_field.startswith("."):
+                blocks = [
+                    dict(item) if isinstance(item, dict) else item
+                    for item in list(frame.get(root) or [])
+                ]
+                if item_index >= len(blocks) or not isinstance(blocks[item_index], dict):
+                    continue
+                block_location = child_field[1:]
+                if block_location in CONTENT_BLOCK_VISIBLE_FIELDS:
+                    blocks[item_index][block_location] = value
+                    frame[root] = blocks
+                    continue
+                if block_location.startswith("items[") and block_location.endswith("]"):
+                    nested_index_text = block_location[len("items["):-1]
+                    if not nested_index_text.isdigit():
+                        continue
+                    nested_index = int(nested_index_text)
+                    items = list(blocks[item_index].get("items") or [])
+                    if nested_index < len(items):
+                        items[nested_index] = value
+                        blocks[item_index]["items"] = items
+                        frame[root] = blocks
+                continue
             if root in STORYBOARD_VISIBLE_LIST_FIELDS:
                 items = list(frame.get(root) or [])
                 if item_index < len(items):

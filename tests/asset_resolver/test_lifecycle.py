@@ -84,6 +84,29 @@ def catalog(tmp_path: Path, *, run_id: str = "run-42") -> AssetCatalog:
     )
 
 
+def _batch_item(candidate):
+    return {
+        "status": "pending_external",
+        "pending_id": candidate.pending_id,
+        "slot_id": candidate.slot_id,
+        "provider": candidate.provider,
+        "provider_asset_id": candidate.provider_asset_id,
+        "requirement_fingerprint": candidate.requirement_fingerprint,
+        "sha256": candidate.sha256,
+        "metadata_path": str(candidate.metadata_path.resolve()),
+    }
+
+
+def _batch_decision(candidate, decision="approved", safety_decisions=None):
+    from src.asset_resolver.lifecycle import pending_asset_decision_binding
+
+    return {
+        "decision": decision,
+        "binding": pending_asset_decision_binding(candidate),
+        "safety_decisions": safety_decisions or {},
+    }
+
+
 def test_approval_preserves_hash_and_promotes_into_active_catalog(tmp_path: Path) -> None:
     from src.asset_resolver.catalog import load_catalog
     from src.asset_resolver.lifecycle import approve_external_asset
@@ -648,3 +671,130 @@ def test_catalog_reload_rejects_unsafe_approved_safety_decisions(
 
     with pytest.raises(CatalogError, match="safety review"):
         load_catalog(manifest_path)
+
+
+def test_batch_review_rolls_back_first_approval_when_second_approval_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    first = pending_asset(tmp_path, asset_id="p1")
+    second = pending_asset(tmp_path, asset_id="p2")
+    asset_catalog = catalog(tmp_path)
+    original_approve = lifecycle.approve_external_asset
+    calls = 0
+
+    def fail_second(candidate, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("second approval failed")
+        return original_approve(candidate, *args, **kwargs)
+
+    monkeypatch.setattr(lifecycle, "approve_external_asset", fail_second)
+
+    with pytest.raises(RuntimeError, match="second approval failed"):
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(first), _batch_item(second)],
+            {
+                first.pending_id: _batch_decision(first),
+                second.pending_id: _batch_decision(second),
+            },
+            rejection_reason="not selected",
+        )
+
+    assert first.path.is_file() and second.path.is_file()
+    assert json.loads(first.metadata_path.read_text())["review_status"] == "pending"
+    assert json.loads(second.metadata_path.read_text())["review_status"] == "pending"
+    assert json.loads((tmp_path / "manifest.json").read_text())["assets"] == []
+
+
+def test_batch_review_rolls_back_mixed_decisions_when_finalize_fails(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import review_pending_asset_batch
+
+    approved = pending_asset(tmp_path, asset_id="p1")
+    rejected = pending_asset(tmp_path, asset_id="p2")
+
+    with pytest.raises(RuntimeError, match="resolve failed"):
+        review_pending_asset_batch(
+            catalog(tmp_path),
+            [_batch_item(approved), _batch_item(rejected)],
+            {
+                approved.pending_id: _batch_decision(approved),
+                rejected.pending_id: _batch_decision(rejected, "rejected"),
+            },
+            rejection_reason="visible logo",
+            finalize=lambda: (_ for _ in ()).throw(RuntimeError("resolve failed")),
+        )
+
+    assert approved.path.is_file() and rejected.path.is_file()
+    assert json.loads(approved.metadata_path.read_text())["review_status"] == "pending"
+    assert json.loads(rejected.metadata_path.read_text())["review_status"] == "pending"
+    assert json.loads((tmp_path / "manifest.json").read_text())["assets"] == []
+
+
+def test_batch_review_mixed_decisions_commit_and_retry_idempotently(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import review_pending_asset_batch
+
+    approved = pending_asset(tmp_path, asset_id="p1")
+    rejected = pending_asset(tmp_path, asset_id="p2")
+    asset_catalog = catalog(tmp_path)
+    items = [_batch_item(approved), _batch_item(rejected)]
+    decisions = {
+        approved.pending_id: _batch_decision(approved),
+        rejected.pending_id: _batch_decision(rejected, "rejected"),
+    }
+
+    first = review_pending_asset_batch(
+        asset_catalog,
+        items,
+        decisions,
+        rejection_reason="visible logo",
+        finalize=lambda: "resolved",
+    )
+    second = review_pending_asset_batch(
+        asset_catalog,
+        items,
+        decisions,
+        rejection_reason="visible logo",
+        finalize=lambda: "resolved-again",
+    )
+
+    assert first.any_rejected is True and first.finalized_value == "resolved"
+    assert second.any_rejected is True and second.finalized_value == "resolved-again"
+    assert len(json.loads((tmp_path / "manifest.json").read_text())["assets"]) == 1
+
+
+def test_batch_review_rejects_stale_binding_and_implicit_safety_approval(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import AssetLifecycleError, review_pending_asset_batch
+
+    candidate = pending_asset(
+        tmp_path,
+        unresolved_safety_checks=("has_logo", "allowed_for_publishing"),
+    )
+    stale = _batch_decision(candidate)
+    stale["binding"] = {**stale["binding"], "sha256": "0" * 64}
+
+    with pytest.raises(AssetLifecycleError, match="binding"):
+        review_pending_asset_batch(
+            catalog(tmp_path),
+            [_batch_item(candidate)],
+            {candidate.pending_id: stale},
+            rejection_reason="not selected",
+        )
+
+    with pytest.raises(AssetLifecycleError, match="explicitly resolve"):
+        review_pending_asset_batch(
+            catalog(tmp_path),
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "pending"

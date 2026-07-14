@@ -336,10 +336,6 @@ def test_asset_approval_promotes_pending_and_rechecks_render_qa(monkeypatch):
         run_id="run-42",
         metadata_path="/tmp/pending-1.json",
     )
-    candidate = SimpleNamespace(
-        pending_id=pending_item.pending_id,
-        unresolved_safety_checks=("has_logo", "allowed_for_publishing"),
-    )
     catalogs = iter(["review-catalog", "refreshed-catalog"])
     calls = []
     monkeypatch.setattr(
@@ -357,14 +353,13 @@ def test_asset_approval_promotes_pending_and_rechecks_render_qa(monkeypatch):
     )
     monkeypatch.setattr(
         module,
-        "load_pending_asset",
-        lambda path, catalog: calls.append(("load", path, catalog)) or candidate,
-    )
-    monkeypatch.setattr(
-        module,
-        "approve_external_asset",
-        lambda loaded, catalog, **kwargs: calls.append(
-            ("approve", loaded, catalog, kwargs)
+        "review_pending_asset_batch",
+        lambda catalog, items, decisions, **kwargs: calls.append(
+            ("batch", catalog, items, decisions, kwargs["rejection_reason"])
+        )
+        or SimpleNamespace(
+            any_rejected=False,
+            finalized_value=kwargs["finalize"](),
         ),
     )
     monkeypatch.setattr(
@@ -383,18 +378,13 @@ def test_asset_approval_promotes_pending_and_rechecks_render_qa(monkeypatch):
     manifest, route = module._apply_asset_decisions(
         state,
         {"items": []},
-        {pending_item.pending_id: "approved"},
+        {pending_item.pending_id: {"decision": "approved"}},
         None,
     )
 
     assert manifest == "approved-manifest"
     assert route == "render_qa"
-    assert ("approve", candidate, "review-catalog", {
-        "safety_decisions": {
-            "has_logo": False,
-            "allowed_for_publishing": True,
-        }
-    }) in calls
+    assert any(call[0] == "batch" for call in calls)
     assert [call for call in calls if call[0] == "catalog"] == [
         ("catalog", {"run_id": "run-42", "allow_external": False}),
         ("catalog", {"run_id": "run-42", "allow_external": False}),
@@ -412,10 +402,6 @@ def test_asset_rejection_reresolves_without_external_provider_calls(monkeypatch)
         run_id="run-42",
         metadata_path="/tmp/pending-1.json",
     )
-    candidate = SimpleNamespace(
-        pending_id=pending_item.pending_id,
-        unresolved_safety_checks=(),
-    )
     catalogs = iter(["review-catalog", "no-provider-catalog"])
     calls = []
     monkeypatch.setattr(
@@ -431,11 +417,16 @@ def test_asset_rejection_reresolves_without_external_provider_calls(monkeypatch)
         lambda _state, **kwargs: calls.append(("catalog", kwargs))
         or next(catalogs),
     )
-    monkeypatch.setattr(module, "load_pending_asset", lambda *_args: candidate)
     monkeypatch.setattr(
         module,
-        "reject_external_asset",
-        lambda loaded, **kwargs: calls.append(("reject", loaded, kwargs)),
+        "review_pending_asset_batch",
+        lambda catalog, items, decisions, **kwargs: calls.append(
+            ("batch", catalog, items, decisions, kwargs["rejection_reason"])
+        )
+        or SimpleNamespace(
+            any_rejected=True,
+            finalized_value=kwargs["finalize"](),
+        ),
     )
     monkeypatch.setattr(module.VisualPlan, "model_validate", lambda _value: "plan")
     monkeypatch.setattr(
@@ -448,7 +439,7 @@ def test_asset_rejection_reresolves_without_external_provider_calls(monkeypatch)
     manifest, route = module._apply_asset_decisions(
         {"visual_plan": {"frame_plan": []}},
         {"items": []},
-        {pending_item.pending_id: "rejected"},
+        {pending_item.pending_id: {"decision": "rejected"}},
         "visible logo",
     )
 

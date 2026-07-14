@@ -71,7 +71,10 @@ def load_run_state(graph, config: dict, initial_state: dict):
     current_state = graph.get_state(config)
     if current_state.values:
         editorial_updates = (
-            hydrate_legacy_editorial_state(current_state.values)
+            hydrate_legacy_editorial_state(
+                current_state.values,
+                checkpoint_nodes=tuple(current_state.next),
+            )
             if current_state.next
             else {}
         )
@@ -343,26 +346,68 @@ def collect_human_review(interrupt_value: dict) -> dict:
         decision_id = asset.get("decision_id")
         if not isinstance(decision_id, str) or not decision_id:
             raise ValueError("Pending review asset is missing decision_id.")
+        print(
+            json.dumps(
+                {
+                    "slot_id": asset.get("slot_id"),
+                    "provider": asset.get("provider"),
+                    "provider_asset_id": asset.get("provider_asset_id"),
+                    "source_url": asset.get("source_url"),
+                    "author": asset.get("author"),
+                    "license": asset.get("license"),
+                    "license_terms_url": asset.get("license_terms_url"),
+                    "sha256": asset.get("sha256"),
+                    "metadata_path": asset.get("metadata_path"),
+                    "unresolved_safety_checks": asset.get(
+                        "unresolved_safety_checks"
+                    ),
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
         while True:
             decision = input(
                 f"资产 {decision_id} ({asset.get('provider') or 'external'})："
                 "输入 approved 或 rejected: "
             ).strip().lower()
             if decision in {"approved", "rejected"}:
-                asset_decisions[decision_id] = decision
                 break
             print("无效输入，请输入 approved / rejected。")
+        safety_decisions = {}
+        if decision == "approved":
+            for safety_check in list(asset.get("unresolved_safety_checks") or []):
+                expected = safety_check == "allowed_for_publishing"
+                while True:
+                    answer = input(
+                        f"安全项 {safety_check}：输入 yes 或 no: "
+                    ).strip().lower()
+                    if answer in {"yes", "no"}:
+                        safety_decisions[safety_check] = answer == "yes"
+                        break
+                    print("无效输入，请输入 yes / no。")
+                if safety_decisions[safety_check] is not expected:
+                    raise ValueError(
+                        f"Asset {decision_id} did not receive a safe publishing decision."
+                    )
+        asset_decisions[decision_id] = {
+            "decision": decision,
+            "binding": dict(asset.get("decision_binding") or {}),
+            "safety_decisions": safety_decisions,
+        }
 
     while True:
         action = input("\n输入 yes 继续；输入 edit 修改 JSON；输入 no 提建议并继续 review: ").strip().lower()
 
         if action == "yes":
-            return {
+            response = {
                 "approved": True,
                 "edited_publish_package": None,
                 "feedback": "approved by user",
-                "asset_decisions": asset_decisions,
             }
+            if asset_decisions:
+                response["asset_decisions"] = asset_decisions
+            return response
 
         if action == "edit":
             try:
@@ -373,21 +418,25 @@ def collect_human_review(interrupt_value: dict) -> dict:
 
             approve = input("修改后是否批准继续？输入 yes 或 no: ").strip().lower()
             feedback = input("可选：补充一点 review 建议，直接回车可跳过: ").strip()
-            return {
+            response = {
                 "approved": approve == "yes",
                 "edited_publish_package": edited_publish_package,
                 "feedback": feedback or "edited by user",
-                "asset_decisions": asset_decisions,
             }
+            if asset_decisions:
+                response["asset_decisions"] = asset_decisions
+            return response
 
         if action == "no":
             feedback = input("请输入 review 建议: ").strip()
-            return {
+            response = {
                 "approved": False,
                 "edited_publish_package": None,
                 "feedback": feedback,
-                "asset_decisions": asset_decisions,
             }
+            if asset_decisions:
+                response["asset_decisions"] = asset_decisions
+            return response
 
         print("无效输入，请输入 yes / edit / no。")
 

@@ -1,15 +1,24 @@
 from __future__ import annotations
 
 import hashlib
+import io
+import os
+import stat
 from pathlib import Path
+
+from PIL import Image
 
 from src.domain import find_policy_violations
 from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.rendering.editorial.design_system import ASSET_ROOT
 from src.schemas import AgentState
+from src.nodes.publish_patch import extract_storyboard_visible_text
+from src.nodes.node_p_text_card_renderer import PUBLISH_ROOT
+from src.editorial_carousel.strategy import ASSET_ADAPTER
 
 
 ASSET_ACTIVE_ROOT = ASSET_ROOT / "active"
+RENDER_OUTPUT_ROOT = PUBLISH_ROOT
 
 _REQUIRED_PUBLISH_FIELDS = (
     "topic_id",
@@ -60,26 +69,11 @@ def _required_field_issues(publish_package: dict) -> list[dict]:
 
 def _storyboard_visible_text(storyboards) -> list[str]:
     text_fragments = []
-    for frame in list(storyboards or []):
-        if not isinstance(frame, dict):
-            text_fragments.append(str(frame))
-            continue
+    for frame in extract_storyboard_visible_text(storyboards):
         text_fragments.extend(
             _coerce_text(value)
-            for key, value in frame.items()
-            if key in {"kicker", "headline", "footer", "question"}
+            for value in dict(frame.get("text_blocks") or {}).values()
         )
-        for field_name in ("wrong_items", "right_items", "checklist_items"):
-            text_fragments.extend(_coerce_text(value) for value in frame.get(field_name) or [])
-        for step in frame.get("steps") or []:
-            if isinstance(step, dict):
-                text_fragments.extend(_coerce_text(step.get(key)) for key in ("name", "hint"))
-        for condition in frame.get("conditions") or []:
-            if isinstance(condition, dict):
-                text_fragments.extend(
-                    _coerce_text(condition.get(key))
-                    for key in ("situation", "recommendation")
-                )
     return text_fragments
 
 
@@ -103,11 +97,59 @@ def _artifact_issue(rule_id: str, message: str, location: str) -> dict:
     }
 
 
-def _sha256(path: Path) -> str | None:
+def _secure_file_snapshot(path_value, trusted_root: Path):
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
+        raw_path = Path(path_value)
+        if raw_path.is_symlink():
+            return None
+        canonical = raw_path.resolve(strict=True)
+        root = trusted_root.resolve(strict=True)
+        if not canonical.is_relative_to(root):
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(raw_path, flags)
+    except (OSError, TypeError, ValueError):
         return None
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            return None
+        chunks = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        data = b"".join(chunks)
+        try:
+            current = raw_path.stat(follow_symlinks=False)
+        except OSError:
+            return None
+        if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
+            return None
+        return (
+            canonical,
+            (opened.st_dev, opened.st_ino),
+            hashlib.sha256(data).hexdigest(),
+            data,
+        )
+    finally:
+        os.close(descriptor)
+
+
+def _secure_png_snapshot(path_value, trusted_root: Path):
+    snapshot = _secure_file_snapshot(path_value, trusted_root)
+    if snapshot is None:
+        return None
+    canonical, identity, digest, data = snapshot
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.verify()
+            if image.format != "PNG":
+                return None
+    except (OSError, ValueError):
+        return None
+    return canonical, identity, digest
 
 
 def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
@@ -154,7 +196,19 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
 
     active_root = Path(ASSET_ACTIVE_ROOT).resolve()
     current_asset_hashes: dict[str, str] = {}
-    for index, item in enumerate(_as_list(asset_manifest, "items")):
+    asset_items = _as_list(asset_manifest, "items")
+    asset_slot_ids = [str(_value(item, "slot_id") or "") for item in asset_items]
+    if len(asset_slot_ids) != len(set(asset_slot_ids)):
+        issues.append(
+            _artifact_issue(
+                "duplicate_asset_slot_id",
+                "AssetManifest slot IDs must be globally unique.",
+                "asset_manifest.items",
+            )
+        )
+    asset_identities: set[tuple[int, int]] = set()
+    asset_canonical_paths: set[Path] = set()
+    for index, item in enumerate(asset_items):
         location = f"asset_manifest.items[{index}]"
         slot_id = str(_value(item, "slot_id") or "")
         status = _value(item, "status")
@@ -174,29 +228,28 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                     f"{location}.status",
                 )
             )
-        try:
-            path = Path(_value(item, "path")).resolve()
-        except (OSError, TypeError, ValueError):
-            path = Path("")
-        if not path.is_relative_to(active_root):
-            issues.append(
-                _artifact_issue(
-                    "asset_path_not_active",
-                    "Final assets must resolve inside the approved active catalog.",
-                    f"{location}.path",
-                )
-            )
-            continue
-        actual = _sha256(path)
-        if actual is None:
+        snapshot = _secure_file_snapshot(_value(item, "path"), active_root)
+        actual = snapshot[2] if snapshot is not None else None
+        if snapshot is None:
             issues.append(
                 _artifact_issue(
                     "asset_file_missing",
-                    "Final asset file is missing or unreadable.",
+                    "Final asset must be a regular, non-symlink file inside the active catalog.",
                     f"{location}.path",
                 )
             )
             continue
+        canonical, identity, _digest, _data = snapshot
+        if canonical in asset_canonical_paths or identity in asset_identities:
+            issues.append(
+                _artifact_issue(
+                    "asset_file_path_alias",
+                    "Every asset manifest item must bind a distinct canonical file and inode.",
+                    f"{location}.path",
+                )
+            )
+        asset_canonical_paths.add(canonical)
+        asset_identities.add(identity)
         if actual != _value(item, "sha256"):
             issues.append(
                 _artifact_issue(
@@ -205,8 +258,83 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                     f"{location}.sha256",
                 )
             )
-        if slot_id:
+        if slot_id and slot_id not in current_asset_hashes:
             current_asset_hashes[slot_id] = actual
+
+    plan_requirements = _as_list(visual_plan, "required_assets")
+    plan_slots = {
+        str(_value(item, "slot_id") or ""): (
+            str(_value(item, "role") or ""),
+            str(_value(item, "layout") or ""),
+        )
+        for item in plan_requirements
+    }
+    storyboard_slot_records = []
+    for frame in list(package.get("storyboards") or []):
+        if not isinstance(frame, dict):
+            continue
+        for slot in list(frame.get("visual_slots") or []):
+            storyboard_slot_records.append(
+                (
+                    str(_value(slot, "slot_id") or ""),
+                    str(_value(slot, "role") or ""),
+                    str(frame.get("layout") or ""),
+                )
+            )
+    storyboard_slot_ids = [record[0] for record in storyboard_slot_records]
+    plan_slot_ids = [str(_value(item, "slot_id") or "") for item in plan_requirements]
+    if (
+        len(storyboard_slot_ids) != len(set(storyboard_slot_ids))
+        or len(plan_slot_ids) != len(set(plan_slot_ids))
+    ):
+        issues.append(
+            _artifact_issue(
+                "duplicate_asset_slot_id",
+                "Visual-plan and storyboard slot IDs must be globally unique.",
+                "visual_plan.required_assets",
+            )
+        )
+    manifest_slots = {
+        str(_value(item, "slot_id") or ""): (
+            str(_value(item, "role") or ""),
+            str(_value(item, "layout") or ""),
+        )
+        for item in asset_items
+    }
+    storyboard_slots = {
+        slot_id: (role, layout)
+        for slot_id, role, layout in storyboard_slot_records
+    }
+    slot_ids_match = set(plan_slots) == set(storyboard_slots) == set(manifest_slots)
+    slot_bindings_match = slot_ids_match and all(
+        plan_slots[slot_id] == manifest_slots[slot_id]
+        and storyboard_slots[slot_id][1] == plan_slots[slot_id][1]
+        and (
+            storyboard_slots[slot_id][0] == plan_slots[slot_id][0]
+            or plan_slots[slot_id][0]
+            in ASSET_ADAPTER.get(
+                (
+                    storyboard_slots[slot_id][1],
+                    storyboard_slots[slot_id][0],
+                ),
+                (),
+            )
+        )
+        for slot_id in plan_slots
+    )
+    if not (
+        slot_bindings_match
+        and len(plan_slots) == len(plan_requirements)
+        and len(storyboard_slots) == len(storyboard_slot_records)
+        and len(manifest_slots) == len(asset_items)
+    ):
+        issues.append(
+            _artifact_issue(
+                "asset_slot_binding_mismatch",
+                "Asset slots must bind exactly across plan, storyboard, and manifest.",
+                "asset_manifest.items",
+            )
+        )
 
     rendered_source_hashes = _value(
         render_manifest, "source_asset_sha256", {}
@@ -222,20 +350,36 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
 
     pages = _as_list(render_manifest, "pages")
     plan_frames = _as_list(visual_plan, "frame_plan")
-    plan_frame_ids = [str(_value(frame, "frame_id") or "") for frame in plan_frames]
-    storyboard_frame_ids = [
-        str(_value(frame, "frame_id") or "")
-        for frame in list(package.get("storyboards") or [])
+    storyboard_frames = list(package.get("storyboards") or [])
+    plan_bindings = [
+        (
+            str(_value(frame, "frame_id") or ""),
+            str(_value(frame, "role") or ""),
+            str(_value(frame, "layout") or ""),
+        )
+        for frame in plan_frames
     ]
-    rendered_frame_ids = [str(_value(page, "frame_id") or "") for page in pages]
-    if (
-        rendered_frame_ids != plan_frame_ids
-        or rendered_frame_ids != storyboard_frame_ids
-    ):
+    storyboard_bindings = [
+        (
+            str(_value(frame, "frame_id") or ""),
+            str(_value(frame, "role") or ""),
+            str(_value(frame, "layout") or ""),
+        )
+        for frame in storyboard_frames
+    ]
+    rendered_bindings = [
+        (
+            str(_value(page, "frame_id") or ""),
+            str(_value(page, "role") or ""),
+            str(_value(page, "layout") or ""),
+        )
+        for page in pages
+    ]
+    if rendered_bindings != plan_bindings or rendered_bindings != storyboard_bindings:
         issues.append(
             _artifact_issue(
                 "rendered_page_order_mismatch",
-                "Rendered page order must match the visual plan and storyboard frame order.",
+                "Rendered page frame, role, layout, and order must match plan and storyboard.",
                 "render_manifest.pages",
             )
         )
@@ -258,23 +402,34 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         )
 
     actual_page_hashes: list[str | None] = []
+    rendered_identities: set[tuple[int, int]] = set()
+    rendered_canonical_paths: set[Path] = set()
     for index, page in enumerate(pages):
         raw_path = _value(page, "path")
-        try:
-            path = Path(raw_path)
-        except TypeError:
-            path = Path("")
-        actual = _sha256(path) if path.suffix.lower() == ".png" else None
+        snapshot = _secure_png_snapshot(raw_path, Path(RENDER_OUTPUT_ROOT))
+        actual = snapshot[2] if snapshot is not None else None
         actual_page_hashes.append(actual)
-        if actual is None:
+        if snapshot is None:
             issues.append(
                 _artifact_issue(
                     "rendered_page_missing",
-                    "Every final rendered page must be a readable PNG.",
+                    "Every final page must be a regular, non-symlink PNG inside the render root.",
                     f"render_manifest.pages[{index}].path",
                 )
             )
-        elif actual != _value(page, "sha256"):
+        else:
+            canonical, identity, _digest = snapshot
+            if identity in rendered_identities or canonical in rendered_canonical_paths:
+                issues.append(
+                    _artifact_issue(
+                        "rendered_page_path_alias",
+                        "Every rendered page must bind a distinct canonical file and inode.",
+                        f"render_manifest.pages[{index}].path",
+                    )
+                )
+            rendered_identities.add(identity)
+            rendered_canonical_paths.add(canonical)
+        if actual is not None and actual != _value(page, "sha256"):
             issues.append(
                 _artifact_issue(
                     "rendered_page_hash_mismatch",
@@ -282,6 +437,37 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                     f"render_manifest.pages[{index}].sha256",
                 )
             )
+        if index < len(storyboard_frames) and isinstance(storyboard_frames[index], dict):
+            expected_text = {
+                role: text
+                for role, text in extract_storyboard_visible_text(
+                    [storyboard_frames[index]]
+                )[0]["text_blocks"].items()
+                if text
+                and (
+                    role in {"kicker", "headline", "footer"}
+                    or role.startswith("content_blocks[")
+                )
+            }
+            probe = _value(page, "probe")
+            text_results = _as_list(probe, "text_results")
+            actual_text = {
+                str(_value(result, "role") or ""): str(
+                    _value(result, "text") or ""
+                )
+                for result in text_results
+            }
+            if (
+                len(actual_text) != len(text_results)
+                or actual_text != expected_text
+            ):
+                issues.append(
+                    _artifact_issue(
+                        "rendered_visible_text_binding_mismatch",
+                        "Rendered text probe must exactly bind current storyboard-visible text.",
+                        f"render_manifest.pages[{index}].probe.text_results",
+                    )
+                )
 
     if _as_list(render_manifest, "contact_sheet_page_sha256") != actual_page_hashes:
         issues.append(
@@ -291,20 +477,33 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                 "render_manifest.contact_sheet_page_sha256",
             )
         )
-    try:
-        contact_path = Path(_value(render_manifest, "contact_sheet_path"))
-    except TypeError:
-        contact_path = Path("")
-    contact_hash = _sha256(contact_path)
-    if contact_hash is None:
+    contact_snapshot = _secure_png_snapshot(
+        _value(render_manifest, "contact_sheet_path"),
+        Path(RENDER_OUTPUT_ROOT),
+    )
+    contact_hash = contact_snapshot[2] if contact_snapshot is not None else None
+    if contact_snapshot is None:
         issues.append(
             _artifact_issue(
                 "contact_sheet_missing",
-                "Human-review contact sheet is missing or unreadable.",
+                "Contact sheet must be a regular, non-symlink PNG inside the render root.",
                 "render_manifest.contact_sheet_path",
             )
         )
-    elif contact_hash != _value(render_manifest, "contact_sheet_sha256"):
+    else:
+        contact_path, contact_identity, _digest = contact_snapshot
+        if (
+            contact_path in rendered_canonical_paths
+            or contact_identity in rendered_identities
+        ):
+            issues.append(
+                _artifact_issue(
+                    "rendered_page_path_alias",
+                    "Contact sheet must not alias a rendered page.",
+                    "render_manifest.contact_sheet_path",
+                )
+            )
+    if contact_hash is not None and contact_hash != _value(render_manifest, "contact_sheet_sha256"):
         issues.append(
             _artifact_issue(
                 "contact_sheet_hash_mismatch",
