@@ -38,13 +38,11 @@ def _load_main(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def renderer_publish_root(monkeypatch, tmp_path):
-    from src.nodes import node_p_text_card_renderer
+    from src.nodes import node_p_text_card_renderer, node_q_01_final_policy_guard
 
-    monkeypatch.setattr(
-        node_p_text_card_renderer,
-        "PUBLISH_ROOT",
-        tmp_path / "outputs" / "publish",
-    )
+    root = tmp_path / "outputs" / "publish"
+    monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", root)
+    monkeypatch.setattr(node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", root)
 
 
 def test_build_thread_id_preserves_explicit_resume_id(monkeypatch):
@@ -709,8 +707,8 @@ def valid_publish_package_with_rendered_images(
                 "safe_margin": 72,
                 "text_results": [
                     {
-                        "role": "headline",
-                        "text": frame["headline"],
+                        "role": role,
+                        "text": text,
                         "visible": True,
                         "overflow": False,
                         "ink_clipped": False,
@@ -724,6 +722,12 @@ def valid_publish_package_with_rendered_images(
                         "width": 600,
                         "height": 80,
                     }
+                    for role, text in (
+                        ("kicker", frame["kicker"]),
+                        ("headline", frame["headline"]),
+                        ("footer", frame["footer"]),
+                        ("content_blocks[0].body", frame["content_blocks"][0]["body"]),
+                    )
                 ],
                 "asset_results": [],
                 "issues": [],
@@ -817,6 +821,26 @@ def valid_publish_package_with_rendered_images(
     }
 
 
+def completed_state_for_package(package: dict) -> SimpleNamespace:
+    authorization = package.get("publish_authorization") or {}
+    return SimpleNamespace(
+        values={
+            "publish_package": package,
+            "visual_plan": package.get("visual_plan"),
+            "asset_manifest": package.get("asset_manifest"),
+            "render_manifest": package.get("render_manifest"),
+            "review_status": authorization.get("review_status"),
+            "carousel_qa_result": authorization.get("carousel_qa_result"),
+            "render_qa_result": authorization.get("render_qa_result"),
+            "focus_keyword_cli_present": authorization.get(
+                "focus_keyword_cli_present"
+            ),
+            "focus_keyword": authorization.get("focus_keyword"),
+        },
+        next=(),
+    )
+
+
 @pytest.mark.parametrize("frame_count", [5, 7])
 def test_export_publish_package_accepts_dynamic_manifest_page_counts(
     monkeypatch, tmp_path, frame_count
@@ -827,7 +851,7 @@ def test_export_publish_package_accepts_dynamic_manifest_page_counts(
     )
     monkeypatch.chdir(tmp_path)
 
-    result = main.export_publish_package(package)
+    result = main.export_publish_package(completed_state_for_package(package))
 
     exported = sorted((tmp_path / "outputs" / "publish").glob("*/images/*.png"))[0]
     assert exported.name == "01-cover.png"
@@ -842,10 +866,13 @@ def test_export_publish_package_uses_renderer_root_from_another_cwd_and_removes_
     tmp_path,
 ):
     main = _load_main(monkeypatch)
-    from src.nodes import node_p_text_card_renderer
+    from src.nodes import node_p_text_card_renderer, node_q_01_final_policy_guard
 
     renderer_root = tmp_path / "repository" / "outputs" / "publish"
     monkeypatch.setattr(node_p_text_card_renderer, "PUBLISH_ROOT", renderer_root)
+    monkeypatch.setattr(
+        node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", renderer_root
+    )
     package = valid_publish_package_with_rendered_images(
         tmp_path,
         publish_root=renderer_root,
@@ -857,7 +884,7 @@ def test_export_publish_package_uses_renderer_root_from_another_cwd_and_removes_
     different_cwd.mkdir()
     monkeypatch.chdir(different_cwd)
 
-    main.export_publish_package(package)
+    main.export_publish_package(completed_state_for_package(package))
 
     assert not legacy_prompt.exists()
     assert (package_dir / f"{package['title']}.json").is_file()
@@ -875,7 +902,7 @@ def test_export_publish_package_preserves_metadata_with_package_relative_image_p
         }
     )
 
-    main.export_publish_package(package)
+    main.export_publish_package(completed_state_for_package(package))
 
     audit_path = next(tmp_path.glob("outputs/publish/*/*.json"))
     audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
@@ -900,16 +927,20 @@ def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
     monkeypatch.chdir(tmp_path)
 
     main.export_publish_package(
-        valid_publish_package_with_rendered_images(
+        completed_state_for_package(valid_publish_package_with_rendered_images(
             tmp_path,
             domain="wellness",
             subdomain="sleep",
             profile_version="wellness-v1",
             title="共同标题",
-        )
+        ))
     )
 
-    output_dirs = [path.name for path in (tmp_path / "outputs" / "publish").iterdir()]
+    output_dirs = [
+        path.name
+        for path in (tmp_path / "outputs" / "publish").iterdir()
+        if path.is_dir()
+    ]
     assert len(output_dirs) == 1
     assert output_dirs[0].endswith("-wellness-sleep-共同标题")
 
@@ -924,8 +955,8 @@ def test_export_publish_package_rejects_paths_outside_package_images(monkeypatch
     package["rendered_image_paths"][0] = str(outside_path)
     package["render_manifest"]["pages"][0]["path"] = str(outside_path)
 
-    with pytest.raises(ValueError, match="inside outputs/publish"):
-        main.export_publish_package(package)
+    with pytest.raises(ValueError, match="inside outputs/publish|recomputed Final Guard"):
+        main.export_publish_package(completed_state_for_package(package))
 
 
 def test_export_publish_package_rejects_non_png_or_wrong_sequence(monkeypatch, tmp_path):
@@ -939,19 +970,19 @@ def test_export_publish_package_rejects_non_png_or_wrong_sequence(monkeypatch, t
     package["render_manifest"]["pages"][0]["path"] = str(non_png)
 
     with pytest.raises(ValueError, match="PNG"):
-        main.export_publish_package(package)
+        main.export_publish_package(completed_state_for_package(package))
 
     package = valid_publish_package_with_rendered_images(tmp_path, title="伪造图片")
     Path(package["rendered_image_paths"][0]).write_bytes(b"not a PNG")
 
     with pytest.raises(ValueError, match="PNG"):
-        main.export_publish_package(package)
+        main.export_publish_package(completed_state_for_package(package))
 
     package = valid_publish_package_with_rendered_images(tmp_path, title="另一份指南")
     package["rendered_image_paths"].reverse()
 
-    with pytest.raises(ValueError, match="RenderManifest order"):
-        main.export_publish_package(package)
+    with pytest.raises(ValueError, match="RenderManifest order|recomputed Final Guard"):
+        main.export_publish_package(completed_state_for_package(package))
 
 
 def test_export_publish_package_rejects_unlisted_png(monkeypatch, tmp_path):
@@ -961,7 +992,7 @@ def test_export_publish_package_rejects_unlisted_png(monkeypatch, tmp_path):
     (image_dir / "unlisted.png").write_bytes(b"\x89PNG\r\n\x1a\nextra")
 
     with pytest.raises(ValueError, match="unlisted PNG"):
-        main.export_publish_package(package)
+        main.export_publish_package(completed_state_for_package(package))
 
 
 def test_export_publish_package_requires_valid_domain_metadata(monkeypatch, tmp_path):
@@ -977,7 +1008,7 @@ def test_export_publish_package_requires_valid_domain_metadata(monkeypatch, tmp_
     }
 
     with pytest.raises(ValueError, match="publish_package requires valid domain and profile_version metadata"):
-        main.export_publish_package(publish_package)
+        main.export_publish_package(completed_state_for_package(publish_package))
 
 
 def test_completed_export_injects_state_manifests_before_delegating(
@@ -1011,29 +1042,21 @@ def test_completed_export_injects_state_manifests_before_delegating(
     monkeypatch.setattr(
         main,
         "export_publish_package",
-        lambda payload: captured.update(payload=payload),
+        lambda completed_state: captured.update(completed_state=completed_state),
     )
 
     assert main.export_completed_publish_package(CompletedGraph(), {}) is True
+    captured_values = captured["completed_state"].values
     assert all(
-        captured["payload"][name] is value
+        captured_values[name] is value
         for name, value in state_manifests.items()
     )
-    assert captured["payload"]["publish_authorization"] == {
-        "workflow_completed": True,
-        "review_status": "approved",
-        "final_policy_issues": [],
-        "carousel_qa_result": {"passed": True, "issues": []},
-        "render_qa_result": {"passed": True, "issues": []},
-        "focus_keyword_cli_present": True,
-        "focus_keyword": "通勤底妆",
-    }
+    assert "publish_authorization" not in captured_values["publish_package"]
 
 
 @pytest.mark.parametrize(
     "missing_or_invalid",
     [
-        "final_policy_issues",
         "carousel_qa_result",
         "render_qa_result",
         "focus_keyword_cli_present",
@@ -1061,12 +1084,6 @@ def test_completed_export_requires_explicit_publishability_state(
     class CompletedGraph:
         def get_state(self, _config):
             return SimpleNamespace(values=values, next=())
-
-    monkeypatch.setattr(
-        main,
-        "export_publish_package",
-        lambda _payload: pytest.fail("non-publishable state reached exporter"),
-    )
 
     assert main.export_completed_publish_package(CompletedGraph(), {}) is False
 

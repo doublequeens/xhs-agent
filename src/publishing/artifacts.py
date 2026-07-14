@@ -10,9 +10,9 @@ import os
 import stat
 import unicodedata
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -30,6 +30,7 @@ from src.schemas import (
 from src.schemas.carousel_qa import CarouselQAResult
 from src.schemas.content_contract import ContentContract
 from src.schemas.render_qa import RenderQAResult
+from src.nodes.node_q_01_final_policy_guard import validate_final_policy
 
 
 LOCK_FIELDS = (
@@ -97,6 +98,20 @@ class PublishArtifacts:
     rendered_image_paths: tuple[Path, ...]
     content_lock: ContentLock
     artifact_generation: int
+    publish_attestation: "PublishAttestation"
+
+
+@dataclass(frozen=True)
+class PublishAttestation:
+    publish_package_sha256: str
+    visual_plan_sha256: str
+    asset_manifest_sha256: str
+    render_manifest_sha256: str
+    carousel_qa_sha256: str
+    render_qa_sha256: str
+    content_lock_sha256: str
+    rendered_artifact_sha256: tuple[tuple[str, str], ...]
+    canonical_sha256: str
 
 
 def canonical_content_bytes(payload: dict) -> bytes:
@@ -286,7 +301,13 @@ def _build_codex_rescue_prompt(
         raise ValueError("ContentLock does not match the current publish package")
 
     package_directory = _package_directory(package)
-    title = _require_locked_value(package, "title")
+    title = _validate_title_component(_require_locked_value(package, "title"))
+    rendered_references: list[str] = []
+    for path in reference_paths:
+        raw_path = os.fspath(path)
+        if any(character in raw_path for character in ("\r", "\n", "\x00")):
+            raise ValueError("rescue reference paths must not contain CR, LF, or NUL")
+        rendered_references.append(f"- {Path(raw_path)}")
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
     return template.format(
         content_lock_json=canonical_content_bytes(_lock_payload(lock)).decode("utf-8"),
@@ -295,9 +316,7 @@ def _build_codex_rescue_prompt(
         package_directory=package_directory,
         audit_json_path=package_directory / f"{title}.json",
         current_images_directory=package_directory / "images",
-        style_reference_paths="\n".join(
-            f"- {Path(path)}" for path in reference_paths
-        ),
+        style_reference_paths="\n".join(rendered_references),
     )
 
 
@@ -336,34 +355,9 @@ def _approved_reference_paths() -> tuple[Path, Path, Path]:
     return paths[0], paths[1], paths[2]
 
 
-def _validate_publishability_snapshot(
+def _validate_manifest_snapshot(
     package: Mapping[str, Any],
 ) -> tuple[VisualPlan, AssetManifest, RenderManifest]:
-    authorization = package.get("publish_authorization")
-    if not isinstance(authorization, Mapping):
-        raise ValueError("publish package requires explicit publish authorization")
-    if authorization.get("workflow_completed") is not True:
-        raise ValueError("publish authorization requires a completed workflow")
-    if authorization.get("review_status") != "approved":
-        raise ValueError("publish authorization requires explicit approved review")
-    if "final_policy_issues" not in authorization or not isinstance(
-        authorization.get("final_policy_issues"), _FrozenList
-    ):
-        raise ValueError("publish authorization requires explicit final_policy_issues")
-    if authorization.get("final_policy_issues"):
-        raise ValueError("publish authorization requires final_policy_issues == []")
-
-    carousel_qa = CarouselQAResult.model_validate(
-        _deep_thaw(authorization.get("carousel_qa_result"))
-    )
-    if carousel_qa.passed is not True or carousel_qa.issues:
-        raise ValueError("publish authorization requires passed Carousel QA")
-    render_qa = RenderQAResult.model_validate(
-        _deep_thaw(authorization.get("render_qa_result"))
-    )
-    if render_qa.passed is not True or render_qa.issues:
-        raise ValueError("publish authorization requires passed Render QA")
-
     visual_plan = VisualPlan.model_validate(_deep_thaw(package.get("visual_plan")))
     asset_manifest = AssetManifest.model_validate(
         _deep_thaw(package.get("asset_manifest"))
@@ -375,14 +369,9 @@ def _validate_publishability_snapshot(
     )
 
     package_flag = package.get("focus_keyword_cli_present")
-    authorized_flag = authorization.get("focus_keyword_cli_present")
-    if type(package_flag) is not bool or type(authorized_flag) is not bool:
+    if type(package_flag) is not bool:
         raise ValueError("focus_keyword_cli_present must be an authoritative bool")
-    if package_flag is not authorized_flag:
-        raise ValueError("focus_keyword_cli_present authorization changed")
     focus_keyword = _require_locked_value(package, "focus_keyword")
-    if authorization.get("focus_keyword") != focus_keyword:
-        raise ValueError("focus_keyword changed after CLI authorization")
     if package_flag and not focus_keyword.strip():
         raise ValueError("explicit CLI focus_keyword cannot be empty")
     if not package_flag and focus_keyword == "":
@@ -392,11 +381,54 @@ def _validate_publishability_snapshot(
 
 
 def validate_publishability(package: dict) -> None:
-    _validate_publishability_snapshot(_freeze_package_snapshot(package))
+    """Validate low-level package shape; this does not authorize final export."""
+    _validate_manifest_snapshot(_freeze_package_snapshot(package))
+
+
+def _completed_state_snapshot(completed_state: Any) -> tuple[dict, Mapping[str, Any]]:
+    if isinstance(completed_state, Mapping):
+        raise TypeError("final export requires a frozen completed graph state, not a package dict")
+    values = getattr(completed_state, "values", None)
+    if not isinstance(values, Mapping):
+        raise TypeError("final export requires completed_state.values")
+    if tuple(getattr(completed_state, "next", ()) or ()):
+        raise ValueError("final export requires a terminal completed graph state")
+
+    detached = _json_value(copy.deepcopy(dict(values)))
+    if not isinstance(detached, dict) or not isinstance(detached.get("publish_package"), dict):
+        raise ValueError("completed state requires publish_package")
+    package = detached["publish_package"]
+    for field in ("visual_plan", "asset_manifest", "render_manifest"):
+        if field not in detached:
+            raise ValueError(f"completed state requires {field}")
+        package[field] = detached[field]
+    package.pop("publish_authorization", None)
+    package.pop("publish_attestation", None)
+    package.pop("expected_artifact_generation", None)
+    if type(detached.get("focus_keyword_cli_present")) is not bool:
+        raise ValueError("completed state requires authoritative focus_keyword_cli_present")
+    package["focus_keyword_cli_present"] = detached["focus_keyword_cli_present"]
+    if detached.get("focus_keyword") != package.get("focus_keyword"):
+        raise ValueError("completed state focus_keyword binding changed")
+    if detached.get("review_status") != "approved":
+        raise ValueError("completed state requires approved review")
+    carousel_qa = CarouselQAResult.model_validate(detached.get("carousel_qa_result"))
+    render_qa = RenderQAResult.model_validate(detached.get("render_qa_result"))
+    if not carousel_qa.passed or carousel_qa.issues:
+        raise ValueError("completed state requires passed Carousel QA")
+    if not render_qa.passed or render_qa.issues:
+        raise ValueError("completed state requires passed Render QA")
+    issues = validate_final_policy(detached)
+    if issues:
+        raise ValueError(
+            "completed state failed recomputed Final Guard: "
+            + json.dumps(issues, ensure_ascii=False, sort_keys=True)
+        )
+    return detached, _freeze_package_snapshot(package)
 
 
 def _validate_title_component(title: str) -> str:
-    if title in {".", ".."} or "/" in title or "\\" in title:
+    if title.startswith(".") or "/" in title or "\\" in title:
         raise ValueError("publish title must be one safe filename component")
     if any(unicodedata.category(character).startswith("C") for character in title):
         raise ValueError("publish title must not contain control characters")
@@ -583,35 +615,105 @@ def _validate_rendered_snapshots(
     return tuple(rendered_paths)
 
 
+@dataclass(frozen=True)
+class _ExportLock:
+    package_fd: int
+    parent_fd: int
+    package_directory: Path
+    parent_identity: tuple[int, int]
+    package_identity: tuple[int, int]
+    lock_fd: int
+    lock_name: str
+    lock_identity: tuple[int, int]
+
+    def verify(self) -> None:
+        try:
+            parent = os.stat(
+                self.package_directory.parent,
+                follow_symlinks=False,
+            )
+            package = os.stat(
+                self.package_directory.name,
+                dir_fd=self.parent_fd,
+                follow_symlinks=False,
+            )
+            lock = os.stat(
+                self.lock_name,
+                dir_fd=self.parent_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            raise ValueError("publish package or lock binding changed") from exc
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or (parent.st_dev, parent.st_ino) != self.parent_identity
+        ):
+            raise ValueError("publish package parent binding changed")
+        if (
+            not stat.S_ISDIR(package.st_mode)
+            or (package.st_dev, package.st_ino) != self.package_identity
+        ):
+            raise ValueError("publish package directory binding changed")
+        if (
+            not stat.S_ISREG(lock.st_mode)
+            or lock.st_nlink != 1
+            or (lock.st_dev, lock.st_ino) != self.lock_identity
+        ):
+            raise ValueError("publish package lock binding changed")
+        opened_lock = os.fstat(self.lock_fd)
+        if (
+            not stat.S_ISREG(opened_lock.st_mode)
+            or opened_lock.st_nlink != 1
+            or (opened_lock.st_dev, opened_lock.st_ino) != self.lock_identity
+        ):
+            raise ValueError("publish package lock binding changed")
+
+
 @contextmanager
 def _package_export_lock(package_directory: Path):
+    parent_directory = package_directory.parent
     try:
-        package_fd = os.open(
-            package_directory,
+        parent_fd = os.open(
+            parent_directory,
             os.O_RDONLY | _OPEN_DIRECTORY | _OPEN_NOFOLLOW,
         )
     except OSError as exc:
+        raise ValueError("publish package parent must be canonical and non-symlink") from exc
+    package_fd: int | None = None
+    lock_fd: int | None = None
+    lock_name = f".{package_directory.name}.publish-artifacts.lock"
+    try:
+        package_fd = os.open(
+            package_directory.name,
+            os.O_RDONLY | _OPEN_DIRECTORY | _OPEN_NOFOLLOW,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        os.close(parent_fd)
         raise ValueError("publish package directory must be canonical and non-symlink") from exc
     opened_package = os.fstat(package_fd)
     try:
-        named_package = os.stat(package_directory, follow_symlinks=False)
+        named_package = os.stat(
+            package_directory.name, dir_fd=parent_fd, follow_symlinks=False
+        )
     except OSError as exc:
         os.close(package_fd)
+        os.close(parent_fd)
         raise ValueError("publish package directory binding changed") from exc
     if (opened_package.st_dev, opened_package.st_ino) != (
         named_package.st_dev,
         named_package.st_ino,
     ):
         os.close(package_fd)
+        os.close(parent_fd)
         raise ValueError("publish package directory binding changed")
-    lock_fd: int | None = None
     try:
         try:
             lock_fd = os.open(
-                PACKAGE_LOCK_FILENAME,
+                lock_name,
                 os.O_RDWR | os.O_CREAT | _OPEN_NOFOLLOW,
                 0o600,
-                dir_fd=package_fd,
+                dir_fd=parent_fd,
             )
         except OSError as exc:
             raise ValueError("publish package lock must be a canonical regular file") from exc
@@ -620,29 +722,35 @@ def _package_export_lock(package_directory: Path):
             raise ValueError("publish package lock must be a canonical regular file")
         fcntl.flock(lock_fd, fcntl.LOCK_EX)
         current = os.stat(
-            PACKAGE_LOCK_FILENAME, dir_fd=package_fd, follow_symlinks=False
+            lock_name, dir_fd=parent_fd, follow_symlinks=False
         )
         if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
             raise ValueError("publish package lock changed while acquiring flock")
-        yield package_fd
-        try:
-            rebound_package = os.stat(
-                package_directory, follow_symlinks=False
-            )
-        except OSError as exc:
-            raise ValueError("publish package directory binding changed") from exc
-        if (rebound_package.st_dev, rebound_package.st_ino) != (
-            opened_package.st_dev,
-            opened_package.st_ino,
-        ):
-            raise ValueError("publish package directory binding changed")
+        export_lock = _ExportLock(
+            package_fd=package_fd,
+            parent_fd=parent_fd,
+            package_directory=package_directory,
+            parent_identity=(os.fstat(parent_fd).st_dev, os.fstat(parent_fd).st_ino),
+            package_identity=(opened_package.st_dev, opened_package.st_ino),
+            lock_fd=lock_fd,
+            lock_name=lock_name,
+            lock_identity=(metadata.st_dev, metadata.st_ino),
+        )
+        export_lock.verify()
+        # This lock coordinates cooperating exporters and detects observed pathname
+        # replacement. A same-uid non-cooperating process can still mutate files
+        # after the final verification; Unix advisory locks cannot prevent that.
+        yield export_lock
+        export_lock.verify()
     finally:
         if lock_fd is not None:
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
             finally:
                 os.close(lock_fd)
-        os.close(package_fd)
+        if package_fd is not None:
+            os.close(package_fd)
+        os.close(parent_fd)
 
 
 def _secure_existing_file_bytes(package_fd: int, name: str) -> bytes | None:
@@ -721,7 +829,15 @@ def _fsync_directory_fd(package_fd: int) -> None:
     os.fsync(package_fd)
 
 
-def _replace_at(package_fd: int, source: Path, destination: Path) -> None:
+def _replace_at(
+    package_fd: int,
+    source: Path,
+    destination: Path,
+    *,
+    verify: Callable[[], None] | None = None,
+) -> None:
+    if verify is not None:
+        verify()
     os.replace(
         source.name,
         destination.name,
@@ -750,28 +866,40 @@ def _transactional_replace_artifacts(
     payloads: Mapping[Path, bytes],
     *,
     delete_paths: Sequence[Path],
+    verify: Callable[[], None] | None = None,
 ) -> None:
     staged: dict[Path, Path] = {}
     backups: dict[Path, Path] = {}
     committed: set[Path] = set()
     try:
         for destination, payload in payloads.items():
+            if verify is not None:
+                verify()
             staged[destination] = _stage_bytes(
                 package_fd, package_directory, destination.name, payload
             )
 
         for destination in (*payloads.keys(), *delete_paths):
+            if verify is not None:
+                verify()
             if _exists_at(package_fd, destination):
                 backup = package_directory / (
                     f".{destination.name}.{uuid.uuid4().hex}.backup"
                 )
-                _replace_at(package_fd, destination, backup)
+                _replace_at(package_fd, destination, backup, verify=verify)
                 backups[destination] = backup
 
         for destination, temp_path in staged.items():
-            _replace_at(package_fd, temp_path, destination)
+            _replace_at(package_fd, temp_path, destination, verify=verify)
             committed.add(destination)
+        if verify is not None:
+            verify()
         _fsync_directory_fd(package_fd)
+        if verify is not None:
+            verify()
+            # Keep all backups until the final pathname/input preflight passes.
+            # A binding failure here still enters the rollback block below.
+            verify()
     except BaseException as original_error:
         recovery_paths: list[Path] = []
         for destination in reversed((*payloads.keys(), *delete_paths)):
@@ -779,7 +907,7 @@ def _transactional_replace_artifacts(
             if backup is not None:
                 try:
                     _replace_at(package_fd, backup, destination)
-                except OSError:
+                except (OSError, ValueError):
                     recovery_paths.append(backup)
                     if destination in committed:
                         try:
@@ -791,13 +919,13 @@ def _transactional_replace_artifacts(
             elif destination in committed:
                 try:
                     _unlink_at(package_fd, destination)
-                except FileNotFoundError:
-                    pass
-        for temp_path in staged.values():
+                except OSError:
+                    recovery_paths.append(destination)
+        for destination, temp_path in staged.items():
+            if destination in committed:
+                continue
             try:
                 _unlink_at(package_fd, temp_path)
-            except FileNotFoundError:
-                pass
             except OSError:
                 recovery_paths.append(temp_path)
         try:
@@ -853,31 +981,82 @@ def _portable_audit(
     return audit
 
 
+def _verify_committed_payloads(
+    package_fd: int,
+    payloads: Mapping[Path, bytes],
+) -> None:
+    for path, expected in payloads.items():
+        actual = _secure_existing_file_bytes(package_fd, path.name)
+        if actual != expected:
+            raise ValueError(f"committed support artifact changed: {path.name}")
+
+
 def current_artifact_generation(package: dict) -> int:
     snapshot = _freeze_package_snapshot(package)
     package_directory = _package_directory(snapshot)
-    with _package_export_lock(package_directory) as package_fd:
-        current_version = _read_package_version(package_fd)
+    with _package_export_lock(package_directory) as export_lock:
+        export_lock.verify()
+        current_version = _read_package_version(export_lock.package_fd)
         return current_version["artifact_generation"] if current_version else 0
 
 
-def export_publish_package(package: dict) -> PublishArtifacts:
-    snapshot = _freeze_package_snapshot(package)
-    visual_plan, asset_manifest, render_manifest = _validate_publishability_snapshot(
-        snapshot
+def _sha256_json(value: Any) -> str:
+    return hashlib.sha256(canonical_content_bytes(_json_value(value))).hexdigest()
+
+
+def _build_publish_attestation(
+    snapshot: Mapping[str, Any],
+    completed_values: Mapping[str, Any],
+    lock: ContentLock,
+    render_manifest: RenderManifest,
+    publish_copy: bytes,
+    rescue_prompt: bytes,
+) -> PublishAttestation:
+    rendered_digests = tuple(
+        (Path(page.path).name, page.sha256) for page in render_manifest.pages
+    ) + ((Path(render_manifest.contact_sheet_path).name, render_manifest.contact_sheet_sha256),)
+    payload = {
+        "publish_package_sha256": _sha256_json(_deep_thaw(snapshot)),
+        "visual_plan_sha256": _sha256_json(completed_values["visual_plan"]),
+        "asset_manifest_sha256": _sha256_json(completed_values["asset_manifest"]),
+        "render_manifest_sha256": _sha256_json(completed_values["render_manifest"]),
+        "carousel_qa_sha256": _sha256_json(completed_values["carousel_qa_result"]),
+        "render_qa_sha256": _sha256_json(completed_values["render_qa_result"]),
+        "content_lock_sha256": lock.canonical_sha256,
+        "rendered_artifact_sha256": rendered_digests
+        + (
+            (PUBLISH_COPY_FILENAME, hashlib.sha256(publish_copy).hexdigest()),
+            (RESCUE_PROMPT_FILENAME, hashlib.sha256(rescue_prompt).hexdigest()),
+        ),
+    }
+    return PublishAttestation(
+        **payload,
+        canonical_sha256=_sha256_json(payload),
     )
+
+
+def _export_publish_package_snapshot(
+    snapshot: Mapping[str, Any],
+    completed_values: Mapping[str, Any],
+    *,
+    expected_generation: int | None = None,
+) -> PublishArtifacts:
+    visual_plan, asset_manifest, render_manifest = _validate_manifest_snapshot(snapshot)
     package_directory = _package_directory(snapshot)
     title = _validate_title_component(_require_locked_value(snapshot, "title"))
-    expected_generation = snapshot.get("expected_artifact_generation")
-    if type(expected_generation) is not int or expected_generation < 0:
-        raise ValueError("expected_artifact_generation must be a non-negative int")
+    if expected_generation is not None and (
+        type(expected_generation) is not int or expected_generation < 0
+    ):
+        raise ValueError("expected_generation must be a non-negative int")
 
-    with _package_export_lock(package_directory) as package_fd:
+    with _package_export_lock(package_directory) as export_lock:
+        package_fd = export_lock.package_fd
+        export_lock.verify()
         current_version = _read_package_version(package_fd)
         current_generation = (
             current_version["artifact_generation"] if current_version else 0
         )
-        if expected_generation != current_generation:
+        if expected_generation is not None and expected_generation != current_generation:
             raise ValueError(
                 "publish artifact generation compare-and-swap failed: "
                 f"expected {expected_generation}, found {current_generation}"
@@ -891,17 +1070,33 @@ def export_publish_package(package: dict) -> PublishArtifacts:
         if current_version and existing_audits != {audit_filename}:
             raise ValueError("versioned publish package is missing its sole audit JSON")
 
+        def verify_export_inputs() -> None:
+            export_lock.verify()
+            _validate_rendered_snapshots(
+                snapshot,
+                package_directory,
+                package_fd,
+                render_manifest,
+            )
+
         rendered_image_paths = _validate_rendered_snapshots(
-            snapshot,
-            package_directory,
-            package_fd,
-            render_manifest,
+            snapshot, package_directory, package_fd, render_manifest
         )
         lock = _build_content_lock(snapshot)
         rescue_prompt = _build_codex_rescue_prompt(
             snapshot,
             lock,
             _approved_reference_paths(),
+        )
+        publish_copy = _build_publish_copy(snapshot).encode("utf-8")
+        rescue_prompt_bytes = rescue_prompt.encode("utf-8")
+        publish_attestation = _build_publish_attestation(
+            snapshot,
+            completed_values,
+            lock,
+            render_manifest,
+            publish_copy,
+            rescue_prompt_bytes,
         )
         next_generation = current_generation + 1
         audit = _portable_audit(snapshot, package_directory)
@@ -916,6 +1111,11 @@ def export_publish_package(package: dict) -> PublishArtifacts:
             package_directory,
         )["render_manifest"]
         audit["artifact_generation"] = next_generation
+        audit["publish_attestation"] = asdict(publish_attestation)
+        audit["review_status"] = completed_values["review_status"]
+        audit["carousel_qa_result"] = _json_value(completed_values["carousel_qa_result"])
+        audit["render_qa_result"] = _json_value(completed_values["render_qa_result"])
+        audit["final_policy_issues"] = []
 
         publish_copy_path = package_directory / PUBLISH_COPY_FILENAME
         rescue_prompt_path = package_directory / RESCUE_PROMPT_FILENAME
@@ -928,8 +1128,8 @@ def export_publish_package(package: dict) -> PublishArtifacts:
             "content_lock_sha256": lock.canonical_sha256,
         }
         payloads = {
-            publish_copy_path: _build_publish_copy(snapshot).encode("utf-8"),
-            rescue_prompt_path: rescue_prompt.encode("utf-8"),
+            publish_copy_path: publish_copy,
+            rescue_prompt_path: rescue_prompt_bytes,
             audit_json_path: (
                 json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
             ).encode("utf-8"),
@@ -948,7 +1148,10 @@ def export_publish_package(package: dict) -> PublishArtifacts:
             package_directory,
             payloads,
             delete_paths=(package_directory / LEGACY_IMAGE_PROMPT_FILENAME,),
+            verify=verify_export_inputs,
         )
+        verify_export_inputs()
+        _verify_committed_payloads(package_fd, payloads)
 
     return PublishArtifacts(
         package_directory=package_directory,
@@ -958,4 +1161,11 @@ def export_publish_package(package: dict) -> PublishArtifacts:
         rendered_image_paths=rendered_image_paths,
         content_lock=lock,
         artifact_generation=next_generation,
+        publish_attestation=publish_attestation,
     )
+
+
+def export_publish_package(completed_state: Any) -> PublishArtifacts:
+    """Export only a frozen terminal graph state after recomputing Final Guard."""
+    completed_values, snapshot = _completed_state_snapshot(completed_state)
+    return _export_publish_package_snapshot(snapshot, completed_values)

@@ -2,6 +2,7 @@ import argparse
 import sys
 import json
 import warnings
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import get_args
@@ -22,9 +23,7 @@ from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
 from src.publishing.artifacts import (
     PublishArtifacts,
-    current_artifact_generation,
     export_publish_package as export_publish_artifacts,
-    validate_publishability,
 )
 from src.schemas import RenderManifest
 from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
@@ -363,12 +362,16 @@ def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list
     return package_dir, resolved_paths
 
 
-def export_publish_package(publish_package: dict) -> PublishArtifacts:
-    """Validate final local images and delegate deep artifact creation."""
+def export_publish_package(completed_state) -> PublishArtifacts:
+    """Validate and export one immutable terminal graph checkpoint."""
+    values = getattr(completed_state, "values", None)
+    if not isinstance(values, Mapping):
+        raise TypeError("final export requires completed graph state")
+    publish_package = values.get("publish_package")
+    if not isinstance(publish_package, Mapping):
+        raise ValueError("completed graph state requires publish_package")
     _resolve_publish_package_profile(publish_package)
-    validate_publishability(publish_package)
-    _rendered_image_package_directory(publish_package)
-    return export_publish_artifacts(publish_package)
+    return export_publish_artifacts(completed_state)
 
 
 def read_multiline_json() -> dict:
@@ -551,52 +554,13 @@ def export_completed_publish_package(graph, config) -> bool:
     if not hasattr(graph, "get_state"):
         return False
     completed_state = graph.get_state(config)
-    values = getattr(completed_state, "values", None) or {}
-    if getattr(completed_state, "next", ()):
-        return False
-    if values.get("review_status") != "approved":
-        return False
-    if "final_policy_issues" not in values or values.get("final_policy_issues") != []:
-        return False
-    if "carousel_qa_result" not in values or "render_qa_result" not in values:
-        return False
-    if type(values.get("focus_keyword_cli_present")) is not bool:
-        return False
-    publish_package = values.get("publish_package")
-    if not publish_package:
-        return False
-    payload = {
-        **publish_package,
-        "visual_plan": values.get("visual_plan"),
-        "asset_manifest": values.get("asset_manifest"),
-        "render_manifest": values.get("render_manifest"),
-        "publish_authorization": {
-            "workflow_completed": True,
-            "review_status": values.get("review_status"),
-            "final_policy_issues": values.get("final_policy_issues"),
-            "carousel_qa_result": values.get("carousel_qa_result"),
-            "render_qa_result": values.get("render_qa_result"),
-            "focus_keyword_cli_present": values.get(
-                "focus_keyword_cli_present"
-            ),
-            "focus_keyword": values.get("focus_keyword"),
-        },
-    }
     try:
-        validate_publishability(payload)
-    except (TypeError, ValueError):
+        publish_package = completed_state.values["publish_package"]
+        print("The final publish package title is:")
+        print(publish_package["title"])
+        export_publish_package(completed_state)
+    except (KeyError, TypeError, ValueError):
         return False
-    if "expected_artifact_generation" in publish_package:
-        payload["expected_artifact_generation"] = publish_package[
-            "expected_artifact_generation"
-        ]
-    else:
-        payload["expected_artifact_generation"] = current_artifact_generation(
-            payload
-        )
-    print("The final publish package title is:")
-    print(publish_package["title"])
-    export_publish_package(payload)
     return True
 
 

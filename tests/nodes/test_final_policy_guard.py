@@ -12,6 +12,7 @@ from src.nodes.node_q_human_review import human_review_node
 from src.nodes.node_q_01_final_policy_guard import (
     final_policy_guard_node,
     route_after_final_guard,
+    validate_final_policy,
 )
 from src.nodes import node_i_r2_compliance as r2_module
 from src.nodes import node_j_decision_engine as decision_module
@@ -58,6 +59,14 @@ def _publish_package(**overrides):
     }
     package.update(overrides)
     return package
+
+
+def test_pure_final_policy_validator_preserves_graph_node_issue_semantics():
+    state = {"publish_package": _publish_package(title="保证立刻见效")}
+
+    assert validate_final_policy(state) == final_policy_guard_node(state)[
+        "final_policy_issues"
+    ]
 
 
 def _legacy_guard_state(package):

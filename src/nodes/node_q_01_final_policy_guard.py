@@ -918,10 +918,11 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     return issues
 
 
-def final_policy_guard_node(state: AgentState) -> AgentState:
+def validate_final_policy(state: AgentState) -> list[dict]:
+    """Return the complete, side-effect-free Final Guard issue list for ``state``."""
     publish_package = state.get("publish_package")
     if publish_package is None:
-        raise ValueError("final_policy_guard_node requires `publish_package` in state.")
+        raise ValueError("validate_final_policy requires `publish_package` in state.")
 
     issues = _required_field_issues(publish_package)
     if not is_legacy_editorial_checkpoint(state):
@@ -941,6 +942,11 @@ def final_policy_guard_node(state: AgentState) -> AgentState:
             for issue in find_policy_violations(combined_text)
         ]
     )
+    return issues
+
+
+def final_policy_guard_node(state: AgentState) -> AgentState:
+    issues = validate_final_policy(state)
     return {
         "final_policy_issues": issues,
         "current_node": "FINAL_POLICY_GUARD",

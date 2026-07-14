@@ -6,6 +6,7 @@ import os
 from copy import deepcopy
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from PIL import Image
@@ -15,7 +16,7 @@ from src.publishing.artifacts import (
     build_codex_rescue_prompt,
     build_content_lock,
     build_publish_copy,
-    export_publish_package,
+    export_publish_package as export_completed_state,
 )
 
 
@@ -109,14 +110,30 @@ def package_payload(frame_count: int = 5) -> dict:
     }
 
 
-def _probe(text: str) -> dict:
+def _probe(frame: dict) -> dict:
+    visible_text = [
+        ("kicker", frame.get("kicker")),
+        ("headline", frame["headline"]),
+        ("footer", frame.get("footer")),
+    ]
+    for block_index, block in enumerate(frame.get("content_blocks", [])):
+        visible_text.extend(
+            [
+                (f"content_blocks[{block_index}].heading", block.get("heading")),
+                (f"content_blocks[{block_index}].body", block.get("body")),
+                *[
+                    (f"content_blocks[{block_index}].items[{item_index}]", item)
+                    for item_index, item in enumerate(block.get("items", []))
+                ],
+            ]
+        )
     return {
         "canvas_width": 1080,
         "canvas_height": 1440,
         "safe_margin": 72,
         "text_results": [
             {
-                "role": "headline",
+                "role": role,
                 "text": text,
                 "visible": True,
                 "overflow": False,
@@ -131,6 +148,8 @@ def _probe(text: str) -> dict:
                 "width": 600,
                 "height": 80,
             }
+            for role, text in visible_text
+            if text
         ],
         "asset_results": [],
         "issues": [],
@@ -159,7 +178,7 @@ def exportable_package(tmp_path: Path, frame_count: int = 5) -> tuple[dict, Path
                 "width": 1080,
                 "height": 1440,
                 "sha256": page_sha256,
-                "probe": _probe(frame["headline"]),
+                "probe": _probe(frame),
             }
         )
     contact_sheet = image_dir / "contact-sheet.png"
@@ -226,6 +245,41 @@ def exportable_package(tmp_path: Path, frame_count: int = 5) -> tuple[dict, Path
         }
     )
     return package, package_dir
+
+
+@pytest.fixture(autouse=True)
+def final_guard_render_root(monkeypatch, tmp_path):
+    from src.nodes import node_q_01_final_policy_guard
+
+    monkeypatch.setattr(
+        node_q_01_final_policy_guard,
+        "RENDER_OUTPUT_ROOT",
+        tmp_path / "outputs" / "publish",
+    )
+
+
+def _completed_state(package: dict) -> SimpleNamespace:
+    authorization = package.get("publish_authorization") or {}
+    return SimpleNamespace(
+        values={
+            "publish_package": package,
+            "visual_plan": package.get("visual_plan"),
+            "asset_manifest": package.get("asset_manifest"),
+            "render_manifest": package.get("render_manifest"),
+            "review_status": authorization.get("review_status"),
+            "carousel_qa_result": authorization.get("carousel_qa_result"),
+            "render_qa_result": authorization.get("render_qa_result"),
+            "focus_keyword_cli_present": authorization.get(
+                "focus_keyword_cli_present"
+            ),
+            "focus_keyword": authorization.get("focus_keyword"),
+        },
+        next=(),
+    )
+
+
+def export_publish_package(package: dict):
+    return export_completed_state(_completed_state(package))
 
 
 def test_publish_copy_is_directly_pasteable():
@@ -363,38 +417,70 @@ def test_rescue_prompt_build_is_manual_only_and_never_calls_image_api(monkeypatc
 
 
 @pytest.mark.parametrize(
+    ("title", "references"),
+    [
+        (".hidden", REFERENCE_PATHS),
+        ("安全标题", [REFERENCE_PATHS[0], "bad\npath", REFERENCE_PATHS[2]]),
+        ("安全标题", [REFERENCE_PATHS[0], "bad\x00path", REFERENCE_PATHS[2]]),
+    ],
+)
+def test_standalone_rescue_prompt_rejects_hidden_title_and_reference_injection(
+    title, references
+):
+    package = package_payload()
+    package["title"] = title
+
+    with pytest.raises(ValueError, match="title|reference|CR|LF|NUL"):
+        build_codex_rescue_prompt(package, build_content_lock(package), references)
+
+
+def test_final_export_rejects_raw_self_authorized_package(tmp_path):
+    package, _ = exportable_package(tmp_path)
+    package["publish_authorization"] = {
+        "workflow_completed": True,
+        "review_status": "approved",
+        "final_policy_issues": [],
+        "carousel_qa_result": {"passed": True, "issues": []},
+        "render_qa_result": {"passed": True, "issues": []},
+        "focus_keyword_cli_present": True,
+        "focus_keyword": package["focus_keyword"],
+    }
+
+    with pytest.raises(TypeError, match="completed graph state|package dict"):
+        export_completed_state(package)
+
+
+def test_final_export_recomputes_guard_and_rejects_stale_render_qa(tmp_path):
+    package, _ = exportable_package(tmp_path)
+    state = _completed_state(package)
+    package["storyboards"][0]["headline"] = "QA 后改写但伪装已授权"
+
+    with pytest.raises(ValueError, match="recomputed Final Guard"):
+        export_completed_state(state)
+
+
+def test_attestation_is_result_only_and_binds_current_inputs(tmp_path):
+    package, _ = exportable_package(tmp_path)
+    package["publish_attestation"] = {"canonical_sha256": "forged"}
+
+    result = export_completed_state(_completed_state(package))
+    audit = json.loads(result.audit_json_path.read_text(encoding="utf-8"))
+
+    assert result.publish_attestation.canonical_sha256 != "forged"
+    assert audit["publish_attestation"]["canonical_sha256"] == (
+        result.publish_attestation.canonical_sha256
+    )
+    assert "forged" not in json.dumps(audit, ensure_ascii=False)
+
+
+@pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda package: package.pop("publish_authorization"), "authorization"),
-        (
-            lambda package: package["publish_authorization"].update(
-                workflow_completed=False
-            ),
-            "completed",
-        ),
         (
             lambda package: package["publish_authorization"].update(
                 review_status="pending"
             ),
             "approved",
-        ),
-        (
-            lambda package: package["publish_authorization"].update(
-                final_policy_issues=None
-            ),
-            "final_policy_issues",
-        ),
-        (
-            lambda package: package["publish_authorization"].update(
-                final_policy_issues=()
-            ),
-            "final_policy_issues",
-        ),
-        (
-            lambda package: package["publish_authorization"].update(
-                final_policy_issues=[{"rule_id": "unsafe"}]
-            ),
-            "final_policy_issues",
         ),
         (
             lambda package: package["publish_authorization"].update(
@@ -428,7 +514,7 @@ def test_rescue_prompt_build_is_manual_only_and_never_calls_image_api(monkeypatc
         ),
     ],
 )
-def test_export_requires_explicit_publishability_authorization(
+def test_export_requires_completed_state_review_qa_and_no_pending_assets(
     tmp_path, mutation, message
 ):
     package, _ = exportable_package(tmp_path)
@@ -561,7 +647,7 @@ def test_export_rejects_page_replaced_during_secure_snapshot(monkeypatch, tmp_pa
 
     monkeypatch.setattr(artifacts_module.os, "read", replace_named_page_after_read)
 
-    with pytest.raises(ValueError, match="changed during snapshot"):
+    with pytest.raises(ValueError, match="changed during snapshot|recomputed Final Guard"):
         export_publish_package(package)
 
 
@@ -606,7 +692,7 @@ def test_export_rejects_signature_only_fake_png(tmp_path):
         page.read_bytes()
     ).hexdigest()
 
-    with pytest.raises(ValueError, match="decode"):
+    with pytest.raises(ValueError, match="decode|recomputed Final Guard"):
         export_publish_package(package)
 
 
@@ -620,7 +706,7 @@ def test_export_rejects_wrong_page_dimensions_even_when_manifest_claims_1080x144
         page.read_bytes()
     ).hexdigest()
 
-    with pytest.raises(ValueError, match="1080 x 1440"):
+    with pytest.raises(ValueError, match="1080 x 1440|recomputed Final Guard"):
         export_publish_package(package)
 
 
@@ -650,7 +736,7 @@ def test_export_rejects_contact_sheet_aliasing_a_page_inode(tmp_path):
         contact.read_bytes()
     ).hexdigest()
 
-    with pytest.raises(ValueError, match="distinct|hardlink"):
+    with pytest.raises(ValueError, match="distinct|hardlink|recomputed Final Guard"):
         export_publish_package(package)
 
 
@@ -667,12 +753,51 @@ def test_export_requires_fixed_contact_sheet_filename(tmp_path):
 
 def test_package_lock_must_be_a_canonical_regular_file(tmp_path):
     package, package_dir = exportable_package(tmp_path)
-    target = package_dir / "attacker-lock"
+    target = package_dir.parent / "attacker-lock"
     target.write_text("", encoding="utf-8")
-    (package_dir / ".publish-artifacts.lock").symlink_to(target)
+    lock_path = package_dir.parent / f".{package_dir.name}.publish-artifacts.lock"
+    lock_path.symlink_to(target)
 
     with pytest.raises(ValueError, match="lock"):
         export_publish_package(package)
+
+
+def test_second_export_rejects_sibling_lock_unlink_and_recreate(monkeypatch, tmp_path):
+    package, package_dir = exportable_package(tmp_path)
+    first = export_publish_package(package)
+    support_before = {
+        path.name: path.read_bytes()
+        for path in package_dir.iterdir()
+        if path.is_file() and not path.name.startswith(".")
+    }
+    original_verify = artifacts_module._ExportLock.verify
+    replaced = False
+
+    def replace_lock_path(export_lock):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            os.unlink(export_lock.lock_name, dir_fd=export_lock.parent_fd)
+            replacement_fd = os.open(
+                export_lock.lock_name,
+                os.O_RDWR | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=export_lock.parent_fd,
+            )
+            os.close(replacement_fd)
+        original_verify(export_lock)
+
+    monkeypatch.setattr(artifacts_module._ExportLock, "verify", replace_lock_path)
+
+    with pytest.raises(ValueError, match="lock.*binding changed"):
+        export_publish_package(package)
+
+    assert first.artifact_generation == 1
+    assert {
+        path.name: path.read_bytes()
+        for path in package_dir.iterdir()
+        if path.is_file() and not path.name.startswith(".")
+    } == support_before
 
 
 def test_export_rejects_package_directory_rebinding_before_return(
@@ -697,16 +822,152 @@ def test_export_rejects_package_directory_rebinding_before_return(
         export_publish_package(package)
 
 
-def test_export_generation_is_compare_and_swap_guarded(tmp_path):
-    package, _ = exportable_package(tmp_path)
+def test_root_rebind_while_backups_exist_rolls_back_before_cleanup(
+    monkeypatch, tmp_path
+):
+    package, package_dir = exportable_package(tmp_path)
     first = export_publish_package(package)
+    legacy = package_dir / artifacts_module.LEGACY_IMAGE_PROMPT_FILENAME
+    legacy.write_text("legacy must survive", encoding="utf-8")
+    old_copy = first.publish_copy_path.read_bytes()
+    changed = deepcopy(package)
+    changed["content"] = "must not commit into displaced root"
+    displaced = package_dir.with_name(f"{package_dir.name}-displaced")
+    original_verify = artifacts_module._ExportLock.verify
+    rebound = False
 
-    assert first.artifact_generation == 1
-    with pytest.raises(ValueError, match="generation|compare-and-swap"):
+    def rebind_once_backups_exist(export_lock):
+        nonlocal rebound
+        names = os.listdir(export_lock.package_fd)
+        if not rebound and any(name.endswith(".backup") for name in names):
+            rebound = True
+            package_dir.rename(displaced)
+            package_dir.mkdir()
+        original_verify(export_lock)
+
+    monkeypatch.setattr(
+        artifacts_module._ExportLock, "verify", rebind_once_backups_exist
+    )
+
+    with pytest.raises(ValueError, match="package directory binding changed"):
+        export_publish_package(changed)
+
+    assert not list(package_dir.glob("publish-copy.txt"))
+    assert (displaced / "publish-copy.txt").read_bytes() == old_copy
+    assert (displaced / artifacts_module.LEGACY_IMAGE_PROMPT_FILENAME).read_text(
+        encoding="utf-8"
+    ) == "legacy must survive"
+    assert not list(displaced.glob(".*.backup"))
+
+
+def test_package_parent_rebind_is_detected_and_rolls_back(monkeypatch, tmp_path):
+    package, package_dir = exportable_package(tmp_path)
+    first = export_publish_package(package)
+    old_copy = first.publish_copy_path.read_bytes()
+    changed = deepcopy(package)
+    changed["content"] = "must not commit through a displaced parent"
+    parent = package_dir.parent
+    displaced_parent = parent.with_name(f"{parent.name}-displaced")
+    original_verify = artifacts_module._ExportLock.verify
+    rebound = False
+
+    def rebind_parent_once_backups_exist(export_lock):
+        nonlocal rebound
+        if not rebound and any(
+            name.endswith(".backup") for name in os.listdir(export_lock.package_fd)
+        ):
+            rebound = True
+            parent.rename(displaced_parent)
+            parent.mkdir()
+        original_verify(export_lock)
+
+    monkeypatch.setattr(
+        artifacts_module._ExportLock, "verify", rebind_parent_once_backups_exist
+    )
+
+    with pytest.raises(ValueError, match="parent.*binding changed"):
+        export_publish_package(changed)
+
+    assert not (package_dir / artifacts_module.PUBLISH_COPY_FILENAME).exists()
+    assert (
+        displaced_parent / package_dir.name / artifacts_module.PUBLISH_COPY_FILENAME
+    ).read_bytes() == old_copy
+
+
+def test_rebind_after_fsync_before_backup_cleanup_still_rolls_back(
+    monkeypatch, tmp_path
+):
+    package, package_dir = exportable_package(tmp_path)
+    first = export_publish_package(package)
+    old_copy = first.publish_copy_path.read_bytes()
+    changed = deepcopy(package)
+    changed["content"] = "must rollback before backup cleanup"
+    displaced = package_dir.with_name(f"{package_dir.name}-displaced")
+    original_verify = artifacts_module._ExportLock.verify
+    original_fsync = artifacts_module._fsync_directory_fd
+    fsynced = False
+    verify_after_fsync = 0
+
+    def mark_fsync(package_fd):
+        nonlocal fsynced
+        original_fsync(package_fd)
+        fsynced = True
+
+    def rebind_on_second_post_fsync_verify(export_lock):
+        nonlocal verify_after_fsync
+        if fsynced:
+            verify_after_fsync += 1
+            if verify_after_fsync == 2:
+                package_dir.rename(displaced)
+                package_dir.mkdir()
+        original_verify(export_lock)
+
+    monkeypatch.setattr(artifacts_module, "_fsync_directory_fd", mark_fsync)
+    monkeypatch.setattr(
+        artifacts_module._ExportLock,
+        "verify",
+        rebind_on_second_post_fsync_verify,
+    )
+
+    with pytest.raises(ValueError, match="package directory binding changed"):
+        export_publish_package(changed)
+
+    assert not (package_dir / artifacts_module.PUBLISH_COPY_FILENAME).exists()
+    assert (displaced / artifacts_module.PUBLISH_COPY_FILENAME).read_bytes() == old_copy
+    assert not list(displaced.glob(".*.backup"))
+
+
+def test_return_reattestation_reopens_committed_support_bytes(monkeypatch, tmp_path):
+    package, package_dir = exportable_package(tmp_path)
+    original_transaction = artifacts_module._transactional_replace_artifacts
+
+    def commit_then_tamper_support(*args, **kwargs):
+        original_transaction(*args, **kwargs)
+        (package_dir / artifacts_module.PUBLISH_COPY_FILENAME).write_text(
+            "tampered after commit", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(
+        artifacts_module,
+        "_transactional_replace_artifacts",
+        commit_then_tamper_support,
+    )
+
+    with pytest.raises(ValueError, match="support artifact.*changed"):
         export_publish_package(package)
 
 
-def test_concurrent_first_exports_cannot_publish_a_mixed_package(tmp_path):
+def test_terminal_retry_ignores_package_generation_and_uses_locked_current_value(tmp_path):
+    package, _ = exportable_package(tmp_path)
+    first = export_publish_package(package)
+    package["expected_artifact_generation"] = 0
+    second = export_publish_package(package)
+
+    assert first.artifact_generation == 1
+    assert second.artifact_generation == 2
+
+
+def test_concurrent_exports_are_serialized_without_a_mixed_package(tmp_path):
     first, package_dir = exportable_package(tmp_path)
     second = deepcopy(first)
     first["content"] = "并发版本甲"
@@ -725,13 +986,16 @@ def test_concurrent_first_exports_cannot_publish_a_mixed_package(tmp_path):
         except ValueError as exc:
             errors.append(exc)
 
-    assert len(results) == 1
-    assert len(errors) == 1
-    audit = json.loads(results[0].audit_json_path.read_text(encoding="utf-8"))
-    copy = results[0].publish_copy_path.read_text(encoding="utf-8")
+    assert len(results) == 2
+    assert not errors
+    assert {result.artifact_generation for result in results} == {1, 2}
+    audit = json.loads(results[-1].audit_json_path.read_text(encoding="utf-8"))
+    copy = results[-1].publish_copy_path.read_text(encoding="utf-8")
     assert audit["content"] in {"并发版本甲", "并发版本乙"}
     assert audit["content"] in copy
-    assert audit["content_lock"]["canonical_sha256"] == results[0].content_lock.canonical_sha256
+    assert audit["content_lock"]["canonical_sha256"] in {
+        result.content_lock.canonical_sha256 for result in results
+    }
     assert not list(package_dir.glob(".*.tmp"))
 
 
@@ -835,6 +1099,37 @@ def test_atomic_reexport_failure_restores_prior_support_artifacts_and_images(
     } == images_before
     assert not list(package_dir.glob(".*.tmp"))
     assert not list(package_dir.glob(".*.backup"))
+
+
+def test_first_export_rollback_records_unlink_failure_and_keeps_cleaning(
+    monkeypatch, tmp_path
+):
+    package, package_dir = exportable_package(tmp_path)
+    real_replace = artifacts_module.os.replace
+    real_unlink = artifacts_module.os.unlink
+
+    def fail_audit_commit(source, destination, **kwargs):
+        if Path(source).suffix == ".tmp" and Path(destination).suffix == ".json":
+            raise OSError("simulated first-export commit failure")
+        return real_replace(source, destination, **kwargs)
+
+    def fail_publish_copy_rollback(path, **kwargs):
+        if Path(path).name == artifacts_module.PUBLISH_COPY_FILENAME:
+            raise OSError("simulated rollback unlink failure")
+        return real_unlink(path, **kwargs)
+
+    monkeypatch.setattr(artifacts_module.os, "replace", fail_audit_commit)
+    monkeypatch.setattr(artifacts_module.os, "unlink", fail_publish_copy_rollback)
+
+    with pytest.raises(artifacts_module.ArtifactRollbackError) as exc_info:
+        export_publish_package(package)
+
+    assert package_dir / artifacts_module.PUBLISH_COPY_FILENAME in (
+        exc_info.value.recovery_paths
+    )
+    assert not (package_dir / artifacts_module.RESCUE_PROMPT_FILENAME).exists()
+    assert not (package_dir / artifacts_module.PACKAGE_VERSION_FILENAME).exists()
+    assert not (package_dir / f"{package['title']}.json").exists()
 
 
 def test_failed_backup_restore_preserves_the_only_old_copy_for_recovery(

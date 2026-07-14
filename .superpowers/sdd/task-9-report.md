@@ -2,7 +2,7 @@
 
 ## Outcome
 
-Implemented the content-locked final publishing package and manual Codex visual-rescue prompt without changing workflow, QA, Final Guard, or legacy modules. The final exporter now writes `publish-copy.txt`, `codex-image-regeneration-prompt.txt`, and `<title>.json`, while preserving the approved renderer output.
+Implemented the content-locked final publishing package and manual Codex visual-rescue prompt. The final exporter writes `publish-copy.txt`, `codex-image-regeneration-prompt.txt`, and `<title>.json` while preserving approved renderer output. Follow-up hardening extracted Final Guard's existing semantics into a shared pure validator so graph execution and completed-state export enforce the same deep policy without duplicating it; Task 10 and legacy behavior remain out of scope.
 
 ## TDD Evidence
 
@@ -164,3 +164,76 @@ Fresh full repository suite:
 ```
 
 Result: `1290 passed, 2 skipped`. The two skips remain the opt-in live stock-provider tests. The three warnings are the existing LangGraph pending-deprecation warning and two legacy storyboard fallback warnings.
+
+## Second Review Closure: Completed-State Authorization and Transaction Binding
+
+The follow-up review found that the package could still self-report authorization and generation, and that the package-local lock/root checks left commit-time rebinding gaps. This round replaces those boundaries rather than adding another package flag.
+
+### RED evidence
+
+The new authorization regression was verified against a temporary restoration of the former raw-package branch:
+
+```bash
+python -m pytest tests/publishing/test_artifacts.py::test_final_export_rejects_raw_self_authorized_package -q
+```
+
+Observed result: `1 failed`, with `Failed: DID NOT RAISE TypeError`. The temporary old-behavior branch was then removed. The same test passes against the completed-state-only implementation.
+
+The first run of the new attestation test also failed because the fixture's render probe did not bind every current storyboard-visible field. The fixture was corrected to exercise the real shared Final Guard rather than weakening validation.
+
+### Authorization and attestation
+
+- Public final export now accepts only a terminal graph state with `next == ()`; a raw package dict is rejected even when it carries a forged `publish_authorization`.
+- One detached state snapshot is taken at entry. State-level `visual_plan`, `asset_manifest`, and `render_manifest` replace any package copies, while package-provided authorization, attestation, and expected generation fields are discarded.
+- `validate_final_policy(state)` is the single pure policy/deep-artifact validator. The graph node and exporter both call it; a parity test proves the node returns the exact pure-validator issue list.
+- Review approval, passed Carousel QA, passed Render QA, authoritative focus-keyword binding, and zero recomputed Final Guard issues are required from the current snapshot. A storyboard rewrite after stale QA is rejected by the recomputed visible-text binding.
+- `PublishAttestation` is generated only as an export result and recorded in the audit. It binds canonical package, visual plan, asset manifest, render manifest, both QA results, ContentLock, rendered page/contact hashes, publish-copy bytes, and rescue-prompt bytes under one canonical digest. Any package-supplied attestation is ignored.
+
+### Generation, lock, and commit-time revalidation
+
+- High-level terminal retry never reads `publish_package.expected_artifact_generation`. It reads the durable current generation while holding the export lock, so two exports of the same terminal checkpoint produce generations 1 then 2. The private low-level writer retains an explicit expected-generation option for CAS testing.
+- The lock is now a sibling in the trusted package parent, opened with no-follow checks and verified as a regular single-link inode before and after `flock` and throughout the transaction.
+- The package-root and lock pathname/inode bindings are rechecked before every staged replacement and before backup cleanup. Rendered pages and the contact sheet are securely reopened and re-attested at those commit points and again before return.
+- A lock unlink/recreate during the second export fails closed without changing the prior support files. A package-root rebind while backups exist rolls back the displaced root, leaves the replacement root without support artifacts, and preserves the legacy prompt.
+- Unix `flock` is advisory: these checks coordinate cooperating exporters and detect observed same-uid pathname replacement, but cannot prevent a non-cooperating same-uid process from mutating files after the final verification.
+
+### Rollback and input hardening
+
+- First-export rollback handles every `OSError` per destination, continues best-effort cleanup and directory fsync, and raises `ArtifactRollbackError` with every path whose recovery action failed. A targeted test forces one destination unlink failure and proves the remaining support artifacts are still cleaned.
+- Titles beginning with `.` are rejected. The standalone rescue-prompt builder now reuses the same title-component validator, and reference paths containing CR, LF, or NUL are rejected before template interpolation.
+
+### Final verification
+
+Focused publishing, main, Final Guard, metadata, domain, and beauty-workflow suite:
+
+```bash
+python -m pytest tests/publishing/test_artifacts.py tests/test_main.py tests/nodes/test_final_policy_guard.py tests/nodes/test_metadata_flow.py tests/nodes/test_domain_nodes.py tests/integration/test_beauty_account_workflow.py -q
+```
+
+Result: `265 passed`.
+
+Fresh full repository suite:
+
+```bash
+python -m pytest -q
+```
+
+Result: `1297 passed, 2 skipped`. The skips are still the opt-in live stock-provider tests. The four warnings are two existing legacy-storyboard warnings plus pytest temporary-directory cleanup warnings outside Task 9.
+
+Static checks:
+
+- `python -m compileall -q src main.py tests/publishing/test_artifacts.py tests/nodes/test_final_policy_guard.py tests/test_main.py` passed.
+- `git diff --check` passed.
+- Ruff is not installed in the active environment, so no Ruff result is claimed.
+
+### Independent re-review closure
+
+The independent reviewer found two final commit-window gaps and one return-attestation gap. Targeted RED tests reproduced all three before the fixes:
+
+- replacing the entire publish parent escaped the package-relative root/lock checks;
+- rebinding after commit fsync but immediately before the first backup cleanup produced `ArtifactCleanupError` instead of rollback;
+- tampering a committed support file after the transaction was not detected before return.
+
+The export lock now stores and continuously verifies the parent pathname inode. Commit and pre-cleanup verification both run while all backups remain available inside the rollback scope. After transaction completion, every committed support payload is securely reopened through the package descriptor and compared byte-for-byte with its expected payload before returning.
+
+The three exact regressions pass, the focused/full results above include them, and the independent re-review concluded: `Ready: Yes`.
