@@ -69,6 +69,11 @@
 - Final-review version boundary: `modern_v2 + old shape + marker`, unknown-version marker spoof, and Final Guard partial-modern marker bypass were all RED; all three are GREEN with version-first classification.
 - Final-review root/provenance boundary: a trusted-root parent replacement through a symlink was readable before the `/`-anchored descriptor chain; consistent forged provenance across every reused item passed before canonical lookup. Both are now rejected while the real catalog reuse integration remains GREEN.
 - The first final-review full run found three domain integration fixtures without canonical catalogs. Those fixtures now generate valid SVG project-original assets plus a validated canonical manifest; the exact regressions pass.
+- Transaction-ledger replay closure: a forged empty-operation journal could rewrite the manifest on recovery before the new test failed. Recovery now requires a durable catalog/run-bound transaction registry, a fresh non-reusable transaction ID, and an immutable plan hash covering both manifest snapshots and every operation. Registry state is authoritative: only `prepared` may roll back, while `committed` and `aborted` transactions can never be replayed as rollback work. Recovery directory/journal/registry ownership and modes plus bounded journal/base64/snapshot sizes fail closed.
+- Standalone lifecycle closure: approval and rejection previously used separate non-WAL mutation paths. Both now enter the same public batch transaction engine; the boolean lock bypass and direct catalog append writer were deleted. The standalone crash matrices cover 15 approval and 12 rejection forward points (`27 passed`), including registry, audit, move, manifest, finalize, and commit-ledger boundaries.
+- Descriptor-relative mutation closure: journal, registry, audit, manifest, move, and unlink writes use held component-wise `openat(O_NOFOLLOW)` directory descriptors, durable temp-file rename, parent fsync, and post-operation directory-binding validation. The catalog lock also validates owner/mode/link/identity before and after `flock` and after the critical section without masking a primary body exception.
+- Canonical Guard closure: the manifest parser now consumes the exact bytes from the Guard's secure descriptor snapshot rather than reopening its pathname. External audit comparison covers the complete canonical provenance/review record; project-original assets additionally bind ownership, production usage, tags, dimensions, layout, and active/fallback role semantics.
+- The first ledger-hardening full run found three domain integration fixtures missing newly enforced manifest dimensions; adding their real 1080x1440 declarations made the focused regressions and the fresh full run GREEN.
 
 ## Final verification
 
@@ -97,6 +102,21 @@
   `python -m compileall -q main.py src tests`
   -> passed.
 - `git diff --check` -> clean.
+- Transaction-ledger/standalone lifecycle suite:
+  `pytest tests/asset_resolver/test_lifecycle.py -q`
+  -> `102 passed`.
+- Hardened lifecycle/Guard combined suite:
+  `pytest tests/asset_resolver/test_lifecycle.py tests/nodes/test_final_policy_guard.py -q`
+  -> `164 passed, 4 warnings` after rerunning the one transient lock-create race regression.
+- Latest broader focused suite:
+  `pytest tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py -q`
+  -> `327 passed, 2 skipped, 4 warnings`.
+- Latest full suite:
+  `pytest -q`
+  -> `1156 passed, 2 skipped` (`1158 tests collected`).
+- Latest bytecode/diff verification:
+  `python -m compileall -q main.py src tests` and `git diff --check`
+  -> passed/clean.
 
 ## Self-review
 

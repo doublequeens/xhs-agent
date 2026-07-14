@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import xml.etree.ElementTree as ET
 import re
-import hashlib
 import fcntl
 import stat
 from collections.abc import Mapping
@@ -18,6 +16,7 @@ from typing import TYPE_CHECKING
 from src.rendering.editorial.design_system import (
     ExternalAssetProvenance,
     load_catalog as load_design_system_catalog,
+    load_catalog_bytes as load_design_system_catalog_bytes,
 )
 
 if TYPE_CHECKING:
@@ -79,51 +78,95 @@ def approved_manifest_item(
 def catalog_review_lock(root: Path):
     """Serialize every catalog lifecycle writer before narrower locks."""
 
+    parent_descriptor: int | None = None
     try:
-        lock_path = root.resolve(strict=True) / ".asset-review.lock"
-        descriptor = os.open(
-            lock_path,
-            os.O_RDWR
-            | os.O_CREAT
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
+        root_path = root.resolve(strict=True)
+        root_metadata = root_path.stat()
+        if root_metadata.st_uid != os.getuid() or stat.S_IMODE(root_metadata.st_mode) & 0o022:
+            raise CatalogError("catalog review lock parent is unsafe")
+        parent_descriptor = os.open(
+            root_path,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
         )
-    except OSError as error:
+        lock_name = ".asset-review.lock"
+        for attempt in range(3):
+            try:
+                descriptor = os.open(
+                    lock_name,
+                    os.O_RDWR
+                    | os.O_CREAT
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=parent_descriptor,
+                )
+                break
+            except FileNotFoundError:
+                if attempt == 2:
+                    raise
+    except (OSError, CatalogError) as error:
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+        if isinstance(error, CatalogError):
+            raise
         raise CatalogError("catalog review lock is unsafe") from error
     locked = False
+    body_error: BaseException | None = None
+
+    def validate_binding(expected: tuple[int, int] | None = None) -> tuple[int, int]:
+        opened = os.fstat(descriptor)
+        current = os.stat(
+            lock_name,
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        identity = (opened.st_dev, opened.st_ino)
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_uid != os.getuid()
+            or stat.S_IMODE(opened.st_mode) != 0o600
+            or stat.S_ISLNK(current.st_mode)
+            or identity != (current.st_dev, current.st_ino)
+            or (expected is not None and identity != expected)
+        ):
+            raise CatalogError("catalog review lock is unsafe")
+        return identity
+
     try:
         try:
-            opened = os.fstat(descriptor)
-            current = lock_path.lstat()
-            if (
-                not stat.S_ISREG(opened.st_mode)
-                or opened.st_nlink != 1
-                or stat.S_ISLNK(current.st_mode)
-                or (opened.st_dev, opened.st_ino)
-                != (current.st_dev, current.st_ino)
-            ):
-                raise CatalogError("catalog review lock is unsafe")
+            identity = validate_binding()
             fcntl.flock(descriptor, fcntl.LOCK_EX)
             locked = True
-            opened_after_lock = os.fstat(descriptor)
-            current_after_lock = lock_path.lstat()
-            if (
-                not stat.S_ISREG(opened_after_lock.st_mode)
-                or opened_after_lock.st_nlink != 1
-                or stat.S_ISLNK(current_after_lock.st_mode)
-                or (opened_after_lock.st_dev, opened_after_lock.st_ino)
-                != (opened.st_dev, opened.st_ino)
-                or (opened_after_lock.st_dev, opened_after_lock.st_ino)
-                != (current_after_lock.st_dev, current_after_lock.st_ino)
-            ):
-                raise CatalogError("catalog review lock identity changed")
+            validate_binding(identity)
         except OSError as error:
             raise CatalogError("catalog review lock is unsafe") from error
-        yield
+        try:
+            yield
+        except BaseException as error:
+            body_error = error
+            raise
     finally:
+        cleanup_error: BaseException | None = None
+        try:
+            if locked:
+                validate_binding(identity)
+        except BaseException as error:
+            cleanup_error = error
         if locked:
-            fcntl.flock(descriptor, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+            except BaseException as error:
+                cleanup_error = cleanup_error or error
         os.close(descriptor)
+        if parent_descriptor is not None:
+            os.close(parent_descriptor)
+        if cleanup_error is not None:
+            if body_error is not None:
+                body_error.add_note(f"catalog review lock cleanup failed: {cleanup_error}")
+            else:
+                if isinstance(cleanup_error, CatalogError):
+                    raise cleanup_error
+                raise CatalogError("catalog review lock cleanup failed") from cleanup_error
 
 
 @dataclass(frozen=True, slots=True)
@@ -193,121 +236,7 @@ class AssetCatalog:
             raise CatalogError("run_id escapes incoming/external")
         return incoming_root
 
-    def append_approved(
-        self,
-        pending,
-        destination: Path,
-        *,
-        safety_review_decisions: Mapping[str, bool],
-        safety_reviewed_at: str,
-        review_disposition: str,
-        _review_lock_held: bool = False,
-    ) -> AssetEntry:
-        """Atomically append a promoted pending asset to the production manifest."""
-
-        asset_id = f"{pending.provider}-{pending.provider_asset_id}"
-        entry = AssetEntry(
-            asset_id=asset_id,
-            role=pending.role,
-            path=destination,
-            width=pending.width,
-            height=pending.height,
-            allowed_layouts=(pending.layout,),
-            tags=pending.tags,
-            disabled_contexts=(),
-            fallback_roles=pending.fallback_roles,
-            ownership="licensed_stock",
-            license=pending.license,
-            sha256=pending.sha256,
-            usage="production",
-            provenance=ExternalAssetProvenance(
-                source_type=pending.source_type,
-                acquired_at=pending.acquired_at,
-                run_id=pending.run_id,
-                provider=pending.provider,
-                provider_asset_id=pending.provider_asset_id,
-                source_url=pending.source_url,
-                source_file_url=pending.source_file_url,
-                author=pending.author,
-                provider_attribution=dict(pending.provider_attribution),
-                license_snapshot=pending.license_snapshot,
-                license_snapshot_sha256=pending.license_snapshot_sha256,
-                license_terms_url=pending.license_terms_url,
-                average_hash=pending.average_hash,
-                requirement_fingerprint=pending.requirement_fingerprint,
-                unresolved_safety_checks=pending.unresolved_safety_checks,
-                safety_review_decisions=dict(safety_review_decisions),
-                safety_reviewed_at=safety_reviewed_at,
-                review_disposition=review_disposition,
-            ),
-        )
-        if not _review_lock_held:
-            with catalog_review_lock(self.root):
-                return self.append_approved(
-                    pending,
-                    destination,
-                    safety_review_decisions=safety_review_decisions,
-                    safety_reviewed_at=safety_reviewed_at,
-                    review_disposition=review_disposition,
-                    _review_lock_held=True,
-                )
-        if self.manifest_path is None:
-            raise CatalogError("approval requires a persistent catalog manifest")
-        manifest_path = self.manifest_path
-        manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_path = manifest_path.with_suffix(f"{manifest_path.suffix}.lock")
-        with lock_path.open("a+b") as lock_handle:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
-            original_bytes = manifest_path.read_bytes()
-            original_version = hashlib.sha256(original_bytes).hexdigest()
-            raw = json.loads(original_bytes.decode("utf-8"))
-            assets = raw.setdefault("assets", [])
-            if any(item.get("asset_id") == asset_id for item in assets):
-                raise CatalogError(f"duplicate approved asset_id: {asset_id}")
-            assets.append(
-                approved_manifest_item(
-                    pending,
-                    destination,
-                    safety_review_decisions=safety_review_decisions,
-                    safety_reviewed_at=safety_reviewed_at,
-                    review_disposition=review_disposition,
-                    catalog_root=self.root,
-                )
-            )
-            file_descriptor, temporary_name = tempfile.mkstemp(
-                dir=manifest_path.parent,
-                prefix=f".{manifest_path.name}.",
-                suffix=".tmp",
-            )
-            try:
-                with os.fdopen(file_descriptor, "w", encoding="utf-8") as handle:
-                    json.dump(raw, handle, ensure_ascii=False, indent=2)
-                    handle.write("\n")
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                load_design_system_catalog(Path(temporary_name))
-                current_version = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-                if current_version != original_version:
-                    raise CatalogError("catalog manifest changed during approval")
-                os.replace(temporary_name, manifest_path)
-            finally:
-                try:
-                    os.unlink(temporary_name)
-                except FileNotFoundError:
-                    pass
-                fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
-        return entry
-
-
-def load_catalog(path: str | Path) -> AssetCatalog:
-    """Load a repository-local catalog through the design-system validator."""
-
-    manifest_path = Path(path).resolve()
-    try:
-        validated = load_design_system_catalog(manifest_path)
-    except (OSError, ValueError, ET.ParseError) as error:
-        raise CatalogError(str(error)) from error
-
+def _from_validated_catalog(validated, manifest_path: Path) -> AssetCatalog:
     entries = tuple(
         AssetEntry(
             asset_id=entry.asset_id,
@@ -333,3 +262,31 @@ def load_catalog(path: str | Path) -> AssetCatalog:
         entries=entries,
         manifest_path=manifest_path,
     )
+
+
+def load_catalog(path: str | Path) -> AssetCatalog:
+    """Load a repository-local catalog through the design-system validator."""
+
+    manifest_path = Path(path).resolve()
+    try:
+        validated = load_design_system_catalog(manifest_path)
+    except (OSError, ValueError, ET.ParseError) as error:
+        raise CatalogError(str(error)) from error
+    return _from_validated_catalog(validated, manifest_path)
+
+
+def load_catalog_bytes(
+    payload: bytes,
+    *,
+    catalog_root: str | Path,
+    manifest_path: str | Path | None = None,
+) -> AssetCatalog:
+    """Load a catalog from one caller-owned secure byte snapshot."""
+
+    root = Path(catalog_root).resolve()
+    bound_manifest = Path(manifest_path).resolve() if manifest_path else root / "manifest.json"
+    try:
+        validated = load_design_system_catalog_bytes(payload, root)
+    except (OSError, ValueError, ET.ParseError) as error:
+        raise CatalogError(str(error)) from error
+    return _from_validated_catalog(validated, bound_manifest)

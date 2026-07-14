@@ -404,6 +404,8 @@ def _install_graph_doubles(
                     "author": None,
                     "provider_attribution": {},
                     "license": "project_internal",
+                    "width": 1080,
+                    "height": 1440,
                     "license_snapshot": None,
                     "license_snapshot_sha256": None,
                     "license_terms_url": None,

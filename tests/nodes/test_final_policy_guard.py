@@ -160,6 +160,8 @@ def _editorial_guard_state(tmp_path: Path):
                 author=None,
                 provider_attribution={},
                 license="project_internal",
+                width=16,
+                height=16,
                 license_snapshot=None,
                 license_snapshot_sha256=None,
                 license_terms_url=None,

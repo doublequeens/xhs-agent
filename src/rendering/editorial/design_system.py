@@ -369,10 +369,9 @@ def _load_entry(raw: Any, catalog_root: Path) -> CatalogEntry:
     )
 
 
-def load_catalog(manifest_path: Path) -> AssetCatalog:
-    """Load and integrity-check a production-only local asset catalog."""
-    manifest_path = manifest_path.resolve()
-    raw = json.loads(manifest_path.read_text(encoding="utf-8"))
+def load_catalog_bytes(payload: bytes, catalog_root: Path) -> AssetCatalog:
+    """Validate a catalog from bytes already captured by a trusted reader."""
+    raw = json.loads(payload.decode("utf-8"))
     if not isinstance(raw, dict):
         raise ValueError("catalog manifest must be an object")
     catalog_id = raw.get("catalog_id")
@@ -382,7 +381,7 @@ def load_catalog(manifest_path: Path) -> AssetCatalog:
     if not isinstance(assets, list) or not assets:
         raise ValueError("catalog assets must be a non-empty list")
 
-    catalog_root = manifest_path.parent.resolve()
+    catalog_root = catalog_root.resolve()
     entries = tuple(_load_entry(item, catalog_root) for item in assets)
     asset_ids = [entry.asset_id for entry in entries]
     paths = [entry.path for entry in entries]
@@ -391,6 +390,12 @@ def load_catalog(manifest_path: Path) -> AssetCatalog:
     if len(set(paths)) != len(paths):
         raise ValueError("catalog paths must be unique")
     return AssetCatalog(catalog_id=catalog_id, entries=entries)
+
+
+def load_catalog(manifest_path: Path) -> AssetCatalog:
+    """Load and integrity-check a production-only local asset catalog."""
+    manifest_path = manifest_path.resolve()
+    return load_catalog_bytes(manifest_path.read_bytes(), manifest_path.parent)
 
 
 BEAUTY_EDITORIAL_V1 = DesignSystem(

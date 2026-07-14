@@ -9,7 +9,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from src.asset_resolver.catalog import load_catalog
+from src.asset_resolver.catalog import load_catalog_bytes
 from src.asset_resolver.lifecycle import PendingAuditRecord
 from src.domain import find_policy_violations
 from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
@@ -288,6 +288,13 @@ def _approved_audit_matches_canonical(
     return (
         audit.sha256 == entry.sha256 == _value(item, "sha256")
         and audit.approved_sha256 == entry.sha256
+        and audit.role == entry.role
+        and audit.layout in entry.allowed_layouts
+        and audit.layout == _value(item, "layout")
+        and audit.width == entry.width == _value(item, "width")
+        and audit.height == entry.height == _value(item, "height")
+        and tuple(audit.tags) == entry.tags
+        and tuple(audit.fallback_roles) == entry.fallback_roles
         and audit.run_id == provenance.run_id == _value(item, "run_id")
         and audit.license == entry.license == _value(item, "license")
         and audit.source_type
@@ -297,6 +304,33 @@ def _approved_audit_matches_canonical(
         and audit.provider_asset_id
         == provenance.provider_asset_id
         == _value(item, "provider_asset_id")
+        and audit.source_url == provenance.source_url == _value(item, "source_url")
+        and audit.source_file_url
+        == provenance.source_file_url
+        == _value(item, "source_file_url")
+        and audit.author == provenance.author == _value(item, "author")
+        and audit.provider_attribution
+        == dict(provenance.provider_attribution)
+        == (_value(item, "provider_attribution", {}) or {})
+        and audit.license_snapshot
+        == provenance.license_snapshot
+        == _value(item, "license_snapshot")
+        and audit.license_snapshot_sha256
+        == provenance.license_snapshot_sha256
+        == _value(item, "license_snapshot_sha256")
+        and audit.license_terms_url
+        == provenance.license_terms_url
+        == _value(item, "license_terms_url")
+        and audit.acquired_at == provenance.acquired_at == _value(item, "acquired_at")
+        and audit.average_hash
+        == provenance.average_hash
+        == _value(item, "average_hash")
+        and audit.requirement_fingerprint
+        == provenance.requirement_fingerprint
+        == _value(item, "requirement_fingerprint")
+        and list(audit.unresolved_safety_checks)
+        == list(provenance.unresolved_safety_checks)
+        == list(_value(item, "unresolved_safety_checks", []) or [])
         and audit.safety_review_decisions
         == dict(provenance.safety_review_decisions)
         == (_value(item, "safety_review_decisions", {}) or {})
@@ -327,7 +361,20 @@ def _asset_item_matches_canonical(
     provenance = entry.provenance
     if provenance is None:
         return (
-            _value(item, "source_type") == "local"
+            entry.ownership == "project_original"
+            and entry.usage == "production"
+            and bool(entry.tags)
+            and _value(item, "layout") in entry.allowed_layouts
+            and _value(item, "width") == entry.width
+            and _value(item, "height") == entry.height
+            and (
+                (_value(item, "status") == "active" and _value(item, "role") == entry.role)
+                or (
+                    _value(item, "status") == "fallback"
+                    and _value(item, "role") in entry.fallback_roles
+                )
+            )
+            and _value(item, "source_type") == "local"
             and _value(item, "provider") is None
             and _value(item, "provider_asset_id") is None
             and _value(item, "run_id") is None
@@ -336,6 +383,23 @@ def _asset_item_matches_canonical(
             and _value(item, "review_status") is None
             and _value(item, "review_disposition") is None
         )
+    if (
+        entry.ownership != "licensed_stock"
+        or entry.usage != "production"
+        or not entry.tags
+        or _value(item, "layout") not in entry.allowed_layouts
+        or _value(item, "width") != entry.width
+        or _value(item, "height") != entry.height
+        or (
+            _value(item, "status") == "active"
+            and _value(item, "role") != entry.role
+        )
+        or (
+            _value(item, "status") == "fallback"
+            and _value(item, "role") not in entry.fallback_roles
+        )
+    ):
+        return False
     fields = (
         ("source_type", provenance.source_type),
         ("provider", provenance.provider),
@@ -422,16 +486,11 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         )
         if manifest_before is None:
             raise ValueError("canonical catalog manifest is not trusted")
-        canonical_catalog = load_catalog(catalog_manifest_path)
-        manifest_after = _secure_file_snapshot(
-            catalog_manifest_path,
-            catalog_root,
+        canonical_catalog = load_catalog_bytes(
+            manifest_before[3],
+            catalog_root=catalog_root,
+            manifest_path=catalog_manifest_path,
         )
-        if (
-            manifest_after is None
-            or manifest_before[1:3] != manifest_after[1:3]
-        ):
-            raise ValueError("canonical catalog manifest changed during validation")
         canonical_entries_by_path = {
             Path(os.path.abspath(entry.path)): entry
             for entry in canonical_catalog.entries
