@@ -1,4 +1,5 @@
 import hashlib
+import json
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -70,8 +71,33 @@ def _editorial_guard_state(tmp_path: Path):
     active_root = tmp_path / "assets" / "active"
     active_root.mkdir(parents=True)
     asset_path = active_root / "asset.svg"
-    asset_path.write_bytes(b"active asset")
+    asset_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"></svg>'
+    )
     asset_sha = hashlib.sha256(asset_path.read_bytes()).hexdigest()
+    (active_root.parent / "manifest.json").write_text(
+        json.dumps(
+            {
+                "catalog_id": "test_editorial_catalog",
+                "assets": [
+                    {
+                        "asset_id": "test_asset",
+                        "role": "product_texture",
+                        "path": "active/asset.svg",
+                        "ownership": "project_original",
+                        "license": "project_internal",
+                        "dimensions": {"width": 16, "height": 16},
+                        "sha256": asset_sha,
+                        "allowed_layouts": ["editorial_cover"],
+                        "tags": ["test"],
+                        "disabled_contexts": [],
+                        "fallback_roles": ["product_texture"],
+                        "usage": "production",
+                    }
+                ],
+            }
+        )
+    )
 
     image_dir = tmp_path / "images"
     image_dir.mkdir()
@@ -125,6 +151,27 @@ def _editorial_guard_state(tmp_path: Path):
                 status="active",
                 path=str(asset_path),
                 sha256=asset_sha,
+                asset_id="test_asset",
+                source_type="local",
+                provider=None,
+                provider_asset_id=None,
+                source_url=None,
+                source_file_url=None,
+                author=None,
+                provider_attribution={},
+                license="project_internal",
+                license_snapshot=None,
+                license_snapshot_sha256=None,
+                license_terms_url=None,
+                run_id=None,
+                acquired_at=None,
+                average_hash=None,
+                requirement_fingerprint=None,
+                unresolved_safety_checks=[],
+                safety_review_decisions={},
+                safety_reviewed_at=None,
+                review_status=None,
+                review_disposition=None,
             )
         ]
     )
@@ -1850,6 +1897,54 @@ def test_final_policy_guard_rejects_intermediate_directory_symlink_swap(
     }
 
 
+def test_final_policy_guard_rejects_trusted_root_parent_symlink_swap(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    trusted_parent = tmp_path / "trusted-parent"
+    render_root = trusted_parent / "render-root"
+    render_root.mkdir(parents=True)
+    original_images = tmp_path / "images"
+    moved_images = render_root / "images"
+    original_images.replace(moved_images)
+    for page in state["render_manifest"].pages:
+        page.path = str(moved_images / Path(page.path).name)
+    state["publish_package"]["rendered_image_paths"] = [
+        page.path for page in state["render_manifest"].pages
+    ]
+    state["render_manifest"].contact_sheet_path = str(
+        moved_images / "contact-sheet.png"
+    )
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
+    original_open = module.os.open
+    moved_parent = tmp_path / "trusted-parent-original"
+    swapped = False
+
+    def swapping_open(path, flags, *, dir_fd=None):
+        nonlocal swapped
+        if not swapped and (
+            Path(path) == render_root or str(path) == trusted_parent.name
+        ):
+            swapped = True
+            trusted_parent.rename(moved_parent)
+            trusted_parent.symlink_to(moved_parent, target_is_directory=True)
+        return original_open(path, flags, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module.os, "open", swapping_open)
+
+    snapshot = module._secure_file_snapshot(
+        state["render_manifest"].pages[0].path,
+        render_root,
+    )
+
+    assert snapshot is None
+
+
 def test_final_policy_guard_rejects_symlinked_active_asset(
     monkeypatch,
     tmp_path,
@@ -1984,6 +2079,23 @@ def test_final_policy_guard_accepts_real_catalog_asset_reuse(
     assert result["final_policy_issues"] == []
 
 
+def test_explicit_modern_v2_marker_spoof_still_reports_missing_artifacts():
+    result = final_policy_guard_node(
+        {
+            "publish_package": _publish_package(),
+            "editorial_workflow_version": "modern_v2",
+            "legacy_editorial_checkpoint": True,
+            "review_status": "approved",
+        }
+    )
+
+    assert {
+        "visual_plan_missing",
+        "asset_manifest_missing",
+        "render_manifest_missing",
+    }.issubset({issue["rule_id"] for issue in result["final_policy_issues"]})
+
+
 def test_final_policy_guard_rejects_conflicting_declaration_for_reused_asset(
     monkeypatch,
     tmp_path,
@@ -2013,5 +2125,40 @@ def test_final_policy_guard_rejects_conflicting_declaration_for_reused_asset(
     result = final_policy_guard_node(state)
 
     assert "asset_file_declaration_conflict" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def test_final_policy_guard_rejects_consistent_forged_reuse_provenance(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root, render_root = _real_reused_asset_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
+    items = list(state["asset_manifest"].items)
+    repeated_path = next(
+        path
+        for path in {item.path for item in items}
+        if sum(item.path == path for item in items) > 1
+    )
+    items = [
+        (
+            item.model_copy(update={"asset_id": "forged-canonical-id"})
+            if item.path == repeated_path
+            else item
+        )
+        for item in items
+    ]
+    state["asset_manifest"] = state["asset_manifest"].model_copy(
+        update={"items": items}
+    )
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_provenance_not_canonical" in {
         issue["rule_id"] for issue in result["final_policy_issues"]
     }

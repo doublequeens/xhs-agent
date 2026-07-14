@@ -552,6 +552,71 @@ def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
     assert current_state.values["legacy_editorial_checkpoint"] is False
 
 
+def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
+    monkeypatch,
+):
+    main = _load_main(monkeypatch)
+    values = {
+        "domain_context": {},
+        "editorial_workflow_version": "modern_v2",
+        "legacy_editorial_checkpoint": True,
+        "publish_package": {
+            "storyboards": [
+                {"frame_id": "frame-1", "template": "cover_statement"}
+            ]
+        },
+    }
+    calls = []
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(
+                values={**values, **(calls[-1] if calls else {})},
+                next=("carousel_qa",),
+            )
+
+        def update_state(self, _config, updates, **_kwargs):
+            calls.append(updates)
+
+    current_state, _ = main.load_run_state(
+        FakeGraph(), {"configurable": {"thread_id": "modern-old-shape"}}, {}
+    )
+
+    assert calls == [{"legacy_editorial_checkpoint": False}]
+    assert current_state.values["editorial_workflow_version"] == "modern_v2"
+    assert current_state.values["legacy_editorial_checkpoint"] is False
+    assert "visual_plan" not in current_state.values
+
+
+def test_unknown_editorial_version_with_legacy_marker_fails_closed(monkeypatch):
+    main = _load_main(monkeypatch)
+    state = SimpleNamespace(
+        values={
+            "domain_context": {},
+            "editorial_workflow_version": "attacker_v9",
+            "legacy_editorial_checkpoint": True,
+            "publish_package": {
+                "storyboards": [
+                    {"frame_id": "frame-1", "template": "cover_statement"}
+                ]
+            },
+        },
+        next=("carousel_qa",),
+    )
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return state
+
+        def update_state(self, *_args, **_kwargs):
+            raise AssertionError("unknown versions must not be rewritten")
+
+    with pytest.raises(ValueError, match="unsupported editorial workflow version"):
+        main.load_run_state(
+            FakeGraph(), {"configurable": {"thread_id": "unknown-version"}}, {}
+        )
+
+
 def test_load_run_state_does_not_replace_present_malformed_domain_context(monkeypatch):
     main = _load_main(monkeypatch)
     malformed_state = SimpleNamespace(

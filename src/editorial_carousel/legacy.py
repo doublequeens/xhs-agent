@@ -27,10 +27,10 @@ def hydrate_legacy_content_contract(raw: Mapping[str, Any]) -> dict[str, Any]:
 def is_legacy_editorial_checkpoint(state: Mapping[str, Any]) -> bool:
     """Return whether state was explicitly hydrated from a pre-editorial run."""
 
-    return (
-        state.get(EDITORIAL_WORKFLOW_VERSION_KEY) == LEGACY_EDITORIAL_V1
-        or state.get(LEGACY_EDITORIAL_CHECKPOINT_KEY) is True
-    )
+    version = state.get(EDITORIAL_WORKFLOW_VERSION_KEY)
+    if version is not None:
+        return version == LEGACY_EDITORIAL_V1
+    return state.get(LEGACY_EDITORIAL_CHECKPOINT_KEY) is True
 
 
 def modern_editorial_transition_updates() -> dict[str, Any]:
@@ -76,25 +76,6 @@ _MODERN_STORYBOARD_FIELDS = frozenset(
 )
 
 
-def _has_explicit_legacy_version(values: Mapping[str, Any]) -> bool:
-    if values.get(LEGACY_EDITORIAL_CHECKPOINT_KEY) is True:
-        return True
-    legacy_values = {
-        0,
-        1,
-        "0",
-        "1",
-        "v1",
-        "legacy",
-        "pre-editorial",
-        LEGACY_EDITORIAL_V1,
-    }
-    return any(
-        values.get(key) in legacy_values
-        for key in ("editorial_workflow_version", "editorial_schema_version")
-    )
-
-
 def _strict_legacy_storyboards(package: Mapping[str, Any]) -> bool:
     storyboards = package.get("storyboards")
     return (
@@ -125,6 +106,15 @@ def hydrate_legacy_editorial_state(
     package = values.get("publish_package")
     if not isinstance(package, Mapping):
         return {}
+    version = values.get(EDITORIAL_WORKFLOW_VERSION_KEY)
+    if version == MODERN_EDITORIAL_V2:
+        return (
+            {LEGACY_EDITORIAL_CHECKPOINT_KEY: False}
+            if values.get(LEGACY_EDITORIAL_CHECKPOINT_KEY) is True
+            else {}
+        )
+    if version not in {None, LEGACY_EDITORIAL_V1}:
+        raise ValueError(f"unsupported editorial workflow version: {version}")
     manifest_slots = ("visual_plan", "asset_manifest", "render_manifest")
     modern_storyboard = any(
         isinstance(frame, Mapping)
@@ -132,6 +122,8 @@ def hydrate_legacy_editorial_state(
         for frame in list(package.get("storyboards") or [])
     )
     if modern_storyboard or all(name in values for name in manifest_slots):
+        if version == LEGACY_EDITORIAL_V1:
+            raise ValueError("legacy editorial version conflicts with modern artifacts")
         return (
             {
                 LEGACY_EDITORIAL_CHECKPOINT_KEY: False,
@@ -141,14 +133,17 @@ def hydrate_legacy_editorial_state(
             or values.get(EDITORIAL_WORKFLOW_VERSION_KEY) == LEGACY_EDITORIAL_V1
             else {}
         )
-    explicit_legacy = _has_explicit_legacy_version(values)
+    exact_legacy_successor = (
+        len(checkpoint_nodes) == 1
+        and checkpoint_nodes[0] in _LEGACY_CHECKPOINT_NODES
+    )
     shape_and_node_legacy = (
         _strict_legacy_storyboards(package)
-        and bool(_LEGACY_CHECKPOINT_NODES.intersection(checkpoint_nodes))
+        and exact_legacy_successor
     )
     raw_contract = package.get("content_contract")
     old_contract_before_storyboard = (
-        "storyboard_generator" in checkpoint_nodes
+        checkpoint_nodes == ("storyboard_generator",)
         and isinstance(raw_contract, Mapping)
         and "visual_mode" in raw_contract
         and not {
@@ -159,8 +154,19 @@ def hydrate_legacy_editorial_state(
             "recommended_frame_count",
         }.intersection(raw_contract)
     )
-    if not explicit_legacy and not shape_and_node_legacy and not old_contract_before_storyboard:
-        return {}
+    if (
+        version != LEGACY_EDITORIAL_V1
+        and not shape_and_node_legacy
+        and not old_contract_before_storyboard
+    ):
+        return (
+            {
+                LEGACY_EDITORIAL_CHECKPOINT_KEY: False,
+                EDITORIAL_WORKFLOW_VERSION_KEY: MODERN_EDITORIAL_V2,
+            }
+            if values.get(LEGACY_EDITORIAL_CHECKPOINT_KEY) is True
+            else {}
+        )
 
     hydrated_package = dict(package)
     raw_contract = hydrated_package.get("content_contract")

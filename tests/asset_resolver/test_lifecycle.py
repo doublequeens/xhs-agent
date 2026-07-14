@@ -681,17 +681,11 @@ def test_batch_review_rolls_back_first_approval_when_second_approval_fails(
     first = pending_asset(tmp_path, asset_id="p1")
     second = pending_asset(tmp_path, asset_id="p2")
     asset_catalog = catalog(tmp_path)
-    original_approve = lifecycle._approve_external_asset_locked
-    calls = 0
-
-    def fail_second(candidate, *args, **kwargs):
-        nonlocal calls
-        calls += 1
-        if calls == 2:
+    def fail_second(event: str) -> None:
+        if event == f"{second.pending_id}.audit.intent":
             raise RuntimeError("second approval failed")
-        return original_approve(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(lifecycle, "_approve_external_asset_locked", fail_second)
+    monkeypatch.setattr(lifecycle, "_crash_point", fail_second)
 
     with pytest.raises(RuntimeError, match="second approval failed"):
         lifecycle.review_pending_asset_batch(
@@ -893,6 +887,7 @@ def test_batch_rollback_aggregates_failures_and_recovers_on_retry(
     destination = tmp_path / "active" / "stock" / "serum-p1.webp"
     original_replace = Path.replace
     original_atomic_write_bytes = lifecycle._atomic_write_bytes
+    original_audit_bytes = candidate.metadata_path.read_bytes()
     fail_rollback = {"enabled": True}
 
     def fail_asset_restore(path: Path, target: Path) -> Path:
@@ -901,7 +896,11 @@ def test_batch_rollback_aggregates_failures_and_recovers_on_retry(
         return original_replace(path, target)
 
     def fail_audit_restore(path: Path, payload: bytes) -> None:
-        if fail_rollback["enabled"] and path == candidate.metadata_path:
+        if (
+            fail_rollback["enabled"]
+            and path == candidate.metadata_path
+            and payload == original_audit_bytes
+        ):
             raise OSError("rollback audit write failed")
         original_atomic_write_bytes(path, payload)
 
@@ -955,3 +954,389 @@ def test_batch_review_accepts_only_canonical_pending_ids(tmp_path: Path) -> None
 
     assert candidate.path.is_file()
     assert json.loads(candidate.metadata_path.read_text())["review_status"] == "pending"
+
+
+def test_batch_recovery_rejects_external_symlink_journal_directory(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import (
+        AssetLifecycleError,
+        review_pending_asset_batch,
+    )
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    external_journals = tmp_path / "outside-journals"
+    external_journals.mkdir()
+    recovery_root = tmp_path / ".asset-review-recovery"
+    recovery_root.symlink_to(external_journals, target_is_directory=True)
+    outside_source = tmp_path / "outside-source.bin"
+    outside_target = tmp_path / "outside-target.bin"
+    outside_source.write_bytes(b"do not move")
+    manifest_bytes = (tmp_path / "manifest.json").read_bytes()
+    malicious = {
+        "state": "needs_recovery",
+        "manifest_bytes_b64": __import__("base64").b64encode(
+            manifest_bytes
+        ).decode("ascii"),
+        "expected_manifest_sha256": hashlib.sha256(manifest_bytes).hexdigest(),
+        "assets": [
+            {
+                "pending_path": str(outside_target),
+                "destination": str(outside_source),
+                "metadata_path": str(candidate.metadata_path),
+                "audit_bytes_b64": __import__("base64").b64encode(
+                    candidate.metadata_path.read_bytes()
+                ).decode("ascii"),
+            }
+        ],
+    }
+    (external_journals / "attacker.json").write_text(json.dumps(malicious))
+
+    with pytest.raises(AssetLifecycleError, match="recovery journal directory"):
+        review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert outside_source.read_bytes() == b"do not move"
+    assert not outside_target.exists()
+
+
+def _leave_recovery_journal(
+    tmp_path: Path,
+    candidate,
+    asset_catalog: AssetCatalog,
+) -> Path:
+    from src.asset_resolver.lifecycle import review_pending_asset_batch
+
+    manifest_path = tmp_path / "manifest.json"
+
+    def force_manifest_cas_failure() -> None:
+        raw = json.loads(manifest_path.read_text())
+        raw["unrelated_committed_value"] = True
+        manifest_path.write_text(json.dumps(raw))
+        raise RuntimeError("leave recovery journal")
+
+    with pytest.raises(RuntimeError, match="leave recovery journal"):
+        review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+            finalize=force_manifest_cas_failure,
+        )
+    journals = list((tmp_path / ".asset-review-recovery").glob("*.json"))
+    assert len(journals) == 1
+    return journals[0]
+
+
+def test_batch_recovery_rejects_journal_path_escape_before_mutation(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import (
+        AssetLifecycleError,
+        review_pending_asset_batch,
+    )
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    journal_path = _leave_recovery_journal(tmp_path, candidate, asset_catalog)
+    outside_source = tmp_path / "outside-source.bin"
+    outside_target = tmp_path / "outside-target.bin"
+    outside_source.write_bytes(b"do not move")
+    journal = json.loads(journal_path.read_text())
+    journal["assets"][0]["pending_path"] = str(outside_target)
+    journal["assets"][0]["destination"] = str(outside_source)
+    journal_path.write_text(json.dumps(journal))
+
+    with pytest.raises(AssetLifecycleError, match="recovery journal"):
+        review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert outside_source.read_bytes() == b"do not move"
+    assert not outside_target.exists()
+
+
+def test_batch_recovery_rejects_unknown_journal_schema_before_mutation(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import (
+        AssetLifecycleError,
+        review_pending_asset_batch,
+    )
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    journal_path = _leave_recovery_journal(tmp_path, candidate, asset_catalog)
+    original_audit = candidate.metadata_path.read_bytes()
+    journal = json.loads(journal_path.read_text())
+    journal["attacker_extension"] = {"write": "/tmp/owned"}
+    journal_path.write_text(json.dumps(journal))
+
+    with pytest.raises(AssetLifecycleError, match="schema"):
+        review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert candidate.metadata_path.read_bytes() == original_audit
+
+
+def test_batch_recovery_rejects_tampered_audit_snapshot_before_mutation(
+    tmp_path: Path,
+) -> None:
+    import base64
+
+    from src.asset_resolver.lifecycle import (
+        AssetLifecycleError,
+        review_pending_asset_batch,
+    )
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    journal_path = _leave_recovery_journal(tmp_path, candidate, asset_catalog)
+    original_audit = candidate.metadata_path.read_bytes()
+    journal = json.loads(journal_path.read_text())
+    journal["assets"][0]["original_audit_bytes_b64"] = base64.b64encode(
+        b'{"review_status":"attacker"}'
+    ).decode("ascii")
+    journal_path.write_text(json.dumps(journal))
+
+    with pytest.raises(AssetLifecycleError, match="audit snapshot"):
+        review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert candidate.metadata_path.read_bytes() == original_audit
+
+
+@pytest.mark.parametrize(
+    "event_template",
+    [
+        "transaction.prepared",
+        "transaction.applying",
+        "{pending_id}.audit.intent",
+        "{pending_id}.audit.applied",
+        "{pending_id}.audit.done",
+        "{pending_id}.move.intent",
+        "{pending_id}.move.applied",
+        "{pending_id}.move.done",
+        "manifest.intent",
+        "manifest.applied",
+        "manifest.done",
+        "transaction.finalizing",
+        "transaction.committed",
+    ],
+)
+def test_batch_recovers_idempotently_after_every_forward_wal_crash_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    event_template: str,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    target_event = event_template.format(pending_id=candidate.pending_id)
+    observed = []
+
+    def crash_at_target(event: str) -> None:
+        observed.append(event)
+        if event == target_event:
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_at_target)
+    with pytest.raises(SimulatedProcessCrash, match=target_event):
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+    assert target_event in observed
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    lifecycle.review_pending_asset_batch(
+        asset_catalog,
+        [_batch_item(candidate)],
+        {candidate.pending_id: _batch_decision(candidate)},
+        rejection_reason="not selected",
+    )
+
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    assert destination.is_file()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert [item["asset_id"] for item in manifest["assets"]] == ["pexels-p1"]
+    assert list((tmp_path / ".asset-review-recovery").glob("*.json")) == []
+
+
+@pytest.mark.parametrize(
+    "event_template",
+    [
+        "rollback_manifest.intent",
+        "rollback_manifest.applied",
+        "rollback_manifest.done",
+        "{pending_id}.rollback_move.intent",
+        "{pending_id}.rollback_move.applied",
+        "{pending_id}.rollback_move.done",
+        "{pending_id}.rollback_audit.intent",
+        "{pending_id}.rollback_audit.applied",
+        "{pending_id}.rollback_audit.done",
+    ],
+)
+def test_batch_recovers_idempotently_after_every_rollback_wal_crash_point(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    event_template: str,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    target_event = event_template.format(pending_id=candidate.pending_id)
+
+    def crash_during_rollback(event: str) -> None:
+        if event == target_event:
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_during_rollback)
+    with pytest.raises(SimulatedProcessCrash, match=target_event):
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+            finalize=lambda: (_ for _ in ()).throw(RuntimeError("finalize failed")),
+        )
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    lifecycle.review_pending_asset_batch(
+        asset_catalog,
+        [_batch_item(candidate)],
+        {candidate.pending_id: _batch_decision(candidate)},
+        rejection_reason="not selected",
+    )
+
+    assert (tmp_path / "active" / "stock" / "serum-p1.webp").is_file()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
+    assert list((tmp_path / ".asset-review-recovery").glob("*.json")) == []
+
+
+def test_failed_retry_of_preexisting_approval_does_not_roll_it_back(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import review_pending_asset_batch
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    items = [_batch_item(candidate)]
+    decisions = {candidate.pending_id: _batch_decision(candidate)}
+    review_pending_asset_batch(
+        asset_catalog,
+        items,
+        decisions,
+        rejection_reason="not selected",
+    )
+
+    with pytest.raises(RuntimeError, match="retry finalize failed"):
+        review_pending_asset_batch(
+            asset_catalog,
+            items,
+            decisions,
+            rejection_reason="not selected",
+            finalize=lambda: (_ for _ in ()).throw(
+                RuntimeError("retry finalize failed")
+            ),
+        )
+
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    assert destination.is_file()
+    assert not candidate.path.exists()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert [item["asset_id"] for item in manifest["assets"]] == ["pexels-p1"]
+
+
+def test_catalog_review_lock_rejects_symlink(tmp_path: Path) -> None:
+    from src.asset_resolver.catalog import CatalogError
+    from src.asset_resolver.lifecycle import approve_external_asset
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    outside = tmp_path / "outside-lock-target"
+    outside.write_bytes(b"outside")
+    (tmp_path / ".asset-review.lock").symlink_to(outside)
+
+    with pytest.raises(CatalogError, match="review lock"):
+        approve_external_asset(candidate, asset_catalog)
+
+    assert outside.read_bytes() == b"outside"
+    assert candidate.path.is_file()
+
+
+def test_catalog_review_lock_rejects_hardlink_alias(tmp_path: Path) -> None:
+    import os
+
+    from src.asset_resolver.catalog import CatalogError
+    from src.asset_resolver.lifecycle import approve_external_asset
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    outside = tmp_path / "outside-lock-target"
+    outside.write_bytes(b"outside")
+    os.link(outside, tmp_path / ".asset-review.lock")
+
+    with pytest.raises(CatalogError, match="review lock"):
+        approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.is_file()
+
+
+def test_catalog_review_lock_rejects_replacement_after_flock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.catalog as catalog_module
+    from src.asset_resolver.catalog import CatalogError
+    from src.asset_resolver.lifecycle import approve_external_asset
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    lock_path = tmp_path / ".asset-review.lock"
+    original_flock = catalog_module.fcntl.flock
+    replaced = False
+
+    def replace_after_lock(descriptor: int, operation: int) -> None:
+        nonlocal replaced
+        original_flock(descriptor, operation)
+        if operation == catalog_module.fcntl.LOCK_EX and not replaced:
+            replaced = True
+            replacement = tmp_path / "replacement-lock"
+            replacement.write_bytes(b"replacement")
+            replacement.replace(lock_path)
+
+    monkeypatch.setattr(catalog_module.fcntl, "flock", replace_after_lock)
+
+    with pytest.raises(CatalogError, match="review lock"):
+        approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.is_file()

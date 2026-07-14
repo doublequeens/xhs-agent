@@ -1,4 +1,5 @@
 import hashlib
+import json
 import sqlite3
 from pathlib import Path
 
@@ -377,11 +378,15 @@ def _install_graph_doubles(
 
     def asset_resolver_node(state):
         items = []
+        catalog_assets = []
         for requirement in state["visual_plan"].required_assets:
             asset_path = active_root / f"{requirement.slot_id}.svg"
-            asset_path.write_bytes(
-                f"domain integration asset {requirement.slot_id}".encode()
+            asset_path.write_text(
+                '<svg xmlns="http://www.w3.org/2000/svg" '
+                'width="1080" height="1440"></svg>'
             )
+            asset_id = f"fixture-{requirement.slot_id}"
+            asset_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
             items.append(
                 {
                     "slot_id": requirement.slot_id,
@@ -389,9 +394,54 @@ def _install_graph_doubles(
                     "layout": requirement.layout,
                     "status": "active",
                     "path": str(asset_path),
-                    "sha256": hashlib.sha256(asset_path.read_bytes()).hexdigest(),
+                    "sha256": asset_sha256,
+                    "asset_id": asset_id,
+                    "source_type": "local",
+                    "provider": None,
+                    "provider_asset_id": None,
+                    "source_url": None,
+                    "source_file_url": None,
+                    "author": None,
+                    "provider_attribution": {},
+                    "license": "project_internal",
+                    "license_snapshot": None,
+                    "license_snapshot_sha256": None,
+                    "license_terms_url": None,
+                    "run_id": None,
+                    "acquired_at": None,
+                    "average_hash": None,
+                    "requirement_fingerprint": None,
+                    "unresolved_safety_checks": [],
+                    "safety_review_decisions": {},
+                    "safety_reviewed_at": None,
+                    "review_status": None,
+                    "review_disposition": None,
                 }
             )
+            catalog_assets.append(
+                {
+                    "asset_id": asset_id,
+                    "role": requirement.role,
+                    "path": f"active/{requirement.slot_id}.svg",
+                    "ownership": "project_original",
+                    "license": "project_internal",
+                    "dimensions": {"width": 1080, "height": 1440},
+                    "sha256": asset_sha256,
+                    "allowed_layouts": [requirement.layout],
+                    "tags": ["integration"],
+                    "disabled_contexts": [],
+                    "fallback_roles": [requirement.role],
+                    "usage": "production",
+                }
+            )
+        (active_root.parent / "manifest.json").write_text(
+            json.dumps(
+                {
+                    "catalog_id": "domain_integration_catalog",
+                    "assets": catalog_assets,
+                }
+            )
+        )
         return {
             "asset_manifest": {"items": items}
         }

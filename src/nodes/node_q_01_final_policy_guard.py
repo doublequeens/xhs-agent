@@ -9,6 +9,8 @@ from pathlib import Path
 
 from PIL import Image
 
+from src.asset_resolver.catalog import load_catalog
+from src.asset_resolver.lifecycle import PendingAuditRecord
 from src.domain import find_policy_violations
 from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.rendering.editorial.design_system import ASSET_ROOT
@@ -100,10 +102,11 @@ def _artifact_issue(rule_id: str, message: str, location: str) -> dict:
 
 def _secure_file_snapshot(path_value, trusted_root: Path):
     directory_descriptors: list[int] = []
+    directory_bindings: list[tuple[int, str, tuple[int, int]]] = []
     descriptor: int | None = None
     try:
         raw_path = Path(path_value)
-        root = trusted_root.resolve(strict=True)
+        root = Path(os.path.abspath(trusted_root))
         lexical_path = Path(
             os.path.abspath(raw_path if raw_path.is_absolute() else root / raw_path)
         )
@@ -114,15 +117,63 @@ def _secure_file_snapshot(path_value, trusted_root: Path):
             return None
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         directory_flags = os.O_RDONLY | os.O_DIRECTORY | nofollow
-        directory_descriptors.append(os.open(root, directory_flags))
-        for component in relative_parts[:-1]:
-            directory_descriptors.append(
-                os.open(
+        directory_descriptors.append(os.open(root.anchor, directory_flags))
+        for component in root.parts[1:]:
+            parent_descriptor = directory_descriptors[-1]
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+            opened_directory = os.fstat(child_descriptor)
+            named_directory = os.stat(
+                component,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(opened_directory.st_mode)
+                or (opened_directory.st_dev, opened_directory.st_ino)
+                != (named_directory.st_dev, named_directory.st_ino)
+            ):
+                os.close(child_descriptor)
+                raise OSError("trusted root component identity changed")
+            directory_bindings.append(
+                (
+                    parent_descriptor,
                     component,
-                    directory_flags,
-                    dir_fd=directory_descriptors[-1],
+                    (opened_directory.st_dev, opened_directory.st_ino),
                 )
             )
+            directory_descriptors.append(child_descriptor)
+        for component in relative_parts[:-1]:
+            parent_descriptor = directory_descriptors[-1]
+            child_descriptor = os.open(
+                component,
+                directory_flags,
+                dir_fd=parent_descriptor,
+            )
+            opened_directory = os.fstat(child_descriptor)
+            named_directory = os.stat(
+                component,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                not stat.S_ISDIR(opened_directory.st_mode)
+                or (opened_directory.st_dev, opened_directory.st_ino)
+                != (named_directory.st_dev, named_directory.st_ino)
+            ):
+                os.close(child_descriptor)
+                raise OSError("artifact directory component identity changed")
+            directory_bindings.append(
+                (
+                    parent_descriptor,
+                    component,
+                    (opened_directory.st_dev, opened_directory.st_ino),
+                )
+            )
+            directory_descriptors.append(child_descriptor)
         descriptor = os.open(
             relative_parts[-1],
             os.O_RDONLY | nofollow,
@@ -155,6 +206,20 @@ def _secure_file_snapshot(path_value, trusted_root: Path):
             return None
         if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
             return None
+        for parent_descriptor, component, identity in directory_bindings:
+            try:
+                current_directory = os.stat(
+                    component,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except OSError:
+                return None
+            if (
+                current_directory.st_dev,
+                current_directory.st_ino,
+            ) != identity:
+                return None
         return (
             lexical_path,
             (opened.st_dev, opened.st_ino),
@@ -181,6 +246,127 @@ def _secure_png_snapshot(path_value, trusted_root: Path):
     except (OSError, ValueError):
         return None
     return canonical, identity, digest
+
+
+def _approved_audit_matches_canonical(
+    item,
+    entry,
+    *,
+    catalog_root: Path,
+) -> bool:
+    provenance = entry.provenance
+    if provenance is None:
+        return True
+    incoming_root = (
+        catalog_root / "incoming" / "external" / provenance.run_id
+    )
+    if not incoming_root.is_dir():
+        return False
+    matching_audits = []
+    for metadata_path in incoming_root.glob("*.json"):
+        snapshot = _secure_file_snapshot(metadata_path, incoming_root)
+        if snapshot is None:
+            continue
+        try:
+            audit = PendingAuditRecord.model_validate_json(
+                snapshot[3],
+                strict=True,
+            )
+        except (TypeError, ValueError):
+            continue
+        if (
+            audit.review_status == "approved"
+            and Path(str(audit.approved_path)) == entry.path
+            and audit.pending_id
+            and audit.provider == provenance.provider
+            and audit.provider_asset_id == provenance.provider_asset_id
+        ):
+            matching_audits.append(audit)
+    if len(matching_audits) != 1:
+        return False
+    audit = matching_audits[0]
+    return (
+        audit.sha256 == entry.sha256 == _value(item, "sha256")
+        and audit.approved_sha256 == entry.sha256
+        and audit.run_id == provenance.run_id == _value(item, "run_id")
+        and audit.license == entry.license == _value(item, "license")
+        and audit.source_type
+        == provenance.source_type
+        == _value(item, "source_type")
+        and audit.provider == provenance.provider == _value(item, "provider")
+        and audit.provider_asset_id
+        == provenance.provider_asset_id
+        == _value(item, "provider_asset_id")
+        and audit.safety_review_decisions
+        == dict(provenance.safety_review_decisions)
+        == (_value(item, "safety_review_decisions", {}) or {})
+        and audit.safety_reviewed_at
+        == provenance.safety_reviewed_at
+        == _value(item, "safety_reviewed_at")
+        and audit.review_disposition
+        == provenance.review_disposition
+        == _value(item, "review_disposition")
+        and _value(item, "review_status") == "approved"
+    )
+
+
+def _asset_item_matches_canonical(
+    item,
+    entry,
+    *,
+    catalog_root: Path,
+    canonical_path: Path,
+) -> bool:
+    if (
+        _value(item, "asset_id") != entry.asset_id
+        or Path(os.path.abspath(_value(item, "path"))) != canonical_path
+        or _value(item, "sha256") != entry.sha256
+        or _value(item, "license") != entry.license
+    ):
+        return False
+    provenance = entry.provenance
+    if provenance is None:
+        return (
+            _value(item, "source_type") == "local"
+            and _value(item, "provider") is None
+            and _value(item, "provider_asset_id") is None
+            and _value(item, "run_id") is None
+            and (_value(item, "safety_review_decisions", {}) or {}) == {}
+            and _value(item, "safety_reviewed_at") is None
+            and _value(item, "review_status") is None
+            and _value(item, "review_disposition") is None
+        )
+    fields = (
+        ("source_type", provenance.source_type),
+        ("provider", provenance.provider),
+        ("provider_asset_id", provenance.provider_asset_id),
+        ("source_url", provenance.source_url),
+        ("source_file_url", provenance.source_file_url),
+        ("author", provenance.author),
+        ("license_snapshot", provenance.license_snapshot),
+        ("license_snapshot_sha256", provenance.license_snapshot_sha256),
+        ("license_terms_url", provenance.license_terms_url),
+        ("run_id", provenance.run_id),
+        ("acquired_at", provenance.acquired_at),
+        ("average_hash", provenance.average_hash),
+        ("requirement_fingerprint", provenance.requirement_fingerprint),
+        ("safety_reviewed_at", provenance.safety_reviewed_at),
+        ("review_disposition", provenance.review_disposition),
+    )
+    return (
+        all(_value(item, field_name) == expected for field_name, expected in fields)
+        and (_value(item, "provider_attribution", {}) or {})
+        == dict(provenance.provider_attribution)
+        and list(_value(item, "unresolved_safety_checks", []) or [])
+        == list(provenance.unresolved_safety_checks)
+        and (_value(item, "safety_review_decisions", {}) or {})
+        == dict(provenance.safety_review_decisions)
+        and _approved_audit_matches_canonical(
+            item,
+            entry,
+            catalog_root=catalog_root,
+        )
+    )
 
 
 def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
@@ -225,7 +411,39 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     if asset_manifest is None or render_manifest is None:
         return issues
 
-    active_root = Path(ASSET_ACTIVE_ROOT).resolve()
+    active_root = Path(os.path.abspath(ASSET_ACTIVE_ROOT))
+    catalog_root = active_root.parent
+    canonical_entries_by_path = {}
+    try:
+        catalog_manifest_path = catalog_root / "manifest.json"
+        manifest_before = _secure_file_snapshot(
+            catalog_manifest_path,
+            catalog_root,
+        )
+        if manifest_before is None:
+            raise ValueError("canonical catalog manifest is not trusted")
+        canonical_catalog = load_catalog(catalog_manifest_path)
+        manifest_after = _secure_file_snapshot(
+            catalog_manifest_path,
+            catalog_root,
+        )
+        if (
+            manifest_after is None
+            or manifest_before[1:3] != manifest_after[1:3]
+        ):
+            raise ValueError("canonical catalog manifest changed during validation")
+        canonical_entries_by_path = {
+            Path(os.path.abspath(entry.path)): entry
+            for entry in canonical_catalog.entries
+        }
+    except (OSError, TypeError, ValueError):
+        issues.append(
+            _artifact_issue(
+                "asset_catalog_not_canonical",
+                "Final assets require a valid canonical active catalog manifest.",
+                "asset_manifest.items",
+            )
+        )
     current_asset_hashes: dict[str, str] = {}
     asset_items = _as_list(asset_manifest, "items")
     asset_slot_ids = [str(_value(item, "slot_id") or "") for item in asset_items]
@@ -270,6 +488,20 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
             )
             continue
         canonical, identity, _digest, _data = snapshot
+        canonical_entry = canonical_entries_by_path.get(canonical)
+        if canonical_entry is None or not _asset_item_matches_canonical(
+            item,
+            canonical_entry,
+            catalog_root=catalog_root,
+            canonical_path=canonical,
+        ):
+            issues.append(
+                _artifact_issue(
+                    "asset_provenance_not_canonical",
+                    "Asset identity and provenance must match the canonical catalog and approved audit.",
+                    location,
+                )
+            )
         declaration = (
             canonical,
             actual,

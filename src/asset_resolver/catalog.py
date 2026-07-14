@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import re
 import hashlib
 import fcntl
+import stat
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -27,17 +28,102 @@ class CatalogError(ValueError):
     """Raised when a local production catalog is invalid or unsafe."""
 
 
+def approved_manifest_item(
+    pending,
+    destination: Path,
+    *,
+    safety_review_decisions: Mapping[str, bool],
+    safety_reviewed_at: str,
+    review_disposition: str,
+    catalog_root: Path,
+) -> dict[str, object]:
+    """Build the canonical catalog record shared by batch and standalone writers."""
+
+    return {
+        "asset_id": f"{pending.provider}-{pending.provider_asset_id}",
+        "role": pending.role,
+        "path": destination.relative_to(catalog_root).as_posix(),
+        "ownership": "licensed_stock",
+        "license": pending.license,
+        "dimensions": {"width": pending.width, "height": pending.height},
+        "sha256": pending.sha256,
+        "allowed_layouts": [pending.layout],
+        "tags": list(pending.tags),
+        "disabled_contexts": [],
+        "fallback_roles": list(pending.fallback_roles),
+        "usage": "production",
+        "provenance": {
+            "source_type": pending.source_type,
+            "acquired_at": pending.acquired_at,
+            "run_id": pending.run_id,
+            "provider": pending.provider,
+            "provider_asset_id": pending.provider_asset_id,
+            "source_url": pending.source_url,
+            "source_file_url": pending.source_file_url,
+            "author": pending.author,
+            "provider_attribution": dict(pending.provider_attribution),
+            "license_snapshot": pending.license_snapshot,
+            "license_snapshot_sha256": pending.license_snapshot_sha256,
+            "license_terms_url": pending.license_terms_url,
+            "average_hash": pending.average_hash,
+            "requirement_fingerprint": pending.requirement_fingerprint,
+            "unresolved_safety_checks": list(pending.unresolved_safety_checks),
+            "safety_review_decisions": dict(safety_review_decisions),
+            "safety_reviewed_at": safety_reviewed_at,
+            "review_disposition": review_disposition,
+        },
+    }
+
+
 @contextmanager
 def catalog_review_lock(root: Path):
     """Serialize every catalog lifecycle writer before narrower locks."""
 
-    lock_path = root.resolve() / ".asset-review.lock"
-    with lock_path.open("a+b") as lock_handle:
-        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+    try:
+        lock_path = root.resolve(strict=True) / ".asset-review.lock"
+        descriptor = os.open(
+            lock_path,
+            os.O_RDWR
+            | os.O_CREAT
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+    except OSError as error:
+        raise CatalogError("catalog review lock is unsafe") from error
+    locked = False
+    try:
         try:
-            yield
-        finally:
-            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+            opened = os.fstat(descriptor)
+            current = lock_path.lstat()
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_nlink != 1
+                or stat.S_ISLNK(current.st_mode)
+                or (opened.st_dev, opened.st_ino)
+                != (current.st_dev, current.st_ino)
+            ):
+                raise CatalogError("catalog review lock is unsafe")
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            locked = True
+            opened_after_lock = os.fstat(descriptor)
+            current_after_lock = lock_path.lstat()
+            if (
+                not stat.S_ISREG(opened_after_lock.st_mode)
+                or opened_after_lock.st_nlink != 1
+                or stat.S_ISLNK(current_after_lock.st_mode)
+                or (opened_after_lock.st_dev, opened_after_lock.st_ino)
+                != (opened.st_dev, opened.st_ino)
+                or (opened_after_lock.st_dev, opened_after_lock.st_ino)
+                != (current_after_lock.st_dev, current_after_lock.st_ino)
+            ):
+                raise CatalogError("catalog review lock identity changed")
+        except OSError as error:
+            raise CatalogError("catalog review lock is unsafe") from error
+        yield
+    finally:
+        if locked:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,42 +265,14 @@ class AssetCatalog:
             if any(item.get("asset_id") == asset_id for item in assets):
                 raise CatalogError(f"duplicate approved asset_id: {asset_id}")
             assets.append(
-                {
-                    "asset_id": asset_id,
-                    "role": pending.role,
-                    "path": destination.relative_to(self.root).as_posix(),
-                    "ownership": "licensed_stock",
-                    "license": pending.license,
-                    "dimensions": {"width": pending.width, "height": pending.height},
-                    "sha256": pending.sha256,
-                    "allowed_layouts": [pending.layout],
-                    "tags": list(pending.tags),
-                    "disabled_contexts": [],
-                    "fallback_roles": list(pending.fallback_roles),
-                    "usage": "production",
-                    "provenance": {
-                        "source_type": pending.source_type,
-                        "acquired_at": pending.acquired_at,
-                        "run_id": pending.run_id,
-                        "provider": pending.provider,
-                        "provider_asset_id": pending.provider_asset_id,
-                        "source_url": pending.source_url,
-                        "source_file_url": pending.source_file_url,
-                        "author": pending.author,
-                        "provider_attribution": dict(pending.provider_attribution),
-                        "license_snapshot": pending.license_snapshot,
-                        "license_snapshot_sha256": pending.license_snapshot_sha256,
-                        "license_terms_url": pending.license_terms_url,
-                        "average_hash": pending.average_hash,
-                        "requirement_fingerprint": pending.requirement_fingerprint,
-                        "unresolved_safety_checks": list(
-                            pending.unresolved_safety_checks
-                        ),
-                        "safety_review_decisions": dict(safety_review_decisions),
-                        "safety_reviewed_at": safety_reviewed_at,
-                        "review_disposition": review_disposition,
-                    },
-                }
+                approved_manifest_item(
+                    pending,
+                    destination,
+                    safety_review_decisions=safety_review_decisions,
+                    safety_reviewed_at=safety_reviewed_at,
+                    review_disposition=review_disposition,
+                    catalog_root=self.root,
+                )
             )
             file_descriptor, temporary_name = tempfile.mkstemp(
                 dir=manifest_path.parent,
