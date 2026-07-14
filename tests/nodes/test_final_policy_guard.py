@@ -201,6 +201,12 @@ def _editorial_guard_state(tmp_path: Path):
                     slot_id="slot-1",
                     role="product_texture",
                     layout="editorial_cover",
+                    min_width=16,
+                    min_height=16,
+                    context_tags=[],
+                    orientation="any",
+                    palette_tags=[],
+                    fallback_asset_ids=[],
                 )
             ],
         ),
@@ -1656,6 +1662,181 @@ def test_final_policy_guard_accepts_complete_approved_editorial_artifacts(
 
     assert result["final_policy_issues"] == []
     assert route_after_final_guard(result) == "content_writer"
+
+
+def test_final_policy_guard_rejects_catalog_asset_inappropriate_for_requirement(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    state["visual_plan"].required_assets[0].min_width = 32
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_requirement_not_satisfied" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def test_final_policy_guard_rejects_local_asset_with_external_only_fields(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    state["asset_manifest"].items[0].source_url = "https://attacker.invalid/asset"
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_provenance_not_canonical" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def test_final_policy_guard_rejects_external_requirement_fingerprint_drift(
+    monkeypatch,
+    tmp_path,
+):
+    from datetime import UTC, datetime
+
+    from src.asset_resolver.lifecycle import PendingAsset
+    from src.asset_resolver.resolver import requirement_fingerprint
+    from src.schemas.assets import AssetRequirement
+
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    catalog_root = active_root.parent
+    item = state["asset_manifest"].items[0]
+    requirement = AssetRequirement.model_validate(
+        vars(state["visual_plan"].required_assets[0])
+    )
+    fingerprint = requirement_fingerprint(requirement)
+    run_id = "run-external"
+    incoming_root = catalog_root / "incoming" / "external" / run_id
+    incoming_root.mkdir(parents=True)
+    pending_path = incoming_root / "candidate.svg"
+    metadata_path = incoming_root / "candidate.json"
+    license_snapshot = catalog_root / "licenses" / "provider-terms.txt"
+    license_snapshot.parent.mkdir()
+    license_snapshot.write_text("provider terms")
+    reviewed_at = datetime.now(UTC).isoformat()
+    candidate = PendingAsset(
+        pending_id="run-external-slot-1-provider-asset",
+        slot_id="slot-1",
+        candidate_rank=1,
+        path=pending_path,
+        metadata_path=metadata_path,
+        provider="provider",
+        provider_asset_id="asset",
+        author="Ada",
+        source_url="https://www.pexels.com/photo/asset/",
+        source_file_url="https://images.pexels.com/photos/asset.svg",
+        role="product_texture",
+        layout="editorial_cover",
+        width=16,
+        height=16,
+        license="Pexels License",
+        license_snapshot="licenses/provider-terms.txt",
+        license_snapshot_sha256=hashlib.sha256(
+            license_snapshot.read_bytes()
+        ).hexdigest(),
+        license_terms_url="https://www.pexels.com/license/",
+        sha256=item.sha256,
+        average_hash="0123456789abcdef",
+        run_id=run_id,
+        production_relative_path=Path("asset.svg"),
+        tags=("test",),
+        fallback_roles=("product_texture",),
+        unresolved_safety_checks=(),
+        requirement_fingerprint=fingerprint,
+        attempt_number=1,
+        provider_attribution=(("author", "Ada"),),
+    )
+    audit = candidate.audit_record()
+    audit.update(
+        {
+            "review_status": "approved",
+            "approved_path": str(Path(item.path)),
+            "approved_sha256": item.sha256,
+            "safety_review_decisions": {},
+            "safety_reviewed_at": reviewed_at,
+            "review_disposition": "approved_for_publishing",
+        }
+    )
+    metadata_path.write_text(json.dumps(audit))
+    manifest_path = catalog_root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest_entry = manifest["assets"][0]
+    manifest_entry.update(
+        {
+            "ownership": "licensed_stock",
+            "license": candidate.license,
+            "provenance": {
+                "source_type": candidate.source_type,
+                "acquired_at": candidate.acquired_at,
+                "run_id": run_id,
+                "provider": candidate.provider,
+                "provider_asset_id": candidate.provider_asset_id,
+                "source_url": candidate.source_url,
+                "source_file_url": candidate.source_file_url,
+                "author": candidate.author,
+                "provider_attribution": dict(candidate.provider_attribution),
+                "license_snapshot": candidate.license_snapshot,
+                "license_snapshot_sha256": candidate.license_snapshot_sha256,
+                "license_terms_url": candidate.license_terms_url,
+                "average_hash": candidate.average_hash,
+                "requirement_fingerprint": fingerprint,
+                "unresolved_safety_checks": [],
+                "safety_review_decisions": {},
+                "safety_reviewed_at": reviewed_at,
+                "review_disposition": "approved_for_publishing",
+            },
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
+    for name, value in {
+        "source_type": candidate.source_type,
+        "provider": candidate.provider,
+        "provider_asset_id": candidate.provider_asset_id,
+        "source_url": candidate.source_url,
+        "source_file_url": candidate.source_file_url,
+        "author": candidate.author,
+        "provider_attribution": dict(candidate.provider_attribution),
+        "license": candidate.license,
+        "license_snapshot": candidate.license_snapshot,
+        "license_snapshot_sha256": candidate.license_snapshot_sha256,
+        "license_terms_url": candidate.license_terms_url,
+        "run_id": run_id,
+        "acquired_at": candidate.acquired_at,
+        "average_hash": candidate.average_hash,
+        "requirement_fingerprint": fingerprint,
+        "unresolved_safety_checks": [],
+        "safety_review_decisions": {},
+        "safety_reviewed_at": reviewed_at,
+        "review_status": "approved",
+        "review_disposition": "approved_for_publishing",
+    }.items():
+        setattr(item, name, value)
+
+    state["visual_plan"].required_assets[0].palette_tags = ["drifted"]
+    result = final_policy_guard_node(state)
+
+    assert "asset_requirement_not_satisfied" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
 
 
 @pytest.mark.parametrize(

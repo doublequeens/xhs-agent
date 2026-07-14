@@ -380,10 +380,12 @@ def _install_graph_doubles(
         items = []
         catalog_assets = []
         for requirement in state["visual_plan"].required_assets:
+            width = requirement.min_width
+            height = requirement.min_height
             asset_path = active_root / f"{requirement.slot_id}.svg"
             asset_path.write_text(
                 '<svg xmlns="http://www.w3.org/2000/svg" '
-                'width="1080" height="1440"></svg>'
+                f'width="{width}" height="{height}"></svg>'
             )
             asset_id = f"fixture-{requirement.slot_id}"
             asset_sha256 = hashlib.sha256(asset_path.read_bytes()).hexdigest()
@@ -404,8 +406,8 @@ def _install_graph_doubles(
                     "author": None,
                     "provider_attribution": {},
                     "license": "project_internal",
-                    "width": 1080,
-                    "height": 1440,
+                    "width": width,
+                    "height": height,
                     "license_snapshot": None,
                     "license_snapshot_sha256": None,
                     "license_terms_url": None,
@@ -427,7 +429,7 @@ def _install_graph_doubles(
                     "path": f"active/{requirement.slot_id}.svg",
                     "ownership": "project_original",
                     "license": "project_internal",
-                    "dimensions": {"width": 1080, "height": 1440},
+                    "dimensions": {"width": width, "height": height},
                     "sha256": asset_sha256,
                     "allowed_layouts": [requirement.layout],
                     "tags": ["integration"],

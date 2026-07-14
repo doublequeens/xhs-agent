@@ -299,10 +299,10 @@ def test_move_failure_restores_pending_audit_and_source(
     persistent_catalog = catalog(tmp_path)
     original_replace = lifecycle._durable_replace
 
-    def failing_move(path: Path, target: Path) -> None:
+    def failing_move(path: Path, target: Path, **kwargs) -> None:
         if path == pending.path:
             raise OSError("move failed")
-        original_replace(path, target)
+        original_replace(path, target, **kwargs)
 
     monkeypatch.setattr(lifecycle, "_durable_replace", failing_move)
 
@@ -874,7 +874,7 @@ def test_batch_rollback_cas_preserves_concurrent_manifest_change(
         "recovery refused to overwrite" in note
         for note in getattr(raised.value, "__notes__", ())
     )
-    journals = list((tmp_path / ".asset-review-recovery").glob("*.json"))
+    journals = list((tmp_path / ".asset-review-recovery").rglob("*.json"))
     assert len(journals) == 1
     assert json.loads(journals[0].read_text())["state"] == "needs_recovery"
 
@@ -892,19 +892,19 @@ def test_batch_rollback_aggregates_failures_and_recovers_on_retry(
     original_audit_bytes = candidate.metadata_path.read_bytes()
     fail_rollback = {"enabled": True}
 
-    def fail_asset_restore(path: Path, target: Path) -> None:
+    def fail_asset_restore(path: Path, target: Path, **kwargs) -> None:
         if fail_rollback["enabled"] and path == destination and target == candidate.path:
             raise OSError("rollback move failed")
-        original_replace(path, target)
+        original_replace(path, target, **kwargs)
 
-    def fail_audit_restore(path: Path, payload: bytes) -> None:
+    def fail_audit_restore(path: Path, payload: bytes, **kwargs) -> None:
         if (
             fail_rollback["enabled"]
             and path == candidate.metadata_path
             and payload == original_audit_bytes
         ):
             raise OSError("rollback audit write failed")
-        original_atomic_write_bytes(path, payload)
+        original_atomic_write_bytes(path, payload, **kwargs)
 
     monkeypatch.setattr(lifecycle, "_durable_replace", fail_asset_restore)
     monkeypatch.setattr(lifecycle, "_atomic_write_bytes", fail_audit_restore)
@@ -922,7 +922,7 @@ def test_batch_rollback_aggregates_failures_and_recovers_on_retry(
     assert "rollback move failed" in notes
     assert "rollback audit write failed" in notes
     journal_root = tmp_path / ".asset-review-recovery"
-    assert len(list(journal_root.glob("*.json"))) == 1
+    assert len(list(journal_root.rglob("*.json"))) == 1
 
     fail_rollback["enabled"] = False
     result = lifecycle.review_pending_asset_batch(
@@ -935,7 +935,7 @@ def test_batch_rollback_aggregates_failures_and_recovers_on_retry(
     assert result.any_rejected is False
     assert destination.is_file()
     assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
-    assert list(journal_root.glob("*.json")) == []
+    assert list(journal_root.rglob("*.json")) == []
 
 
 def test_batch_review_accepts_only_canonical_pending_ids(tmp_path: Path) -> None:
@@ -1030,7 +1030,7 @@ def _leave_recovery_journal(
             rejection_reason="not selected",
             finalize=force_manifest_cas_failure,
         )
-    journals = list((tmp_path / ".asset-review-recovery").glob("*.json"))
+    journals = list((tmp_path / ".asset-review-recovery").rglob("*.json"))
     assert len(journals) == 1
     return journals[0]
 
@@ -1185,7 +1185,7 @@ def test_batch_recovers_idempotently_after_every_forward_wal_crash_point(
     assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
     manifest = json.loads((tmp_path / "manifest.json").read_text())
     assert [item["asset_id"] for item in manifest["assets"]] == ["pexels-p1"]
-    assert list((tmp_path / ".asset-review-recovery").glob("*.json")) == []
+    assert list((tmp_path / ".asset-review-recovery").rglob("*.json")) == []
 
 
 @pytest.mark.parametrize(
@@ -1240,7 +1240,7 @@ def test_batch_recovers_idempotently_after_every_rollback_wal_crash_point(
 
     assert (tmp_path / "active" / "stock" / "serum-p1.webp").is_file()
     assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
-    assert list((tmp_path / ".asset-review-recovery").glob("*.json")) == []
+    assert list((tmp_path / ".asset-review-recovery").rglob("*.json")) == []
 
 
 def test_failed_retry_of_preexisting_approval_does_not_roll_it_back(
@@ -1368,7 +1368,7 @@ def test_committed_transaction_journal_replay_never_rolls_back(
             {candidate.pending_id: _batch_decision(candidate)},
             rejection_reason="not selected",
         )
-    journal_path = next((tmp_path / ".asset-review-recovery").glob("*.json"))
+    journal_path = next((tmp_path / ".asset-review-recovery").rglob("*.json"))
     replay = json.loads(journal_path.read_text())
     replay["state"] = "applying"
     journal_path.write_text(json.dumps(replay))
@@ -1412,7 +1412,7 @@ def test_empty_operation_journal_cannot_rewrite_manifest(
         )
     manifest_path = tmp_path / "manifest.json"
     committed_manifest = manifest_path.read_bytes()
-    journal_path = next((tmp_path / ".asset-review-recovery").glob("*.json"))
+    journal_path = next((tmp_path / ".asset-review-recovery").rglob("*.json"))
     forged = json.loads(journal_path.read_text())
     malicious_manifest = json.dumps(
         {"catalog_id": "test-catalog", "assets": [], "attacker": True}
@@ -1562,3 +1562,345 @@ def test_standalone_rejection_recovers_through_shared_wal_crash_matrix(
     assert audit["review_status"] == "rejected"
     assert candidate.path.is_file()
     assert json.loads((tmp_path / "manifest.json").read_text())["assets"] == []
+
+
+def test_catalog_transaction_registry_supports_multiple_run_ids(
+    tmp_path: Path,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    run_a = catalog(tmp_path, run_id="run-a")
+    first = pending_asset(tmp_path, run_id="run-a", asset_id="a")
+    lifecycle.approve_external_asset(first, run_a)
+
+    run_b = replace(run_a, run_id="run-b")
+    approved = pending_asset(tmp_path, run_id="run-b", asset_id="b")
+    rejected = pending_asset(tmp_path, run_id="run-b", asset_id="c")
+    lifecycle.approve_external_asset(approved, run_b)
+    lifecycle.reject_external_asset(
+        rejected,
+        reason="not selected",
+        catalog=run_b,
+    )
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert {item["asset_id"] for item in manifest["assets"]} == {
+        "pexels-a",
+        "pexels-b",
+    }
+    registry = json.loads(
+        (tmp_path / ".asset-review-recovery" / "transactions.registry").read_text()
+    )
+    assert {entry["run_id"] for entry in registry["transactions"].values()} == {
+        "run-b",
+    }
+
+
+def test_crashed_run_does_not_isolate_other_run_and_can_recover_later(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    run_a = catalog(tmp_path, run_id="run-a")
+    first = pending_asset(tmp_path, run_id="run-a", asset_id="a")
+
+    def crash_after_audit(event: str) -> None:
+        if event == f"{first.pending_id}.audit.applied":
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_after_audit)
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(first, run_a)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    run_b = replace(run_a, run_id="run-b")
+    second = pending_asset(tmp_path, run_id="run-b", asset_id="b")
+    lifecycle.approve_external_asset(second, run_b)
+
+    third = pending_asset(tmp_path, run_id="run-a", asset_id="c")
+    lifecycle.approve_external_asset(third, run_a)
+
+    assert json.loads(first.metadata_path.read_text())["review_status"] == "pending"
+    assert first.path.is_file()
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert {item["asset_id"] for item in manifest["assets"]} == {
+        "pexels-b",
+        "pexels-c",
+    }
+
+
+def test_large_audit_fails_before_transaction_or_asset_mutation(
+    tmp_path: Path,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    candidate = replace(candidate, author="a" * (800 * 1024))
+    candidate.metadata_path.write_text(json.dumps(candidate.audit_record()))
+    asset_catalog = catalog(tmp_path)
+    original_audit = candidate.metadata_path.read_bytes()
+    original_manifest = asset_catalog.manifest_path.read_bytes()
+
+    with pytest.raises(lifecycle.AssetLifecycleError, match="too large"):
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert candidate.metadata_path.read_bytes() == original_audit
+    assert candidate.path.is_file()
+    assert asset_catalog.manifest_path.read_bytes() == original_manifest
+    assert not (tmp_path / ".asset-review-recovery").exists()
+    assert not (tmp_path / "active").exists()
+
+
+def test_aggregate_snapshots_fail_before_registry_prepare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "MAX_RECOVERY_FILE_BYTES", 20 * 1024 * 1024)
+    monkeypatch.setattr(lifecycle, "MAX_RECOVERY_TOTAL_SNAPSHOT_BYTES", 8_000)
+    candidates = [
+        pending_asset(tmp_path, asset_id=f"p{index}", candidate_rank=index)
+        for index in range(1, 4)
+    ]
+    asset_catalog = catalog(tmp_path)
+
+    with pytest.raises(lifecycle.AssetLifecycleError, match="snapshots are too large"):
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate) for candidate in candidates],
+            {
+                candidate.pending_id: _batch_decision(candidate)
+                for candidate in candidates
+            },
+            rejection_reason="not selected",
+        )
+
+    assert all(candidate.path.is_file() for candidate in candidates)
+    assert not (tmp_path / ".asset-review-recovery").exists()
+    assert not (tmp_path / "active").exists()
+
+
+def test_serialized_journal_quota_is_checked_before_registry_prepare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "MAX_RECOVERY_FILE_BYTES", 2_000)
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+
+    with pytest.raises(lifecycle.AssetLifecycleError, match="journal is too large"):
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert candidate.path.is_file()
+    assert not (tmp_path / ".asset-review-recovery").exists()
+    assert not (tmp_path / "active").exists()
+
+
+def _age_recovery_transaction(
+    lifecycle,
+    tmp_path: Path,
+    *,
+    created_at: str,
+) -> Path:
+    journal_path = next(
+        path
+        for path in (tmp_path / ".asset-review-recovery").rglob("*.json")
+        if path.name != "transactions.registry"
+    )
+    journal = lifecycle.AssetReviewRecoveryJournal.model_validate(
+        json.loads(journal_path.read_text()),
+        strict=True,
+    )
+    journal.created_at = created_at
+    journal.plan_sha256 = lifecycle._journal_plan_sha256(journal)
+    journal_path.write_text(json.dumps(journal.model_dump(mode="json")))
+    registry_path = tmp_path / ".asset-review-recovery" / "transactions.registry"
+    registry = json.loads(registry_path.read_text())
+    entry = registry["transactions"][journal.transaction_id]
+    entry["created_at"] = created_at
+    entry["plan_sha256"] = journal.plan_sha256
+    registry_path.write_text(json.dumps(registry))
+    return journal_path
+
+
+def test_old_committed_transaction_journal_is_cleaned_without_freshness_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+
+    def crash_after_commit(event: str) -> None:
+        if event == "transaction.committed":
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_after_commit)
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+    journal_path = _age_recovery_transaction(
+        lifecycle,
+        tmp_path,
+        created_at="2000-01-01T00:00:00+00:00",
+    )
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="only pending"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert not journal_path.exists()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
+
+
+def test_old_prepared_transaction_remains_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+
+    def crash_after_prepare(event: str) -> None:
+        if event == "transaction.prepared":
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_after_prepare)
+    with pytest.raises(SimulatedProcessCrash):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+    _age_recovery_transaction(
+        lifecycle,
+        tmp_path,
+        created_at="2000-01-01T00:00:00+00:00",
+    )
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    with pytest.raises(lifecycle.AssetLifecycleError, match="stale"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.is_file()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "pending"
+
+
+def test_terminal_registry_entries_compact_before_small_registry_quota(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    monkeypatch.setattr(lifecycle, "MAX_TRANSACTION_REGISTRY_BYTES", 900)
+    asset_catalog = catalog(tmp_path)
+
+    for index in range(1, 11):
+        candidate = pending_asset(
+            tmp_path,
+            asset_id=f"compact-{index}",
+            candidate_rank=min(index, 3),
+        )
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    registry = json.loads(
+        (tmp_path / ".asset-review-recovery" / "transactions.registry").read_text()
+    )
+    assert len(registry["transactions"]) == 1
+
+
+def test_move_refuses_destination_created_after_wal_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+
+    def create_destination_at_intent(event: str) -> None:
+        if event == f"{candidate.pending_id}.move.intent":
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(b"concurrent destination")
+
+    monkeypatch.setattr(lifecycle, "_crash_point", create_destination_at_intent)
+
+    with pytest.raises(lifecycle.AssetLifecycleError, match="destination"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert destination.read_bytes() == b"concurrent destination"
+    assert candidate.path.is_file()
+    assert json.loads((tmp_path / "manifest.json").read_text())["assets"] == []
+
+
+def test_move_refuses_source_inode_swapped_after_audit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    original = tmp_path / "original-source.webp"
+
+    def swap_source_before_move(event: str) -> None:
+        if event == f"{candidate.pending_id}.audit.done":
+            candidate.path.rename(original)
+            candidate.path.write_bytes(b"swapped source")
+
+    monkeypatch.setattr(lifecycle, "_crash_point", swap_source_before_move)
+
+    with pytest.raises(lifecycle.AssetLifecycleError, match="source"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.read_bytes() == b"swapped source"
+    assert original.is_file()
+    assert not (tmp_path / "active" / "stock" / "serum-p1.webp").exists()
+
+
+def test_lock_replacement_stops_before_next_durable_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+    from src.asset_resolver.catalog import CatalogError
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    lock_path = tmp_path / ".asset-review.lock"
+
+    def replace_lock_after_audit(event: str) -> None:
+        if event == f"{candidate.pending_id}.audit.done":
+            lock_path.rename(tmp_path / ".asset-review.lock.detached")
+            lock_path.write_bytes(b"replacement")
+            lock_path.chmod(0o600)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", replace_lock_after_audit)
+
+    with pytest.raises(CatalogError, match="review lock"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.is_file()
+    assert json.loads((tmp_path / "manifest.json").read_text())["assets"] == []
+    assert not (tmp_path / "active" / "stock" / "serum-p1.webp").exists()

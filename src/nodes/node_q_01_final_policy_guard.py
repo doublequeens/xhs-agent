@@ -11,10 +11,12 @@ from PIL import Image
 
 from src.asset_resolver.catalog import load_catalog_bytes
 from src.asset_resolver.lifecycle import PendingAuditRecord
+from src.asset_resolver.resolver import requirement_fingerprint
 from src.domain import find_policy_violations
 from src.editorial_carousel.legacy import is_legacy_editorial_checkpoint
 from src.rendering.editorial.design_system import ASSET_ROOT
 from src.schemas import AgentState
+from src.schemas.assets import AssetRequirement
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.nodes.node_p_text_card_renderer import PUBLISH_ROOT
 from src.editorial_carousel.strategy import ASSET_ADAPTER
@@ -377,7 +379,18 @@ def _asset_item_matches_canonical(
             and _value(item, "source_type") == "local"
             and _value(item, "provider") is None
             and _value(item, "provider_asset_id") is None
+            and _value(item, "source_url") is None
+            and _value(item, "source_file_url") is None
+            and _value(item, "author") is None
+            and (_value(item, "provider_attribution", {}) or {}) == {}
+            and _value(item, "license_snapshot") is None
+            and _value(item, "license_snapshot_sha256") is None
+            and _value(item, "license_terms_url") is None
             and _value(item, "run_id") is None
+            and _value(item, "acquired_at") is None
+            and _value(item, "average_hash") is None
+            and _value(item, "requirement_fingerprint") is None
+            and list(_value(item, "unresolved_safety_checks", []) or []) == []
             and (_value(item, "safety_review_decisions", {}) or {}) == {}
             and _value(item, "safety_reviewed_at") is None
             and _value(item, "review_status") is None
@@ -429,6 +442,34 @@ def _asset_item_matches_canonical(
             item,
             entry,
             catalog_root=catalog_root,
+        )
+    )
+
+
+def _canonical_requirement(payload) -> AssetRequirement | None:
+    try:
+        return AssetRequirement.model_validate(
+            {
+                field_name: _value(payload, field_name)
+                for field_name in AssetRequirement.model_fields
+            }
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _entry_satisfies_requirement(entry, requirement: AssetRequirement) -> bool:
+    return (
+        entry.usage == "production"
+        and requirement.layout in entry.allowed_layouts
+        and entry.width >= requirement.min_width
+        and entry.height >= requirement.min_height
+        and (
+            requirement.orientation == "any"
+            or entry.orientation == requirement.orientation
+        )
+        and not set(requirement.context_tags).intersection(
+            entry.disabled_contexts
         )
     )
 
@@ -503,6 +544,11 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                 "asset_manifest.items",
             )
         )
+    plan_requirements = _as_list(visual_plan, "required_assets")
+    canonical_requirements_by_slot = {
+        str(_value(payload, "slot_id") or ""): _canonical_requirement(payload)
+        for payload in plan_requirements
+    }
     current_asset_hashes: dict[str, str] = {}
     asset_items = _as_list(asset_manifest, "items")
     asset_slot_ids = [str(_value(item, "slot_id") or "") for item in asset_items]
@@ -548,16 +594,35 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
             continue
         canonical, identity, _digest, _data = snapshot
         canonical_entry = canonical_entries_by_path.get(canonical)
-        if canonical_entry is None or not _asset_item_matches_canonical(
+        canonical_matches = canonical_entry is not None and _asset_item_matches_canonical(
             item,
             canonical_entry,
             catalog_root=catalog_root,
             canonical_path=canonical,
-        ):
+        )
+        if not canonical_matches:
             issues.append(
                 _artifact_issue(
                     "asset_provenance_not_canonical",
                     "Asset identity and provenance must match the canonical catalog and approved audit.",
+                    location,
+                )
+            )
+        requirement = canonical_requirements_by_slot.get(slot_id)
+        if (
+            canonical_entry is None
+            or requirement is None
+            or not _entry_satisfies_requirement(canonical_entry, requirement)
+            or (
+                canonical_entry.provenance is not None
+                and _value(item, "requirement_fingerprint")
+                != requirement_fingerprint(requirement)
+            )
+        ):
+            issues.append(
+                _artifact_issue(
+                    "asset_requirement_not_satisfied",
+                    "Final asset must satisfy the current canonical requirement.",
                     location,
                 )
             )
@@ -605,7 +670,6 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         if slot_id and slot_id not in current_asset_hashes:
             current_asset_hashes[slot_id] = actual
 
-    plan_requirements = _as_list(visual_plan, "required_assets")
     plan_slots = {
         str(_value(item, "slot_id") or ""): (
             str(_value(item, "role") or ""),

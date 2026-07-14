@@ -74,6 +74,12 @@
 - Descriptor-relative mutation closure: journal, registry, audit, manifest, move, and unlink writes use held component-wise `openat(O_NOFOLLOW)` directory descriptors, durable temp-file rename, parent fsync, and post-operation directory-binding validation. The catalog lock also validates owner/mode/link/identity before and after `flock` and after the critical section without masking a primary body exception.
 - Canonical Guard closure: the manifest parser now consumes the exact bytes from the Guard's secure descriptor snapshot rather than reopening its pathname. External audit comparison covers the complete canonical provenance/review record; project-original assets additionally bind ownership, production usage, tags, dimensions, layout, and active/fallback role semantics.
 - The first ledger-hardening full run found three domain integration fixtures missing newly enforced manifest dimensions; adding their real 1080x1440 declarations made the focused regressions and the fresh full run GREEN.
+- Multi-run registry closure: two RED public lifecycle tests showed that a top-level `run_id` made a committed run A block run B, while a run B retry attempted to validate and quarantine run A's legitimate crash journal. The registry is now catalog/root scoped with `run_id` on each transaction entry, and journals live in owner-only run subdirectories. Run B can commit while a pre-manifest run A transaction remains recoverable; run A recovery skips manifest compensation when manifest apply never began, preserving run B's catalog update.
+- Pre-mutation quota closure: 800 KiB audit, multi-asset aggregate, and small exact serialized-journal tests were RED because preparation created active directories and registered an unbounded transaction. Manifest and audit snapshots now use bounded identity-stable reads; every original/target snapshot, decoded aggregate, and the final base64-expanded journal bytes are checked before recovery-root creation, registry preparation, or active/catalog mutation. Destination directories are created only after durable move intent.
+- Registry retention closure: terminal entries with no remaining journal compact before registry quota enforcement, registry reads have a separate bounded maintenance ceiling, and a small-quota ten-transaction regression remains live. Freshness applies only to prepared work: an old committed journal is safely cleaned while an old prepared transaction fails closed.
+- Atomic identity closure: source-swap and destination-creation RED tests showed that descriptor-relative rename could still move the wrong inode or overwrite a concurrently created destination. Move now binds source inode/hash and destination absence at the rename point; audit and manifest atomic writes recheck CAS hash and the original metadata inode. Directory creation uses held-parent `mkdirat`, fsync, and inode revalidation. Catalog lock/root identity is rechecked at critical-section entry and before every durable mutation; lock replacement stops before move/manifest commit.
+- Current-requirement Guard closure: RED tests covered an undersized canonical asset and a local asset carrying an external URL. Final Guard now reconstructs the current `AssetRequirement`, applies the resolver's production/layout/minimum-dimension/orientation/disabled-context hard filters, requires the current external requirement fingerprint to match item/audit provenance, and requires every external-only field to be empty for project-original assets. A real external approved audit regression covers fingerprint drift.
+- The first current-requirement full run found three integration fixtures that declared every SVG as portrait even for square requirements. The fixture now emits actual requirement dimensions; the exact three regressions and the fresh full run pass.
 
 ## Final verification
 
@@ -117,6 +123,18 @@
 - Latest bytecode/diff verification:
   `python -m compileall -q main.py src tests` and `git diff --check`
   -> passed/clean.
+- Final multi-run/quota/identity lifecycle suite:
+  `pytest tests/asset_resolver/test_lifecycle.py -q`
+  -> `113 passed`.
+- Final requirement/provenance Guard suite:
+  `pytest tests/nodes/test_final_policy_guard.py -q`
+  -> `65 passed, 4 warnings`.
+- Final broader focused suite:
+  `pytest tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py -q`
+  -> `341 passed, 2 skipped, 4 warnings`.
+- Final full suite:
+  `pytest -q`
+  -> `1170 passed, 2 skipped` (`1172 tests collected`).
 
 ## Self-review
 

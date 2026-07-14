@@ -108,4 +108,3 @@
 - [ ] Run the combined focused suite, full `pytest -q`, bytecode compilation, and `git diff --check`.
 - [ ] Update the report with the strict journal/crash protocol and exact RED/GREEN/final counts.
 - [ ] Commit and verify `git status --short` is empty.
-

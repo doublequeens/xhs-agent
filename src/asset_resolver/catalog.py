@@ -82,6 +82,7 @@ def catalog_review_lock(root: Path):
     try:
         root_path = root.resolve(strict=True)
         root_metadata = root_path.stat()
+        root_identity = (root_metadata.st_dev, root_metadata.st_ino)
         if root_metadata.st_uid != os.getuid() or stat.S_IMODE(root_metadata.st_mode) & 0o022:
             raise CatalogError("catalog review lock parent is unsafe")
         parent_descriptor = os.open(
@@ -114,6 +115,7 @@ def catalog_review_lock(root: Path):
 
     def validate_binding(expected: tuple[int, int] | None = None) -> tuple[int, int]:
         opened = os.fstat(descriptor)
+        current_root = root_path.stat(follow_symlinks=False)
         current = os.stat(
             lock_name,
             dir_fd=parent_descriptor,
@@ -122,6 +124,8 @@ def catalog_review_lock(root: Path):
         identity = (opened.st_dev, opened.st_ino)
         if (
             not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISDIR(current_root.st_mode)
+            or (current_root.st_dev, current_root.st_ino) != root_identity
             or opened.st_nlink != 1
             or opened.st_uid != os.getuid()
             or stat.S_IMODE(opened.st_mode) != 0o600
@@ -141,7 +145,7 @@ def catalog_review_lock(root: Path):
         except OSError as error:
             raise CatalogError("catalog review lock is unsafe") from error
         try:
-            yield
+            yield lambda: validate_binding(identity)
         except BaseException as error:
             body_error = error
             raise

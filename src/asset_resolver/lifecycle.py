@@ -8,6 +8,7 @@ import os
 import stat
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -53,9 +54,15 @@ RECOVERY_JOURNAL_VERSION = 1
 TRANSACTION_REGISTRY_FILENAME = "transactions.registry"
 TRANSACTION_REGISTRY_VERSION = 1
 MAX_RECOVERY_FILE_BYTES = 2 * 1024 * 1024
+MAX_TRANSACTION_REGISTRY_BYTES = 2 * 1024 * 1024
+MAX_TRANSACTION_REGISTRY_READ_BYTES = 16 * 1024 * 1024
 MAX_RECOVERY_SNAPSHOT_BYTES = 1024 * 1024
 MAX_RECOVERY_TOTAL_SNAPSHOT_BYTES = 4 * 1024 * 1024
 MAX_TRANSACTION_AGE_SECONDS = 30 * 24 * 60 * 60
+_CATALOG_LOCK_CHECKPOINT: ContextVar[Callable[[], object] | None] = ContextVar(
+    "catalog_lock_checkpoint",
+    default=None,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +154,10 @@ class PendingAuditRecord(BaseModel):
     license_terms_url: NonEmptyStrictString
     sha256: Hash64
     average_hash: AverageHash
-    run_id: NonEmptyStrictString
+    run_id: Annotated[
+        StrictStr,
+        Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
+    ]
     production_relative_path: NonEmptyStrictString
     tags: Annotated[list[NonEmptyStrictString], Field(min_length=1)]
     fallback_roles: Annotated[list[NonEmptyStrictString], Field(min_length=1)]
@@ -250,6 +260,7 @@ class RecoveryAssetRecord(BaseModel):
     disposition: Literal["approved", "rejected"]
     pending_path: NonEmptyStrictString
     destination: NonEmptyStrictString
+    destination_expected_absent: StrictBool
     metadata_path: NonEmptyStrictString
     asset_sha256: Hash64
     source_device: Annotated[StrictInt, Field(ge=0)]
@@ -309,6 +320,10 @@ class TransactionRegistryEntry(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     plan_sha256: Hash64
+    run_id: Annotated[
+        StrictStr,
+        Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"),
+    ]
     state: Literal["prepared", "committed", "aborted"]
     created_at: NonEmptyStrictString
 
@@ -327,7 +342,6 @@ class TransactionRegistry(BaseModel):
     version: Literal[TRANSACTION_REGISTRY_VERSION]
     catalog_id: NonEmptyStrictString
     catalog_root: NonEmptyStrictString
-    run_id: NonEmptyStrictString
     transactions: dict[
         Annotated[StrictStr, Field(pattern=r"^[0-9a-f]{32}$")],
         TransactionRegistryEntry,
@@ -389,11 +403,54 @@ def _write_all(descriptor: int, payload: bytes) -> None:
         view = view[written:]
 
 
+def _read_bounded_bytes(path: Path, *, limit: int, label: str) -> bytes:
+    descriptor: int | None = None
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        before = path.lstat()
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_size > limit
+        ):
+            raise AssetLifecycleError(f"{label} is too large or unsafe")
+        descriptor = os.open(path, os.O_RDONLY | nofollow)
+        opened = os.fstat(descriptor)
+        chunks: list[bytes] = []
+        total = 0
+        while chunk := os.read(descriptor, min(64 * 1024, limit + 1 - total)):
+            chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise AssetLifecycleError(f"{label} is too large")
+        after = path.lstat()
+        if (
+            (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino)
+            or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)
+        ):
+            raise AssetLifecycleError(f"{label} identity changed")
+        return b"".join(chunks)
+    except OSError as error:
+        raise AssetLifecycleError(f"{label} is unreadable") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
 def _atomic_write_json(path: Path, payload: dict[str, object]) -> None:
     _atomic_write_bytes(path, _json_bytes(payload))
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> None:
+def _atomic_write_bytes(
+    path: Path,
+    payload: bytes,
+    *,
+    expected_sha256: str | None = None,
+    expected_identity: tuple[int, int] | None = None,
+    expected_absent: bool = False,
+) -> None:
+    _verify_catalog_lock()
     temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
     descriptor: int | None = None
     with _held_parent_directory(path) as (parent_descriptor, name):
@@ -411,6 +468,40 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> None:
             os.fsync(descriptor)
             os.close(descriptor)
             descriptor = None
+            if expected_absent:
+                try:
+                    os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
+                except FileNotFoundError:
+                    pass
+                else:
+                    raise AssetLifecycleError(
+                        "atomic write destination is no longer absent"
+                    )
+            elif expected_sha256 is not None or expected_identity is not None:
+                target_descriptor = os.open(
+                    name,
+                    os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_descriptor,
+                )
+                try:
+                    target_metadata = os.fstat(target_descriptor)
+                    target_identity = (
+                        target_metadata.st_dev,
+                        target_metadata.st_ino,
+                    )
+                    if (
+                        (expected_identity is not None and target_identity != expected_identity)
+                        or (
+                            expected_sha256 is not None
+                            and _descriptor_sha256(target_descriptor)
+                            != expected_sha256
+                        )
+                    ):
+                        raise AssetLifecycleError(
+                            "atomic write compare-and-swap failed"
+                        )
+                finally:
+                    os.close(target_descriptor)
             os.rename(
                 temporary_name,
                 name,
@@ -738,8 +829,19 @@ def _validate_explicit_safety_review(
 
 @contextmanager
 def _batch_lifecycle_lock(catalog: AssetCatalog):
-    with catalog_review_lock(catalog.root):
-        yield
+    with catalog_review_lock(catalog.root) as checkpoint:
+        token = _CATALOG_LOCK_CHECKPOINT.set(checkpoint)
+        try:
+            checkpoint()
+            yield
+        finally:
+            _CATALOG_LOCK_CHECKPOINT.reset(token)
+
+
+def _verify_catalog_lock() -> None:
+    checkpoint = _CATALOG_LOCK_CHECKPOINT.get()
+    if checkpoint is not None:
+        checkpoint()
 
 
 def _bytes_digest(payload: bytes) -> str:
@@ -776,8 +878,7 @@ def _recovery_root(catalog: AssetCatalog, *, create: bool) -> Path:
     recovery_root = catalog_root / RECOVERY_JOURNAL_DIR
     if create and not recovery_root.exists():
         try:
-            recovery_root.mkdir(mode=0o700)
-            _fsync_directory(catalog_root)
+            _durable_mkdir(recovery_root, root=catalog_root, mode=0o700)
         except OSError as error:
             raise AssetLifecycleError(
                 "recovery journal directory could not be created"
@@ -837,31 +938,85 @@ def _lexical_path_inside(path_value: str, root: Path, *, label: str) -> Path:
     return path
 
 
-def _durable_replace(source: Path, destination: Path) -> None:
+def _descriptor_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    while chunk := os.read(descriptor, 1024 * 1024):
+        digest.update(chunk)
+    os.lseek(descriptor, 0, os.SEEK_SET)
+    return digest.hexdigest()
+
+
+def _durable_replace(
+    source: Path,
+    destination: Path,
+    *,
+    expected_source_identity: tuple[int, int] | None = None,
+    expected_source_sha256: str | None = None,
+    destination_must_be_absent: bool = True,
+) -> None:
+    _verify_catalog_lock()
     with _held_parent_directory(source) as (source_parent, source_name):
-        source_metadata = os.stat(
+        source_descriptor = os.open(
             source_name,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=source_parent,
-            follow_symlinks=False,
         )
-        if not stat.S_ISREG(source_metadata.st_mode) or source_metadata.st_nlink != 1:
-            raise AssetLifecycleError("asset move source is unsafe")
-        with _held_parent_directory(destination) as (
-            destination_parent,
-            destination_name,
-        ):
-            os.rename(
+        try:
+            source_metadata = os.fstat(source_descriptor)
+            named_source = os.stat(
                 source_name,
-                destination_name,
-                src_dir_fd=source_parent,
-                dst_dir_fd=destination_parent,
+                dir_fd=source_parent,
+                follow_symlinks=False,
             )
-            os.fsync(destination_parent)
-            if source_parent != destination_parent:
-                os.fsync(source_parent)
+            source_identity = (source_metadata.st_dev, source_metadata.st_ino)
+            if (
+                not stat.S_ISREG(source_metadata.st_mode)
+                or source_metadata.st_nlink != 1
+                or source_identity != (named_source.st_dev, named_source.st_ino)
+                or (
+                    expected_source_identity is not None
+                    and source_identity != expected_source_identity
+                )
+                or (
+                    expected_source_sha256 is not None
+                    and _descriptor_sha256(source_descriptor)
+                    != expected_source_sha256
+                )
+            ):
+                raise AssetLifecycleError("asset move source identity changed")
+            with _held_parent_directory(destination) as (
+                destination_parent,
+                destination_name,
+            ):
+                if destination_must_be_absent:
+                    try:
+                        os.stat(
+                            destination_name,
+                            dir_fd=destination_parent,
+                            follow_symlinks=False,
+                        )
+                    except FileNotFoundError:
+                        pass
+                    else:
+                        raise AssetLifecycleError(
+                            "asset move destination is no longer absent"
+                        )
+                os.rename(
+                    source_name,
+                    destination_name,
+                    src_dir_fd=source_parent,
+                    dst_dir_fd=destination_parent,
+                )
+                os.fsync(destination_parent)
+                if source_parent != destination_parent:
+                    os.fsync(source_parent)
+        finally:
+            os.close(source_descriptor)
 
 
 def _durable_unlink(path: Path) -> None:
+    _verify_catalog_lock()
     with _held_parent_directory(path) as (parent_descriptor, name):
         try:
             metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
@@ -873,7 +1028,13 @@ def _durable_unlink(path: Path) -> None:
         os.fsync(parent_descriptor)
 
 
-def _durable_mkdir(path: Path, *, root: Path) -> None:
+def _durable_mkdir(
+    path: Path,
+    *,
+    root: Path,
+    mode: int = 0o755,
+) -> None:
+    _verify_catalog_lock()
     root = Path(os.path.abspath(root))
     path = Path(os.path.abspath(path))
     if not path.is_relative_to(root):
@@ -881,18 +1042,71 @@ def _durable_mkdir(path: Path, *, root: Path) -> None:
     current = root
     for component in path.relative_to(root).parts:
         child = current / component
-        if not child.exists():
-            child.mkdir(mode=0o755)
-            _fsync_directory(current)
-        current = _require_directory_without_symlinks(
-            child,
-            label="created directory",
-        )
+        with _held_parent_directory(child) as (parent_descriptor, name):
+            try:
+                metadata = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                os.mkdir(name, mode=mode, dir_fd=parent_descriptor)
+                os.fsync(parent_descriptor)
+                metadata = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            if not stat.S_ISDIR(metadata.st_mode):
+                raise AssetLifecycleError("created directory is unsafe")
+            child_descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | os.O_DIRECTORY
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
+            )
+            try:
+                opened = os.fstat(child_descriptor)
+                if (opened.st_dev, opened.st_ino) != (
+                    metadata.st_dev,
+                    metadata.st_ino,
+                ):
+                    raise AssetLifecycleError(
+                        "created directory identity changed"
+                    )
+            finally:
+                os.close(child_descriptor)
+        current = child
 
 
 def _journal_path(catalog: AssetCatalog, transaction_id: str) -> Path:
-    root = _recovery_root(catalog, create=True)
+    root = _run_recovery_root(catalog, create=True)
     return root / f"{transaction_id}.json"
+
+
+def _run_recovery_root(catalog: AssetCatalog, *, create: bool) -> Path:
+    recovery_root = _recovery_root(catalog, create=create)
+    run_root = recovery_root / catalog.run_id
+    if create and not run_root.exists():
+        try:
+            _durable_mkdir(run_root, root=recovery_root, mode=0o700)
+        except OSError as error:
+            raise AssetLifecycleError(
+                "run recovery journal directory could not be created"
+            ) from error
+    if run_root.exists() or run_root.is_symlink():
+        trusted = _require_directory_without_symlinks(
+            run_root,
+            label="run recovery journal directory",
+        )
+        metadata = trusted.stat()
+        if metadata.st_uid != os.getuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise AssetLifecycleError(
+                "run recovery journal directory owner or mode is unsafe"
+            )
+        return trusted
+    return run_root
 
 
 def _registry_path(catalog: AssetCatalog) -> Path:
@@ -944,7 +1158,6 @@ def _new_registry(catalog: AssetCatalog) -> TransactionRegistry:
         version=TRANSACTION_REGISTRY_VERSION,
         catalog_id=catalog.catalog_id,
         catalog_root=str(_require_directory_without_symlinks(catalog.root, label="catalog root")),
-        run_id=catalog.run_id,
     )
 
 
@@ -953,11 +1166,12 @@ def _load_registry(catalog: AssetCatalog, *, create: bool) -> TransactionRegistr
     if not path.exists():
         registry = _new_registry(catalog)
         if create:
-            _atomic_write_json(path, registry.model_dump(mode="json"))
+            _write_registry(catalog, registry)
         return registry
     try:
         registry = TransactionRegistry.model_validate(
-            _read_journal_file(path), strict=True
+            _read_journal_file(path, limit=MAX_TRANSACTION_REGISTRY_READ_BYTES),
+            strict=True,
         )
     except (ValidationError, AssetLifecycleError, TypeError, ValueError) as error:
         raise AssetLifecycleError("asset review transaction registry is invalid") from error
@@ -965,14 +1179,25 @@ def _load_registry(catalog: AssetCatalog, *, create: bool) -> TransactionRegistr
     if (
         registry.catalog_id != catalog.catalog_id
         or registry.catalog_root != expected_root
-        or registry.run_id != catalog.run_id
     ):
         raise AssetLifecycleError("asset review transaction registry binding is invalid")
+    compacted = False
+    recovery_root = _recovery_root(catalog, create=False)
+    for transaction_id, entry in list(registry.transactions.items()):
+        journal_path = recovery_root / entry.run_id / f"{transaction_id}.json"
+        if entry.state in {"committed", "aborted"} and not journal_path.exists():
+            del registry.transactions[transaction_id]
+            compacted = True
+    if compacted:
+        _write_registry(catalog, registry)
     return registry
 
 
 def _write_registry(catalog: AssetCatalog, registry: TransactionRegistry) -> None:
-    _atomic_write_json(_registry_path(catalog), registry.model_dump(mode="json"))
+    payload = _json_bytes(registry.model_dump(mode="json"))
+    if len(payload) > MAX_TRANSACTION_REGISTRY_BYTES:
+        raise AssetLifecycleError("asset review transaction registry is too large")
+    _atomic_write_bytes(_registry_path(catalog), payload)
 
 
 def _registry_prepare(
@@ -984,6 +1209,7 @@ def _registry_prepare(
         raise AssetLifecycleError("asset review transaction ID was already used")
     registry.transactions[journal.transaction_id] = TransactionRegistryEntry(
         plan_sha256=journal.plan_sha256,
+        run_id=journal.run_id,
         state="prepared",
         created_at=journal.created_at,
     )
@@ -996,7 +1222,12 @@ def _registry_entry(
 ) -> TransactionRegistryEntry:
     registry = _load_registry(catalog, create=False)
     entry = registry.transactions.get(journal.transaction_id)
-    if entry is None or entry.plan_sha256 != journal.plan_sha256:
+    if (
+        entry is None
+        or entry.plan_sha256 != journal.plan_sha256
+        or entry.run_id != journal.run_id
+        or entry.run_id != catalog.run_id
+    ):
         raise AssetLifecycleError("recovery journal transaction registry binding is invalid")
     try:
         created_at = datetime.fromisoformat(entry.created_at)
@@ -1004,9 +1235,10 @@ def _registry_entry(
     except ValueError as error:
         raise AssetLifecycleError("recovery journal transaction timestamp is invalid") from error
     now = datetime.now(UTC)
-    if (
-        entry.created_at != journal.created_at
-        or created_at > now
+    if entry.created_at != journal.created_at:
+        raise AssetLifecycleError("recovery journal transaction is stale or invalid")
+    if entry.state == "prepared" and (
+        created_at > now
         or journal_created_at > now
         or (now - created_at).total_seconds() > MAX_TRANSACTION_AGE_SECONDS
     ):
@@ -1021,7 +1253,12 @@ def _registry_set_state(
 ) -> None:
     registry = _load_registry(catalog, create=False)
     entry = registry.transactions.get(journal.transaction_id)
-    if entry is None or entry.plan_sha256 != journal.plan_sha256:
+    if (
+        entry is None
+        or entry.plan_sha256 != journal.plan_sha256
+        or entry.run_id != journal.run_id
+        or entry.run_id != catalog.run_id
+    ):
         raise AssetLifecycleError("asset review transaction registry binding is invalid")
     if entry.state == state:
         return
@@ -1035,7 +1272,10 @@ def _write_recovery_journal(
     path: Path,
     journal: AssetReviewRecoveryJournal,
 ) -> None:
-    _atomic_write_json(path, journal.model_dump(mode="json"))
+    payload = _json_bytes(journal.model_dump(mode="json"))
+    if len(payload) > MAX_RECOVERY_FILE_BYTES:
+        raise AssetLifecycleError("asset review recovery journal is too large")
+    _atomic_write_bytes(path, payload)
 
 
 def _crash_point(_event: str) -> None:
@@ -1074,7 +1314,11 @@ def _manifest_cas_write(
         raise AssetLifecycleError(
             "catalog manifest changed after batch snapshot; recovery refused to overwrite it"
         )
-    _atomic_write_bytes(manifest_path, target_bytes)
+    _atomic_write_bytes(
+        manifest_path,
+        target_bytes,
+        expected_sha256=_bytes_digest(current),
+    )
 
 
 def _quarantine_journal(path: Path) -> None:
@@ -1087,7 +1331,11 @@ def _quarantine_journal(path: Path) -> None:
         pass
 
 
-def _read_journal_file(path: Path) -> dict[str, object]:
+def _read_journal_file(
+    path: Path,
+    *,
+    limit: int = MAX_RECOVERY_FILE_BYTES,
+) -> dict[str, object]:
     descriptor: int | None = None
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -1096,7 +1344,7 @@ def _read_journal_file(path: Path) -> dict[str, object]:
             before.st_nlink != 1
             or before.st_uid != os.getuid()
             or stat.S_IMODE(before.st_mode) != 0o600
-            or before.st_size > MAX_RECOVERY_FILE_BYTES
+            or before.st_size > limit
         ):
             raise AssetLifecycleError("recovery journal file has unsafe links")
         descriptor = os.open(path, os.O_RDONLY | nofollow)
@@ -1111,10 +1359,10 @@ def _read_journal_file(path: Path) -> dict[str, object]:
             raise AssetLifecycleError("recovery journal file identity changed")
         chunks = []
         total = 0
-        while chunk := os.read(descriptor, min(64 * 1024, MAX_RECOVERY_FILE_BYTES + 1 - total)):
+        while chunk := os.read(descriptor, min(64 * 1024, limit + 1 - total)):
             chunks.append(chunk)
             total += len(chunk)
-            if total > MAX_RECOVERY_FILE_BYTES:
+            if total > limit:
                 raise AssetLifecycleError("recovery journal file is too large")
         return json.loads(b"".join(chunks).decode("utf-8"))
     except (OSError, ValueError, TypeError) as error:
@@ -1231,7 +1479,7 @@ def _validated_recovery_journal(
                 raise AssetLifecycleError(
                     "recovery journal destination path escapes its trusted root"
                 )
-            if record.disposition == "approved" or destination.parent.exists():
+            if destination.parent.exists() or record.move_phase == "done":
                 destination = _lexical_path_inside(
                     record.destination,
                     active_root,
@@ -1354,16 +1602,17 @@ def _rollback_from_journal(
             "intent",
             "rollback_manifest.intent",
         )
-        original_manifest = _decode_bound_bytes(
-            journal.original_manifest_bytes_b64,
-            journal.original_manifest_sha256,
-            label="original manifest snapshot",
-        )
-        _manifest_cas_write(
-            catalog,
-            expected_sha256=journal.target_manifest_sha256,
-            target_bytes=original_manifest,
-        )
+        if journal.manifest_phase != "pending":
+            original_manifest = _decode_bound_bytes(
+                journal.original_manifest_bytes_b64,
+                journal.original_manifest_sha256,
+                label="original manifest snapshot",
+            )
+            _manifest_cas_write(
+                catalog,
+                expected_sha256=journal.target_manifest_sha256,
+                target_bytes=original_manifest,
+            )
         _crash_point("rollback_manifest.applied")
         _set_journal_phase(
             journal_path,
@@ -1390,7 +1639,15 @@ def _rollback_from_journal(
                     f"{record.pending_id}.rollback_move.intent",
                 )
                 if destination.exists() and not pending_path.exists():
-                    _durable_replace(destination, pending_path)
+                    _durable_replace(
+                        destination,
+                        pending_path,
+                        expected_source_identity=(
+                            record.source_device,
+                            record.source_inode,
+                        ),
+                        expected_source_sha256=record.asset_sha256,
+                    )
                 elif not pending_path.exists() or destination.exists():
                     raise AssetLifecycleError("asset rollback paths are inconsistent")
                 _crash_point(f"{record.pending_id}.rollback_move.applied")
@@ -1421,7 +1678,11 @@ def _rollback_from_journal(
             metadata_path = Path(record.metadata_path)
             current_sha256 = _bytes_digest(metadata_path.read_bytes())
             if current_sha256 == record.target_audit_sha256:
-                _atomic_write_bytes(metadata_path, original_audit)
+                _atomic_write_bytes(
+                    metadata_path,
+                    original_audit,
+                    expected_sha256=record.target_audit_sha256,
+                )
             elif current_sha256 != record.original_audit_sha256:
                 raise AssetLifecycleError("audit rollback compare-and-swap failed")
             _crash_point(f"{record.pending_id}.rollback_audit.applied")
@@ -1439,7 +1700,7 @@ def _rollback_from_journal(
 
 
 def _recover_asset_review_journals_locked(catalog: AssetCatalog) -> None:
-    recovery_root = _recovery_root(catalog, create=False)
+    recovery_root = _run_recovery_root(catalog, create=False)
     if not recovery_root.exists():
         return
     for path in sorted(recovery_root.glob("*.json")):
@@ -1530,25 +1791,23 @@ def _prepare_batch_journal(
         label="incoming root",
     )
     active_root = catalog_root / "active"
-    has_new_approval = any(
-        disposition == "approved"
-        and canonical_by_id[pending_id].review_status == "pending"
-        for pending_id, (disposition, _safety) in normalized.items()
-    )
-    if has_new_approval and not active_root.exists():
-        _durable_mkdir(active_root, root=catalog_root)
     if active_root.exists() or active_root.is_symlink():
         active_root = _require_directory_without_symlinks(
             active_root,
             label="active root",
         )
-    original_manifest = catalog.manifest_path.read_bytes()
+    original_manifest = _read_bounded_bytes(
+        catalog.manifest_path,
+        limit=MAX_RECOVERY_SNAPSHOT_BYTES,
+        label="catalog manifest snapshot",
+    )
     try:
         target_manifest_payload = json.loads(original_manifest.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, TypeError) as error:
         raise AssetLifecycleError("catalog manifest is invalid") from error
     target_assets = target_manifest_payload.setdefault("assets", [])
     records: list[RecoveryAssetRecord] = []
+    decoded_total = len(original_manifest)
 
     for pending_id, (disposition, safety) in normalized.items():
         candidate = canonical_by_id[pending_id]
@@ -1572,16 +1831,13 @@ def _prepare_batch_journal(
         )
         if not destination.is_relative_to(active_root):
             raise AssetLifecycleError("approved destination escapes active catalog")
-        if disposition == "approved":
-            _durable_mkdir(destination.parent, root=active_root)
-            _require_directory_without_symlinks(
-                destination.parent,
-                label="destination parent",
-            )
-            _fsync_directory(destination.parent)
         source_metadata = _regular_file_metadata(pending_path, label="pending path")
         audit_metadata = _regular_file_metadata(metadata_path, label="metadata path")
-        original_audit = metadata_path.read_bytes()
+        original_audit = _read_bounded_bytes(
+            metadata_path,
+            limit=MAX_RECOVERY_SNAPSHOT_BYTES,
+            label="pending audit snapshot",
+        )
         reviewed_at = datetime.now(UTC).isoformat()
         target_audit = _reviewed_audit_bytes(
             candidate,
@@ -1591,6 +1847,11 @@ def _prepare_batch_journal(
             rejection_reason=rejection_reason,
             reviewed_at=reviewed_at,
         )
+        if len(target_audit) > MAX_RECOVERY_SNAPSHOT_BYTES:
+            raise AssetLifecycleError("target audit snapshot is too large")
+        decoded_total += len(original_audit) + len(target_audit)
+        if decoded_total > MAX_RECOVERY_TOTAL_SNAPSHOT_BYTES:
+            raise AssetLifecycleError("recovery journal snapshots are too large")
         if disposition == "approved":
             asset_id = f"{candidate.provider}-{candidate.provider_asset_id}"
             if any(item.get("asset_id") == asset_id for item in target_assets):
@@ -1611,6 +1872,7 @@ def _prepare_batch_journal(
                 disposition=disposition,
                 pending_path=str(pending_path),
                 destination=str(destination),
+                destination_expected_absent=True,
                 metadata_path=str(metadata_path),
                 asset_sha256=candidate.sha256,
                 source_device=source_metadata.st_dev,
@@ -1629,6 +1891,11 @@ def _prepare_batch_journal(
         )
 
     target_manifest = _json_bytes(target_manifest_payload)
+    if len(target_manifest) > MAX_RECOVERY_SNAPSHOT_BYTES:
+        raise AssetLifecycleError("target manifest snapshot is too large")
+    decoded_total += len(target_manifest)
+    if decoded_total > MAX_RECOVERY_TOTAL_SNAPSHOT_BYTES:
+        raise AssetLifecycleError("recovery journal snapshots are too large")
     transaction_id = uuid.uuid4().hex
     created_at = datetime.now(UTC).isoformat()
     journal = AssetReviewRecoveryJournal(
@@ -1650,6 +1917,8 @@ def _prepare_batch_journal(
         assets=records,
     )
     journal.plan_sha256 = _journal_plan_sha256(journal)
+    if len(_json_bytes(journal.model_dump(mode="json"))) > MAX_RECOVERY_FILE_BYTES:
+        raise AssetLifecycleError("asset review recovery journal is too large")
     journal_path = _journal_path(catalog, transaction_id)
     _registry_prepare(catalog, journal)
     _crash_point("transaction.registered")
@@ -1686,6 +1955,11 @@ def _apply_batch_journal(
                         record.target_audit_sha256,
                         label="target audit snapshot",
                     ),
+                    expected_sha256=record.original_audit_sha256,
+                    expected_identity=(
+                        record.metadata_device,
+                        record.metadata_inode,
+                    ),
                 )
             elif current_audit_sha256 != record.target_audit_sha256:
                 raise AssetLifecycleError("audit apply compare-and-swap failed")
@@ -1709,8 +1983,18 @@ def _apply_batch_journal(
                 )
                 pending_path = Path(record.pending_path)
                 destination = Path(record.destination)
+                _durable_mkdir(destination.parent, root=catalog.root)
                 if pending_path.exists() and not destination.exists():
-                    _durable_replace(pending_path, destination)
+                    _durable_replace(
+                        pending_path,
+                        destination,
+                        expected_source_identity=(
+                            record.source_device,
+                            record.source_inode,
+                        ),
+                        expected_source_sha256=record.asset_sha256,
+                        destination_must_be_absent=record.destination_expected_absent,
+                    )
                 elif not destination.exists() or pending_path.exists():
                     raise AssetLifecycleError("asset apply paths are inconsistent")
                 _crash_point(f"{record.pending_id}.move.applied")
