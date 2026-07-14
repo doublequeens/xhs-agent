@@ -1702,6 +1702,109 @@ def test_final_policy_guard_rejects_local_asset_with_external_only_fields(
     }
 
 
+@pytest.mark.parametrize(
+    "field_name,value",
+    [
+        ("pending_id", "forged-pending"),
+        ("metadata_path", "/tmp/forged.json"),
+        ("candidate_rank", 1),
+        ("attempt_number", 1),
+    ],
+)
+def test_final_policy_guard_rejects_all_local_external_workflow_fields(
+    monkeypatch,
+    tmp_path,
+    field_name,
+    value,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    setattr(state["asset_manifest"].items[0], field_name, value)
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_provenance_not_canonical" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def _configure_asymmetric_fallback(state, active_root: Path, *, listed: bool) -> None:
+    fallback_path = active_root / "fallback.svg"
+    fallback_path.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16"></svg>'
+    )
+    fallback_sha = hashlib.sha256(fallback_path.read_bytes()).hexdigest()
+    manifest_path = active_root.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["assets"][0]["fallback_roles"] = ["background_token"]
+    manifest["assets"].append(
+        {
+            "asset_id": "fallback_asset",
+            "role": "background_token",
+            "path": "active/fallback.svg",
+            "ownership": "project_original",
+            "license": "project_internal",
+            "dimensions": {"width": 16, "height": 16},
+            "sha256": fallback_sha,
+            "allowed_layouts": ["editorial_cover"],
+            "tags": ["test"],
+            "disabled_contexts": [],
+            "fallback_roles": ["unrelated_role"],
+            "usage": "production",
+        }
+    )
+    manifest_path.write_text(json.dumps(manifest))
+    item = state["asset_manifest"].items[0]
+    item.status = "fallback"
+    item.path = str(fallback_path)
+    item.sha256 = fallback_sha
+    item.asset_id = "fallback_asset"
+    state["render_manifest"].source_asset_sha256["slot-1"] = fallback_sha
+    state["visual_plan"].required_assets[0].fallback_asset_ids = (
+        ["fallback_asset"] if listed else []
+    )
+
+
+def test_final_policy_guard_accepts_resolver_authorized_asymmetric_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    _configure_asymmetric_fallback(state, active_root, listed=True)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+
+    result = final_policy_guard_node(state)
+
+    assert result["final_policy_issues"] == []
+
+
+def test_final_policy_guard_rejects_unlisted_forged_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    _configure_asymmetric_fallback(state, active_root, listed=False)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_requirement_not_satisfied" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
 def test_final_policy_guard_rejects_external_requirement_fingerprint_drift(
     monkeypatch,
     tmp_path,

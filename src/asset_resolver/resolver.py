@@ -27,6 +27,7 @@ from src.schemas.assets import (
 from src.schemas.visual_plan import VisualPlan
 
 from .catalog import AssetCatalog, AssetEntry
+from .eligibility import entry_satisfies_requirement
 from .lifecycle import (
     PendingAsset,
     list_pending_assets,
@@ -39,7 +40,6 @@ from .providers import (
 )
 
 
-_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 MAX_IMAGE_PIXELS = 40_000_000
 MAX_DOWNLOAD_ATTEMPTS = 3
 
@@ -67,37 +67,10 @@ def requirement_fingerprint(requirement: AssetRequirement) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _has_complete_provenance(entry: AssetEntry) -> bool:
-    return bool(
-        entry.ownership
-        and entry.license
-        and _SHA256_PATTERN.fullmatch(entry.sha256)
-    )
-
-
-def _crop_compatible(entry: AssetEntry, requirement: AssetRequirement) -> bool:
-    return (
-        requirement.orientation == "any"
-        or entry.orientation == requirement.orientation
-    )
-
-
-def _base_eligible(entry: AssetEntry, requirement: AssetRequirement) -> bool:
-    return (
-        entry.usage == "production"
-        and requirement.layout in entry.allowed_layouts
-        and entry.width >= requirement.min_width
-        and entry.height >= requirement.min_height
-        and _crop_compatible(entry, requirement)
-        and not set(requirement.context_tags).intersection(entry.disabled_contexts)
-        and _has_complete_provenance(entry)
-    )
-
-
 def eligible(entry: AssetEntry, requirement: AssetRequirement) -> bool:
     """Return whether an entry is a production-safe exact local match."""
 
-    return entry.role == requirement.role and _base_eligible(entry, requirement)
+    return entry_satisfies_requirement(entry, requirement, mode="exact")
 
 
 def _has_catalog_integrity(entry: AssetEntry, catalog: AssetCatalog) -> bool:
@@ -110,21 +83,6 @@ def _has_catalog_integrity(entry: AssetEntry, catalog: AssetCatalog) -> bool:
     except OSError:
         return False
     return actual_hash == entry.sha256
-
-
-def _can_authorize_fallback_role(
-    entry: AssetEntry,
-    fallback_role: str,
-    requirement: AssetRequirement,
-    catalog: AssetCatalog,
-) -> bool:
-    return (
-        entry.usage == "production"
-        and entry.role == requirement.role
-        and fallback_role in entry.fallback_roles
-        and _has_complete_provenance(entry)
-        and _has_catalog_integrity(entry, catalog)
-    )
 
 
 def _last_used_timestamp(catalog: AssetCatalog, asset_id: str) -> float:
@@ -180,20 +138,19 @@ def _select_explicit_fallback(
     entries_by_id = {entry.asset_id: entry for entry in catalog.entries}
     for asset_id in requirement.fallback_asset_ids:
         entry = entries_by_id.get(asset_id)
-        fallback_role_is_declared = entry is not None and any(
-            _can_authorize_fallback_role(
-                candidate,
-                entry.role,
-                requirement,
-                catalog,
-            )
-            for candidate in catalog.entries
-        )
         if (
             entry is not None
-            and fallback_role_is_declared
             and entry.asset_id not in catalog.recent_asset_ids
-            and _base_eligible(entry, requirement)
+            and entry_satisfies_requirement(
+                entry,
+                requirement,
+                mode="fallback",
+                catalog_entries=catalog.entries,
+                authorizer_integrity=lambda candidate: _has_catalog_integrity(
+                    candidate,
+                    catalog,
+                ),
+            )
             and _has_catalog_integrity(entry, catalog)
         ):
             return entry

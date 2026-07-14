@@ -32,6 +32,12 @@
   - The catalog review lock opens with `O_NOFOLLOW` and requires a stable regular single-link inode before and after `flock`, rejecting symlinks, hardlink aliases, and replacement races while preserving the global lock order.
   - `modern_v2` is decisive over old shapes and spoofed legacy markers. Unknown versions fail closed; versionless legacy inference requires a strict old shape at one exact old successor; partial modern checkpoints remain modern and surface missing-artifact issues.
   - Final Guard opens the absolute trusted root from `/` one component at a time with `O_DIRECTORY | O_NOFOLLOW`, retains every directory descriptor, and rechecks each parent/name inode after reading. It also verifies every final asset against the canonical active catalog; licensed stock additionally requires one matching strict approved audit with exact run/review/safety/reviewed-at/hash bindings. Project-original seed assets follow an explicit local canonical-catalog rule.
+- Closed the catalog-global recovery and shared-eligibility review:
+  - Before any run prepares new work, the catalog lock now drives recovery from every registry `prepared` entry. Each journal is located through the entry's exact raw `run_id`, validated with a run-bound catalog view, and fully rolled back before the current run snapshots or mutates the manifest. A registry prepare with no journal is durably aborted and compacted as a post-crash orphan.
+  - Run recovery directories use `sha256(run_id UTF-8)` keys, so case-insensitive filesystems cannot alias distinct `Run`/`run` identifiers while journal and registry payloads retain the exact raw run ID.
+  - The catalog review lock retains the authenticated catalog-root directory descriptor for the entire critical section. Durable mkdir, atomic write, hard-link move, quarantine, and unlink operations resolve catalog-relative paths from that descriptor; pathname identity remains a checkpoint, not the operation anchor.
+  - Absent-destination promotion uses `linkat` no-clobber semantics, verifies the destination inode/hash, rechecks the source name, and then unlinks the expected source inode/hash. A source swap after link removes only the newly linked destination and fails closed; a preexisting hardlink destination is never overwritten. Atomic writes verify the committed pathname inode and payload hash after rename.
+  - Resolver and Final Guard share one `entry_satisfies_requirement` deep module for base, exact, and explicit-fallback rules. Fallbacks must be named by `fallback_asset_ids` and authorized by a production primary-role catalog entry declaring the target role; Guard also rejects every pending-workflow field on project-original local items.
 
 ## TDD evidence
 
@@ -80,6 +86,10 @@
 - Atomic identity closure: source-swap and destination-creation RED tests showed that descriptor-relative rename could still move the wrong inode or overwrite a concurrently created destination. Move now binds source inode/hash and destination absence at the rename point; audit and manifest atomic writes recheck CAS hash and the original metadata inode. Directory creation uses held-parent `mkdirat`, fsync, and inode revalidation. Catalog lock/root identity is rechecked at critical-section entry and before every durable mutation; lock replacement stops before move/manifest commit.
 - Current-requirement Guard closure: RED tests covered an undersized canonical asset and a local asset carrying an external URL. Final Guard now reconstructs the current `AssetRequirement`, applies the resolver's production/layout/minimum-dimension/orientation/disabled-context hard filters, requires the current external requirement fingerprint to match item/audit provenance, and requires every external-only field to be empty for project-original assets. A real external approved audit regression covers fingerprint drift.
 - The first current-requirement full run found three integration fixtures that declared every SVG as portrait even for square requirements. The fixture now emits actual requirement dimensions; the exact three regressions and the fresh full run pass.
+- Catalog-global recovery: three manifest crash regressions (`intent`, `applied`, `done`) were RED because run B committed without first restoring run A. A case-sensitive run-directory test exposed raw path keys, and repeated `transaction.registered` crashes grew the registry to two prepared entries. The five regressions are GREEN with registry-driven cross-run recovery, hashed directory keys, and prepared-orphan compaction.
+- Durable move/root binding: the post-link source-swap test was RED because the old rename path never reached a no-clobber link seam; the checkpoint-then-root-replacement test was RED because the replacement root manifest was overwritten. Both are GREEN with verified link+unlink and the held root descriptor. A preexisting hardlink-destination regression additionally proves no-clobber behavior.
+- Shared Guard eligibility: four local pending-workflow fields were accepted, a legal non-symmetric resolver fallback was rejected, and an unlisted fallback was not classified as a requirement violation. All six regressions are GREEN through the shared exact/fallback helper and complete local-field exclusion.
+- Pre-commit filesystem review: an open/restore race proved the retained root descriptor was not compared with the pre-open root inode, and an expected-absent atomic write could overwrite a last-moment creator. Both were RED. The lock now authenticates the opened root descriptor before lock-file creation and at every checkpoint; expected-absent writes use hard-link no-clobber commit. Expected unlink retains its verified descriptor through a final name/lock check and the unlink syscall.
 
 ## Final verification
 
@@ -135,6 +145,24 @@
 - Final full suite:
   `pytest -q`
   -> `1170 passed, 2 skipped` (`1172 tests collected`).
+- Catalog-global recovery/no-clobber/root-fd targeted suite:
+  `pytest -q tests/asset_resolver/test_lifecycle.py -k 'new_run_recovers_prepared_manifest or run_recovery_directories_use_case_sensitive_hash_keys or registered_transaction_orphans or move_cleans_new_destination or hardlink_destination or root_replacement_after_checkpoint or root_swapped_during_root_open or expected_absent_atomic_write'`
+  -> `10 passed`.
+- Latest lifecycle suite:
+  `pytest -q tests/asset_resolver/test_lifecycle.py`
+  -> `123 passed`.
+- Latest Final Guard suite:
+  `pytest -q tests/nodes/test_final_policy_guard.py`
+  -> `71 passed, 4 warnings`.
+- Latest broader focused suite:
+  `pytest -q tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py`
+  -> `357 passed, 2 skipped, 4 warnings`.
+- Latest full suite:
+  `pytest -q`
+  -> `1186 passed, 2 skipped, 4 warnings` (`1188 tests collected`).
+- Latest bytecode/diff verification:
+  `python -m compileall -q main.py src tests` and `git diff --check`
+  -> passed/clean.
 
 ## Self-review
 

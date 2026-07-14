@@ -10,6 +10,7 @@ from pathlib import Path
 from PIL import Image
 
 from src.asset_resolver.catalog import load_catalog_bytes
+from src.asset_resolver.eligibility import entry_satisfies_requirement
 from src.asset_resolver.lifecycle import PendingAuditRecord
 from src.asset_resolver.resolver import requirement_fingerprint
 from src.domain import find_policy_violations
@@ -371,12 +372,13 @@ def _asset_item_matches_canonical(
             and _value(item, "height") == entry.height
             and (
                 (_value(item, "status") == "active" and _value(item, "role") == entry.role)
-                or (
-                    _value(item, "status") == "fallback"
-                    and _value(item, "role") in entry.fallback_roles
-                )
+                or _value(item, "status") == "fallback"
             )
             and _value(item, "source_type") == "local"
+            and _value(item, "pending_id") is None
+            and _value(item, "metadata_path") is None
+            and _value(item, "candidate_rank") is None
+            and _value(item, "attempt_number") is None
             and _value(item, "provider") is None
             and _value(item, "provider_asset_id") is None
             and _value(item, "source_url") is None
@@ -406,10 +408,6 @@ def _asset_item_matches_canonical(
         or (
             _value(item, "status") == "active"
             and _value(item, "role") != entry.role
-        )
-        or (
-            _value(item, "status") == "fallback"
-            and _value(item, "role") not in entry.fallback_roles
         )
     ):
         return False
@@ -458,22 +456,6 @@ def _canonical_requirement(payload) -> AssetRequirement | None:
         return None
 
 
-def _entry_satisfies_requirement(entry, requirement: AssetRequirement) -> bool:
-    return (
-        entry.usage == "production"
-        and requirement.layout in entry.allowed_layouts
-        and entry.width >= requirement.min_width
-        and entry.height >= requirement.min_height
-        and (
-            requirement.orientation == "any"
-            or entry.orientation == requirement.orientation
-        )
-        and not set(requirement.context_tags).intersection(
-            entry.disabled_contexts
-        )
-    )
-
-
 def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     issues: list[dict] = []
     if state.get("review_status") != "approved":
@@ -519,6 +501,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     active_root = Path(os.path.abspath(ASSET_ACTIVE_ROOT))
     catalog_root = active_root.parent
     canonical_entries_by_path = {}
+    canonical_entries = ()
     try:
         catalog_manifest_path = catalog_root / "manifest.json"
         manifest_before = _secure_file_snapshot(
@@ -536,6 +519,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
             Path(os.path.abspath(entry.path)): entry
             for entry in canonical_catalog.entries
         }
+        canonical_entries = canonical_catalog.entries
     except (OSError, TypeError, ValueError):
         issues.append(
             _artifact_issue(
@@ -609,10 +593,22 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                 )
             )
         requirement = canonical_requirements_by_slot.get(slot_id)
+        eligibility_mode = "fallback" if status == "fallback" else "exact"
         if (
             canonical_entry is None
             or requirement is None
-            or not _entry_satisfies_requirement(canonical_entry, requirement)
+            or _value(item, "role") != requirement.role
+            or not entry_satisfies_requirement(
+                canonical_entry,
+                requirement,
+                mode=eligibility_mode,
+                catalog_entries=canonical_entries,
+                authorizer_integrity=lambda entry: (
+                    (entry_snapshot := _secure_file_snapshot(entry.path, active_root))
+                    is not None
+                    and entry_snapshot[2] == entry.sha256
+                ),
+            )
             or (
                 canonical_entry.provenance is not None
                 and _value(item, "requirement_fingerprint")

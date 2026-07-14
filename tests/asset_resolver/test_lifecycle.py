@@ -1344,6 +1344,41 @@ def test_catalog_review_lock_rejects_replacement_after_flock(
     assert candidate.path.is_file()
 
 
+def test_catalog_review_lock_rejects_root_swapped_during_root_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.catalog as catalog_module
+    from src.asset_resolver.catalog import CatalogError, catalog_review_lock
+
+    root = tmp_path / "catalog"
+    root.mkdir()
+    detached_original = tmp_path / "catalog-original"
+    detached_replacement = tmp_path / "catalog-replacement"
+    original_open = catalog_module.os.open
+    swapped = False
+
+    def open_swapped_root(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if Path(path) == root and kwargs.get("dir_fd") is None and not swapped:
+            swapped = True
+            root.rename(detached_original)
+            root.mkdir()
+            descriptor = original_open(path, flags, *args, **kwargs)
+            root.rename(detached_replacement)
+            detached_original.rename(root)
+            return descriptor
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(catalog_module.os, "open", open_swapped_root)
+
+    with pytest.raises(CatalogError, match="review lock"):
+        with catalog_review_lock(root):
+            pass
+
+    assert not (detached_replacement / ".asset-review.lock").exists()
+
+
 def test_committed_transaction_journal_replay_never_rolls_back(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1633,6 +1668,111 @@ def test_crashed_run_does_not_isolate_other_run_and_can_recover_later(
     }
 
 
+@pytest.mark.parametrize("crash_event", ["manifest.intent", "manifest.applied", "manifest.done"])
+def test_new_run_recovers_prepared_manifest_transaction_before_its_own_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    crash_event: str,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    run_a = catalog(tmp_path, run_id="run-a")
+    first = pending_asset(tmp_path, run_id="run-a", asset_id="a")
+
+    def crash_run_a(event: str) -> None:
+        if event == crash_event:
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_run_a)
+    with pytest.raises(SimulatedProcessCrash, match=crash_event):
+        lifecycle.approve_external_asset(first, run_a)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", lambda _event: None)
+    run_b = replace(run_a, run_id="run-b")
+    second = pending_asset(tmp_path, run_id="run-b", asset_id="b")
+    lifecycle.approve_external_asset(second, run_b)
+
+    assert first.path.is_file()
+    assert json.loads(first.metadata_path.read_text())["review_status"] == "pending"
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert [item["asset_id"] for item in manifest["assets"]] == ["pexels-b"]
+
+    lifecycle.approve_external_asset(first, run_a)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert {item["asset_id"] for item in manifest["assets"]} == {
+        "pexels-a",
+        "pexels-b",
+    }
+    assert json.loads(first.metadata_path.read_text())["review_status"] == "approved"
+    assert json.loads(second.metadata_path.read_text())["review_status"] == "approved"
+    assert list((tmp_path / ".asset-review-recovery").rglob("*.json")) == []
+
+
+def test_run_recovery_directories_use_case_sensitive_hash_keys(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    monkeypatch.setattr(
+        lifecycle,
+        "_crash_point",
+        lambda event: (_ for _ in ()).throw(SimulatedProcessCrash(event))
+        if event == "transaction.registered"
+        else None,
+    )
+    for run_id, asset_id in (("Run", "upper"), ("run", "lower")):
+        candidate = pending_asset(tmp_path, run_id=run_id, asset_id=asset_id)
+        with pytest.raises(SimulatedProcessCrash, match="transaction.registered"):
+            lifecycle.approve_external_asset(candidate, catalog(tmp_path, run_id=run_id))
+
+    recovery_root = tmp_path / ".asset-review-recovery"
+    expected = {
+        hashlib.sha256(run_id.encode("utf-8")).hexdigest()
+        for run_id in ("Run", "run")
+    }
+    assert expected.issubset({path.name for path in recovery_root.iterdir()})
+    assert not (recovery_root / "Run").exists()
+    assert not (recovery_root / "run").exists()
+
+
+def test_registered_transaction_orphans_are_compacted_before_each_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    class SimulatedProcessCrash(BaseException):
+        pass
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+
+    def crash_after_registry_prepare(event: str) -> None:
+        if event == "transaction.registered":
+            raise SimulatedProcessCrash(event)
+
+    monkeypatch.setattr(lifecycle, "_crash_point", crash_after_registry_prepare)
+    for _ in range(5):
+        with pytest.raises(SimulatedProcessCrash, match="transaction.registered"):
+            lifecycle.approve_external_asset(candidate, asset_catalog)
+        registry = json.loads(
+            (
+                tmp_path
+                / ".asset-review-recovery"
+                / "transactions.registry"
+            ).read_text()
+        )
+        assert len(registry["transactions"]) == 1
+
+
 def test_large_audit_fails_before_transaction_or_asset_mutation(
     tmp_path: Path,
 ) -> None:
@@ -1877,6 +2017,140 @@ def test_move_refuses_source_inode_swapped_after_audit(
     assert candidate.path.read_bytes() == b"swapped source"
     assert original.is_file()
     assert not (tmp_path / "active" / "stock" / "serum-p1.webp").exists()
+
+
+def test_move_cleans_new_destination_if_source_is_swapped_after_link(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    original_source = tmp_path / "original-source-after-link.webp"
+    original_link = lifecycle.os.link
+
+    def link_then_swap_source(*args, **kwargs) -> None:
+        original_link(*args, **kwargs)
+        candidate.path.rename(original_source)
+        candidate.path.write_bytes(b"swapped after link")
+
+    monkeypatch.setattr(lifecycle.os, "link", link_then_swap_source)
+
+    with pytest.raises(lifecycle.AssetLifecycleError, match="source identity"):
+        lifecycle.approve_external_asset(candidate, asset_catalog)
+
+    assert candidate.path.read_bytes() == b"swapped after link"
+    assert original_source.is_file()
+    assert not destination.exists()
+    assert json.loads((tmp_path / "manifest.json").read_text())["assets"] == []
+
+
+def test_move_never_clobbers_preexisting_hardlink_destination(
+    tmp_path: Path,
+) -> None:
+    import os
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    destination.parent.mkdir(parents=True)
+    os.link(candidate.path, destination)
+    source_identity = candidate.path.stat()
+
+    with lifecycle._batch_lifecycle_lock(asset_catalog):
+        with pytest.raises(
+            lifecycle.AssetLifecycleError,
+            match="source identity|destination",
+        ):
+            lifecycle._durable_replace(
+                candidate.path,
+                destination,
+                expected_source_identity=(
+                    source_identity.st_dev,
+                    source_identity.st_ino,
+                ),
+                expected_source_sha256=candidate.sha256,
+            )
+
+    assert candidate.path.samefile(destination)
+    assert candidate.path.read_bytes() == destination.read_bytes()
+
+
+def test_root_replacement_after_checkpoint_never_writes_replacement_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+    from src.asset_resolver.catalog import CatalogError, catalog_review_lock
+
+    root = tmp_path / "catalog"
+    root.mkdir()
+    asset_catalog = catalog(root)
+    old_root = tmp_path / "catalog-detached"
+    replacement_manifest = b'{"catalog_id":"replacement","assets":[]}\n'
+    original_verify = lifecycle._verify_catalog_lock
+    replaced = False
+
+    def replace_root_after_successful_checkpoint() -> None:
+        nonlocal replaced
+        original_verify()
+        if not replaced:
+            replaced = True
+            root.rename(old_root)
+            root.mkdir()
+            (root / "manifest.json").write_bytes(replacement_manifest)
+
+    with pytest.raises(CatalogError, match="review lock"):
+        with catalog_review_lock(root):
+            monkeypatch.setattr(
+                lifecycle,
+                "_verify_catalog_lock",
+                replace_root_after_successful_checkpoint,
+            )
+            lifecycle._atomic_write_bytes(
+                asset_catalog.manifest_path,
+                b'{"catalog_id":"test-catalog","assets":[],"old":true}\n',
+            )
+
+    assert (root / "manifest.json").read_bytes() == replacement_manifest
+
+
+def test_expected_absent_atomic_write_never_clobbers_last_moment_creator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+    from src.asset_resolver.catalog import catalog_review_lock
+
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "new-record.json"
+    original_link = lifecycle.os.link
+    injected = False
+
+    def create_destination_before_link(*args, **kwargs):
+        nonlocal injected
+        if not injected:
+            injected = True
+            destination.write_bytes(b"concurrent creator")
+        return original_link(*args, **kwargs)
+
+    monkeypatch.setattr(lifecycle.os, "link", create_destination_before_link)
+
+    with catalog_review_lock(asset_catalog.root):
+        with pytest.raises(
+            lifecycle.AssetLifecycleError,
+            match="destination is no longer absent",
+        ):
+            lifecycle._atomic_write_bytes(
+                destination,
+                b"writer payload",
+                expected_absent=True,
+            )
+
+    assert destination.read_bytes() == b"concurrent creator"
 
 
 def test_lock_replacement_stops_before_next_durable_mutation(

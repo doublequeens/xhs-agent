@@ -8,7 +8,6 @@ import os
 import stat
 import uuid
 from contextlib import contextmanager
-from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field, fields, replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -34,6 +33,7 @@ from .catalog import (
     CatalogError,
     approved_manifest_item,
     catalog_review_lock,
+    current_catalog_review_lock_handle,
     load_catalog,
 )
 from .providers import candidate_urls_are_allowed
@@ -59,12 +59,6 @@ MAX_TRANSACTION_REGISTRY_READ_BYTES = 16 * 1024 * 1024
 MAX_RECOVERY_SNAPSHOT_BYTES = 1024 * 1024
 MAX_RECOVERY_TOTAL_SNAPSHOT_BYTES = 4 * 1024 * 1024
 MAX_TRANSACTION_AGE_SECONDS = 30 * 24 * 60 * 60
-_CATALOG_LOCK_CHECKPOINT: ContextVar[Callable[[], object] | None] = ContextVar(
-    "catalog_lock_checkpoint",
-    default=None,
-)
-
-
 @dataclass(frozen=True, slots=True)
 class PendingAsset:
     pending_id: str
@@ -366,8 +360,14 @@ def _held_parent_directory(path: Path):
     nofollow = getattr(os, "O_NOFOLLOW", 0)
     flags = os.O_RDONLY | os.O_DIRECTORY | nofollow
     try:
-        descriptors.append(os.open(lexical.anchor, flags))
-        for component in lexical.parent.parts[1:]:
+        lock_handle = current_catalog_review_lock_handle()
+        if lock_handle is not None and lexical.is_relative_to(lock_handle.root_path):
+            descriptors.append(os.dup(lock_handle.root_descriptor))
+            components = lexical.parent.relative_to(lock_handle.root_path).parts
+        else:
+            descriptors.append(os.open(lexical.anchor, flags))
+            components = lexical.parent.parts[1:]
+        for component in components:
             parent = descriptors[-1]
             child = os.open(component, flags, dir_fd=parent)
             opened = os.fstat(child)
@@ -502,12 +502,52 @@ def _atomic_write_bytes(
                         )
                 finally:
                     os.close(target_descriptor)
-            os.rename(
-                temporary_name,
+            _verify_catalog_lock()
+            if expected_absent:
+                try:
+                    os.link(
+                        temporary_name,
+                        name,
+                        src_dir_fd=parent_descriptor,
+                        dst_dir_fd=parent_descriptor,
+                        follow_symlinks=False,
+                    )
+                except FileExistsError as error:
+                    raise AssetLifecycleError(
+                        "atomic write destination is no longer absent"
+                    ) from error
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+            else:
+                os.rename(
+                    temporary_name,
+                    name,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=parent_descriptor,
+                )
+            committed_descriptor = os.open(
                 name,
-                src_dir_fd=parent_descriptor,
-                dst_dir_fd=parent_descriptor,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
             )
+            try:
+                committed = os.fstat(committed_descriptor)
+                named = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    not stat.S_ISREG(committed.st_mode)
+                    or (committed.st_dev, committed.st_ino)
+                    != (named.st_dev, named.st_ino)
+                    or _descriptor_sha256(committed_descriptor)
+                    != _bytes_digest(payload)
+                ):
+                    raise AssetLifecycleError(
+                        "atomic write committed identity changed"
+                    )
+            finally:
+                os.close(committed_descriptor)
             os.fsync(parent_descriptor)
         finally:
             if descriptor is not None:
@@ -830,16 +870,12 @@ def _validate_explicit_safety_review(
 @contextmanager
 def _batch_lifecycle_lock(catalog: AssetCatalog):
     with catalog_review_lock(catalog.root) as checkpoint:
-        token = _CATALOG_LOCK_CHECKPOINT.set(checkpoint)
-        try:
-            checkpoint()
-            yield
-        finally:
-            _CATALOG_LOCK_CHECKPOINT.reset(token)
+        checkpoint()
+        yield
 
 
 def _verify_catalog_lock() -> None:
-    checkpoint = _CATALOG_LOCK_CHECKPOINT.get()
+    checkpoint = current_catalog_review_lock_handle()
     if checkpoint is not None:
         checkpoint()
 
@@ -1002,12 +1038,68 @@ def _durable_replace(
                         raise AssetLifecycleError(
                             "asset move destination is no longer absent"
                         )
-                os.rename(
-                    source_name,
-                    destination_name,
-                    src_dir_fd=source_parent,
-                    dst_dir_fd=destination_parent,
-                )
+                linked = False
+                try:
+                    os.link(
+                        source_name,
+                        destination_name,
+                        src_dir_fd=source_parent,
+                        dst_dir_fd=destination_parent,
+                        follow_symlinks=False,
+                    )
+                    linked = True
+                    destination_descriptor = os.open(
+                        destination_name,
+                        os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                        dir_fd=destination_parent,
+                    )
+                    try:
+                        destination_metadata = os.fstat(destination_descriptor)
+                        destination_identity = (
+                            destination_metadata.st_dev,
+                            destination_metadata.st_ino,
+                        )
+                        if (
+                            destination_identity != source_identity
+                            or (
+                                expected_source_sha256 is not None
+                                and _descriptor_sha256(destination_descriptor)
+                                != expected_source_sha256
+                            )
+                        ):
+                            raise AssetLifecycleError(
+                                "asset move destination identity changed"
+                            )
+                    finally:
+                        os.close(destination_descriptor)
+                    named_source = os.stat(
+                        source_name,
+                        dir_fd=source_parent,
+                        follow_symlinks=False,
+                    )
+                    if (named_source.st_dev, named_source.st_ino) != source_identity:
+                        raise AssetLifecycleError(
+                            "asset move source identity changed after link"
+                        )
+                    _durable_unlink(
+                        source,
+                        expected_identity=source_identity,
+                        expected_sha256=expected_source_sha256,
+                    )
+                    linked = False
+                except Exception:
+                    if linked:
+                        try:
+                            _durable_unlink(
+                                destination,
+                                expected_identity=source_identity,
+                                expected_sha256=expected_source_sha256,
+                            )
+                        except Exception as cleanup_error:
+                            raise AssetLifecycleError(
+                                f"asset move cleanup failed: {cleanup_error}"
+                            )
+                    raise
                 os.fsync(destination_parent)
                 if source_parent != destination_parent:
                     os.fsync(source_parent)
@@ -1015,14 +1107,53 @@ def _durable_replace(
             os.close(source_descriptor)
 
 
-def _durable_unlink(path: Path) -> None:
+def _durable_unlink(
+    path: Path,
+    *,
+    expected_identity: tuple[int, int] | None = None,
+    expected_sha256: str | None = None,
+) -> None:
     _verify_catalog_lock()
     with _held_parent_directory(path) as (parent_descriptor, name):
         try:
             metadata = os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
-                raise AssetLifecycleError("durable unlink target is unsafe")
-            os.unlink(name, dir_fd=parent_descriptor)
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_descriptor,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                identity = (opened.st_dev, opened.st_ino)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or identity != (metadata.st_dev, metadata.st_ino)
+                    or (
+                        opened.st_nlink != 1
+                        and expected_identity is None
+                        and expected_sha256 is None
+                    )
+                    or (
+                        expected_identity is not None
+                        and identity != expected_identity
+                    )
+                    or (
+                        expected_sha256 is not None
+                        and _descriptor_sha256(descriptor) != expected_sha256
+                    )
+                ):
+                    raise AssetLifecycleError("durable unlink target is unsafe")
+                current = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (current.st_dev, current.st_ino) != identity:
+                    raise AssetLifecycleError("durable unlink target is unsafe")
+                _verify_catalog_lock()
+                os.unlink(name, dir_fd=parent_descriptor)
+            finally:
+                os.close(descriptor)
         except FileNotFoundError:
             return
         os.fsync(parent_descriptor)
@@ -1087,7 +1218,7 @@ def _journal_path(catalog: AssetCatalog, transaction_id: str) -> Path:
 
 def _run_recovery_root(catalog: AssetCatalog, *, create: bool) -> Path:
     recovery_root = _recovery_root(catalog, create=create)
-    run_root = recovery_root / catalog.run_id
+    run_root = recovery_root / _run_directory_key(catalog.run_id)
     if create and not run_root.exists():
         try:
             _durable_mkdir(run_root, root=recovery_root, mode=0o700)
@@ -1107,6 +1238,12 @@ def _run_recovery_root(catalog: AssetCatalog, *, create: bool) -> Path:
             )
         return trusted
     return run_root
+
+
+def _run_directory_key(run_id: str) -> str:
+    """Return a filesystem-neutral key while journals retain the exact run ID."""
+
+    return hashlib.sha256(run_id.encode("utf-8")).hexdigest()
 
 
 def _registry_path(catalog: AssetCatalog) -> Path:
@@ -1184,7 +1321,11 @@ def _load_registry(catalog: AssetCatalog, *, create: bool) -> TransactionRegistr
     compacted = False
     recovery_root = _recovery_root(catalog, create=False)
     for transaction_id, entry in list(registry.transactions.items()):
-        journal_path = recovery_root / entry.run_id / f"{transaction_id}.json"
+        journal_path = (
+            recovery_root
+            / _run_directory_key(entry.run_id)
+            / f"{transaction_id}.json"
+        )
         if entry.state in {"committed", "aborted"} and not journal_path.exists():
             del registry.transactions[transaction_id]
             compacted = True
@@ -1324,9 +1465,8 @@ def _manifest_cas_write(
 def _quarantine_journal(path: Path) -> None:
     quarantine = path.with_name(f"{path.name}.invalid-{uuid.uuid4().hex}")
     try:
-        os.replace(path, quarantine)
-        _fsync_directory(path.parent)
-    except OSError:
+        _durable_replace(path, quarantine)
+    except (OSError, AssetLifecycleError):
         # Failure to quarantine still fails closed; no journal-directed mutation follows.
         pass
 
@@ -1700,16 +1840,34 @@ def _rollback_from_journal(
 
 
 def _recover_asset_review_journals_locked(catalog: AssetCatalog) -> None:
-    recovery_root = _run_recovery_root(catalog, create=False)
+    recovery_root = _recovery_root(catalog, create=False)
     if not recovery_root.exists():
         return
-    for path in sorted(recovery_root.glob("*.json")):
-        journal = _validated_recovery_journal(catalog, path)
-        registry_entry = _registry_entry(catalog, journal)
+    registry = _load_registry(catalog, create=False)
+    for transaction_id, snapshot_entry in sorted(registry.transactions.items()):
+        run_catalog = replace(catalog, run_id=snapshot_entry.run_id)
+        path = (
+            recovery_root
+            / _run_directory_key(snapshot_entry.run_id)
+            / f"{transaction_id}.json"
+        )
+        if not path.exists():
+            if snapshot_entry.state == "prepared":
+                current = _load_registry(catalog, create=False)
+                entry = current.transactions.get(transaction_id)
+                if entry is not None and entry.state == "prepared":
+                    entry.state = "aborted"
+                    _write_registry(catalog, current)
+                current = _load_registry(catalog, create=False)
+                current.transactions.pop(transaction_id, None)
+                _write_registry(catalog, current)
+            continue
+        journal = _validated_recovery_journal(run_catalog, path)
+        registry_entry = _registry_entry(run_catalog, journal)
         if registry_entry.state in {"committed", "aborted"}:
             _durable_unlink(path)
             continue
-        errors = _rollback_from_journal(catalog, path, journal)
+        errors = _rollback_from_journal(run_catalog, path, journal)
         if errors:
             journal.state = "needs_recovery"
             journal.rollback_errors = errors
@@ -1717,7 +1875,7 @@ def _recover_asset_review_journals_locked(catalog: AssetCatalog) -> None:
             raise AssetLifecycleError(
                 "asset review recovery remains incomplete: " + "; ".join(errors)
             )
-        _registry_set_state(catalog, journal, "aborted")
+        _registry_set_state(run_catalog, journal, "aborted")
         _durable_unlink(path)
 
 

@@ -6,8 +6,9 @@ import xml.etree.ElementTree as ET
 import re
 import fcntl
 import stat
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +26,27 @@ if TYPE_CHECKING:
 
 class CatalogError(ValueError):
     """Raised when a local production catalog is invalid or unsafe."""
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogReviewLockHandle:
+    """A catalog lock checkpoint plus the root descriptor it authenticated."""
+
+    root_path: Path
+    root_descriptor: int
+    _checkpoint: Callable[[], tuple[int, int]]
+
+    def __call__(self) -> tuple[int, int]:
+        return self._checkpoint()
+
+
+_CATALOG_REVIEW_LOCK_HANDLE: ContextVar[CatalogReviewLockHandle | None] = (
+    ContextVar("catalog_review_lock_handle", default=None)
+)
+
+
+def current_catalog_review_lock_handle() -> CatalogReviewLockHandle | None:
+    return _CATALOG_REVIEW_LOCK_HANDLE.get()
 
 
 def approved_manifest_item(
@@ -89,6 +111,14 @@ def catalog_review_lock(root: Path):
             root_path,
             os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
         )
+        opened_root = os.fstat(parent_descriptor)
+        if (
+            not stat.S_ISDIR(opened_root.st_mode)
+            or (opened_root.st_dev, opened_root.st_ino) != root_identity
+            or opened_root.st_uid != os.getuid()
+            or stat.S_IMODE(opened_root.st_mode) & 0o022
+        ):
+            raise CatalogError("catalog review lock parent is unsafe")
         lock_name = ".asset-review.lock"
         for attempt in range(3):
             try:
@@ -114,6 +144,7 @@ def catalog_review_lock(root: Path):
     body_error: BaseException | None = None
 
     def validate_binding(expected: tuple[int, int] | None = None) -> tuple[int, int]:
+        opened_root = os.fstat(parent_descriptor)
         opened = os.fstat(descriptor)
         current_root = root_path.stat(follow_symlinks=False)
         current = os.stat(
@@ -124,6 +155,10 @@ def catalog_review_lock(root: Path):
         identity = (opened.st_dev, opened.st_ino)
         if (
             not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISDIR(opened_root.st_mode)
+            or (opened_root.st_dev, opened_root.st_ino) != root_identity
+            or opened_root.st_uid != os.getuid()
+            or stat.S_IMODE(opened_root.st_mode) & 0o022
             or not stat.S_ISDIR(current_root.st_mode)
             or (current_root.st_dev, current_root.st_ino) != root_identity
             or opened.st_nlink != 1
@@ -144,11 +179,19 @@ def catalog_review_lock(root: Path):
             validate_binding(identity)
         except OSError as error:
             raise CatalogError("catalog review lock is unsafe") from error
+        handle = CatalogReviewLockHandle(
+            root_path=root_path,
+            root_descriptor=parent_descriptor,
+            _checkpoint=lambda: validate_binding(identity),
+        )
+        token = _CATALOG_REVIEW_LOCK_HANDLE.set(handle)
         try:
-            yield lambda: validate_binding(identity)
+            yield handle
         except BaseException as error:
             body_error = error
             raise
+        finally:
+            _CATALOG_REVIEW_LOCK_HANDLE.reset(token)
     finally:
         cleanup_error: BaseException | None = None
         try:
