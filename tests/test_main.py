@@ -8,7 +8,6 @@ from typing import get_args
 import pytest
 
 from src.domain import DomainName
-from src.rendering.text_cards import output_paths
 from src.run_registry import RunRegistry
 
 
@@ -650,34 +649,178 @@ def valid_publish_package_with_rendered_images(
     profile_version: str = "beauty-v1",
     title: str = "通勤底妆指南",
     publish_root: Path | None = None,
+    frame_count: int = 5,
 ) -> dict:
     root = publish_root or tmp_path / "outputs" / "publish"
     image_dir = root / f"20260713-{domain}-{subdomain}-{title}" / "images"
     image_dir.mkdir(parents=True)
-    paths = output_paths(image_dir)
+    layouts = [
+        "editorial_cover",
+        "texture_baseline",
+        "front_face_zone",
+        "saveable_checklist",
+        "saveable_reference",
+        "decision_tree",
+        "three_state_diagnostic",
+    ]
+    frames = [
+        {
+            "frame_id": f"frame-{index}",
+            "role": "cover" if index == 1 else f"detail-{index}",
+            "layout": layouts[index - 1],
+            "headline": title if index == 1 else f"第{index}页",
+            "kicker": "通勤护肤",
+            "content_blocks": [
+                {"block_type": "text", "body": f"第{index}页正文"}
+            ],
+            "emphasis": [],
+            "visual_slots": [],
+            "footer": "按肤感微调",
+        }
+        for index in range(1, frame_count + 1)
+    ]
+    paths = [
+        image_dir
+        / (
+            "01-cover.png"
+            if index == 1
+            else f"{index:02d}-{frame['role']}.png"
+        )
+        for index, frame in enumerate(frames, start=1)
+    ]
     for path in paths:
         path.write_bytes(b"\x89PNG\r\n\x1a\nlocally rendered png")
+    contact_sheet = image_dir / "contact-sheet.png"
+    contact_sheet.write_bytes(b"\x89PNG\r\n\x1a\ncontact sheet")
+    pages = [
+        {
+            "frame_id": frame["frame_id"],
+            "role": frame["role"],
+            "layout": frame["layout"],
+            "path": str(path),
+            "width": 1080,
+            "height": 1440,
+            "sha256": "a" * 64,
+            "probe": {
+                "canvas_width": 1080,
+                "canvas_height": 1440,
+                "safe_margin": 72,
+                "text_results": [
+                    {
+                        "role": "headline",
+                        "text": frame["headline"],
+                        "visible": True,
+                        "overflow": False,
+                        "ink_clipped": False,
+                        "layout_clipped": False,
+                        "font_family": "Source Han Serif SC",
+                        "font_size": 64,
+                        "line_height": 78,
+                        "line_count": 1,
+                        "x": 100,
+                        "y": 100,
+                        "width": 600,
+                        "height": 80,
+                    }
+                ],
+                "asset_results": [],
+                "issues": [],
+            },
+        }
+        for frame, path in zip(frames, paths, strict=True)
+    ]
     return {
+        "focus_keyword": "通勤底妆",
+        "topic": "通勤底妆不搓泥",
+        "topic_id": "topic-commute-base",
+        "angle": "按成膜顺序判断",
+        "angle_id": "angle-commute-order",
+        "target_group": "通勤护肤人群",
+        "core_pain": "防晒后底妆搓泥",
         "title": title,
         "content": "body",
         "cover_copy": "先看这张",
-        "storyboards": [],
+        "hashtags": ["#通勤底妆", "#护肤"],
+        "storyboards": frames,
+        "content_contract": {
+            "audience": "通勤护肤人群",
+            "trigger_situation": "早高峰上班前",
+            "decision_problem": "防晒和底妆如何避免搓泥",
+            "first_screen_promise": "通勤前 3 步避开防晒搓泥",
+            "screenshot_asset": "防晒与底妆搭配清单",
+            "proof_asset": "产品质地实拍",
+            "visual_mode": "text_card",
+            "content_job": "diagnose_and_adjust",
+            "primary_visual_family": "face_zone_map",
+            "primary_visual_subject": "face_map",
+            "proof_mode": "product_texture",
+            "recommended_frame_count": frame_count,
+        },
         "domain": domain,
         "subdomain": subdomain,
         "profile_version": profile_version,
         "rendered_image_paths": [str(path) for path in paths],
+        "visual_plan": {
+            "design_system": "beauty_editorial_v1",
+            "content_job": "diagnose_and_adjust",
+            "primary_visual_family": "face_zone_map",
+            "supporting_families": [],
+            "frame_plan": [
+                {
+                    "frame_id": frame["frame_id"],
+                    "role": frame["role"],
+                    "layout": frame["layout"],
+                    "purpose": frame["headline"],
+                    "asset_roles": [],
+                }
+                for frame in frames
+            ],
+            "required_assets": [],
+        },
+        "asset_manifest": {
+            "items": [],
+            "search_report": {
+                "search_triggered": False,
+                "queries": [],
+                "provider_reports": [],
+                "selection_reasons": {},
+            },
+        },
+        "render_manifest": {
+            "pages": pages,
+            "fonts": {
+                "all_loaded": True,
+                "computed_families": [
+                    "Source Han Serif SC",
+                    "Source Han Sans SC",
+                    "Bodoni Moda",
+                ],
+            },
+            "contact_sheet_path": str(contact_sheet),
+            "contact_sheet_sha256": "b" * 64,
+            "contact_sheet_page_sha256": ["a" * 64] * frame_count,
+            "source_asset_sha256": {},
+        },
     }
 
 
-def test_export_publish_package_preserves_rendered_cards_without_image_prompt(monkeypatch, tmp_path):
+@pytest.mark.parametrize("frame_count", [5, 7])
+def test_export_publish_package_accepts_dynamic_manifest_page_counts(
+    monkeypatch, tmp_path, frame_count
+):
     main = _load_main(monkeypatch)
-    package = valid_publish_package_with_rendered_images(tmp_path)
+    package = valid_publish_package_with_rendered_images(
+        tmp_path, frame_count=frame_count
+    )
     monkeypatch.chdir(tmp_path)
 
-    main.export_publish_package(package)
+    result = main.export_publish_package(package)
 
     exported = sorted((tmp_path / "outputs" / "publish").glob("*/images/*.png"))[0]
     assert exported.name == "01-cover.png"
+    assert len(result.rendered_image_paths) == frame_count
+    assert result.publish_copy_path.is_file()
+    assert result.rescue_prompt_path.is_file()
     assert not list((tmp_path / "outputs" / "publish").glob("*/Storyboard_images_generator_prompt.txt"))
 
 
@@ -712,10 +855,12 @@ def test_export_publish_package_preserves_metadata_with_package_relative_image_p
     monkeypatch.chdir(tmp_path)
 
     package = valid_publish_package_with_rendered_images(tmp_path)
-    package["content_contract"] = {
-        "first_screen_promise": "通勤前 3 分钟底妆不搓泥",
-        "screenshot_asset": "防晒成膜计时截图",
-    }
+    package["content_contract"].update(
+        {
+            "first_screen_promise": "通勤前 3 分钟底妆不搓泥",
+            "screenshot_asset": "防晒成膜计时截图",
+        }
+    )
 
     main.export_publish_package(package)
 
@@ -723,8 +868,12 @@ def test_export_publish_package_preserves_metadata_with_package_relative_image_p
     audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
     assert audit["content_contract"] == package["content_contract"]
     assert audit["rendered_image_paths"] == [
-        f"images/{path.name}" for path in output_paths(Path("images"))
+        f"images/{Path(path).name}" for path in package["rendered_image_paths"]
     ]
+    assert audit["content_lock"]["focus_keyword"] == package["focus_keyword"]
+    assert audit["visual_plan"] == package["visual_plan"]
+    assert audit["asset_manifest"] == package["asset_manifest"]
+    assert audit["render_manifest"] == package["render_manifest"]
 
 
 def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
@@ -757,6 +906,7 @@ def test_export_publish_package_rejects_paths_outside_package_images(monkeypatch
     outside_path = tmp_path / "outside.png"
     outside_path.write_bytes(b"not part of this package")
     package["rendered_image_paths"][0] = str(outside_path)
+    package["render_manifest"]["pages"][0]["path"] = str(outside_path)
 
     with pytest.raises(ValueError, match="inside outputs/publish"):
         main.export_publish_package(package)
@@ -770,6 +920,7 @@ def test_export_publish_package_rejects_non_png_or_wrong_sequence(monkeypatch, t
     non_png = Path(package["rendered_image_paths"][0]).with_suffix(".jpg")
     non_png.write_bytes(b"wrong extension")
     package["rendered_image_paths"][0] = str(non_png)
+    package["render_manifest"]["pages"][0]["path"] = str(non_png)
 
     with pytest.raises(ValueError, match="PNG"):
         main.export_publish_package(package)
@@ -783,7 +934,17 @@ def test_export_publish_package_rejects_non_png_or_wrong_sequence(monkeypatch, t
     package = valid_publish_package_with_rendered_images(tmp_path, title="另一份指南")
     package["rendered_image_paths"].reverse()
 
-    with pytest.raises(ValueError, match="required sequence"):
+    with pytest.raises(ValueError, match="RenderManifest order"):
+        main.export_publish_package(package)
+
+
+def test_export_publish_package_rejects_unlisted_png(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    package = valid_publish_package_with_rendered_images(tmp_path)
+    image_dir = Path(package["rendered_image_paths"][0]).parent
+    (image_dir / "unlisted.png").write_bytes(b"\x89PNG\r\n\x1a\nextra")
+
+    with pytest.raises(ValueError, match="unlisted PNG"):
         main.export_publish_package(package)
 
 
@@ -801,6 +962,42 @@ def test_export_publish_package_requires_valid_domain_metadata(monkeypatch, tmp_
 
     with pytest.raises(ValueError, match="publish_package requires valid domain and profile_version metadata"):
         main.export_publish_package(publish_package)
+
+
+def test_completed_export_injects_state_manifests_before_delegating(
+    monkeypatch, tmp_path
+):
+    main = _load_main(monkeypatch)
+    package = valid_publish_package_with_rendered_images(tmp_path)
+    state_manifests = {
+        name: package.pop(name)
+        for name in ("visual_plan", "asset_manifest", "render_manifest")
+    }
+    captured = {}
+
+    class CompletedGraph:
+        def get_state(self, _config):
+            return SimpleNamespace(
+                values={
+                    "review_status": "approved",
+                    "final_policy_issues": [],
+                    "publish_package": package,
+                    **state_manifests,
+                },
+                next=(),
+            )
+
+    monkeypatch.setattr(
+        main,
+        "export_publish_package",
+        lambda payload: captured.update(payload=payload),
+    )
+
+    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
+    assert all(
+        captured["payload"][name] is value
+        for name, value in state_manifests.items()
+    )
 
 
 def test_main_rejects_subdomain_without_domain(monkeypatch):

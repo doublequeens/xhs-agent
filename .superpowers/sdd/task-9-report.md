@@ -1,0 +1,121 @@
+# Task 9 Implementation Report
+
+## Outcome
+
+Implemented the content-locked final publishing package and manual Codex visual-rescue prompt without changing workflow, QA, Final Guard, or legacy modules. The final exporter now writes `publish-copy.txt`, `codex-image-regeneration-prompt.txt`, and `<title>.json`, while preserving the approved renderer output.
+
+## TDD Evidence
+
+### RED
+
+Command:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/publishing/test_artifacts.py tests/test_main.py tests/integration/test_beauty_account_workflow.py -q
+```
+
+Observed failure before production implementation:
+
+```text
+ModuleNotFoundError: No module named 'src.publishing'
+1 error during collection
+```
+
+This was the expected Task 9 seam: the publishing module and deep artifact exporter did not exist.
+
+### GREEN
+
+Focused Task 9 suite:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest tests/publishing/test_artifacts.py tests/test_main.py tests/integration/test_beauty_account_workflow.py -q
+```
+
+Result: `97 passed`.
+
+Full repository suite:
+
+```bash
+/opt/anaconda3/envs/xhs-agent/bin/python -m pytest -q
+```
+
+Result: `1243 passed, 2 skipped`. The skipped tests are the existing opt-in live Pexels/Unsplash tests. Existing LangGraph pending-deprecation and legacy-checkpoint warnings remain.
+
+Static verification:
+
+- `/opt/anaconda3/envs/xhs-agent/bin/python -m compileall -q src main.py` passed.
+- `git diff --check` passed.
+- Ruff and Mypy are not installed in the project environment, so no Ruff/Mypy result is claimed.
+
+## ContentLock Coverage
+
+`build_content_lock` locks, in canonical order:
+
+- `focus_keyword`
+- `topic`
+- `topic_id`
+- `angle`
+- `angle_id`
+- `target_group`
+- `core_pain`
+- `title`
+- `cover_copy`
+- `first_screen_promise`
+- `content`
+- `hashtags`
+- the complete validated `storyboards`
+
+`first_screen_promise` is taken only from a fully validated `ContentContract`; missing locked fields are rejected rather than synthesized. Canonical bytes use UTF-8 JSON with `sort_keys=True` and compact separators, so top-level and nested dict insertion order do not affect the hash.
+
+Tests prove the hash changes for every locked top-level value, the contract promise, and each visible storyboard text location: headline, kicker, block heading, block body, block item, emphasis, and footer. The assembler deterministically propagates the CLI/state `focus_keyword`, including the allowed empty-string case.
+
+## Rescue Prompt and Manual-Only Boundary
+
+- The template is byte-for-byte identical to the complete template in `.superpowers/sdd/task-9-brief.md`; verified with a direct `diff` against the brief code block.
+- The prompt embeds only the current canonical ContentLock, its SHA-256, the current frame text table, current package paths, and exactly three approved `reference_only` anchors.
+- The three production anchors are loaded from the reference manifest and checked for `usage`, path containment, existence, and SHA-256.
+- Unrelated package notes, golden fixture names, and the example title do not enter the prompt.
+- Prompt generation is a pure local text operation. A test makes any `requests.post` call fail, proving this path does not call an image API.
+
+## Atomic Export and Failure Tests
+
+Each support artifact is first written to a sibling temporary file, flushed, `fsync`ed, closed, and then installed with `os.replace`. The package directory is also `fsync`ed. Re-export backs up existing support files and restores them if replacement fails.
+
+Failure coverage includes:
+
+- failure on the second replacement of a first export: no partial support files remain;
+- failure during replacement of an existing export: prior support files are restored;
+- in both cases, all Render-QA-approved page PNGs and the manifest-listed contact sheet remain byte-for-byte unchanged;
+- temporary and backup support files are cleaned up.
+
+The audit JSON contains the serialized `content_lock`, `visual_plan`, `asset_manifest`, and `render_manifest`, plus package-relative ordered page paths.
+
+## Main Export Validation
+
+`main.py` no longer imports or validates the legacy fixed-six `output_paths`. It validates the 5–7 ordered `RenderManifest.pages`, requires the publish-package paths to preserve that order, requires every page to be a readable PNG in one package `images/` directory, and rejects any PNG not listed by the manifest.
+
+`contact-sheet.png` is accepted only as the separately listed `RenderManifest.contact_sheet_path`; any additional PNG is rejected as unlisted. After validation, `main.py` delegates artifact creation to `src.publishing.artifacts.export_publish_package`. Terminal graph export injects the state-level visual, asset, and render manifests without mutating the graph's publish package.
+
+## Self-Review
+
+### Standards axis
+
+- New publishing responsibilities are isolated behind one module and a small immutable result type.
+- Main remains the path/profile safety boundary and delegates serialization/write details.
+- No duplicate fixed-six naming logic remains in main.
+- No unrelated refactor or workflow/QA/legacy modification was introduced.
+- No Golden/Task 10 fixture or behavior was added.
+
+### Spec axis
+
+- All Task 9 public functions are implemented and exported.
+- Publish copy format is exact UTF-8/LF pasteable text.
+- ContentLock covers every required field and all storyboard content.
+- The rescue prompt is exact, current-package-only, three-anchor, and manual-only.
+- Export is sibling-temp, `fsync`, atomic-replace, rollback tested, and image-preserving.
+- Main accepts dynamic 5- and 7-page manifests and rejects ordering/path/unlisted-PNG violations.
+- Audit JSON contains all four required manifests/locks and relative page paths.
+
+### Concerns
+
+No blocking concerns. As with any filesystem transaction, recovery from a persistent filesystem failure that also prevents rollback cannot be guaranteed; the implemented rollback covers ordinary staged-write and atomic-replace failures and is exercised for both first export and re-export. Live stock-provider tests remain intentionally skipped and are unrelated to this manual-only local exporter.

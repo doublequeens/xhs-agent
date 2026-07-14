@@ -20,14 +20,17 @@ from src.editorial_carousel.legacy import (
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
-from src.rendering.text_cards import output_paths
+from src.publishing.artifacts import (
+    PublishArtifacts,
+    export_publish_package as export_publish_artifacts,
+)
+from src.schemas import RenderManifest
 from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 RUN_REGISTRY_PATH = Path("data/agent_runs.sqlite")
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
-LEGACY_IMAGE_PROMPT_FILENAME = "Storyboard_images_generator_prompt.txt"
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -274,27 +277,39 @@ def _resolve_publish_package_profile(publish_package: dict):
 
 
 def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list[Path]]:
-    """Validate the renderer's six-file output before writing the audit JSON."""
+    """Validate the ordered RenderManifest output before publishing artifacts."""
+    manifest = RenderManifest.model_validate(publish_package.get("render_manifest"))
+    manifest_paths = [page.path for page in manifest.pages]
     raw_paths = publish_package.get("rendered_image_paths")
-    expected_names = [path.name for path in output_paths(Path("images"))]
-    if not isinstance(raw_paths, list) or len(raw_paths) != len(expected_names):
-        raise ValueError("publish_package requires exactly six rendered_image_paths")
+    if not isinstance(raw_paths, list) or len(raw_paths) != len(manifest_paths):
+        raise ValueError(
+            "publish_package rendered_image_paths must match the 5-7 RenderManifest pages"
+        )
 
     publish_root = node_p_text_card_renderer.PUBLISH_ROOT.resolve()
     package_dir: Path | None = None
     resolved_paths: list[Path] = []
-    for index, (raw_path, expected_name) in enumerate(zip(raw_paths, expected_names), start=1):
+    for index, (raw_path, manifest_path) in enumerate(
+        zip(raw_paths, manifest_paths, strict=True), start=1
+    ):
         try:
             image_path = Path(raw_path).resolve()
+            expected_path = Path(manifest_path).resolve()
         except (OSError, TypeError, ValueError) as exc:
             raise ValueError(f"rendered image path {index} cannot be resolved: {exc}") from exc
 
+        if image_path != expected_path:
+            raise ValueError(
+                "rendered_image_paths must preserve RenderManifest order"
+            )
         if not image_path.is_relative_to(publish_root):
             raise ValueError("rendered image paths must remain inside outputs/publish")
         if image_path.suffix.lower() != ".png":
             raise ValueError("rendered image paths must be PNG files")
-        if image_path.name != expected_name:
-            raise ValueError("rendered image paths must use the required sequence")
+        if index == 1 and image_path.name != "01-cover.png":
+            raise ValueError("RenderManifest page paths must start with 01-cover.png")
+        if index > 1 and not image_path.name.startswith(f"{index:02d}-"):
+            raise ValueError("RenderManifest page paths must use ordered NN-role names")
         if not image_path.is_file():
             raise ValueError(f"rendered image path is missing: {image_path.name}")
         try:
@@ -314,36 +329,40 @@ def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list
         resolved_paths.append(image_path)
 
     assert package_dir is not None
-    actual_pngs = sorted(path.resolve() for path in package_dir.joinpath("images").glob("*.png"))
-    if actual_pngs != sorted(resolved_paths):
-        raise ValueError("package images directory must contain exactly the rendered PNG sequence")
+    try:
+        contact_sheet_path = Path(manifest.contact_sheet_path).resolve()
+    except (OSError, TypeError, ValueError) as exc:
+        raise ValueError(f"contact sheet path cannot be resolved: {exc}") from exc
+    image_dir = package_dir / "images"
+    if (
+        contact_sheet_path.parent != image_dir
+        or contact_sheet_path.suffix.lower() != ".png"
+        or not contact_sheet_path.is_file()
+    ):
+        raise ValueError(
+            "RenderManifest contact sheet must be a PNG in the package images directory"
+        )
+    try:
+        contact_signature = contact_sheet_path.read_bytes()[: len(PNG_SIGNATURE)]
+    except OSError as exc:
+        raise ValueError("RenderManifest contact sheet cannot be read") from exc
+    if contact_signature != PNG_SIGNATURE:
+        raise ValueError("RenderManifest contact sheet must contain a PNG file")
+
+    listed_pngs = {contact_sheet_path, *resolved_paths}
+    actual_pngs = {path.resolve() for path in image_dir.glob("*.png")}
+    if actual_pngs != listed_pngs:
+        raise ValueError(
+            "package images directory contains an unlisted PNG or is missing a manifest PNG"
+        )
     return package_dir, resolved_paths
 
 
-def export_publish_package(publish_package: dict) -> None:
-    """Write an audit record alongside the locally rendered final card set."""
+def export_publish_package(publish_package: dict) -> PublishArtifacts:
+    """Validate final local images and delegate deep artifact creation."""
     _resolve_publish_package_profile(publish_package)
-    package_dir, rendered_image_paths = _rendered_image_package_directory(publish_package)
-    title = publish_package.get("title")
-    if not isinstance(title, str) or not title:
-        raise ValueError("publish_package requires a non-empty title for export")
-
-    audit_path = (package_dir / f"{title}.json").resolve()
-    if not audit_path.is_relative_to(package_dir):
-        raise ValueError("publish audit path must remain inside the package directory")
-
-    legacy_prompt_path = package_dir / LEGACY_IMAGE_PROMPT_FILENAME
-    try:
-        legacy_prompt_path.unlink(missing_ok=True)
-    except OSError as exc:
-        raise ValueError("obsolete image prompt could not be removed from package") from exc
-
-    audit_package = dict(publish_package)
-    audit_package["rendered_image_paths"] = [
-        path.relative_to(package_dir).as_posix() for path in rendered_image_paths
-    ]
-    with audit_path.open("w", encoding="utf-8") as audit_file:
-        json.dump(audit_package, audit_file, ensure_ascii=False, indent=4)
+    _rendered_image_package_directory(publish_package)
+    return export_publish_artifacts(publish_package)
 
 
 def read_multiline_json() -> dict:
@@ -536,7 +555,14 @@ def export_completed_publish_package(graph, config) -> bool:
         return False
     print("The final publish package title is:")
     print(publish_package["title"])
-    export_publish_package(publish_package)
+    export_publish_package(
+        {
+            **publish_package,
+            "visual_plan": values.get("visual_plan"),
+            "asset_manifest": values.get("asset_manifest"),
+            "render_manifest": values.get("render_manifest"),
+        }
+    )
     return True
 
 

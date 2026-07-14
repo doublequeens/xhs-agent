@@ -135,6 +135,7 @@ def beauty_account_workflow():
     )
     return {
         "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
+        "focus_keyword": "防晒搓泥",
         "topic_signals": [signal],
         "trends": [topic],
         "domain_context": {
@@ -303,6 +304,7 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert reached_nodes == ["human_review"]
     assert captured["assembler_calls"] == 1
     assert captured["storyboard_calls"] == 1
+    assert captured["human_review_package"]["focus_keyword"] == "防晒搓泥"
     assert '"content_contract"' in captured["storyboard_prompt"]
     assert contract.first_screen_promise in captured["storyboard_prompt"]
 

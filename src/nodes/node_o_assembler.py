@@ -92,6 +92,7 @@ def assembler_node(state: AgentState) -> AgentState:
     publish_package_json = llm.execute(messages)
     publish_package_json.update(
         {
+            "focus_keyword": str(state.get("focus_keyword") or ""),
             "title": enforce_title_length(_get_value(final_content, "final_title")),
             "content": _get_value(final_content, "final_md"),
             "topic_id": topic_id,

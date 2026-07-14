@@ -1,0 +1,86 @@
+你正在对一篇已经完成选题、写作、合规和人工审核的小红书美容护肤图文做视觉救援。
+这是一次 visual-only regeneration，不是内容创作。
+
+## 不可更改的 Content Lock
+
+下面的 canonical JSON 是唯一内容事实来源：
+{content_lock_json}
+
+ContentLock SHA-256：{content_lock_sha256}
+
+逐页可见文字与归属：
+{frame_text_table}
+
+必须锁定：focus_keyword、topic、topic_id、angle、angle_id、target_group、core_pain、
+title、cover_copy、first_screen_promise、content、hashtags、frame 数量、frame 顺序、
+frame role、layout，以及 storyboard 内每一个可见字符串。
+
+禁止重新选题、重新写文案、替换关键词、改变目标人群或核心痛点。禁止增加、删除或
+改写护肤结论、步骤、用量、判断标准、风险提示和事实。禁止把参考图中的标题或内容
+带入本篇。如果锁定字段缺失、JSON 无法读取或哈希校验失败，立即停止并报告，不得补写。
+
+每张图片的所有可见文字必须逐字来自对应 storyboard。文字放不下时改变构图、字号层级
+或换行，不能缩写、同义改写、删字或增加互动话术。
+
+## 输入文件及角色
+
+- 本文件所在目录：{package_directory}
+- 当前文章审计 JSON：{audit_json_path}，只读内容来源。
+- 当前套图：{current_images_directory}，用于诊断问题，不是必须保留的编辑目标。
+- 质量锚点：
+{style_reference_paths}
+
+先用 view_image 查看当前套图中的每张图片和全部质量锚点。质量锚点只用于理解美容编辑
+感、纸张质感、配色、线稿、材质、留白、层级和精致度；不得复制其文字、选题、信息结构
+或固定页面顺序。
+
+## Style Lock
+
+- 画布：1080 × 1440，竖版小红书图文。
+- 气质：当代美容杂志编辑感，克制、柔和、精致、有呼吸感；不能像 PPT、微商海报、
+  电商详情页、儿童手账或廉价信息卡。
+- 色彩：暖象牙白 #F7F2EA、墨色 #292625、灰粉 #9A707B、珊瑚 #D45D4C、
+  鼠尾草绿 #78805E。允许改变各页占比，不增加高饱和霓虹色。
+- 视觉语言：细腻纸张、柔光护肤品质地、透明液滴、纤细面部线稿、清晰分区、轻量细线
+  和编号。每页必须有与本页语义对应的视觉主体，不能只做装饰。
+- 中文字体：项目内 Source Han Serif SC SemiBold 只用于显示标题；Source Han Sans SC
+  Regular/Medium 用于正文；Bodoni Moda Regular 用于页码或数字。禁止系统 fallback、
+  书法体、手写体、卡通字体和超粗黑体。
+- 同套一致性：颜色、纸张、线条、字体和光线统一；构图必须随 layout 和信息任务变化，
+  不能把同一模板机械复制 5–7 次。
+
+## 允许改变的内容
+
+只允许改变布局的视觉实现、换行、字号层级、留白、素材选择、插画、背景、光影、裁切和
+Design System 内的配色占比。不得改变 frame 数量、顺序、role、layout、信息任务或文字归属。
+
+## 执行流程
+
+1. 读取审计 JSON，重新计算 ContentLock canonical JSON 的 SHA-256；必须等于上面的哈希。
+2. 用 view_image 查看当前 images 中每张图，列出需要修复的视觉问题；不要修改原文件。
+3. 用 view_image 查看三个 reference_only 质量锚点并提炼 Style Lock；只提炼风格。
+4. 找到同目录第一个不存在的 images-codex-vN，创建该目录和其 visual-bases 子目录；禁止
+   覆盖 images、审计 JSON、publish-copy.txt、prompt 本身或已有 images-codex-vN。
+5. 先为封面单独调用一次 Codex 内置 image generation。它只生成无中文文字的视觉底图，
+   按封面 layout 为锁定文字留出安全区；不得调用 API、CLI 或要求 OPENAI_API_KEY。
+6. 用 view_image 检查封面底图。未达到 Style Lock 就只调整一个问题并重新生成封面；通过后
+   将它作为后续页面的 style anchor。
+7. 按锁定顺序逐页处理剩余 frame。每个不同页面单独调用一次内置 image generation，参考
+   质量锚点、已通过的封面和紧邻上一页；生成与本页 role/layout/visual slots 对应、无中文
+   文字的视觉底图。
+8. 使用项目本地字体和确定性 HTML/CSS 把对应 storyboard 的锁定文字叠加到底图。不得让
+   图像模型自由生成中文；不得修改项目生产代码。临时 HTML 只放在本次版本目录的工作区。
+9. 用 Playwright 截图得到 1080 × 1440 PNG，文件名保持 01-cover.png、随后
+   NN-<frame-role>.png 的顺序。
+10. 逐页验证尺寸、文字逐字一致、字体、溢出、安全边距、语义对应、无 Logo/水印/二维码、
+    无可识别真人正脸。某页失败时只重做该页，不推翻已通过页面。
+11. 生成 contact-sheet.png，检查跨页美容编辑感、风格一致性、版式变化、主视觉和保存页。
+    contact sheet 失败时定位并只重做失败页面。
+12. 最终再次比较所有排版输入文字与 ContentLock storyboards。全部一致后才交付；否则停止并
+    明确列出未通过页面，不得声称完成。
+
+## 最终输出
+
+只把新套图、visual-bases、临时排版文件和 contact-sheet.png 写入选定的
+images-codex-vN。保留原 images 和所有既有版本。结束时报告新目录、每页文件、采用的
+内置 image generation 路径、最终 ContentLock 哈希和仍需人工判断的视觉风险。
