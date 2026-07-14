@@ -16,6 +16,7 @@ from src.schemas import (
     VisualPlan,
 )
 from src.schemas import AgentState
+from src.schemas.content_contract import ContentContract
 from src.nodes.publish_patch import (
     enforce_publish_package_title_length,
     extract_storyboard_visible_text,
@@ -101,9 +102,22 @@ def _storyboard_render_structure_signature(storyboards) -> list[dict]:
 
 
 def _has_render_structure_edits(previous_package: dict, current_package: dict) -> bool:
-    return _storyboard_render_structure_signature(
-        previous_package.get("storyboards")
-    ) != _storyboard_render_structure_signature(current_package.get("storyboards"))
+    def signature(package: dict):
+        raw_contract = package.get("content_contract")
+        try:
+            contract = ContentContract.model_validate(raw_contract).model_dump(
+                mode="json"
+            )
+        except (TypeError, ValueError):
+            contract = _json_value(raw_contract)
+        return {
+            "content_contract": contract,
+            "storyboards": _storyboard_render_structure_signature(
+                package.get("storyboards")
+            ),
+        }
+
+    return signature(previous_package) != signature(current_package)
 
 
 def _invalidated_editorial_artifacts() -> dict:

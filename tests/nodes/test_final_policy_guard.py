@@ -18,6 +18,7 @@ from src.nodes import node_o_storyboards_generator as storyboard_module
 from src.nodes.node_q_human_review import route_after_human_review
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas import R1Output
+from src.schemas.content_contract import ContentContract
 
 
 def _publish_package(**overrides):
@@ -760,6 +761,47 @@ def test_human_review_modern_storyboard_edit_invalidates_downstream_artifacts(
         lambda _payload: {
             "approved": True,
             "edited_publish_package": {"storyboards": [storyboard_patch]},
+        },
+    )
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(
+                storyboards=[_modern_storyboard_frame()]
+            ),
+            "review_round": 0,
+            "final_policy_issues": [],
+            "visual_plan": object(),
+            "asset_manifest": {"items": []},
+            "carousel_qa_result": {"passed": True},
+            "render_manifest": {"pages": []},
+            "render_qa_result": {"passed": True},
+        }
+    )
+
+    assert result["review_status"] == "needs_r2_recheck"
+    assert route_after_human_review(result) == "r2_compliance"
+    assert result["visual_plan"] is None
+    assert result["asset_manifest"] is None
+    assert result["carousel_qa_result"] is None
+    assert result["render_manifest"] is None
+    assert result["render_qa_result"] is None
+
+
+def test_human_review_content_contract_edit_invalidates_downstream_artifacts(
+    monkeypatch,
+):
+    original_contract = _publish_package()["content_contract"]
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        lambda _payload: {
+            "approved": True,
+            "edited_publish_package": {
+                "content_contract": {
+                    **original_contract,
+                    "proof_mode": "comparison",
+                }
+            },
         },
     )
 
@@ -1751,10 +1793,10 @@ def test_final_policy_guard_rejects_path_replacement_during_single_open_snapshot
     replaced = False
     target_descriptor = None
 
-    def tracking_open(path, flags):
+    def tracking_open(path, flags, *, dir_fd=None):
         nonlocal target_descriptor
-        descriptor = original_open(path, flags)
-        if Path(path) == target:
+        descriptor = original_open(path, flags, dir_fd=dir_fd)
+        if Path(path).name == target.name:
             target_descriptor = descriptor
         return descriptor
 
@@ -1768,6 +1810,38 @@ def test_final_policy_guard_rejects_path_replacement_during_single_open_snapshot
 
     monkeypatch.setattr(module.os, "open", tracking_open)
     monkeypatch.setattr(module.os, "read", replacing_read)
+
+    result = final_policy_guard_node(state)
+
+    assert "rendered_page_missing" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def test_final_policy_guard_rejects_intermediate_directory_symlink_swap(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    image_root = tmp_path / "images"
+    moved_root = tmp_path / "images-original"
+    original_open = module.os.open
+    swapped = False
+
+    def swapping_open(path, flags, *, dir_fd=None):
+        nonlocal swapped
+        if path == "images" and dir_fd is not None and not swapped:
+            swapped = True
+            image_root.rename(moved_root)
+            image_root.symlink_to(moved_root, target_is_directory=True)
+        return original_open(path, flags, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module.os, "open", swapping_open)
 
     result = final_policy_guard_node(state)
 
@@ -1794,5 +1868,150 @@ def test_final_policy_guard_rejects_symlinked_active_asset(
     result = final_policy_guard_node(state)
 
     assert "asset_file_missing" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
+def _real_reused_asset_guard_state(tmp_path: Path):
+    from src.asset_resolver.catalog import load_catalog
+    from src.asset_resolver.resolver import resolve_assets
+    from src.editorial_carousel.strategy import ASSET_ADAPTER, build_visual_plan
+
+    catalog_path = (
+        Path(__file__).resolve().parents[2]
+        / "assets/visual/beauty-editorial-v1/manifest.json"
+    )
+    contract = ContentContract(
+        audience="通勤护肤人群",
+        trigger_situation="早上快速护肤",
+        decision_problem="如何对比并选择步骤",
+        first_screen_promise="一页看懂今天怎么选",
+        screenshot_asset="选择清单",
+        proof_asset="肤感对照",
+        visual_mode="text_plus_real_proof",
+        content_job="compare_and_choose",
+        primary_visual_family="comparison_decision",
+        primary_visual_subject="skin_macro",
+        proof_mode="diagram",
+        recommended_frame_count=5,
+    )
+    plan = build_visual_plan(contract, recent_signatures=[])
+    manifest = resolve_assets(plan, load_catalog(catalog_path))
+    requirements = {
+        (item.layout, item.role): item for item in plan.required_assets
+    }
+    storyboards = []
+    pages = []
+    image_root = tmp_path / "rendered"
+    image_root.mkdir()
+    for index, frame in enumerate(plan.frame_plan):
+        semantic_role = frame.asset_roles[0]
+        concrete_role = ASSET_ADAPTER[(frame.layout, semantic_role)][0]
+        requirement = requirements[(frame.layout, concrete_role)]
+        headline = f"Frame {index + 1}"
+        storyboards.append(
+            {
+                "frame_id": frame.frame_id,
+                "role": frame.role,
+                "layout": frame.layout,
+                "headline": headline,
+                "content_blocks": [],
+                "visual_slots": [
+                    {
+                        "slot_id": requirement.slot_id,
+                        "role": semantic_role,
+                    }
+                ],
+            }
+        )
+        page_path = image_root / f"{index + 1:02d}.png"
+        Image.new("RGB", (16, 16), (index * 20, 40, 60)).save(page_path)
+        pages.append(
+            SimpleNamespace(
+                frame_id=frame.frame_id,
+                role=frame.role,
+                layout=frame.layout,
+                path=str(page_path),
+                sha256=hashlib.sha256(page_path.read_bytes()).hexdigest(),
+                probe=SimpleNamespace(
+                    text_results=[SimpleNamespace(role="headline", text=headline)]
+                ),
+            )
+        )
+    contact_sheet = image_root / "contact-sheet.png"
+    Image.new("RGB", (32, 16), "white").save(contact_sheet)
+    package = _publish_package(
+        domain="beauty",
+        subdomain="skincare",
+        profile_version="beauty-v1",
+        content_contract=contract.model_dump(mode="json"),
+        storyboards=storyboards,
+        rendered_image_paths=[page.path for page in pages],
+    )
+    render_manifest = SimpleNamespace(
+        pages=pages,
+        source_asset_sha256={item.slot_id: item.sha256 for item in manifest.items},
+        contact_sheet_path=str(contact_sheet),
+        contact_sheet_sha256=hashlib.sha256(contact_sheet.read_bytes()).hexdigest(),
+        contact_sheet_page_sha256=[page.sha256 for page in pages],
+    )
+    return {
+        "publish_package": package,
+        "review_status": "approved",
+        "visual_plan": plan,
+        "asset_manifest": manifest,
+        "render_manifest": render_manifest,
+        "carousel_qa_result": {"passed": True},
+        "render_qa_result": {"passed": True},
+    }, catalog_path.parent / "active", image_root
+
+
+def test_final_policy_guard_accepts_real_catalog_asset_reuse(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root, render_root = _real_reused_asset_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
+    paths = [item.path for item in state["asset_manifest"].items]
+    assert len(paths) > len(set(paths))
+
+    result = final_policy_guard_node(state)
+
+    assert result["final_policy_issues"] == []
+
+
+def test_final_policy_guard_rejects_conflicting_declaration_for_reused_asset(
+    monkeypatch,
+    tmp_path,
+):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root, render_root = _real_reused_asset_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
+    items = list(state["asset_manifest"].items)
+    repeated_path = next(
+        path
+        for path in {item.path for item in items}
+        if sum(item.path == path for item in items) > 1
+    )
+    conflicting_index = next(
+        index for index, item in enumerate(items) if item.path == repeated_path
+    )
+    items[conflicting_index] = items[conflicting_index].model_copy(
+        update={"asset_id": "forged-reuse-declaration"}
+    )
+    state["asset_manifest"] = state["asset_manifest"].model_copy(
+        update={"items": items}
+    )
+
+    result = final_policy_guard_node(state)
+
+    assert "asset_file_declaration_conflict" in {
         issue["rule_id"] for issue in result["final_policy_issues"]
     }

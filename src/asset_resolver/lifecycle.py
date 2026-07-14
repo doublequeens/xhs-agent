@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import fcntl
 import json
 import os
 import tempfile
+import uuid
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
@@ -25,7 +27,7 @@ from pydantic import (
 
 from src.schemas.assets import LayoutName
 
-from .catalog import AssetCatalog, AssetEntry
+from .catalog import AssetCatalog, AssetEntry, catalog_review_lock
 from .providers import candidate_urls_are_allowed
 
 
@@ -37,6 +39,9 @@ class AssetLifecycleError(RuntimeError):
 class BatchAssetReviewResult:
     any_rejected: bool
     finalized_value: Any = None
+
+
+RECOVERY_JOURNAL_DIR = ".asset-review-recovery"
 
 
 @dataclass(frozen=True, slots=True)
@@ -460,6 +465,7 @@ def _complete_approval(
             safety_review_decisions=decisions,
             safety_reviewed_at=reviewed_at,
             review_disposition="approved_for_publishing",
+            _review_lock_held=True,
         )
     except Exception:
         if moved and destination.exists():
@@ -481,7 +487,7 @@ def _validate_run_scope(candidate: PendingAsset, catalog: AssetCatalog) -> None:
         )
 
 
-def approve_external_asset(
+def _approve_external_asset_locked(
     candidate: PendingAsset,
     catalog: AssetCatalog,
     *,
@@ -526,7 +532,21 @@ def approve_external_asset(
             )
 
 
-def reject_external_asset(
+def approve_external_asset(
+    candidate: PendingAsset,
+    catalog: AssetCatalog,
+    *,
+    safety_decisions: Mapping[str, bool] | None = None,
+) -> AssetEntry:
+    with catalog_review_lock(catalog.root):
+        return _approve_external_asset_locked(
+            candidate,
+            catalog,
+            safety_decisions=safety_decisions,
+        )
+
+
+def _reject_external_asset_locked(
     candidate: PendingAsset,
     *,
     reason: str,
@@ -572,6 +592,20 @@ def reject_external_asset(
         ),
         None,
     )
+
+
+def reject_external_asset(
+    candidate: PendingAsset,
+    *,
+    reason: str,
+    catalog: AssetCatalog,
+) -> PendingAsset | None:
+    with catalog_review_lock(catalog.root):
+        return _reject_external_asset_locked(
+            candidate,
+            reason=reason,
+            catalog=catalog,
+        )
 
 
 _DECISION_BINDING_FIELDS = (
@@ -626,13 +660,103 @@ def _validate_explicit_safety_review(
 
 @contextmanager
 def _batch_lifecycle_lock(catalog: AssetCatalog):
-    lock_path = catalog.root.resolve() / ".asset-review-batch.lock"
+    with catalog_review_lock(catalog.root):
+        yield
+
+
+def _bytes_digest(payload: bytes) -> str:
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _manifest_restore_cas(
+    catalog: AssetCatalog,
+    *,
+    original_bytes: bytes,
+    expected_current_sha256: str,
+) -> None:
+    manifest_path = catalog.manifest_path
+    if manifest_path is None:
+        raise AssetLifecycleError("recovery requires a persistent catalog manifest")
+    lock_path = manifest_path.with_suffix(f"{manifest_path.suffix}.lock")
     with lock_path.open("a+b") as lock_handle:
         fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
         try:
-            yield
+            current = manifest_path.read_bytes()
+            if _bytes_digest(current) == _bytes_digest(original_bytes):
+                return
+            if _bytes_digest(current) != expected_current_sha256:
+                raise AssetLifecycleError(
+                    "catalog manifest changed after batch snapshot; recovery refused to overwrite it"
+                )
+            _atomic_write_bytes(manifest_path, original_bytes)
         finally:
             fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
+
+
+def _journal_path(catalog: AssetCatalog) -> Path:
+    root = catalog.root.resolve() / RECOVERY_JOURNAL_DIR
+    root.mkdir(parents=True, exist_ok=True)
+    return root / f"{uuid.uuid4().hex}.json"
+
+
+def _write_recovery_journal(path: Path, payload: dict[str, object]) -> None:
+    _atomic_write_json(path, payload)
+
+
+def _rollback_from_journal(
+    catalog: AssetCatalog,
+    journal: dict[str, object],
+) -> list[str]:
+    errors: list[str] = []
+    for asset in list(journal.get("assets") or []):
+        if not isinstance(asset, dict):
+            continue
+        pending_path = Path(str(asset["pending_path"]))
+        destination = Path(str(asset["destination"]))
+        try:
+            if destination.exists() and not pending_path.exists():
+                pending_path.parent.mkdir(parents=True, exist_ok=True)
+                destination.replace(pending_path)
+        except Exception as error:
+            errors.append(f"restore asset {pending_path}: {error}")
+        try:
+            _atomic_write_bytes(
+                Path(str(asset["metadata_path"])),
+                base64.b64decode(str(asset["audit_bytes_b64"])),
+            )
+        except Exception as error:
+            errors.append(f"restore audit {asset['metadata_path']}: {error}")
+    try:
+        _manifest_restore_cas(
+            catalog,
+            original_bytes=base64.b64decode(str(journal["manifest_bytes_b64"])),
+            expected_current_sha256=str(journal["expected_manifest_sha256"]),
+        )
+    except Exception as error:
+        errors.append(f"restore catalog manifest: {error}")
+    return errors
+
+
+def _recover_asset_review_journals_locked(catalog: AssetCatalog) -> None:
+    recovery_root = catalog.root.resolve() / RECOVERY_JOURNAL_DIR
+    if not recovery_root.exists():
+        return
+    for path in sorted(recovery_root.glob("*.json")):
+        try:
+            journal = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as error:
+            raise AssetLifecycleError(
+                f"asset review recovery journal is unreadable: {path}"
+            ) from error
+        if journal.get("state") in {"committed", "rolled_back"}:
+            path.unlink(missing_ok=True)
+            continue
+        errors = _rollback_from_journal(catalog, journal)
+        if errors:
+            raise AssetLifecycleError(
+                "asset review recovery remains incomplete: " + "; ".join(errors)
+            )
+        path.unlink(missing_ok=True)
 
 
 def review_pending_asset_batch(
@@ -662,8 +786,8 @@ def review_pending_asset_batch(
         raise AssetLifecycleError("asset decisions must be a mapping")
 
     with _batch_lifecycle_lock(catalog):
+        _recover_asset_review_journals_locked(catalog)
         canonical_by_id: dict[str, PendingAsset] = {}
-        aliases: dict[str, set[str]] = {}
         for item in pending_items:
             metadata_path = _payload_value(item, "metadata_path")
             if not metadata_path:
@@ -684,21 +808,14 @@ def review_pending_asset_batch(
                         f"manifest does not match canonical pending asset: {field_name}"
                     )
             canonical_by_id[candidate.pending_id] = candidate
-            for alias in {
-                candidate.pending_id,
-                candidate.provider_asset_id,
-                f"{candidate.provider}:{candidate.provider_asset_id}",
-            }:
-                aliases.setdefault(alias, set()).add(candidate.pending_id)
 
         normalized: dict[str, tuple[str, dict[str, bool]]] = {}
-        for raw_alias, raw_decision in decisions.items():
-            matching = aliases.get(str(raw_alias), set())
-            if len(matching) != 1:
+        for raw_pending_id, raw_decision in decisions.items():
+            pending_id = str(raw_pending_id)
+            if pending_id not in canonical_by_id:
                 raise AssetLifecycleError(
-                    f"unknown or ambiguous pending asset decision ID: {raw_alias}"
+                    f"unknown canonical pending asset decision ID: {raw_pending_id}"
                 )
-            pending_id = next(iter(matching))
             if pending_id in normalized:
                 raise AssetLifecycleError(f"duplicate decision for pending asset: {pending_id}")
             if not isinstance(raw_decision, Mapping):
@@ -748,36 +865,76 @@ def review_pending_asset_batch(
             for item in canonical_by_id.values()
         }
         any_rejected = any(value[0] == "rejected" for value in normalized.values())
+        journal_path = _journal_path(catalog)
+        journal: dict[str, object] = {
+            "state": "prepared",
+            "manifest_path": str(catalog.manifest_path),
+            "manifest_bytes_b64": base64.b64encode(manifest_bytes).decode("ascii"),
+            "expected_manifest_sha256": _bytes_digest(manifest_bytes),
+            "assets": [
+                {
+                    "pending_id": candidate.pending_id,
+                    "pending_path": str(candidate.path),
+                    "destination": str(
+                        (
+                            catalog.active_root
+                            / candidate.production_relative_path
+                        ).resolve()
+                    ),
+                    "metadata_path": str(candidate.metadata_path),
+                    "audit_bytes_b64": base64.b64encode(
+                        audit_bytes[candidate.pending_id]
+                    ).decode("ascii"),
+                }
+                for candidate in canonical_by_id.values()
+            ],
+            "rollback_errors": [],
+        }
+        _write_recovery_journal(journal_path, journal)
         try:
+            journal["state"] = "applying"
+            _write_recovery_journal(journal_path, journal)
             for pending_id, (disposition, safety) in normalized.items():
                 candidate = canonical_by_id[pending_id]
                 if candidate.review_status == disposition:
                     continue
                 if disposition == "approved":
-                    approve_external_asset(
+                    _approve_external_asset_locked(
                         candidate,
                         catalog,
                         safety_decisions=safety,
                     )
                 else:
-                    reject_external_asset(
+                    _reject_external_asset_locked(
                         candidate,
                         reason=rejection_reason,
                         catalog=catalog,
                     )
-            finalized = finalize() if finalize else None
-        except Exception:
-            for candidate in canonical_by_id.values():
-                destination = (
-                    catalog.active_root / candidate.production_relative_path
-                ).resolve()
-                if destination.exists() and not candidate.path.exists():
-                    candidate.path.parent.mkdir(parents=True, exist_ok=True)
-                    destination.replace(candidate.path)
-                _atomic_write_bytes(
-                    candidate.metadata_path,
-                    audit_bytes[candidate.pending_id],
+                journal["expected_manifest_sha256"] = _bytes_digest(
+                    catalog.manifest_path.read_bytes()
                 )
-            _atomic_write_bytes(catalog.manifest_path, manifest_bytes)
+                _write_recovery_journal(journal_path, journal)
+            finalized = finalize() if finalize else None
+        except Exception as original_error:
+            rollback_errors = _rollback_from_journal(catalog, journal)
+            if rollback_errors:
+                journal["state"] = "needs_recovery"
+                journal["rollback_errors"] = rollback_errors
+                try:
+                    _write_recovery_journal(journal_path, journal)
+                except Exception as journal_error:
+                    rollback_errors.append(
+                        f"persist recovery journal: {journal_error}"
+                    )
+                original_error.add_note(
+                    "asset review rollback incomplete: "
+                    + "; ".join(rollback_errors)
+                )
+            else:
+                journal["state"] = "rolled_back"
+                journal_path.unlink(missing_ok=True)
             raise
+        journal["state"] = "committed"
+        _write_recovery_journal(journal_path, journal)
+        journal_path.unlink(missing_ok=True)
         return BatchAssetReviewResult(any_rejected, finalized)

@@ -16,6 +16,7 @@ from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
 from src.nodes.node_q_human_review import route_after_human_review
 from src.nodes.node_p_carousel_qa import route_after_carousel_qa
 from src.nodes.node_p_render_qa import route_after_render_qa
+from src.editorial_carousel.legacy import route_after_storyboard_generation
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
@@ -144,7 +145,14 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     # builder.add_edge("image_qa", "assembler")
     builder.add_edge("assembler", "visual_strategy_planner")
     builder.add_edge("visual_strategy_planner", "storyboard_generator")
-    builder.add_edge("storyboard_generator", "asset_resolver")
+    builder.add_conditional_edges(
+        "storyboard_generator",
+        route_after_storyboard_generation,
+        {
+            "asset_resolver": "asset_resolver",
+            "carousel_qa": "carousel_qa",
+        },
+    )
     builder.add_edge("asset_resolver", "carousel_qa")
     builder.add_conditional_edges(
         "carousel_qa",

@@ -11,7 +11,12 @@ from langgraph.types import Command
 from memory.memory_manager import XHSMemoryManager
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
 from src.domain import DomainContext, DomainName, build_content_policy, get_domain_profile
-from src.editorial_carousel.legacy import hydrate_legacy_editorial_state
+from src.editorial_carousel.legacy import (
+    EDITORIAL_WORKFLOW_VERSION_KEY,
+    LEGACY_EDITORIAL_V1,
+    LEGACY_RESUME_PREDECESSOR_BY_SUCCESSOR,
+    hydrate_legacy_editorial_state,
+)
 from src.graph import create_graph
 from src.models import set_default_provider
 from src.nodes import node_p_text_card_renderer
@@ -83,7 +88,26 @@ def load_run_state(graph, config: dict, initial_state: dict):
             **editorial_updates,
         }
         if hydration_updates:
-            graph.update_state(config, hydration_updates)
+            exact_successor = (
+                current_state.next[0]
+                if (
+                    editorial_updates.get(EDITORIAL_WORKFLOW_VERSION_KEY)
+                    == LEGACY_EDITORIAL_V1
+                    and len(current_state.next) == 1
+                )
+                else None
+            )
+            predecessor = LEGACY_RESUME_PREDECESSOR_BY_SUCCESSOR.get(
+                exact_successor
+            )
+            if predecessor is None:
+                graph.update_state(config, hydration_updates)
+            else:
+                graph.update_state(
+                    config,
+                    hydration_updates,
+                    as_node=predecessor,
+                )
             current_state = graph.get_state(config)
     run_input = None if current_state.values else initial_state
     return current_state, run_input

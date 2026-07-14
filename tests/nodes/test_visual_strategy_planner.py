@@ -28,7 +28,17 @@ def test_visual_strategy_planner_builds_plan_from_final_publish_package():
 
     result = visual_strategy_planner_node(_state())
 
-    assert set(result) == {"visual_plan"}
+    assert set(result) == {
+        "visual_plan",
+        "editorial_workflow_version",
+        "legacy_editorial_checkpoint",
+        "asset_manifest",
+        "render_manifest",
+        "carousel_qa_result",
+        "render_qa_result",
+    }
+    assert result["editorial_workflow_version"] == "modern_v2"
+    assert result["legacy_editorial_checkpoint"] is False
     assert result["visual_plan"].content_job == "diagnose_and_adjust"
     assert result["visual_plan"].primary_visual_family == "face_zone_map"
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import json
 import os
 import stat
 from pathlib import Path
@@ -98,17 +99,40 @@ def _artifact_issue(rule_id: str, message: str, location: str) -> dict:
 
 
 def _secure_file_snapshot(path_value, trusted_root: Path):
+    directory_descriptors: list[int] = []
+    descriptor: int | None = None
     try:
         raw_path = Path(path_value)
-        if raw_path.is_symlink():
-            return None
-        canonical = raw_path.resolve(strict=True)
         root = trusted_root.resolve(strict=True)
-        if not canonical.is_relative_to(root):
+        lexical_path = Path(
+            os.path.abspath(raw_path if raw_path.is_absolute() else root / raw_path)
+        )
+        if not lexical_path.is_relative_to(root):
             return None
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
-        descriptor = os.open(raw_path, flags)
+        relative_parts = lexical_path.relative_to(root).parts
+        if not relative_parts or any(part in {"", ".", ".."} for part in relative_parts):
+            return None
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        directory_flags = os.O_RDONLY | os.O_DIRECTORY | nofollow
+        directory_descriptors.append(os.open(root, directory_flags))
+        for component in relative_parts[:-1]:
+            directory_descriptors.append(
+                os.open(
+                    component,
+                    directory_flags,
+                    dir_fd=directory_descriptors[-1],
+                )
+            )
+        descriptor = os.open(
+            relative_parts[-1],
+            os.O_RDONLY | nofollow,
+            dir_fd=directory_descriptors[-1],
+        )
     except (OSError, TypeError, ValueError):
+        if descriptor is not None:
+            os.close(descriptor)
+        for directory_descriptor in reversed(directory_descriptors):
+            os.close(directory_descriptor)
         return None
     try:
         opened = os.fstat(descriptor)
@@ -122,19 +146,26 @@ def _secure_file_snapshot(path_value, trusted_root: Path):
             chunks.append(chunk)
         data = b"".join(chunks)
         try:
-            current = raw_path.stat(follow_symlinks=False)
+            current = os.stat(
+                relative_parts[-1],
+                dir_fd=directory_descriptors[-1],
+                follow_symlinks=False,
+            )
         except OSError:
             return None
         if (current.st_dev, current.st_ino) != (opened.st_dev, opened.st_ino):
             return None
         return (
-            canonical,
+            lexical_path,
             (opened.st_dev, opened.st_ino),
             hashlib.sha256(data).hexdigest(),
             data,
         )
     finally:
-        os.close(descriptor)
+        if descriptor is not None:
+            os.close(descriptor)
+        for directory_descriptor in reversed(directory_descriptors):
+            os.close(directory_descriptor)
 
 
 def _secure_png_snapshot(path_value, trusted_root: Path):
@@ -206,8 +237,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                 "asset_manifest.items",
             )
         )
-    asset_identities: set[tuple[int, int]] = set()
-    asset_canonical_paths: set[Path] = set()
+    declarations_by_identity: dict[tuple[int, int], tuple[object, ...]] = {}
     for index, item in enumerate(asset_items):
         location = f"asset_manifest.items[{index}]"
         slot_id = str(_value(item, "slot_id") or "")
@@ -240,16 +270,39 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
             )
             continue
         canonical, identity, _digest, _data = snapshot
-        if canonical in asset_canonical_paths or identity in asset_identities:
+        declaration = (
+            canonical,
+            actual,
+            _value(item, "sha256"),
+            _value(item, "asset_id"),
+            _value(item, "source_type"),
+            _value(item, "provider"),
+            _value(item, "provider_asset_id"),
+            _value(item, "source_url"),
+            _value(item, "source_file_url"),
+            _value(item, "author"),
+            json.dumps(
+                _value(item, "provider_attribution", {}) or {},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+            _value(item, "license"),
+            _value(item, "license_snapshot"),
+            _value(item, "license_snapshot_sha256"),
+            _value(item, "license_terms_url"),
+            _value(item, "average_hash"),
+            _value(item, "review_disposition"),
+        )
+        prior_declaration = declarations_by_identity.get(identity)
+        if prior_declaration is not None and prior_declaration != declaration:
             issues.append(
                 _artifact_issue(
-                    "asset_file_path_alias",
-                    "Every asset manifest item must bind a distinct canonical file and inode.",
+                    "asset_file_declaration_conflict",
+                    "Reused asset bytes must have one identical hash and provenance declaration.",
                     f"{location}.path",
                 )
             )
-        asset_canonical_paths.add(canonical)
-        asset_identities.add(identity)
+        declarations_by_identity.setdefault(identity, declaration)
         if actual != _value(item, "sha256"):
             issues.append(
                 _artifact_issue(

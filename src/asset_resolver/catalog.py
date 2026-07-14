@@ -8,6 +8,7 @@ import re
 import hashlib
 import fcntl
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +25,19 @@ if TYPE_CHECKING:
 
 class CatalogError(ValueError):
     """Raised when a local production catalog is invalid or unsafe."""
+
+
+@contextmanager
+def catalog_review_lock(root: Path):
+    """Serialize every catalog lifecycle writer before narrower locks."""
+
+    lock_path = root.resolve() / ".asset-review.lock"
+    with lock_path.open("a+b") as lock_handle:
+        fcntl.flock(lock_handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_handle.fileno(), fcntl.LOCK_UN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +115,7 @@ class AssetCatalog:
         safety_review_decisions: Mapping[str, bool],
         safety_reviewed_at: str,
         review_disposition: str,
+        _review_lock_held: bool = False,
     ) -> AssetEntry:
         """Atomically append a promoted pending asset to the production manifest."""
 
@@ -140,6 +155,16 @@ class AssetCatalog:
                 review_disposition=review_disposition,
             ),
         )
+        if not _review_lock_held:
+            with catalog_review_lock(self.root):
+                return self.append_approved(
+                    pending,
+                    destination,
+                    safety_review_decisions=safety_review_decisions,
+                    safety_reviewed_at=safety_reviewed_at,
+                    review_disposition=review_disposition,
+                    _review_lock_held=True,
+                )
         if self.manifest_path is None:
             raise CatalogError("approval requires a persistent catalog manifest")
         manifest_path = self.manifest_path

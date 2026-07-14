@@ -44,7 +44,7 @@ def test_graph_places_asset_resolution_before_carousel_render():
 
     assert edges["assembler"] == {"visual_strategy_planner"}
     assert edges["visual_strategy_planner"] == {"storyboard_generator"}
-    assert edges["storyboard_generator"] == {"asset_resolver"}
+    assert edges["storyboard_generator"] == {"asset_resolver", "carousel_qa"}
     assert edges["asset_resolver"] == {"carousel_qa"}
     assert edges["carousel_qa"] == {
         "editorial_carousel_renderer",

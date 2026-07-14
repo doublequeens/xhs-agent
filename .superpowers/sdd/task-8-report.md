@@ -20,6 +20,12 @@
   - Legacy hydration now requires an explicit old editorial version/marker or a strict old-template shape at an old checkpoint seam. Partial or corrupt modern state is never downgraded, and stale legacy markers are cleared on modern hydration.
   - Human decisions bind pending ID, slot, provider ID, requirement fingerprint, SHA-256, and canonical metadata path; a generic approval cannot synthesize safety clearance.
   - Final Guard uses one `O_NOFOLLOW` file-descriptor snapshot for inode checks, SHA-256, and Pillow decoding, enforces trusted render-root containment and distinct canonical paths/inodes, binds ordered frame/role/layout/text probes, and rebinds unique asset slots across plan/storyboard/manifest.
+- Closed the second Task 8 review without loosening the modern artifact contract:
+  - Final Guard now permits intentional reuse of one catalog asset across unique slots while requiring each slot's exact requirement/layout/role/hash/provenance binding. A real beauty catalog -> strategy -> resolver -> guard integration covers background and skin-detail reuse; conflicting declarations for the same path/inode fail closed.
+  - Exact pre-Task-8 checkpoints at `storyboard_generator`, `carousel_qa`, and `render_qa` resume in an isolated `legacy_v1` lane without invoking the asset resolver. An R1 regeneration that produces a modern plan emits an explicit `modern_v2` transition, clears legacy state, invalidates downstream artifacts, and immediately returns to the full modern resolver/guard path.
+  - Batch, standalone approval/rejection, and direct catalog append operations share one catalog-review lock. Batch recovery is journaled durably; compensation attempts every asset/audit restoration, restores the manifest under its own lock with compare-and-swap, preserves a concurrent manifest write, retains the original exception, and retries incomplete recovery before later review work.
+  - Final Guard walks every trusted-root path component by directory file descriptor with `O_DIRECTORY | O_NOFOLLOW`, then validates and reads the final regular file from the same descriptor chain. An intermediate-directory symlink swap is rejected.
+  - Human Review's render-structure signature now includes the canonical complete `ContentContract`, so any planner/render contract edit invalidates downstream artifacts and routes through R2. Batch decision lookup accepts only the displayed canonical pending ID.
 
 ## TDD evidence
 
@@ -45,6 +51,12 @@
 - Legacy classification closure: corrupt/partial states and stale marker tests pass without weakening modern artifact requirements.
 - Secure Final Guard closure: focused tests cover valid artifacts, corrupt bytes, duplicate raw paths, symlinked active assets, symlink and hardlink page aliases, paths outside the trusted root, ordered role/layout mismatch, stale visible-text probes, duplicate/rebound slots, and path replacement after open.
 - The first closure full-suite run was `1076 passed, 2 skipped, 3 failed`; all three failures were modern integration fixtures with placeholder PNGs and incomplete bindings. The fixtures were upgraded to consistent modern artifacts rather than marked legacy. The fresh full run passed.
+- Second-review catalog reuse: two RED failures showed that physical reuse was rejected categorically and conflicting same-file declarations were not detected. The production catalog/strategy/resolver integration and conflict regression are GREEN.
+- Exact legacy resume: four RED integration failures exposed checkpoint-successor drift and unconditional modern resolver routing. Typed hydration with predecessor-aware `update_state(..., as_node=...)`, conditional storyboard routing, and the same-run `legacy_v1 -> modern_v2` transition made all four real-checkpointer cases GREEN.
+- Content-contract invalidation: the new contract-edit regression was RED because Human Review approved stale artifacts; canonical contract participation in the render-structure signature made it GREEN.
+- Lifecycle concurrency/recovery: the initial lifecycle run had one stale failure-injection seam after global locking moved below the public wrapper. The updated suite proves batch/standalone serialization, manifest CAS preservation under a simulated concurrent writer, aggregated move-plus-audit rollback failures, durable journal retention, successful recovery on retry, and canonical-ID-only decisions (`43 passed`).
+- Descriptor-chain traversal: focused regressions cover both final-file replacement after open and an intermediate directory swapped to a symlink; both fail closed under component-wise `openat` traversal.
+- Second-review combined focused verification passed with `179 passed`; the first subsequent full run found one stale exact-key assertion for the newly typed planner transition. Updating that contract assertion yielded the final clean run.
 
 ## Final verification
 
@@ -56,7 +68,13 @@
   -> `8 passed`.
 - Full suite:
   `pytest -q`
-  -> `1080 passed, 2 skipped, 4 warnings` in 26.58s.
+  -> `1092 passed, 2 skipped, 4 warnings` in 27.74s.
+- Second-review focused suite:
+  `pytest tests/test_main.py tests/test_graph.py tests/nodes/test_domain_nodes.py tests/integration/test_legacy_editorial_resume.py tests/nodes/test_final_policy_guard.py tests/asset_resolver/test_lifecycle.py -q`
+  -> `179 passed`.
+- Lifecycle concurrency/recovery suite:
+  `pytest tests/asset_resolver/test_lifecycle.py -q`
+  -> `43 passed`.
 - Bytecode compilation:
   `python -m compileall -q main.py src tests`
   -> passed.
@@ -73,7 +91,7 @@
 
 ### Spec
 
-- Verified explicit asset approval and rejection lifecycle, canonical provenance/safety binding, whole-batch rollback and retry, already-downloaded next/fallback resolution without repeat external calls, pending-asset exclusion from Final Guard, R1/R2/review routes, checkpoint resume without repeated resolution, modern visible-text invalidation, secure current-byte snapshots and ordered bindings, final PNG persistence, and CLI asset decision input.
+- Verified explicit asset approval and rejection lifecycle, canonical provenance/safety binding, globally serialized writers, compare-and-swap rollback, durable recovery and retry, already-downloaded next/fallback resolution without repeat external calls, pending-asset exclusion from Final Guard, R1/R2/review routes, exact legacy checkpoint resume, same-run legacy-to-modern transition, complete contract invalidation, intentional audited catalog reuse, component-wise secure current-byte snapshots and ordered bindings, final PNG persistence, and CLI asset decision input.
 - No Task 8 requirement remains partial.
 
 ## Concerns and follow-up boundaries

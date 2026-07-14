@@ -428,7 +428,8 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
                 values={**old_values, **calls[-1]}, next=("carousel_qa",)
             )
 
-        def update_state(self, _config, updates):
+        def update_state(self, _config, updates, *, as_node=None):
+            assert as_node == "asset_resolver"
             calls.append(updates)
 
     current_state, run_input = main.load_run_state(
@@ -438,6 +439,7 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
     assert run_input is None
     assert current_state.next == ("carousel_qa",)
     assert calls[0]["legacy_editorial_checkpoint"] is True
+    assert calls[0]["editorial_workflow_version"] == "legacy_v1"
     assert calls[0]["visual_plan"] is None
     assert calls[0]["asset_manifest"] is None
     assert calls[0]["render_manifest"] is None
@@ -541,7 +543,12 @@ def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
         FakeGraph(), {"configurable": {"thread_id": "modern"}}, {}
     )
 
-    assert calls == [{"legacy_editorial_checkpoint": False}]
+    assert calls == [
+        {
+            "legacy_editorial_checkpoint": False,
+            "editorial_workflow_version": "modern_v2",
+        }
+    ]
     assert current_state.values["legacy_editorial_checkpoint"] is False
 
 

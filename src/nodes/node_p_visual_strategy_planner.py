@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.editorial_carousel.strategy import build_visual_plan
+from src.editorial_carousel.legacy import modern_editorial_transition_updates
 from src.schemas import AgentState
 
 
@@ -40,8 +41,9 @@ def visual_strategy_planner_node(state: AgentState) -> AgentState:
         )
 
     return {
+        **modern_editorial_transition_updates(),
         "visual_plan": build_visual_plan(
             content_contract,
             recent_signatures=_recent_frame_plan_signatures(state),
-        )
+        ),
     }

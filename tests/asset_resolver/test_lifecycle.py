@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import replace
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, BrokenBarrierError
+from threading import Barrier, BrokenBarrierError, Event
 from pathlib import Path
 
 import pytest
@@ -681,7 +681,7 @@ def test_batch_review_rolls_back_first_approval_when_second_approval_fails(
     first = pending_asset(tmp_path, asset_id="p1")
     second = pending_asset(tmp_path, asset_id="p2")
     asset_catalog = catalog(tmp_path)
-    original_approve = lifecycle.approve_external_asset
+    original_approve = lifecycle._approve_external_asset_locked
     calls = 0
 
     def fail_second(candidate, *args, **kwargs):
@@ -691,7 +691,7 @@ def test_batch_review_rolls_back_first_approval_when_second_approval_fails(
             raise RuntimeError("second approval failed")
         return original_approve(candidate, *args, **kwargs)
 
-    monkeypatch.setattr(lifecycle, "approve_external_asset", fail_second)
+    monkeypatch.setattr(lifecycle, "_approve_external_asset_locked", fail_second)
 
     with pytest.raises(RuntimeError, match="second approval failed"):
         lifecycle.review_pending_asset_batch(
@@ -797,4 +797,161 @@ def test_batch_review_rejects_stale_binding_and_implicit_safety_approval(
             {candidate.pending_id: _batch_decision(candidate)},
             rejection_reason="not selected",
         )
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "pending"
+
+
+def test_batch_review_and_standalone_approval_share_one_lifecycle_lock(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import (
+        approve_external_asset,
+        review_pending_asset_batch,
+    )
+
+    batch_candidate = pending_asset(tmp_path, asset_id="batch")
+    standalone_candidate = pending_asset(tmp_path, asset_id="standalone")
+    asset_catalog = catalog(tmp_path)
+    batch_in_finalize = Event()
+    release_batch = Event()
+    standalone_started = Event()
+
+    def hold_batch_lock() -> None:
+        batch_in_finalize.set()
+        assert release_batch.wait(timeout=5)
+
+    def standalone_approval():
+        standalone_started.set()
+        return approve_external_asset(standalone_candidate, asset_catalog)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        batch_future = executor.submit(
+            review_pending_asset_batch,
+            asset_catalog,
+            [_batch_item(batch_candidate)],
+            {batch_candidate.pending_id: _batch_decision(batch_candidate)},
+            rejection_reason="not selected",
+            finalize=hold_batch_lock,
+        )
+        assert batch_in_finalize.wait(timeout=5)
+        standalone_future = executor.submit(standalone_approval)
+        assert standalone_started.wait(timeout=5)
+        assert not standalone_future.done()
+        release_batch.set()
+        batch_future.result(timeout=5)
+        standalone_future.result(timeout=5)
+
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    assert {item["asset_id"] for item in manifest["assets"]} == {
+        "pexels-batch",
+        "pexels-standalone",
+    }
+
+
+def test_batch_rollback_cas_preserves_concurrent_manifest_change(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import review_pending_asset_batch
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    manifest_path = tmp_path / "manifest.json"
+
+    def concurrent_manifest_write_then_fail() -> None:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["concurrent_writer"] = "committed"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        raise RuntimeError("finalize failed after concurrent write")
+
+    with pytest.raises(
+        RuntimeError, match="finalize failed after concurrent write"
+    ) as raised:
+        review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+            finalize=concurrent_manifest_write_then_fail,
+        )
+
+    assert json.loads(manifest_path.read_text())["concurrent_writer"] == "committed"
+    assert any(
+        "recovery refused to overwrite" in note
+        for note in getattr(raised.value, "__notes__", ())
+    )
+    journals = list((tmp_path / ".asset-review-recovery").glob("*.json"))
+    assert len(journals) == 1
+    assert json.loads(journals[0].read_text())["state"] == "needs_recovery"
+
+
+def test_batch_rollback_aggregates_failures_and_recovers_on_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import src.asset_resolver.lifecycle as lifecycle
+
+    candidate = pending_asset(tmp_path)
+    asset_catalog = catalog(tmp_path)
+    destination = tmp_path / "active" / "stock" / "serum-p1.webp"
+    original_replace = Path.replace
+    original_atomic_write_bytes = lifecycle._atomic_write_bytes
+    fail_rollback = {"enabled": True}
+
+    def fail_asset_restore(path: Path, target: Path) -> Path:
+        if fail_rollback["enabled"] and path == destination and target == candidate.path:
+            raise OSError("rollback move failed")
+        return original_replace(path, target)
+
+    def fail_audit_restore(path: Path, payload: bytes) -> None:
+        if fail_rollback["enabled"] and path == candidate.metadata_path:
+            raise OSError("rollback audit write failed")
+        original_atomic_write_bytes(path, payload)
+
+    monkeypatch.setattr(Path, "replace", fail_asset_restore)
+    monkeypatch.setattr(lifecycle, "_atomic_write_bytes", fail_audit_restore)
+
+    with pytest.raises(RuntimeError, match="finalize failed") as raised:
+        lifecycle.review_pending_asset_batch(
+            asset_catalog,
+            [_batch_item(candidate)],
+            {candidate.pending_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+            finalize=lambda: (_ for _ in ()).throw(RuntimeError("finalize failed")),
+        )
+
+    notes = " ".join(getattr(raised.value, "__notes__", ()))
+    assert "rollback move failed" in notes
+    assert "rollback audit write failed" in notes
+    journal_root = tmp_path / ".asset-review-recovery"
+    assert len(list(journal_root.glob("*.json"))) == 1
+
+    fail_rollback["enabled"] = False
+    result = lifecycle.review_pending_asset_batch(
+        asset_catalog,
+        [_batch_item(candidate)],
+        {candidate.pending_id: _batch_decision(candidate)},
+        rejection_reason="not selected",
+    )
+
+    assert result.any_rejected is False
+    assert destination.is_file()
+    assert json.loads(candidate.metadata_path.read_text())["review_status"] == "approved"
+    assert list(journal_root.glob("*.json")) == []
+
+
+def test_batch_review_accepts_only_canonical_pending_ids(tmp_path: Path) -> None:
+    from src.asset_resolver.lifecycle import (
+        AssetLifecycleError,
+        review_pending_asset_batch,
+    )
+
+    candidate = pending_asset(tmp_path)
+
+    with pytest.raises(AssetLifecycleError, match="unknown canonical pending"):
+        review_pending_asset_batch(
+            catalog(tmp_path),
+            [_batch_item(candidate)],
+            {candidate.provider_asset_id: _batch_decision(candidate)},
+            rejection_reason="not selected",
+        )
+
+    assert candidate.path.is_file()
     assert json.loads(candidate.metadata_path.read_text())["review_status"] == "pending"

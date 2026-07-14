@@ -622,7 +622,13 @@ def test_graph_builder_wires_domain_nodes(monkeypatch):
     assert ("virality_score", "outline_architect") not in added_edges
     assert ("assembler", "visual_strategy_planner") in added_edges
     assert ("visual_strategy_planner", "storyboard_generator") in added_edges
-    assert ("storyboard_generator", "asset_resolver") in added_edges
+    assert (
+        "storyboard_generator",
+        (
+            ("asset_resolver", "asset_resolver"),
+            ("carousel_qa", "carousel_qa"),
+        ),
+    ) in added_edges
     assert ("asset_resolver", "carousel_qa") in added_edges
     assert ("storyboard_generator", "human_review") not in added_edges
     assert (
