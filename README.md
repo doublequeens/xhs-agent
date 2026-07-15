@@ -26,13 +26,16 @@ cd xhs-agent
 /opt/anaconda3/envs/xhs-agent/bin/python -m pip install -r requirements.txt
 /opt/anaconda3/envs/xhs-agent/bin/python -m playwright install chromium
 cp .env.example .env
+set -a
+source .env
+set +a
 ```
 
-上面的 Python 可执行文件路径是示例环境路径；也可以先激活自己的 Python 3.12 环境，再将命令中的解释器替换为该环境的 `python`。不要把 `.env` 提交到 Git。
+上面的 Python 可执行文件路径是示例环境路径；也可以先激活自己的 Python 3.12 环境，再将命令中的解释器替换为该环境的 `python`。项目运行时读取 shell 环境变量，不会自动加载 `.env`，因此每个新 shell 都要重新执行 `set -a; source .env; set +a`，或逐项 `export`。不要把 `.env` 提交到 Git。
 
 ### 环境变量
 
-根据所选模型和功能，在 `.env` 或 shell 中设置相应变量。文档只列变量名，不包含任何值：
+根据所选模型和功能，在 `.env` 后通过上面的 `source` 步骤加载，或直接在 shell 中设置相应变量。文档只列变量名，不包含任何值：
 
 | 变量 | 用途 |
 | --- | --- |
