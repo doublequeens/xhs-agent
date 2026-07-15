@@ -1,5 +1,7 @@
 # Signal-Driven Topic Generation Implementation Plan
 
+> 当前状态：已实施；本文保留作历史实施记录，不是自动待办。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a signal-driven topic generation pipeline that replaces direct LLM topic generation with structured signals, creative briefs, diversity filtering, and traceability.

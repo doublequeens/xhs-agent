@@ -1,5 +1,7 @@
 # Xiaohongshu Metrics Collector Implementation Plan
 
+> 当前状态：已实施；本文保留作历史实施记录，不是自动待办。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a once-daily, low-access Playwright collector that binds Xiaohongshu note IDs, imports the official creator-center workbook, and stores both latest and historical metrics.

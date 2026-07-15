@@ -1,5 +1,7 @@
 # Editorial Beauty Carousel Workflow Implementation Plan
 
+> 当前状态：已实施；本文保留作历史实施记录，不是自动待办。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the fixed six-card text renderer with a local-first, content-aware beauty editorial carousel pipeline that produces 5–7 publishable images, audited stock-asset fallback, human-review artifacts, `publish-copy.txt`, and a content-locked manual Codex image-regeneration prompt.

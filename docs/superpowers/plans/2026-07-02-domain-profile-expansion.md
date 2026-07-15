@@ -1,5 +1,7 @@
 # Domain Profile Expansion Implementation Plan
 
+> 当前状态：已实施；本文保留作历史实施记录，不是自动待办。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend the existing skincare-only Xiaohongshu agent into a shared, domain-aware workflow for beauty, wellness, and healthy-lifestyle content with isolated memory, evidence handling, and enforceable safety policies.

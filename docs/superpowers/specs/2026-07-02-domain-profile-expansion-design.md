@@ -4,6 +4,8 @@
 
 Approved for implementation planning on 2026-07-02.
 
+当前状态：已实施；本文保留作设计记录。
+
 ## Objective
 
 Expand the agent from skincare-only content generation to three related content

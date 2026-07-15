@@ -2,6 +2,8 @@
 
 Date: 2026-07-05
 
+Status: 已实施；本文保留作设计记录。
+
 ## Goal
 
 Automatically collect performance metrics for published Xiaohongshu notes once per day, bind Xiaohongshu note identifiers to existing agent content records, and update both current metrics and daily history.

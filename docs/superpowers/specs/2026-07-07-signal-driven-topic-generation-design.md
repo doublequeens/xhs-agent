@@ -4,6 +4,8 @@
 
 Approved for implementation planning on 2026-07-07.
 
+当前状态：已实施；本文保留作设计记录。
+
 ## Objective
 
 Replace direct LLM topic generation with a signal-driven topic generation
