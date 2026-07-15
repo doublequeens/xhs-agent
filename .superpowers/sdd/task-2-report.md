@@ -367,4 +367,3 @@ directory cleanup warnings.
   alternative remains deterministic and schema-valid.
 - Confirmed `git diff --check` exits 0.
 - No new concerns beyond the existing expected third-party/legacy warning notes.
-
