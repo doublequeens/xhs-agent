@@ -403,8 +403,10 @@ BEAUTY_EDITORIAL_V1 = DesignSystem(
     canvas=(1080, 1440),
     colors=MappingProxyType(
         {
-            "background": "#F7F2EA",
-            "ink": "#292625",
+            "background": "#F4ECE0",
+            "paper": "#FBF6EE",
+            "ink": "#2B2622",
+            "soft": "#6B625A",
             "mauve": "#9A707B",
             "coral": "#D45D4C",
             "sage": "#78805E",
@@ -412,9 +414,9 @@ BEAUTY_EDITORIAL_V1 = DesignSystem(
     ),
     font_paths=MappingProxyType(
         {
-            "display": FONT_ROOT / "SourceHanSerifSC-SemiBold.otf",
-            "body_regular": FONT_ROOT / "SourceHanSansSC-Regular.otf",
-            "body_medium": FONT_ROOT / "SourceHanSansSC-Medium.otf",
+            "display": FONT_ROOT / "LXGWWenKai-Medium.ttf",
+            "body_regular": FONT_ROOT / "LXGWWenKai-Regular.ttf",
+            "body_medium": FONT_ROOT / "LXGWWenKai-Medium.ttf",
             "numeral": FONT_ROOT / "BodoniModa-Regular.ttf",
         }
     ),
