@@ -3,10 +3,16 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
-from src.schemas.assets import AssetManifest, AssetSearchReport
+from src.schemas.assets import (
+    AssetManifest,
+    AssetManifestItem,
+    AssetRequirement,
+    AssetSearchReport,
+)
 from src.schemas.content_contract import ContentContract
 from src.schemas.content_lock import ContentLock
-from src.schemas.render_manifest import RenderManifest
+from src.schemas.decision import StoryboardVisibleText
+from src.schemas.render_manifest import RenderedPage, RenderManifest
 from src.schemas.storyboard import CarouselFrame, CarouselPayload
 from src.schemas.visual_plan import VisualPlan
 
@@ -22,71 +28,90 @@ BASE_CONTRACT = {
 }
 
 ZONE_PLAN = {
-    "design_system": "beauty_editorial_v1",
+    "design_system": "beauty_editorial_v2",
+    "template_family": "deep_teal",
+    "template_selection": {
+        "template_family": "deep_teal",
+        "score": 91,
+        "reasons": ["diagnostic clarity"],
+        "rejected_families": {
+            "pink_red": ["lower diagnostic fit"],
+            "soft_pink": ["lower contrast fit"],
+            "coral_impact": ["lower tone fit"],
+            "green_catalog": ["not an item collection"],
+            "white_quote": ["not quote-led"],
+        },
+    },
+    "narrative_form": "diagnostic_qa",
     "content_job": "diagnose_and_adjust",
-    "primary_visual_family": "face_zone_map",
-    "supporting_families": ["beauty_editorial", "saveable_reference"],
     "frame_plan": [
         {
             "frame_id": "cover",
             "role": "cover",
-            "layout": "editorial_cover",
+            "page_archetype": "cover",
             "purpose": "建立问题与承诺",
+            "allowed_density": ["sparse"],
             "asset_roles": ["beauty_subject"],
         },
         {
             "frame_id": "baseline",
             "role": "baseline",
-            "layout": "texture_baseline",
+            "page_archetype": "thesis",
             "purpose": "建立质地基线",
+            "allowed_density": ["standard"],
             "asset_roles": ["product_texture"],
         },
         {
             "frame_id": "applicable-case",
             "role": "applicable_case",
-            "layout": "front_face_zone",
+            "page_archetype": "diagnostic",
             "purpose": "标出适用区域",
+            "allowed_density": ["standard", "dense"],
             "asset_roles": ["face_map"],
         },
         {
             "frame_id": "zone-adjustment",
             "role": "zone_adjustment",
-            "layout": "three_quarter_face_zone",
+            "page_archetype": "explanation",
             "purpose": "展示分区调整",
+            "allowed_density": ["standard"],
             "asset_roles": ["face_map"],
         },
         {
             "frame_id": "feedback",
             "role": "feedback_diagnosis",
-            "layout": "three_state_diagnostic",
+            "page_archetype": "comparison",
             "purpose": "根据反馈诊断",
+            "allowed_density": ["dense"],
             "asset_roles": ["comparison"],
         },
         {
             "frame_id": "save",
             "role": "save",
-            "layout": "saveable_reference",
+            "page_archetype": "save",
             "purpose": "提供保存参考",
+            "allowed_density": ["standard", "dense"],
             "asset_roles": ["reference"],
         },
     ],
-    "required_assets": [
-        {
-            "slot_id": "face-map",
-            "role": "face_map",
-            "layout": "front_face_zone",
-            "min_width": 1080,
-            "min_height": 1440,
-            "context_tags": ["t-zone"],
-        }
-    ],
+    "required_assets": [],
+}
+
+ASSET_REQUIREMENT = {
+    "slot_id": "face-map",
+    "role": "face_map",
+    "page_archetype": "diagnostic",
+    "min_width": 1080,
+    "min_height": 1440,
+    "context_tags": ["t-zone"],
 }
 
 ZONE_STORYBOARD = [
     {
         "frame_id": item["frame_id"],
         "role": item["role"],
-        "layout": item["layout"],
+        "page_archetype": item["page_archetype"],
+        "content_density_hint": "auto" if index == 0 else "standard",
         "headline": "先看懂分区，再调整护肤步骤" if index == 0 else item["purpose"],
         "kicker": "分区护肤",
         "content_blocks": [
@@ -126,29 +151,32 @@ CONTENT_LOCK = {
 }
 
 
-def _frame_sequence(source, layouts):
-    frames = deepcopy(source[: len(layouts)])
-    for frame, layout in zip(frames, layouts, strict=True):
-        frame["layout"] = layout
+def _frame_sequence(source, archetypes):
+    frames = deepcopy(source[: len(archetypes)])
+    for frame, archetype in zip(frames, archetypes, strict=True):
+        frame["page_archetype"] = archetype
     return frames
 
 
 def _render_pages(count=5):
-    layouts = [
-        "editorial_cover",
-        "texture_baseline",
-        "front_face_zone",
-        "three_state_diagnostic",
-        "saveable_reference",
-        "step_timeline",
-        "saveable_checklist",
-        "decision_tree",
+    archetypes = [
+        "cover",
+        "thesis",
+        "diagnostic",
+        "explanation",
+        "save",
+        "steps",
+        "checklist",
+        "quote",
     ]
     return [
         {
             "frame_id": f"frame-{index}",
             "role": "cover" if index == 1 else f"detail-{index}",
-            "layout": layout,
+            "page_archetype": archetype,
+            "template_family": "deep_teal",
+            "density": "standard",
+            "composition_variant": f"diagnostic-{index}",
             "path": f"{index:02d}-frame.png",
             "width": 1080,
             "height": 1440,
@@ -179,7 +207,7 @@ def _render_pages(count=5):
                 "issues": [],
             },
         }
-        for index, layout in enumerate(layouts[:count], start=1)
+        for index, archetype in enumerate(archetypes[:count], start=1)
     ]
 
 
@@ -188,45 +216,104 @@ def test_content_contract_requires_editorial_strategy_fields():
         ContentContract.model_validate(BASE_CONTRACT)
 
 
-def test_visual_plan_accepts_five_to_seven_frames_and_rejects_arbitrary_layout():
+def test_content_contract_visual_family_does_not_imply_template_or_frame_count():
+    contract_fields = {
+        **BASE_CONTRACT,
+        "content_job": "diagnose_and_adjust",
+        "primary_visual_family": "face_zone_map",
+        "primary_visual_subject": "face_map",
+        "proof_mode": "diagram",
+        "recommended_frame_count": 6,
+    }
+    face_map_contract = ContentContract.model_validate(contract_fields)
+    editorial_contract = ContentContract.model_validate(
+        {**contract_fields, "primary_visual_family": "beauty_editorial"}
+    )
     plan = VisualPlan.model_validate(ZONE_PLAN)
-    assert plan.primary_visual_family == "face_zone_map"
+
+    assert "template_family" not in ContentContract.model_fields
+    assert (
+        face_map_contract.recommended_frame_count
+        == editorial_contract.recommended_frame_count
+        == len(plan.frame_plan)
+    )
+    assert plan.template_family == "deep_teal"
+
+
+def test_visual_plan_accepts_v2_template_archetypes_and_five_to_seven_frames():
+    plan = VisualPlan.model_validate(ZONE_PLAN)
+    assert plan.design_system == "beauty_editorial_v2"
+    assert plan.template_family == "deep_teal"
+    assert plan.template_selection.template_family == "deep_teal"
+    assert plan.frame_plan[0].page_archetype == "cover"
+    assert 5 <= len(plan.frame_plan) <= 7
+    assert any(
+        frame.page_archetype in {"save", "checklist", "comparison"}
+        for frame in plan.frame_plan
+    )
+    assert plan.required_assets == []
+
     broken = deepcopy(ZONE_PLAN)
-    broken["frame_plan"][1]["layout"] = "freeform_html"
+    broken["frame_plan"][1]["page_archetype"] = "freeform_html"
     with pytest.raises(ValidationError):
         VisualPlan.model_validate(broken)
 
 
+def test_visual_plan_allows_content_driven_five_to_seven_page_counts():
+    closing = {
+        **ZONE_PLAN["frame_plan"][-1],
+        "frame_id": "closing",
+        "role": "closing",
+        "page_archetype": "closing",
+        "purpose": "收束内容",
+    }
+    seven_frames = [*ZONE_PLAN["frame_plan"], closing]
+
+    for count in (5, 6, 7):
+        plan = VisualPlan.model_validate(
+            {**ZONE_PLAN, "frame_plan": seven_frames[:count]}
+        )
+        assert len(plan.frame_plan) == count
+
+    with pytest.raises(ValidationError):
+        VisualPlan.model_validate(
+            {**ZONE_PLAN, "frame_plan": ZONE_PLAN["frame_plan"][:4]}
+        )
+    with pytest.raises(ValidationError):
+        VisualPlan.model_validate(
+            {
+                **ZONE_PLAN,
+                "frame_plan": [
+                    *seven_frames,
+                    {**closing, "frame_id": "extra"},
+                ],
+            }
+        )
+
+
 @pytest.mark.parametrize(
-    "layouts",
+    "archetypes",
     [
         [
-            "texture_baseline",
-            "front_face_zone",
-            "three_quarter_face_zone",
-            "three_state_diagnostic",
-            "saveable_reference",
+            "thesis",
+            "diagnostic",
+            "explanation",
+            "comparison",
+            "save",
         ],
         [
-            "editorial_cover",
-            "texture_baseline",
-            "texture_baseline",
-            "texture_baseline",
-            "editorial_cover",
-        ],
-        [
-            "editorial_cover",
-            "texture_baseline",
-            "front_face_zone",
-            "three_quarter_face_zone",
-            "three_state_diagnostic",
+            "cover",
+            "thesis",
+            "diagnostic",
+            "explanation",
+            "closing",
         ],
     ],
-    ids=["cover-first", "three-distinct-layouts", "saveable-layout"],
+    ids=["cover-first", "saveable-archetype"],
 )
-def test_visual_plan_requires_editorial_frame_composition(layouts):
+def test_visual_plan_requires_v2_frame_composition(archetypes):
     broken = deepcopy(ZONE_PLAN)
-    broken["frame_plan"] = _frame_sequence(ZONE_PLAN["frame_plan"], layouts)
+    broken["frame_plan"] = _frame_sequence(ZONE_PLAN["frame_plan"], archetypes)
     with pytest.raises(ValidationError):
         VisualPlan.model_validate(broken)
 
@@ -246,8 +333,18 @@ def test_carousel_frame_rejects_network_url_and_free_css():
 def test_carousel_payload_requires_five_to_seven_frames():
     payload = CarouselPayload.model_validate({"storyboards": ZONE_STORYBOARD})
     assert len(payload.storyboards) == 6
+    assert payload.storyboards[0].page_archetype == "cover"
+    assert payload.storyboards[0].content_density_hint == "auto"
+    assert payload.storyboards[1].content_density_hint == "standard"
     with pytest.raises(ValidationError):
         CarouselPayload.model_validate({"storyboards": ZONE_STORYBOARD[:4]})
+
+
+def test_carousel_frame_density_hint_defaults_to_auto():
+    frame = deepcopy(ZONE_STORYBOARD[0])
+    frame.pop("content_density_hint")
+
+    assert CarouselFrame.model_validate(frame).content_density_hint == "auto"
 
 
 def test_carousel_payload_rejects_cross_frame_duplicate_visual_slot_id():
@@ -261,36 +358,120 @@ def test_carousel_payload_rejects_cross_frame_duplicate_visual_slot_id():
 
 
 @pytest.mark.parametrize(
-    "layouts",
+    "archetypes",
     [
         [
-            "texture_baseline",
-            "front_face_zone",
-            "three_quarter_face_zone",
-            "three_state_diagnostic",
-            "saveable_reference",
+            "thesis",
+            "diagnostic",
+            "explanation",
+            "comparison",
+            "save",
         ],
         [
-            "editorial_cover",
-            "texture_baseline",
-            "texture_baseline",
-            "texture_baseline",
-            "editorial_cover",
-        ],
-        [
-            "editorial_cover",
-            "texture_baseline",
-            "front_face_zone",
-            "three_quarter_face_zone",
-            "three_state_diagnostic",
+            "cover",
+            "thesis",
+            "diagnostic",
+            "explanation",
+            "closing",
         ],
     ],
-    ids=["cover-first", "three-distinct-layouts", "saveable-layout"],
+    ids=["cover-first", "saveable-archetype"],
 )
-def test_carousel_payload_requires_editorial_frame_composition(layouts):
-    frames = _frame_sequence(ZONE_STORYBOARD, layouts)
+def test_carousel_payload_requires_v2_frame_composition(archetypes):
+    frames = _frame_sequence(ZONE_STORYBOARD, archetypes)
     with pytest.raises(ValidationError):
         CarouselPayload.model_validate({"storyboards": frames})
+
+
+def test_asset_contracts_use_page_archetype():
+    requirement = AssetRequirement.model_validate(ASSET_REQUIREMENT)
+    manifest_item = AssetManifestItem.model_validate(
+        {
+            "slot_id": "face-map",
+            "role": "face_map",
+            "page_archetype": "diagnostic",
+            "status": "active",
+            "path": "assets/face-map.png",
+            "source_type": "bundled",
+            "license": "project-owned",
+            "width": 1080,
+            "height": 1440,
+            "sha256": "a" * 64,
+        }
+    )
+
+    assert requirement.page_archetype == "diagnostic"
+    assert manifest_item.page_archetype == "diagnostic"
+
+
+def test_storyboard_visible_text_uses_page_archetype():
+    visible = StoryboardVisibleText.model_validate(
+        {
+            "frame_id": "cover",
+            "role": "cover",
+            "page_archetype": "cover",
+            "text_blocks": {"headline": "先看懂分区"},
+        }
+    )
+
+    assert visible.page_archetype == "cover"
+
+
+@pytest.mark.parametrize(
+    ("model", "payload"),
+    [
+        (
+            VisualPlan,
+            {
+                **ZONE_PLAN,
+                "frame_plan": [
+                    {**ZONE_PLAN["frame_plan"][0], "layout": "editorial_cover"},
+                    *ZONE_PLAN["frame_plan"][1:],
+                ],
+            },
+        ),
+        (
+            CarouselFrame,
+            {**ZONE_STORYBOARD[0], "layout": "editorial_cover"},
+        ),
+        (
+            AssetRequirement,
+            {**ASSET_REQUIREMENT, "layout": "front_face_zone"},
+        ),
+        (
+            AssetManifestItem,
+            {
+                "slot_id": "face-map",
+                "role": "face_map",
+                "page_archetype": "diagnostic",
+                "layout": "front_face_zone",
+                "status": "active",
+                "path": "assets/face-map.png",
+                "source_type": "bundled",
+                "license": "project-owned",
+                "width": 1080,
+                "height": 1440,
+                "sha256": "a" * 64,
+            },
+        ),
+        (
+            RenderedPage,
+            {**_render_pages(1)[0], "layout": "editorial_cover"},
+        ),
+        (
+            StoryboardVisibleText,
+            {
+                "frame_id": "cover",
+                "role": "cover",
+                "page_archetype": "cover",
+                "layout": "editorial_cover",
+            },
+        ),
+    ],
+)
+def test_modern_schemas_reject_legacy_layout(model, payload):
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
 
 
 def test_manifest_contracts_are_strict():
@@ -314,6 +495,29 @@ def test_manifest_contracts_are_strict():
     )
     assert asset_manifest.search_report.search_triggered is False
     assert render_manifest.contact_sheet_path == "contact-sheet.png"
+    assert render_manifest.pages[0].template_family == "deep_teal"
+    assert render_manifest.pages[0].density == "standard"
+    assert render_manifest.pages[0].composition_variant == "diagnostic-1"
+
+
+def test_render_manifest_rejects_mixed_template_families():
+    pages = _render_pages()
+    pages[-1]["template_family"] = "soft_pink"
+
+    with pytest.raises(
+        ValidationError,
+        match="all rendered pages must use one template family",
+    ):
+        RenderManifest.model_validate(
+            {
+                "pages": pages,
+                "fonts": {"all_loaded": True, "computed_families": []},
+                "contact_sheet_path": "contact-sheet.png",
+                "contact_sheet_sha256": "f" * 64,
+                "contact_sheet_page_sha256": [page["sha256"] for page in pages],
+                "source_asset_sha256": {},
+            }
+        )
 
 
 def test_render_manifest_requires_durable_page_probe_and_artifact_evidence():

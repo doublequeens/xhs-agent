@@ -2,7 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .visual_plan import LayoutName, _validate_editorial_frame_layouts
+from .editorial_templates import DensityHint, PageArchetype
+from .visual_plan import _validate_page_archetypes
 
 
 class StrictModel(BaseModel):
@@ -35,7 +36,8 @@ class VisualSlot(StrictModel):
 class CarouselFrame(StrictModel):
     frame_id: str = Field(min_length=1, max_length=64)
     role: str = Field(min_length=1, max_length=48)
-    layout: LayoutName
+    page_archetype: PageArchetype
+    content_density_hint: DensityHint = "auto"
     headline: str = Field(min_length=1, max_length=80)
     kicker: str | None = Field(default=None, max_length=48)
     content_blocks: list[ContentBlock] = Field(max_length=8)
@@ -49,7 +51,7 @@ class CarouselPayload(StrictModel):
 
     @model_validator(mode="after")
     def require_editorial_frame_composition(self):
-        _validate_editorial_frame_layouts(self.storyboards)
+        _validate_page_archetypes(self.storyboards)
         slot_ids = [
             slot.slot_id for frame in self.storyboards for slot in frame.visual_slots
         ]

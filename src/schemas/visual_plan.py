@@ -2,7 +2,14 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .assets import AssetRequirement, LayoutName
+from .assets import AssetRequirement
+from .editorial_templates import (
+    Density,
+    PageArchetype,
+    TemplateFamily,
+    TemplateSelection,
+)
+from .narrative import NarrativeForm
 
 
 ContentJob = Literal[
@@ -19,17 +26,18 @@ VisualFamily = Literal[
     "comparison_decision",
     "saveable_reference",
 ]
-_SAVEABLE_LAYOUTS = frozenset({"saveable_checklist", "saveable_reference"})
+_SAVEABLE_ARCHETYPES = frozenset({"save", "checklist", "comparison"})
 
 
-def _validate_editorial_frame_layouts(frames) -> None:
-    layouts = [frame.layout for frame in frames]
-    if layouts[0] != "editorial_cover":
-        raise ValueError("first frame layout must be editorial_cover")
-    if len(set(layouts)) < 3:
-        raise ValueError("frame plan must use at least three distinct layouts")
-    if not _SAVEABLE_LAYOUTS.intersection(layouts):
-        raise ValueError("frame plan must include a saveable layout")
+def _validate_page_archetypes(frames) -> None:
+    if frames[0].page_archetype != "cover":
+        raise ValueError("first frame page_archetype must be cover")
+    if not any(
+        frame.page_archetype in _SAVEABLE_ARCHETYPES for frame in frames
+    ):
+        raise ValueError(
+            "frame plan must include a standalone saveable archetype"
+        )
 
 
 class StrictModel(BaseModel):
@@ -39,20 +47,22 @@ class StrictModel(BaseModel):
 class FramePlanItem(StrictModel):
     frame_id: str = Field(min_length=1, max_length=64)
     role: str = Field(min_length=1, max_length=48)
-    layout: LayoutName
+    page_archetype: PageArchetype
     purpose: str = Field(min_length=1, max_length=160)
+    allowed_density: list[Density] = Field(min_length=1, max_length=3)
     asset_roles: list[str] = Field(default_factory=list, max_length=4)
 
 
 class VisualPlan(StrictModel):
-    design_system: Literal["beauty_editorial_v1"]
+    design_system: Literal["beauty_editorial_v2"]
+    template_family: TemplateFamily
+    template_selection: TemplateSelection
+    narrative_form: NarrativeForm
     content_job: ContentJob
-    primary_visual_family: VisualFamily
-    supporting_families: list[VisualFamily] = Field(max_length=4)
     frame_plan: list[FramePlanItem] = Field(min_length=5, max_length=7)
     required_assets: list[AssetRequirement]
 
     @model_validator(mode="after")
     def require_editorial_frame_composition(self):
-        _validate_editorial_frame_layouts(self.frame_plan)
+        _validate_page_archetypes(self.frame_plan)
         return self

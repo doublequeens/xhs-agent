@@ -2,7 +2,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from .visual_plan import LayoutName
+from .editorial_templates import Density, PageArchetype, TemplateFamily
 
 
 class StrictModel(BaseModel):
@@ -56,7 +56,10 @@ class PageProbeAttestation(StrictModel):
 class RenderedPage(StrictModel):
     frame_id: str = Field(min_length=1, max_length=64)
     role: str = Field(min_length=1, max_length=48)
-    layout: LayoutName
+    page_archetype: PageArchetype
+    template_family: TemplateFamily
+    density: Density
+    composition_variant: str
     path: str = Field(min_length=1)
     width: Literal[1080]
     height: Literal[1440]
@@ -78,3 +81,10 @@ class RenderManifest(StrictModel):
         Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
     ] = Field(min_length=5, max_length=7)
     source_asset_sha256: dict[str, str]
+
+    @model_validator(mode="after")
+    def require_one_template_family(self):
+        families = {page.template_family for page in self.pages}
+        if len(families) != 1:
+            raise ValueError("all rendered pages must use one template family")
+        return self

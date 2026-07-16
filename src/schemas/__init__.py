@@ -25,7 +25,17 @@ from .assets import (
     AssetManifestItem,
     AssetRequirement,
     AssetSearchReport,
+    LayoutName,
     ProviderSearchReport,
+)
+from .editorial_templates import (
+    CopyMetrics,
+    Density,
+    DensityHint,
+    PageArchetype,
+    ResolvedVariant,
+    TemplateFamily,
+    TemplateSelection,
 )
 from .content_lock import ContentLock
 from .render_manifest import (
@@ -42,7 +52,7 @@ from .storyboard import (
     ContentBlock,
     VisualSlot,
 )
-from .visual_plan import ContentJob, FramePlanItem, LayoutName, VisualFamily, VisualPlan
+from .visual_plan import ContentJob, FramePlanItem, VisualFamily, VisualPlan
 from .render_qa import RenderQAIssue, RenderQAResult
 
 
@@ -66,6 +76,8 @@ __all__ = [
     "HashTagOutput",
     "CarouselFrame", "CarouselPayload", "ContentBlock", "VisualSlot",
     "ContentJob", "VisualFamily", "LayoutName", "FramePlanItem", "VisualPlan",
+    "TemplateFamily", "PageArchetype", "Density", "DensityHint",
+    "TemplateSelection", "CopyMetrics", "ResolvedVariant",
     "AssetRequirement", "AssetManifestItem", "AssetManifest",
     "ProviderSearchReport", "AssetSearchReport",
     "TextProbeResult", "AssetProbeResult", "PageProbeAttestation",

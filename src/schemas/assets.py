@@ -2,6 +2,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .editorial_templates import PageArchetype
+
 
 LayoutName = Literal[
     "editorial_cover",
@@ -25,7 +27,7 @@ class StrictModel(BaseModel):
 class AssetRequirement(StrictModel):
     slot_id: str = Field(min_length=1, max_length=64)
     role: str = Field(min_length=1, max_length=64)
-    layout: LayoutName
+    page_archetype: PageArchetype
     min_width: int = Field(ge=1)
     min_height: int = Field(ge=1)
     context_tags: list[str] = Field(default_factory=list, max_length=12)
@@ -54,7 +56,7 @@ class AssetSearchReport(StrictModel):
 class AssetManifestItem(StrictModel):
     slot_id: str = Field(min_length=1, max_length=64)
     role: str = Field(min_length=1, max_length=64)
-    layout: LayoutName
+    page_archetype: PageArchetype
     status: Literal["active", "pending_external", "fallback"]
     path: str = Field(min_length=1)
     asset_id: str | None = None
