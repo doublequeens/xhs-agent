@@ -1,0 +1,85 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"/>
+<style>
+@font-face{font-family:"Heavy";src:url("../../../assets/fonts/templates/Alibaba-PuHuiTi-Heavy.ttf") format("truetype");font-weight:800;}
+@font-face{font-family:"Sans";src:url("../../../assets/fonts/templates/HarmonyOS_Sans_SC_Regular.ttf") format("truetype");font-weight:400;}
+@font-face{font-family:"Bodoni";src:url("../../../assets/fonts/beauty-editorial-v1/BodoniModa-Regular.ttf") format("truetype");}
+:root{--pink:#F4A7BF;--red:#DC2333;--red-deep:#B01828;--ink:#2B0910;--cream:#FFF6F2;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{background:#ddd;font-family:"Sans";}
+.page{position:relative;width:1080px;height:1350px;overflow:hidden;margin:0 auto;display:flex;flex-direction:column;padding:74px 78px;}
+
+/* ===== COVER (pink bg) ===== */
+.cover{background:var(--pink);color:var(--red);justify-content:space-between;}
+.cover .topbar{display:flex;justify-content:space-between;font-size:22px;font-weight:800;letter-spacing:.22em;color:var(--red-deep);text-transform:uppercase;}
+.cover .topbar::before{content:"";position:absolute;left:78px;right:78px;top:118px;height:3px;background:var(--red-deep);opacity:.5;}
+.cover .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:18px;}
+.cover .icon{font-size:120px;line-height:1;}
+.cover .num{font-family:"Heavy";font-size:230px;line-height:.85;color:var(--red);letter-spacing:-.04em;}
+.cover .title{font-family:"Heavy";font-size:78px;line-height:1.1;color:var(--red);}
+.cover .sub{font-family:"Sans";font-size:34px;font-weight:800;color:var(--red-deep);}
+.cover .btn{align-self:center;margin-top:10px;display:inline-flex;align-items:center;gap:14px;background:var(--red);color:#fff;font-family:"Heavy";font-size:34px;padding:18px 44px;border-radius:999px;}
+.cover .foot{display:flex;justify-content:space-between;font-size:21px;font-weight:800;color:var(--red-deep);}
+.cover .foot::before{content:"";position:absolute;left:78px;right:78px;bottom:118px;height:3px;background:var(--red-deep);opacity:.5;}
+
+/* ===== INNER red bg (tip page) ===== */
+.tip-red{background:var(--red);color:#fff;}
+.tip-red .tag{font-family:"Heavy";font-size:30px;letter-spacing:.1em;color:#fff;opacity:.85;}
+.tip-red .big{font-family:"Heavy";font-size:170px;line-height:.9;color:#fff;}
+.tip-red .h{font-family:"Heavy";font-size:62px;line-height:1.2;color:#fff;margin-top:8px;}
+.tip-red .body{flex:1;display:flex;flex-direction:column;justify-content:center;gap:20px;}
+.tip-red .p{font-family:"Sans";font-size:36px;line-height:1.6;color:#fff;opacity:.95;max-width:820px;}
+.tip-red .keyrow{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;}
+.tip-red .key{font-size:28px;font-weight:800;background:rgba(255,255,255,.16);padding:12px 24px;border-radius:999px;}
+.tip-red .pg{align-self:flex-end;font-family:"Bodoni";font-size:34px;color:#fff;opacity:.8;}
+
+/* ===== INNER pink bg (white card) ===== */
+.tip-card{background:var(--pink);}
+.tip-card .wrap{flex:1;display:flex;align-items:center;}
+.tip-card .card{background:#fff;border-radius:28px;padding:60px 56px;width:100%;display:flex;flex-direction:column;gap:22px;box-shadow:0 12px 40px rgba(176,24,40,.18);}
+.tip-card .num{font-family:"Heavy";font-size:120px;line-height:.9;color:var(--red);}
+.tip-card .h{font-family:"Heavy";font-size:58px;line-height:1.2;color:var(--ink);}
+.tip-card .p{font-family:"Sans";font-size:35px;line-height:1.6;color:#5a3a40;}
+.tip-card .keys{display:flex;gap:14px;flex-wrap:wrap;}
+.tip-card .key{font-size:27px;font-weight:800;color:var(--red);background:#FDEDEF;padding:12px 24px;border-radius:999px;}
+.tip-card .pg{position:absolute;right:78px;bottom:60px;font-family:"Bodoni";font-size:34px;color:var(--red-deep);opacity:.7;}
+</style></head><body>
+
+<!-- 1-1 COVER -->
+<div class="page cover">
+  <div class="topbar"><span>MISTIPS</span><span>夏日护肤</span></div>
+  <div class="hero">
+    <div class="icon">💡</div>
+    <div class="num">5</div>
+    <div class="title">夏天护肤小习惯</div>
+    <div class="sub">油皮通勤族 · 早八急救指南</div>
+    <div class="btn">向右滑动 <span style="font-size:30px">→</span></div>
+  </div>
+  <div class="foot"><span>@成分党·文献派</span><span>科学护肤</span></div>
+</div>
+
+<!-- 1-2 TIP (red bg) -->
+<div class="page tip-red">
+  <div class="body">
+    <div class="tag">TIP 01</div>
+    <div class="big">01</div>
+    <div class="h">清晨温水洁面，别过度</div>
+    <div class="p">早上只用温水或极少量氨基酸洁面，保留夜间皮脂膜；过度清洁会让油皮越洗越油。</div>
+    <div class="keyrow"><span class="key">温水</span><span class="key">氨基酸</span><span class="key">≤30秒</span></div>
+  </div>
+  <div class="pg">02 / 05</div>
+</div>
+
+<!-- 1-3 TIP (pink bg + white card) -->
+<div class="page tip-card">
+  <div class="wrap">
+    <div class="card">
+      <div class="num">02</div>
+      <div class="h">防晒先行，等它成膜</div>
+      <div class="p">通勤紫外线最强，防晒是一切抗老的起点。涂完耐心等 2–3 分钟成膜，再上后续，不搓泥不斑驳。</div>
+      <div class="keys"><span class="key">SPF30+</span><span class="key">等成膜</span><span class="key">2–3分钟</span></div>
+    </div>
+  </div>
+  <div class="pg">03 / 05</div>
+</div>
+
+</body></html>
