@@ -178,6 +178,15 @@ def test_angle_prompt_requires_narrative_plan_and_cross_angle_form_variety():
     assert "至少使用两种不同 narrative_form" in prompt
 
 
+def test_assembler_prompt_uses_authoritative_narrative_plan_without_reclassification():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("assembler", get_domain_profile("beauty"))
+
+    assert "narrative_plan" in prompt
+    assert "storyboard_strategy" not in prompt
+
+
 @pytest.mark.parametrize(
     "task",
     [

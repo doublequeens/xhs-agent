@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
 from src.schemas import CarouselPayload
-from src.schemas.decision import DecisionOutput
+from src.schemas.decision import DecisionOutput, HashTagInput
 from src.schemas.draft import DraftItem
 from src.schemas.narrative import NarrativePlan
 from src.schemas.topic import TopicItem
@@ -89,6 +89,37 @@ def _narrative_plan():
         },
         closing_mode="reflection",
     )
+
+
+def _hashtag_input(**updates):
+    values = {
+        "final_title": "睡眠改善指南",
+        "final_md": "body",
+        "topic_id": "tp_001",
+        "topic": "睡眠改善",
+        "angle_id": "ag_001",
+        "angle": "睡眠策略",
+        "domain": "wellness",
+        "subdomain": "sleep",
+        "content_intent": "how_to",
+        "risk_level": "medium",
+        "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+        "target_group": "上班族",
+        "core_pain": "熬夜后疲惫",
+        "best_cover_copy": "cover",
+        "narrative_plan": _narrative_plan(),
+    }
+    values.update(updates)
+    return HashTagInput.model_validate(values)
+
+
+def _narrative_metadata():
+    narrative_plan = _narrative_plan().model_dump(mode="json")
+    return {
+        "narrative_plan": narrative_plan,
+        "narrative_form": narrative_plan["narrative_form"],
+        "closing_mode": narrative_plan["closing_mode"],
+    }
 
 
 def _visual_plan():
@@ -898,10 +929,29 @@ def test_decision_engine_raises_before_model_on_duplicate_topic(monkeypatch):
     assert calls["count"] == 0
 
 
-def test_assembler_overwrites_publish_package_metadata(monkeypatch):
+def test_assembler_injects_authoritative_narrative_metadata_and_ignores_model_strategy(
+    monkeypatch,
+):
     from src.nodes import node_o_assembler as module
 
     captured = {}
+    narrative_plan = NarrativePlan.model_validate(
+        {
+            "narrative_form": "comparison",
+            "beats": [
+                {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+                {"beat_id": "left", "kind": "comparison", "purpose": "说明常见做法"},
+                {"beat_id": "right", "kind": "comparison", "purpose": "说明推荐做法"},
+                {"beat_id": "boundary", "kind": "boundary", "purpose": "总结适用边界"},
+            ],
+            "saveable_beat": {
+                "beat_id": "right",
+                "kind": "comparison",
+                "purpose": "说明推荐做法",
+            },
+            "closing_mode": "boundary",
+        }
+    )
 
     class FakeModel:
         def execute(self, messages):
@@ -928,21 +978,10 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
         {
             "focus_keyword": "改善睡眠",
             "focus_keyword_cli_present": True,
-            "final_content": SimpleNamespace(
-                final_title="睡眠改善指南",
-                final_md="body",
-                topic_id="tp_001",
-                topic="睡眠改善",
-                angle_id="ag_001",
-                angle="睡眠策略",
-                target_group="上班族",
-                core_pain="熬夜后疲惫",
-                best_cover_copy="cover",
-                domain="wellness",
-                subdomain="sleep",
-                content_intent="how_to",
-                risk_level="medium",
-                risk_flags=["medical-adjacent", "sleep-adjacent"],
+            "final_content": _hashtag_input(
+                final_title="睡眠改善指南✨",
+                final_md="body ✨",
+                narrative_plan=narrative_plan,
             ),
             "hashtags": SimpleNamespace(hashtags=["#x"]),
             "trends": [_topic()],
@@ -966,10 +1005,14 @@ def test_assembler_overwrites_publish_package_metadata(monkeypatch):
     assert publish_package["target_group"] == "上班族"
     assert publish_package["core_pain"] == "熬夜后疲惫"
     assert publish_package["cover_copy"] == "cover"
-    assert publish_package["title"] == "睡眠改善指南"
-    assert publish_package["content"] == "body"
+    assert publish_package["title"] == "睡眠改善指南✨"
+    assert publish_package["content"] == "body ✨"
     assert publish_package["profile_version"] == "wellness-v1"
     assert publish_package["content_contract"] == _content_contract()
+    assert publish_package["narrative_plan"] == narrative_plan.model_dump(mode="json")
+    assert publish_package["narrative_form"] == "comparison"
+    assert publish_package["closing_mode"] == "boundary"
+    assert "storyboard_strategy" not in publish_package
     assert "image_final_choices" not in captured["human_prompt"]
 
 
@@ -1020,27 +1063,14 @@ def test_assembler_enforces_title_max_length_including_punctuation(monkeypatch):
                 "images": [],
                 "hashtags": ["#x"],
                 "notes": [],
-                "storyboard_strategy": "auto",
             }
 
     monkeypatch.setattr(module, "get_model", lambda: FakeModel())
 
     result = module.assembler_node(
         {
-            "final_content": SimpleNamespace(
+            "final_content": _hashtag_input(
                 final_title="1234567890123456789！超长标题",
-                final_md="body",
-                topic_id="tp_001",
-                topic="睡眠改善",
-                angle_id="ag_001",
-                angle="睡眠策略",
-                target_group="上班族",
-                core_pain="熬夜后疲惫",
-                best_cover_copy="cover",
-                domain="wellness",
-                subdomain="sleep",
-                content_intent="how_to",
-                risk_level="medium",
                 risk_flags=["medical-adjacent"],
             ),
             "hashtags": SimpleNamespace(hashtags=["#x"]),
@@ -1062,7 +1092,6 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
         def execute(self, _messages):
             return {
                 "notes": ["generated note"],
-                "storyboard_strategy": "generated",
                 "hashtags": ["#generated"],
             }
 
@@ -1070,20 +1099,10 @@ def test_assembler_reapplies_pending_metadata_without_reviving_r2_managed_copy(m
 
     result = module.assembler_node(
         {
-            "final_content": SimpleNamespace(
+            "final_content": _hashtag_input(
                 final_title="R2 修订后的标题",
                 final_md="R2 修订后的正文",
-                topic_id="tp_001",
-                topic="睡眠改善",
-                angle_id="ag_001",
-                angle="睡眠策略",
-                target_group="上班族",
-                core_pain="熬夜后疲惫",
                 best_cover_copy="R2 修订后的封面",
-                domain="wellness",
-                subdomain="sleep",
-                content_intent="how_to",
-                risk_level="medium",
                 risk_flags=["medical-adjacent"],
             ),
             "hashtags": SimpleNamespace(hashtags=["#generated"]),
@@ -1135,7 +1154,7 @@ def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(mo
         "images": [],
         "hashtags": ["#x"],
         "notes": ["note"],
-        "storyboard_strategy": "scenario_companion",
+        **_narrative_metadata(),
         "domain": "wellness",
         "profile_version": "wellness-v1",
         "subdomain": "sleep",
@@ -1168,7 +1187,9 @@ def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(mo
     assert merged_package["images"] == publish_package["images"]
     assert merged_package["hashtags"] == publish_package["hashtags"]
     assert merged_package["notes"] == publish_package["notes"]
-    assert merged_package["storyboard_strategy"] == publish_package["storyboard_strategy"]
+    assert merged_package["narrative_plan"] == publish_package["narrative_plan"]
+    assert merged_package["narrative_form"] == publish_package["narrative_form"]
+    assert merged_package["closing_mode"] == publish_package["closing_mode"]
     assert merged_package["domain"] == publish_package["domain"]
     assert merged_package["profile_version"] == publish_package["profile_version"]
     assert merged_package["subdomain"] == publish_package["subdomain"]
@@ -1317,7 +1338,7 @@ def test_storyboard_generator_rejects_invalid_payload_before_state_write(monkeyp
             "images": [],
             "hashtags": ["#x"],
             "notes": ["note"],
-            "storyboard_strategy": "scenario_companion",
+            **_narrative_metadata(),
             "domain": "wellness",
             "profile_version": "wellness-v1",
             "subdomain": "sleep",

@@ -92,6 +92,7 @@ def assembler_node(state: AgentState) -> AgentState:
 
     llm = get_model()
     publish_package_json = llm.execute(messages)
+    narrative_plan = final_content.narrative_plan.model_dump(mode="json")
     publish_package_json.update(
         {
             "focus_keyword": focus_keyword,
@@ -112,8 +113,12 @@ def assembler_node(state: AgentState) -> AgentState:
             "risk_level": _get_value(final_content, "risk_level"),
             "risk_flags": list(_get_value(final_content, "risk_flags") or []),
             "content_contract": content_contract,
+            "narrative_plan": narrative_plan,
+            "narrative_form": narrative_plan["narrative_form"],
+            "closing_mode": narrative_plan["closing_mode"],
         }
     )
+    publish_package_json.pop("storyboard_strategy", None)
     pending_patch = state.get("pending_human_publish_patch")
     if pending_patch:
         publish_package_json = merge_publish_package(

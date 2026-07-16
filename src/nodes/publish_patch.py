@@ -25,6 +25,9 @@ ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "content_intent",
     "risk_level",
     "risk_flags",
+    "narrative_plan",
+    "narrative_form",
+    "closing_mode",
 }
 
 
