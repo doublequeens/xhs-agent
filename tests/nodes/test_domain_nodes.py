@@ -32,6 +32,78 @@ def narrative_plan(narrative_form="scenario_story", *, closing_mode="reflection"
     )
 
 
+def invoke_angle_strategist_node(monkeypatch, *, narrative_forms):
+    from src.nodes import node_b_angle_strategist as module
+
+    class FakeModel:
+        def execute(self, _messages):
+            return [
+                {
+                    "topic_id": "tp_001",
+                    "topic": "睡前仪式",
+                    "target_group": "上班族",
+                    "core_pain": "入睡慢",
+                    "angles": [
+                        {
+                            "angle_id": f"ag_{index:03d}",
+                            "angle": f"角度 {index}",
+                            "opening_hook": "今晚先别急着改变全部习惯",
+                            "value_promise": "找到一个可执行的睡前调整",
+                            "suggested_structure": "从具体场景展开并给出边界清晰的建议",
+                            "narrative_plan": narrative_plan(
+                                narrative_form
+                            ).model_dump(mode="json"),
+                        }
+                        for index, narrative_form in enumerate(
+                            narrative_forms,
+                            start=1,
+                        )
+                    ],
+                }
+            ]
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+    return module.angle_strategist_node(
+        {
+            "trends": [],
+            "domain_context": {
+                "domain": "wellness",
+                "profile_version": "wellness-v1",
+            },
+            "content_policy": {},
+        }
+    )
+
+
+def test_angle_strategist_rejects_one_repeated_narrative_form(monkeypatch):
+    with pytest.raises(
+        ValueError,
+        match="at least two distinct narrative forms",
+    ):
+        invoke_angle_strategist_node(
+            monkeypatch,
+            narrative_forms=["scenario_story"] * 3,
+        )
+
+
+def test_angle_strategist_accepts_two_narrative_forms_across_three_angles(
+    monkeypatch,
+):
+    result = invoke_angle_strategist_node(
+        monkeypatch,
+        narrative_forms=[
+            "scenario_story",
+            "cognitive_correction",
+            "scenario_story",
+        ],
+    )
+
+    assert {
+        angle.narrative_plan.narrative_form
+        for angle in result["angles"][0].angles
+    } == {"scenario_story", "cognitive_correction"}
+
+
 def invoke_outline_node(monkeypatch, *, narrative, model_narrative=None):
     from src.nodes import node_d_outline_architect as module
 

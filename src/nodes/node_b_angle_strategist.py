@@ -46,4 +46,14 @@ def angle_strategist_node(state: AgentState) -> AgentState:
         angle_strategies = []
         raise RuntimeError(f"Process terminated due to error: {e}")
 
+    for strategy in angle_strategies:
+        narrative_forms = {
+            angle.narrative_plan.narrative_form for angle in strategy.angles
+        }
+        if len(narrative_forms) < 2:
+            raise ValueError(
+                "angle_strategist requires at least two distinct narrative forms "
+                "across each three-angle strategy"
+            )
+
     return {"angles": angle_strategies}
