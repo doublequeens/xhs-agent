@@ -1,12 +1,16 @@
 from pydantic import BaseModel, Field
 from typing import List
 
+from .narrative import NarrativePlan
+
+
 class ContentAngle(BaseModel):
     angle_id: str
     angle: str
     opening_hook: str
     value_promise: str
     suggested_structure: str
+    narrative_plan: NarrativePlan
 
 class AngleStrategy(BaseModel):
     topic_id: str

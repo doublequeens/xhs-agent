@@ -1,4 +1,11 @@
 from .agent_state import AgentState
+from .narrative import (
+    ClosingMode,
+    NarrativeBeat,
+    NarrativeBeatKind,
+    NarrativeForm,
+    NarrativePlan,
+)
 from .topic import TopicItem
 from .angle import AngleStrategy, ContentAngle
 from .virality_score import ScoreBreakdown, ScoreResult
@@ -41,6 +48,7 @@ from .render_qa import RenderQAIssue, RenderQAResult
 
 __all__ = [
     "AgentState",
+    "NarrativeForm", "NarrativeBeatKind", "ClosingMode", "NarrativeBeat", "NarrativePlan",
     "TopicItem",
     "AngleStrategy", "ContentAngle",
     "MatchedHistoryItem", "MemorySignalResult", "NoveltyCheckResult", "NoveltyCheckResults", "NoveltyMatches"

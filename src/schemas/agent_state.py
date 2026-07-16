@@ -23,6 +23,7 @@ from .topic_signal import CreativeBrief, TopicGenerationTrace, TopicSignal
 from .assets import AssetManifest
 from .render_manifest import RenderManifest
 from .visual_plan import VisualPlan
+from .narrative import NarrativePlan
 
 class AgentState(TypedDict):
     trends_num: int
@@ -50,6 +51,7 @@ class AgentState(TypedDict):
     drafts: List[DraftItem]
     title_options: List[DraftTitles]
     title_winner: TitleWinner
+    selected_narrative_plan: NotRequired[Optional[NarrativePlan]]
     current_node: Optional[str]
     decision_output: DecisionOutput
     r1_output: R1Output

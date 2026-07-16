@@ -1,6 +1,9 @@
 from pydantic import BaseModel, Field
 from typing import List
 
+from .narrative import NarrativePlan
+
+
 class ScoreBreakdown(BaseModel):
     click_potential: int
     save_value: int
@@ -28,3 +31,4 @@ class ScoreResult(BaseModel):
     opening_hook: str
     value_promise: str
     suggested_structure: str
+    narrative_plan: NarrativePlan

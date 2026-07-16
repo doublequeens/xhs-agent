@@ -3,6 +3,9 @@ import string
 from pydantic import BaseModel, Field
 from typing import List
 
+from .narrative import NarrativePlan
+
+
 class MatchedHistoryItem(BaseModel):
     content_id: str
     topic: str
@@ -35,6 +38,7 @@ class NoveltyCheckResult(BaseModel):
     opening_hook: str
     value_promise: str
     suggested_structure: str
+    narrative_plan: NarrativePlan
 
     decision: str
     novelty_score: float

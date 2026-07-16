@@ -1,5 +1,8 @@
 from pydantic import BaseModel
 
+from .narrative import NarrativePlan
+
+
 class DraftItem(BaseModel):
     draft_id: str
     draft_md: str
@@ -9,3 +12,4 @@ class DraftItem(BaseModel):
     angle: str
     target_group: str
     core_pain: str
+    narrative_plan: NarrativePlan

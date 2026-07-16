@@ -5,6 +5,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.domain.models import ContentIntent, DomainName, RiskLevel
 from src.schemas.assets import LayoutName
 
+from .narrative import NarrativePlan
+
+
 class SingleTask(BaseModel):
     task_id: str
     source: str
@@ -34,6 +37,7 @@ class ContentCandidate(BaseModel):
     angle: str
     target_group: str
     core_pain: str
+    narrative_plan: NarrativePlan
     storyboard_visible_text: List["StoryboardVisibleText"] = Field(default_factory=list)
 
 class RevisionMeta(BaseModel):
@@ -73,6 +77,7 @@ class R2ContentSnapShoot(BaseModel):
     target_group: str
     core_pain: str
     best_cover_copy: str
+    narrative_plan: NarrativePlan
     storyboard_visible_text: List[StoryboardVisibleText] = Field(default_factory=list)
 
 class R2Input(BaseModel):
@@ -95,6 +100,7 @@ class HashTagInput(BaseModel):
     target_group: str
     core_pain: str
     best_cover_copy: str
+    narrative_plan: NarrativePlan
 
 class NormalizedInput(BaseModel):
     r1_input: Optional[R1Input] = None

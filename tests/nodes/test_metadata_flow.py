@@ -5,6 +5,8 @@ from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
 from src.schemas import CarouselPayload
+from src.schemas.narrative import NarrativePlan
+from src.schemas.title_ranker import TitleWinner
 from src.schemas.topic import TopicItem
 
 
@@ -68,6 +70,24 @@ def _domain_context():
 
 def _content_policy():
     return build_content_policy(get_domain_profile("wellness"), risk_level="medium").model_dump()
+
+
+def _narrative_plan():
+    return NarrativePlan(
+        narrative_form="scenario_story",
+        beats=[
+            {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+            {"beat_id": "scene", "kind": "scene", "purpose": "呈现具体场景"},
+            {"beat_id": "reveal", "kind": "reveal", "purpose": "揭示关键发现"},
+            {"beat_id": "lesson", "kind": "summary", "purpose": "总结可保存结论"},
+        ],
+        saveable_beat={
+            "beat_id": "lesson",
+            "kind": "summary",
+            "purpose": "总结可保存结论",
+        },
+        closing_mode="reflection",
+    )
 
 
 def _visual_plan():
@@ -342,6 +362,7 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
     from src.nodes import node_j_decision_engine as module
 
     captured = {}
+    narrative_plan = _narrative_plan()
 
     class FakeModel:
         def execute(self, messages):
@@ -364,6 +385,7 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
                         "target_group": "wrong-group",
                         "core_pain": "wrong-pain",
                         "best_cover_copy": "wrong-cover",
+                        "narrative_plan": narrative_plan.model_dump(mode="json"),
                     }
                 },
             }
@@ -382,6 +404,7 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
                     target_group="上班族",
                     core_pain="熬夜后疲惫",
                     best_cover_copy="cover",
+                    narrative_plan=narrative_plan,
                 )
             ),
             "trends": [_topic()],
@@ -405,6 +428,85 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
     assert hashtag_input.target_group == "上班族"
     assert hashtag_input.core_pain == "熬夜后疲惫"
     assert hashtag_input.best_cover_copy == "cover"
+    assert hashtag_input.narrative_plan == narrative_plan
+
+
+def test_title_ranker_decision_hashtag_preserves_narrative_plan(monkeypatch):
+    from src.nodes import node_j_decision_engine as decision_module
+    from src.nodes import node_k_hashtag_seo as hashtag_module
+
+    narrative_plan = _narrative_plan()
+    winner = TitleWinner(
+        draft_id="draft_001",
+        draft_md="content",
+        best_title="睡眠改善指南",
+        best_title_id="title_001",
+        safer_title="睡眠习惯参考",
+        safer_title_id="title_002",
+        best_cover_copy="cover",
+        why_win=["场景明确"],
+        must_fix_if_selected=[],
+        optional_improvements=[],
+        topic_id="tp_001",
+        topic="睡眠改善",
+        angle_id="ag_001",
+        angle="睡眠策略",
+        target_group="上班族",
+        core_pain="熬夜后疲惫",
+        narrative_plan=narrative_plan,
+    )
+
+    class DecisionModel:
+        def execute(self, _messages):
+            return {
+                "next_node": "HASHTAG_SEO",
+                "normalized_input": {
+                    "hashtag_input": {
+                        "final_title": winner.best_title,
+                        "final_md": winner.draft_md,
+                        "topic_id": winner.topic_id,
+                        "angle_id": winner.angle_id,
+                        "topic": winner.topic,
+                        "angle": winner.angle,
+                        "domain": "wellness",
+                        "subdomain": "sleep",
+                        "content_intent": "how_to",
+                        "risk_level": "medium",
+                        "risk_flags": ["medical-adjacent", "sleep-adjacent"],
+                        "target_group": winner.target_group,
+                        "core_pain": winner.core_pain,
+                        "best_cover_copy": winner.best_cover_copy,
+                        "narrative_plan": winner.narrative_plan.model_dump(mode="json"),
+                    }
+                },
+            }
+
+    monkeypatch.setattr(decision_module, "get_model", lambda: DecisionModel())
+    decision_result = decision_module.decision_engine_node(
+        {
+            "current_node": "TITLE_RANKER",
+            "title_winner": winner,
+            "trends": [_topic()],
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+        }
+    )
+
+    monkeypatch.setattr(
+        hashtag_module,
+        "get_model",
+        lambda: SimpleNamespace(execute=lambda _messages: {"hashtags": ["#睡眠改善"]}),
+    )
+    result = hashtag_module.hashtag_node(
+        {
+            **decision_result,
+            "domain_context": _domain_context(),
+            "content_policy": _content_policy(),
+        }
+    )
+
+    assert result["final_content"].narrative_plan.narrative_form == "scenario_story"
+    assert result["final_content"].narrative_plan.saveable_beat.beat_id == "lesson"
 
 
 def test_decision_engine_raises_before_model_when_topic_missing(monkeypatch):

@@ -1,6 +1,9 @@
 from pydantic import BaseModel
 from typing import List, Optional
 
+from .narrative import NarrativePlan
+
+
 class TitleScore(BaseModel):
     click_score: float
     save_score: float
@@ -47,6 +50,7 @@ class TitleWinner(BaseModel):
     angle: str
     target_group: str
     core_pain: str
+    narrative_plan: NarrativePlan
 
 class TitleRankResult(BaseModel):
     ranking: List[TitleRankItem]
