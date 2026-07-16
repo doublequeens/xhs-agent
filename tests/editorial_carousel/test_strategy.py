@@ -1,8 +1,10 @@
 from copy import deepcopy
 
 import pytest
+from pydantic import ValidationError
 
 from src.schemas.content_contract import ContentContract
+from src.schemas.narrative import NarrativePlan
 
 
 FAMILY_BY_JOB = {
@@ -13,54 +15,81 @@ FAMILY_BY_JOB = {
     "understand_and_notice": "beauty_editorial",
 }
 
-EXPECTED_RECIPES = {
-    "diagnose_and_adjust": (
-        ("cover", "editorial_cover", "beauty_subject"),
-        ("baseline", "texture_baseline", "product_texture"),
-        ("applicable_case", "front_face_zone", "face_map"),
-        ("zone_adjustment", "three_quarter_face_zone", "face_map"),
-        ("feedback_diagnosis", "three_state_diagnostic", "comparison"),
-        ("save", "saveable_reference", "reference"),
+SUBJECT_BY_JOB = {
+    "diagnose_and_adjust": "face_map",
+    "follow_steps": "process",
+    "compare_and_choose": "product_cutout",
+    "save_and_check": "checklist",
+    "understand_and_notice": "serum_texture",
+}
+
+BEATS_BY_FORM = {
+    "cognitive_correction": (
+        ("hook", "hook"),
+        ("mistake", "misconception"),
+        ("reveal", "reveal"),
+        ("action", "action"),
     ),
-    "follow_steps": (
-        ("cover", "editorial_cover", "beauty_subject"),
-        ("sequence", "step_timeline", "process"),
-        ("routine", "morning_evening_flow", "process"),
-        ("decision", "decision_tree", "comparison"),
-        ("save", "saveable_checklist", "reference"),
+    "step_tutorial": (
+        ("hook", "hook"),
+        ("scene", "scene"),
+        ("steps", "steps"),
+        ("diagnostic", "diagnostic"),
+        ("explanation", "explanation"),
+        ("action", "action"),
     ),
-    "compare_and_choose": (
-        ("cover", "editorial_cover", "beauty_subject"),
-        ("comparison", "left_right_comparison", "comparison"),
-        ("feedback_diagnosis", "three_state_diagnostic", "comparison"),
-        ("decision", "decision_tree", "comparison"),
-        ("save", "saveable_reference", "reference"),
+    "checklist_collection": (
+        ("hook", "hook"),
+        ("principle", "principle"),
+        ("checklist", "checklist"),
+        ("example", "example"),
+        ("action", "action"),
     ),
-    "save_and_check": (
-        ("cover", "editorial_cover", "beauty_subject"),
-        ("checklist", "saveable_checklist", "reference"),
-        ("decision", "decision_tree", "comparison"),
-        ("comparison", "left_right_comparison", "comparison"),
-        ("save", "saveable_reference", "reference"),
+    "comparison": (
+        ("hook", "hook"),
+        ("left-right", "comparison"),
+        ("diagnostic", "diagnostic"),
+        ("boundary", "boundary"),
+        ("action", "action"),
     ),
-    "understand_and_notice": (
-        ("cover", "editorial_cover", "beauty_subject"),
-        ("baseline", "texture_baseline", "product_texture"),
-        ("observation", "three_state_diagnostic", "comparison"),
-        ("method", "step_timeline", "process"),
-        ("save", "saveable_reference", "reference"),
+    "diagnostic_qa": (
+        ("hook", "hook"),
+        ("diagnostic", "diagnostic"),
+        ("question", "qa"),
+        ("explanation", "explanation"),
+        ("action", "action"),
+    ),
+    "scenario_story": (
+        ("hook", "hook"),
+        ("scene", "scene"),
+        ("tension", "tension"),
+        ("example", "example"),
+        ("action", "action"),
+    ),
+    "story_reversal": (
+        ("hook", "hook"),
+        ("scene", "scene"),
+        ("tension", "tension"),
+        ("reveal", "reveal"),
+        ("action", "action"),
+    ),
+    "reflective_editorial": (
+        ("hook", "hook"),
+        ("quote", "quote"),
+        ("principle", "principle"),
+        ("reflection", "explanation"),
+        ("action", "action"),
     ),
 }
 
 
-def contract_for(job: str) -> ContentContract:
-    subject_by_job = {
-        "diagnose_and_adjust": "face_map",
-        "follow_steps": "process",
-        "compare_and_choose": "product_cutout",
-        "save_and_check": "checklist",
-        "understand_and_notice": "serum_texture",
-    }
+def contract_for(
+    job: str,
+    *,
+    proof_mode: str = "diagram",
+    recommended_frame_count: int = 6,
+    primary_visual_family: str | None = None,
+) -> ContentContract:
     return ContentContract(
         audience="通勤护肤人群",
         trigger_situation="早上需要快速完成护肤",
@@ -70,224 +99,227 @@ def contract_for(job: str) -> ContentContract:
         proof_asset="结构化对照证据",
         visual_mode="text_plus_real_proof",
         content_job=job,
-        primary_visual_family=FAMILY_BY_JOB[job],
-        primary_visual_subject=subject_by_job[job],
-        proof_mode="diagram",
-        recommended_frame_count=6,
+        primary_visual_family=(
+            primary_visual_family or FAMILY_BY_JOB[job]
+        ),
+        primary_visual_subject=SUBJECT_BY_JOB[job],
+        proof_mode=proof_mode,
+        recommended_frame_count=recommended_frame_count,
     )
 
 
-@pytest.mark.parametrize("job,family", FAMILY_BY_JOB.items())
-def test_strategy_maps_content_job_to_family(job, family):
-    from src.editorial_carousel.strategy import build_visual_plan
-
-    plan = build_visual_plan(contract_for(job), recent_signatures=[])
-
-    assert plan.content_job == job
-    assert plan.primary_visual_family == family
-    assert plan.frame_plan[0].layout == "editorial_cover"
-    assert 5 <= len(plan.frame_plan) <= 7
-    assert len({frame.layout for frame in plan.frame_plan}) >= 3
-    assert any(
-        frame.layout in {"saveable_checklist", "saveable_reference"}
-        for frame in plan.frame_plan
-    )
-    assert len(plan.required_assets) == len(plan.frame_plan)
-    assert [requirement.layout for requirement in plan.required_assets] == [
-        frame.layout for frame in plan.frame_plan
+def narrative_plan_for(form: str, *, beat_count: int | None = None) -> NarrativePlan:
+    beat_values = list(BEATS_BY_FORM[form])
+    if beat_count is not None:
+        if beat_count > len(beat_values):
+            beat_values.extend(
+                (f"extra-{index}", "explanation")
+                for index in range(len(beat_values) + 1, beat_count + 1)
+            )
+        beat_values = beat_values[:beat_count]
+    beats = [
+        {
+            "beat_id": beat_id,
+            "kind": kind,
+            "purpose": f"完成{beat_id}的叙事任务",
+        }
+        for beat_id, kind in beat_values
     ]
+    return NarrativePlan.model_validate(
+        {
+            "narrative_form": form,
+            "beats": beats,
+            "saveable_beat": beats[-1],
+            "closing_mode": "action_prompt",
+        }
+    )
 
 
-def test_recipes_preserve_the_exact_task_2_semantic_contract():
-    from src.editorial_carousel.strategy import RECIPES
+def publish_package_for(
+    contract: ContentContract,
+    narrative_plan: NarrativePlan,
+    *,
+    content: str = "正文",
+) -> dict:
+    return {
+        "topic_id": "topic-001",
+        "angle_id": "angle-001",
+        "title": "分区护肤指南",
+        "content": content,
+        "content_contract": contract.model_dump(mode="json"),
+        "narrative_plan": narrative_plan.model_dump(mode="json"),
+    }
 
-    assert RECIPES == EXPECTED_RECIPES
 
+@pytest.mark.parametrize(
+    "form",
+    [
+        "cognitive_correction",
+        "step_tutorial",
+        "checklist_collection",
+        "comparison",
+        "diagnostic_qa",
+        "scenario_story",
+        "story_reversal",
+        "reflective_editorial",
+    ],
+)
+def test_public_planner_builds_a_strict_v2_plan_for_every_narrative_form(form):
+    from src.editorial_carousel import build_visual_plan
 
-def test_zone_strategy_produces_the_six_spec_semantic_roles():
-    from src.editorial_carousel.strategy import build_visual_plan
-
+    contract = contract_for("understand_and_notice", proof_mode="none")
+    narrative_plan = narrative_plan_for(form)
     plan = build_visual_plan(
-        contract_for("diagnose_and_adjust"), recent_signatures=[]
+        contract,
+        narrative_plan,
+        publish_package_for(contract, narrative_plan),
+        recent_signatures=[],
     )
 
-    assert [
-        (frame.role, frame.layout, frame.asset_roles)
+    assert plan.design_system == "beauty_editorial_v2"
+    assert plan.narrative_form == form
+    assert plan.template_family == plan.template_selection.template_family
+    assert len(plan.frame_plan) == 6
+    assert plan.frame_plan[0].page_archetype == "cover"
+    assert any(
+        frame.page_archetype in {"save", "checklist", "comparison"}
         for frame in plan.frame_plan
-    ] == [
-        ("cover", "editorial_cover", ["beauty_subject"]),
-        ("baseline", "texture_baseline", ["product_texture"]),
-        ("applicable_case", "front_face_zone", ["face_map"]),
-        ("zone_adjustment", "three_quarter_face_zone", ["face_map"]),
-        ("feedback_diagnosis", "three_state_diagnostic", ["comparison"]),
-        ("save", "saveable_reference", ["reference"]),
+    )
+    assert plan.required_assets == []
+
+
+@pytest.mark.parametrize(
+    ("recommended_count", "beat_count", "expected_count"),
+    [(5, 4, 5), (5, 7, 7), (7, 4, 7)],
+)
+def test_page_count_comes_only_from_contract_and_narrative_beats(
+    recommended_count: int,
+    beat_count: int,
+    expected_count: int,
+):
+    from src.editorial_carousel.planner import build_visual_plan
+
+    narrative_plan = narrative_plan_for("step_tutorial", beat_count=beat_count)
+    contract = contract_for(
+        "follow_steps",
+        proof_mode="none",
+        recommended_frame_count=recommended_count,
+    )
+    package = publish_package_for(contract, narrative_plan)
+
+    plan = build_visual_plan(contract, narrative_plan, package, [])
+
+    assert len(plan.frame_plan) == expected_count
+
+
+def test_primary_visual_family_does_not_change_page_count_or_archetypes():
+    from src.editorial_carousel.planner import build_visual_plan
+
+    narrative_plan = narrative_plan_for("comparison")
+    first_contract = contract_for(
+        "compare_and_choose",
+        proof_mode="none",
+        primary_visual_family="comparison_decision",
+    )
+    second_contract = contract_for(
+        "compare_and_choose",
+        proof_mode="none",
+        primary_visual_family="beauty_editorial",
+    )
+    package = publish_package_for(first_contract, narrative_plan)
+
+    first = build_visual_plan(first_contract, narrative_plan, package, [])
+    second = build_visual_plan(second_contract, narrative_plan, package, [])
+
+    assert [frame.page_archetype for frame in first.frame_plan] == [
+        frame.page_archetype for frame in second.frame_plan
     ]
 
 
-@pytest.mark.parametrize("job", FAMILY_BY_JOB)
-def test_strategy_uses_asset_specific_profiles_and_explicit_valid_fallbacks(job):
-    from src.editorial_carousel.strategy import build_visual_plan
+def test_exact_recent_blueprint_signature_changes_an_equal_ranked_blueprint():
+    from src.editorial_carousel.planner import build_visual_plan
 
-    plan = build_visual_plan(contract_for(job), recent_signatures=[])
-    profiles = {
-        requirement.layout: (
-            requirement.role,
-            requirement.min_width,
-            requirement.min_height,
-            requirement.orientation,
-            requirement.fallback_asset_ids,
-        )
-        for requirement in plan.required_assets
-    }
-
-    expected_by_layout = {
-        "editorial_cover": ("background_token", 1080, 1440, "portrait", []),
-        "texture_baseline": (
-            "serum_texture",
-            512,
-            512,
-            "square",
-            ["liquid_drips"],
-        ),
-        "front_face_zone": (
-            "face_angle",
-            512,
-            512,
-            "square",
-            ["mask_chin"],
-        ),
-        "three_quarter_face_zone": (
-            "face_zone_mask",
-            512,
-            512,
-            "square",
-            ["face_front"],
-        ),
-        "step_timeline": ("line_token", 1080, 300, "landscape", []),
-        "morning_evening_flow": ("pump_shape", 512, 512, "square", []),
-        "left_right_comparison": ("skin_detail", 512, 512, "square", []),
-        "three_state_diagnostic": ("skin_detail", 512, 512, "square", []),
-        "decision_tree": ("container_shape", 512, 512, "square", []),
-        "saveable_checklist": (
-            "background_token",
-            1080,
-            1440,
-            "portrait",
-            [],
-        ),
-        "saveable_reference": (
-            "background_token",
-            1080,
-            1440,
-            "portrait",
-            [],
-        ),
-    }
-
-    assert profiles == {
-        layout: expected_by_layout[layout]
-        for layout in profiles
-    }
-
-
-@pytest.mark.parametrize(
-    "job",
-    [
-        "follow_steps",
-        "compare_and_choose",
-        "save_and_check",
+    narrative_plan = narrative_plan_for("cognitive_correction")
+    contract = contract_for(
         "understand_and_notice",
-    ],
-)
-def test_non_zone_recipes_use_the_smallest_schema_valid_frame_count(job):
-    from src.editorial_carousel.strategy import build_visual_plan
-
-    plan = build_visual_plan(contract_for(job), recent_signatures=[])
-
-    assert len(plan.frame_plan) == 5
-
-
-def test_recent_identical_signature_never_changes_diagnostic_recipe():
-    from src.editorial_carousel.strategy import build_visual_plan
-
-    contract = contract_for("diagnose_and_adjust")
-    original = build_visual_plan(contract, recent_signatures=[])
-    signature = tuple(
-        (frame.role, frame.layout) for frame in original.frame_plan
+        proof_mode="none",
+        recommended_frame_count=5,
     )
-
-    repeated = build_visual_plan(contract, recent_signatures=[signature])
-
-    assert repeated.frame_plan == original.frame_plan
-    assert repeated.frame_plan[4].layout == "three_state_diagnostic"
-
-
-@pytest.mark.parametrize(
-    ("job", "changed_index", "alternative_layout"),
-    [
-        ("follow_steps", 2, "step_timeline"),
-        ("compare_and_choose", 2, "decision_tree"),
-        ("save_and_check", 2, "step_timeline"),
-        ("understand_and_notice", 3, "morning_evening_flow"),
-    ],
-)
-def test_recent_signature_changes_only_the_auxiliary_layout(
-    job, changed_index, alternative_layout
-):
-    from src.editorial_carousel.strategy import build_visual_plan
-
-    contract = contract_for(job)
-    original = build_visual_plan(contract, recent_signatures=[])
-    signature = tuple(
-        (frame.role, frame.layout) for frame in original.frame_plan
-    )
-
-    alternative = build_visual_plan(contract, recent_signatures=[signature])
-    repeated = build_visual_plan(contract, recent_signatures=[signature])
-
-    assert alternative.content_job == original.content_job
-    assert alternative.primary_visual_family == original.primary_visual_family
-    assert alternative.frame_plan != original.frame_plan
-    assert alternative.frame_plan == repeated.frame_plan
-    assert alternative.frame_plan[changed_index].layout == alternative_layout
-    assert (
-        alternative.frame_plan[changed_index].asset_roles
-        == original.frame_plan[changed_index].asset_roles
-    )
-
-
-def test_legacy_hydration_is_explicit_and_preserves_supplied_values():
-    from src.editorial_carousel.legacy import hydrate_legacy_content_contract
-
-    raw = {
-        "visual_mode": "comparison_table",
-        "primary_visual_subject": "process",
+    package = publish_package_for(contract, narrative_plan)
+    original = build_visual_plan(contract, narrative_plan, package, [])
+    original_archetypes = [
+        frame.page_archetype for frame in original.frame_plan
+    ]
+    signature = {
+        "narrative_form": narrative_plan.narrative_form,
+        "frame_plan_signature": original_archetypes,
+        "frame_count": len(original_archetypes),
     }
 
-    hydrated = hydrate_legacy_content_contract(raw)
+    repeated = build_visual_plan(
+        contract,
+        narrative_plan,
+        package,
+        [signature],
+    )
 
-    assert hydrated == {
-        "visual_mode": "comparison_table",
-        "content_job": "save_and_check",
-        "primary_visual_family": "saveable_reference",
-        "primary_visual_subject": "process",
-        "proof_mode": "comparison",
-        "recommended_frame_count": 6,
+    assert [frame.page_archetype for frame in repeated.frame_plan] != (
+        original_archetypes
+    )
+    assert len(repeated.frame_plan) == len(original.frame_plan) == 5
+
+
+def test_required_assets_are_empty_for_none_and_only_bind_matching_proof_pages():
+    from src.editorial_carousel.planner import build_visual_plan
+
+    narrative_plan = narrative_plan_for("comparison")
+    no_proof = contract_for("compare_and_choose", proof_mode="none")
+    comparison_proof = contract_for(
+        "compare_and_choose",
+        proof_mode="comparison",
+    )
+    package = publish_package_for(comparison_proof, narrative_plan)
+
+    pure_text_plan = build_visual_plan(no_proof, narrative_plan, package, [])
+    proof_plan = build_visual_plan(
+        comparison_proof,
+        narrative_plan,
+        package,
+        [],
+    )
+
+    assert pure_text_plan.required_assets == []
+    assert proof_plan.required_assets
+    proof_frames = {
+        frame.frame_id: frame
+        for frame in proof_plan.frame_plan
+        if "comparison" in frame.asset_roles
     }
-    assert raw == {
-        "visual_mode": "comparison_table",
-        "primary_visual_subject": "process",
-    }
+    assert {
+        requirement.slot_id.removesuffix("-comparison")
+        for requirement in proof_plan.required_assets
+    } == set(proof_frames)
+    assert all(
+        requirement.page_archetype
+        == proof_frames[
+            requirement.slot_id.removesuffix("-comparison")
+        ].page_archetype
+        for requirement in proof_plan.required_assets
+    )
 
 
-def test_strategy_does_not_hydrate_incomplete_new_contracts():
-    from pydantic import ValidationError
+def test_public_planner_does_not_hydrate_incomplete_new_contracts():
+    from src.editorial_carousel.planner import build_visual_plan
 
-    from src.editorial_carousel.strategy import build_visual_plan
-
-    raw = contract_for("save_and_check").model_dump(mode="json")
-    incomplete = deepcopy(raw)
+    narrative_plan = narrative_plan_for("checklist_collection")
+    contract = contract_for("save_and_check")
+    incomplete = deepcopy(contract.model_dump(mode="json"))
     incomplete.pop("content_job")
 
     with pytest.raises(ValidationError):
-        build_visual_plan(incomplete, recent_signatures=[])
+        build_visual_plan(
+            incomplete,
+            narrative_plan,
+            publish_package_for(contract, narrative_plan),
+            [],
+        )

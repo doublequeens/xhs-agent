@@ -4,16 +4,30 @@ import pytest
 from pydantic import ValidationError
 
 from src.schemas.content_contract import ContentContract
-from tests.editorial_carousel.test_strategy import contract_for
+from src.schemas.narrative import NarrativePlan
+from tests.editorial_carousel.test_strategy import (
+    contract_for,
+    narrative_plan_for,
+    publish_package_for,
+)
 
 
-def _state(contract: ContentContract | dict | None = None) -> dict:
+def _state(
+    contract: ContentContract | dict | None = None,
+    narrative_plan: NarrativePlan | dict | None = None,
+) -> dict:
+    resolved_contract = contract or contract_for(
+        "diagnose_and_adjust",
+        proof_mode="none",
+    )
+    resolved_narrative = narrative_plan or narrative_plan_for("diagnostic_qa")
+    validated_contract = ContentContract.model_validate(resolved_contract)
+    validated_narrative = NarrativePlan.model_validate(resolved_narrative)
     return {
-        "publish_package": {
-            "topic_id": "topic-001",
-            "title": "分区护肤指南",
-            "content_contract": contract or contract_for("diagnose_and_adjust"),
-        },
+        "publish_package": publish_package_for(
+            validated_contract,
+            validated_narrative,
+        ),
         "evidence_briefs": {
             "topic-001": SimpleNamespace(items=[], unsupported_claims=[])
         },
@@ -40,44 +54,64 @@ def test_visual_strategy_planner_builds_plan_from_final_publish_package():
     assert result["editorial_workflow_version"] == "modern_v2"
     assert result["legacy_editorial_checkpoint"] is False
     assert result["visual_plan"].content_job == "diagnose_and_adjust"
-    assert result["visual_plan"].primary_visual_family == "face_zone_map"
+    assert result["visual_plan"].narrative_form == "diagnostic_qa"
+    assert result["visual_plan"].design_system == "beauty_editorial_v2"
 
 
-def test_visual_strategy_planner_uses_recent_published_frame_plan_signatures():
-    from src.editorial_carousel.strategy import build_visual_plan
+def test_visual_strategy_planner_uses_recent_visual_signatures():
     from src.nodes.node_p_visual_strategy_planner import (
         visual_strategy_planner_node,
     )
 
-    contract = contract_for("follow_steps")
-    original = build_visual_plan(contract, recent_signatures=[])
-    signature = [
-        [frame.role, frame.layout]
-        for frame in original.frame_plan
-    ]
-    state = _state(contract)
+    state = _state(
+        contract_for(
+            "understand_and_notice",
+            proof_mode="none",
+            recommended_frame_count=5,
+        ),
+        narrative_plan_for("cognitive_correction"),
+    )
+    first = visual_strategy_planner_node(state)["visual_plan"]
     state["memory_context"]["recent_content"] = [
-        {"frame_plan_signature": signature}
+        {
+            "visual_plan": first.model_dump(mode="json"),
+        }
     ]
 
-    result = visual_strategy_planner_node(state)
+    repeated = visual_strategy_planner_node(state)["visual_plan"]
 
-    assert result["visual_plan"].content_job == "follow_steps"
-    assert result["visual_plan"].frame_plan[2].layout == "step_timeline"
+    assert (
+        repeated.template_family != first.template_family
+        or repeated.frame_plan != first.frame_plan
+    )
+    assert len(repeated.frame_plan) == len(first.frame_plan) == 5
 
 
-def test_visual_strategy_planner_requires_publish_package_contract():
+@pytest.mark.parametrize(
+    ("missing_key", "message"),
+    [
+        (
+            "content_contract",
+            "visual_strategy_planner_node requires publish_package.content_contract",
+        ),
+        (
+            "narrative_plan",
+            "visual_strategy_planner_node requires publish_package.narrative_plan",
+        ),
+    ],
+)
+def test_visual_strategy_planner_requires_final_planning_contracts(
+    missing_key: str,
+    message: str,
+):
     from src.nodes.node_p_visual_strategy_planner import (
         visual_strategy_planner_node,
     )
 
     state = _state()
-    state["publish_package"].pop("content_contract")
+    state["publish_package"].pop(missing_key)
 
-    with pytest.raises(
-        ValueError,
-        match="visual_strategy_planner_node requires publish_package.content_contract",
-    ):
+    with pytest.raises(ValueError, match=message):
         visual_strategy_planner_node(state)
 
 
@@ -86,8 +120,8 @@ def test_visual_strategy_planner_does_not_apply_legacy_hydration():
         visual_strategy_planner_node,
     )
 
-    incomplete = contract_for("save_and_check").model_dump(mode="json")
-    incomplete.pop("content_job")
+    state = _state()
+    state["publish_package"]["content_contract"].pop("content_job")
 
     with pytest.raises(ValidationError):
-        visual_strategy_planner_node(_state(incomplete))
+        visual_strategy_planner_node(state)
