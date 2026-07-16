@@ -25,7 +25,7 @@ from pydantic import (
     model_validator,
 )
 
-from src.schemas.assets import LayoutName
+from src.schemas.editorial_templates import PageArchetype
 
 from .catalog import (
     AssetCatalog,
@@ -67,6 +67,21 @@ MAX_TRANSACTION_REGISTRY_READ_BYTES = 16 * 1024 * 1024
 MAX_RECOVERY_SNAPSHOT_BYTES = 1024 * 1024
 MAX_RECOVERY_TOTAL_SNAPSHOT_BYTES = 4 * 1024 * 1024
 MAX_TRANSACTION_AGE_SECONDS = 30 * 24 * 60 * 60
+_LEGACY_LAYOUT_TO_ARCHETYPE: dict[str, PageArchetype] = {
+    "editorial_cover": "cover",
+    "texture_baseline": "explanation",
+    "front_face_zone": "diagnostic",
+    "three_quarter_face_zone": "diagnostic",
+    "step_timeline": "steps",
+    "morning_evening_flow": "steps",
+    "left_right_comparison": "comparison",
+    "three_state_diagnostic": "diagnostic",
+    "decision_tree": "qa",
+    "saveable_checklist": "checklist",
+    "saveable_reference": "save",
+}
+
+
 @dataclass(frozen=True, slots=True)
 class PendingAsset:
     pending_id: str
@@ -80,7 +95,7 @@ class PendingAsset:
     source_url: str
     source_file_url: str
     role: str
-    layout: str
+    page_archetype: PageArchetype
     width: int
     height: int
     license: str
@@ -196,7 +211,7 @@ class PendingAuditRecord(BaseModel):
     source_url: NonEmptyStrictString
     source_file_url: NonEmptyStrictString
     role: NonEmptyStrictString
-    layout: LayoutName
+    page_archetype: PageArchetype
     width: Annotated[StrictInt, Field(ge=1)]
     height: Annotated[StrictInt, Field(ge=1)]
     license: NonEmptyStrictString
@@ -229,6 +244,22 @@ class PendingAuditRecord(BaseModel):
     review_disposition: Literal[
         "approved_for_publishing", "rejected"
     ] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_layout(cls, value):
+        if not isinstance(value, Mapping) or "page_archetype" in value:
+            return value
+        legacy_layout = value.get("layout")
+        if legacy_layout is None:
+            return value
+        page_archetype = _LEGACY_LAYOUT_TO_ARCHETYPE.get(str(legacy_layout))
+        if page_archetype is None:
+            raise ValueError("pending audit legacy layout is invalid")
+        migrated = dict(value)
+        migrated.pop("layout", None)
+        migrated["page_archetype"] = page_archetype
+        return migrated
 
     @field_validator("pending_id", "slot_id", "provider", "provider_asset_id", "author", "role", "license", "run_id")
     @classmethod

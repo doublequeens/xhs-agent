@@ -33,7 +33,7 @@ def entry_satisfies_requirement(
 
     base_eligible = (
         entry.usage == "production"
-        and requirement.layout in entry.allowed_layouts
+        and requirement.page_archetype in entry.allowed_layouts
         and entry.width >= requirement.min_width
         and entry.height >= requirement.min_height
         and (

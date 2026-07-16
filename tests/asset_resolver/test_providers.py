@@ -45,7 +45,7 @@ def requirement() -> AssetRequirement:
     return AssetRequirement(
         slot_id="serum-slot",
         role="serum_texture",
-        layout="texture_baseline",
+        page_archetype="explanation",
         min_width=1080,
         min_height=1440,
         context_tags=["serum", "drop"],

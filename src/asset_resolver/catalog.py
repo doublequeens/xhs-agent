@@ -68,7 +68,7 @@ def approved_manifest_item(
         "license": pending.license,
         "dimensions": {"width": pending.width, "height": pending.height},
         "sha256": pending.sha256,
-        "allowed_layouts": [pending.layout],
+        "allowed_layouts": [pending.page_archetype],
         "tags": list(pending.tags),
         "disabled_contexts": [],
         "fallback_roles": list(pending.fallback_roles),

@@ -11,7 +11,6 @@ from PIL import Image
 from pydantic import ValidationError
 
 from src.asset_resolver.lifecycle import ApprovedSafetyReview
-from src.editorial_carousel.strategy import ASSET_ADAPTER
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.rendering.editorial.probes import EXPECTED_FONT_FAMILIES
@@ -26,8 +25,9 @@ from src.schemas.decision import (
     RevisionMeta,
     SingleTask,
 )
+from src.schemas.narrative import NarrativePlan
 from src.schemas.render_qa import RenderQAIssue, RenderQAResult
-SAVEABLE_LAYOUTS = frozenset({"saveable_checklist", "saveable_reference"})
+SAVEABLE_ARCHETYPES = frozenset({"checklist", "save", "comparison"})
 
 
 def _as_list(payload: Any, key: str) -> list[Any]:
@@ -428,7 +428,7 @@ def _manifest_page_issues(
         for field, rule_id in (
             ("frame_id", "rendered_page_frame_id_mismatch"),
             ("role", "rendered_page_role_mismatch"),
-            ("layout", "rendered_page_layout_mismatch"),
+            ("page_archetype", "rendered_page_archetype_mismatch"),
         ):
             if _get_value(page, field) != _get_value(frame, field):
                 issues.append(
@@ -570,6 +570,16 @@ def _asset_issues(
     rendered_hashes = _get_value(render_manifest, "source_asset_sha256", {})
     if not isinstance(rendered_hashes, dict):
         rendered_hashes = {}
+    storyboard_slot_ids = set(frame_by_slot)
+    manifest_slot_ids = set(item_by_slot)
+    if storyboard_slot_ids != manifest_slot_ids:
+        issues.append(
+            _issue(
+                "asset_manifest_slot_set_mismatch",
+                "AssetManifest slot IDs must exactly equal the declared storyboard slot IDs.",
+                "asset_manifest.items",
+            )
+        )
 
     for index, item in auditable_items:
         slot_id = str(_get_value(item, "slot_id") or "")
@@ -809,15 +819,16 @@ def _asset_issues(
             for slot in _as_list(frame, "visual_slots")
             if _get_value(slot, "slot_id") == slot_id
         )
-        semantic_role = _get_value(slot, "role")
-        layout = _get_value(frame, "layout")
-        adapter = ASSET_ADAPTER.get((layout, semantic_role))
-        if adapter is None or _get_value(item, "role") != adapter[0]:
+        if (
+            _get_value(item, "role") != _get_value(slot, "role")
+            or _get_value(item, "page_archetype")
+            != _get_value(frame, "page_archetype")
+        ):
             issues.append(
                 _issue(
-                    "asset_catalog_role_mismatch",
-                    "Manifest role must equal the adapter's concrete catalog role for this semantic slot.",
-                    f"asset_manifest.items.{slot_id}.role",
+                    "asset_slot_binding_mismatch",
+                    "Manifest role and page_archetype must exactly match the storyboard slot binding.",
+                    f"asset_manifest.items.{slot_id}",
                     frame_id=frame_id,
                 )
             )
@@ -954,14 +965,12 @@ def _quality_proxy_metrics(
     category_scores: list[float] = []
     for frame in frames:
         for slot in _as_list(frame, "visual_slots"):
-            adapter = ASSET_ADAPTER.get(
-                (_get_value(frame, "layout"), _get_value(slot, "role"))
-            )
             item = item_by_slot.get(_get_value(slot, "slot_id"))
             role_fit = (
-                adapter is not None
-                and item is not None
-                and _get_value(item, "role") == adapter[0]
+                item is not None
+                and _get_value(item, "role") == _get_value(slot, "role")
+                and _get_value(item, "page_archetype")
+                == _get_value(frame, "page_archetype")
             )
             requirement = requirements.get(_get_value(slot, "slot_id"))
             measured = probe_assets.get(_get_value(slot, "slot_id"))
@@ -982,12 +991,12 @@ def _quality_proxy_metrics(
         and (
             _get_value(page, "frame_id"),
             _get_value(page, "role"),
-            _get_value(page, "layout"),
+            _get_value(page, "page_archetype"),
         )
         == (
             _get_value(frame, "frame_id"),
             _get_value(frame, "role"),
-            _get_value(frame, "layout"),
+            _get_value(frame, "page_archetype"),
         )
         for index, frame in enumerate(frames)
         for page in [pages[index] if index < len(pages) else None]
@@ -1048,19 +1057,23 @@ def _quality_proxy_metrics(
     )
     visual_hierarchy = round(
         0.8 * scale_hierarchy
-        + 10 * (_get_value(cover, "layout") == "editorial_cover")
+        + 10 * (_get_value(cover, "page_archetype") == "cover")
         + 10 * bool(_get_value(cover, "headline"))
     )
     saveable_item_counts = [
         sum(len(_as_list(block, "items")) for block in _as_list(frame, "content_blocks"))
         for frame in frames
-        if _get_value(frame, "layout") in SAVEABLE_LAYOUTS
+        if _get_value(frame, "page_archetype") in SAVEABLE_ARCHETYPES
     ]
     saveability = min(100, 20 * max(saveable_item_counts, default=0))
 
-    layouts = [str(_get_value(frame, "layout") or "") for frame in frames]
+    archetypes = [
+        str(_get_value(frame, "page_archetype") or "") for frame in frames
+    ]
     template_stiffness = round(
-        100 * (len(layouts) - len(set(layouts))) / max(1, len(layouts))
+        100
+        * (len(archetypes) - len(set(archetypes)))
+        / max(1, len(archetypes))
     )
     visible_character_counts = [
         sum(
@@ -1095,8 +1108,16 @@ def _quality_proxy_metrics(
     }
 
 
-def _build_r1_decision(package: dict, issues: list[RenderQAIssue]) -> DecisionOutput:
+def _build_r1_decision(
+    package: dict,
+    issues: list[RenderQAIssue],
+    narrative_plan: NarrativePlan | None = None,
+) -> DecisionOutput:
     draft_id = str(package.get("draft_id") or package.get("topic_id") or "render_qa")
+    authoritative_narrative = narrative_plan or NarrativePlan.model_validate(
+        package.get("narrative_plan")
+    )
+
     def task_id(issue: RenderQAIssue) -> str:
         identity = "|".join(
             (
@@ -1139,6 +1160,7 @@ def _build_r1_decision(package: dict, issues: list[RenderQAIssue]) -> DecisionOu
             angle=str(package.get("angle") or ""),
             target_group=str(package.get("target_group") or ""),
             core_pain=str(package.get("core_pain") or ""),
+            narrative_plan=authoritative_narrative,
             storyboard_visible_text=extract_storyboard_visible_text(
                 package.get("storyboards")
             ),
@@ -1217,7 +1239,25 @@ def render_qa_node(state: AgentState) -> dict:
     result = RenderQAResult(passed=not issues, issues=issues, **metrics)
     output = {"render_qa_result": result, "current_node": "RENDER_QA"}
     if issues:
-        output["decision_output"] = _build_r1_decision(package, issues)
+        try:
+            r1_narrative_plan = NarrativePlan.model_validate(
+                package.get("narrative_plan")
+            )
+        except (TypeError, ValueError):
+            try:
+                r1_narrative_plan = NarrativePlan.model_validate(
+                    state.get("selected_narrative_plan")
+                )
+            except (TypeError, ValueError) as selected_error:
+                raise ValueError(
+                    "render_qa_node requires selected_narrative_plan to "
+                    "recover an invalid publish_package.narrative_plan."
+                ) from selected_error
+        output["decision_output"] = _build_r1_decision(
+            package,
+            issues,
+            r1_narrative_plan,
+        )
     return output
 
 

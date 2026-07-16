@@ -9,14 +9,42 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from src.editorial_carousel.strategy import ASSET_ADAPTER, build_visual_plan
 from src.schemas.assets import AssetManifest, AssetManifestItem, AssetSearchReport
 from src.schemas.content_contract import ContentContract
+from src.schemas.narrative import NarrativePlan
 from src.schemas.render_manifest import FontLoadReport, RenderManifest, RenderedPage
 from src.schemas.render_qa import RenderQAIssue
+from src.schemas.visual_plan import VisualPlan
 
 
 EXPECTED_FONTS = ["Source Han Serif SC", "Source Han Sans SC", "Bodoni Moda"]
+
+
+def _narrative_plan() -> dict:
+    return {
+        "narrative_form": "scenario_story",
+        "beats": [
+            {"beat_id": "hook", "kind": "hook", "purpose": "建立通勤问题"},
+            {"beat_id": "scene", "kind": "scene", "purpose": "还原上妆现场"},
+            {
+                "beat_id": "explanation",
+                "kind": "explanation",
+                "purpose": "解释成膜节奏",
+            },
+            {
+                "beat_id": "diagnostic",
+                "kind": "diagnostic",
+                "purpose": "判断自己的问题",
+            },
+            {"beat_id": "save", "kind": "checklist", "purpose": "保存检查清单"},
+        ],
+        "saveable_beat": {
+            "beat_id": "save",
+            "kind": "checklist",
+            "purpose": "保存检查清单",
+        },
+        "closing_mode": "action_prompt",
+    }
 
 
 def _contract() -> ContentContract:
@@ -39,22 +67,146 @@ def _contract() -> ContentContract:
 
 
 def _plan():
-    return build_visual_plan(_contract(), recent_signatures=[])
+    return VisualPlan.model_validate(
+        {
+            "design_system": "beauty_editorial_v2",
+            "template_family": "soft_pink",
+            "template_selection": {
+                "template_family": "soft_pink",
+                "score": 100,
+                "reasons": ["render QA fixture"],
+                "rejected_families": {
+                    "pink_red": ["fixture"],
+                    "deep_teal": ["fixture"],
+                    "coral_impact": ["fixture"],
+                    "green_catalog": ["fixture"],
+                    "white_quote": ["fixture"],
+                },
+            },
+            "narrative_form": "scenario_story",
+            "content_job": "diagnose_and_adjust",
+            "frame_plan": [
+                {
+                    "frame_id": "cover",
+                    "role": "cover",
+                    "page_archetype": "cover",
+                    "purpose": "establish the first-screen promise",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": ["background_token"],
+                },
+                {
+                    "frame_id": "baseline",
+                    "role": "baseline",
+                    "page_archetype": "explanation",
+                    "purpose": "establish the product baseline",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": ["serum_texture"],
+                },
+                {
+                    "frame_id": "applicable-case",
+                    "role": "applicable_case",
+                    "page_archetype": "diagnostic",
+                    "purpose": "identify when the guidance applies",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": ["face_angle"],
+                },
+                {
+                    "frame_id": "zone-adjustment",
+                    "role": "zone_adjustment",
+                    "page_archetype": "diagnostic",
+                    "purpose": "show where and how to adjust",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": ["face_zone_mask"],
+                },
+                {
+                    "frame_id": "feedback-diagnosis",
+                    "role": "feedback_diagnosis",
+                    "page_archetype": "comparison",
+                    "purpose": "interpret observable feedback",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": ["skin_detail"],
+                },
+                {
+                    "frame_id": "save",
+                    "role": "save",
+                    "page_archetype": "save",
+                    "purpose": "provide a standalone saveable reference",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": ["background_token"],
+                },
+            ],
+            "required_assets": [
+                {
+                    "slot_id": "cover-background-token",
+                    "role": "background_token",
+                    "page_archetype": "cover",
+                    "min_width": 1080,
+                    "min_height": 1440,
+                    "orientation": "portrait",
+                },
+                {
+                    "slot_id": "baseline-product-texture",
+                    "role": "serum_texture",
+                    "page_archetype": "explanation",
+                    "min_width": 512,
+                    "min_height": 512,
+                    "orientation": "square",
+                },
+                {
+                    "slot_id": "applicable-case-face-map",
+                    "role": "face_angle",
+                    "page_archetype": "diagnostic",
+                    "min_width": 512,
+                    "min_height": 512,
+                    "orientation": "square",
+                },
+                {
+                    "slot_id": "zone-adjustment-face-map",
+                    "role": "face_zone_mask",
+                    "page_archetype": "diagnostic",
+                    "min_width": 512,
+                    "min_height": 512,
+                    "orientation": "square",
+                },
+                {
+                    "slot_id": "feedback-diagnosis-comparison",
+                    "role": "skin_detail",
+                    "page_archetype": "comparison",
+                    "min_width": 512,
+                    "min_height": 512,
+                    "orientation": "square",
+                },
+                {
+                    "slot_id": "save-reference",
+                    "role": "background_token",
+                    "page_archetype": "save",
+                    "min_width": 1080,
+                    "min_height": 1440,
+                    "orientation": "portrait",
+                },
+            ],
+        }
+    )
 
 
 def _storyboards():
     plan = _plan()
-    requirements = {(item.layout, item.role): item for item in plan.required_assets}
+    requirements = {item.slot_id: item for item in plan.required_assets}
     frames = []
     for index, planned in enumerate(plan.frame_plan):
-        semantic_role = planned.asset_roles[0]
-        concrete_role = ASSET_ADAPTER[(planned.layout, semantic_role)][0]
-        requirement = requirements[(planned.layout, concrete_role)]
+        requirement = next(
+            item
+            for item in requirements.values()
+            if item.page_archetype == planned.page_archetype
+            and item.role in planned.asset_roles
+            and item.slot_id.startswith(planned.frame_id)
+        )
         frames.append(
             {
                 "frame_id": planned.frame_id,
                 "role": planned.role,
-                "layout": planned.layout,
+                "page_archetype": planned.page_archetype,
+                "content_density_hint": "auto",
                 "headline": (
                     _contract().first_screen_promise
                     if index == 0
@@ -68,7 +220,7 @@ def _storyboards():
                 "visual_slots": [
                     {
                         "slot_id": requirement.slot_id,
-                        "role": semantic_role,
+                        "role": requirement.role,
                         "semantic_tags": ["skincare"],
                     }
                 ],
@@ -113,7 +265,7 @@ def _fixtures(root: Path):
             AssetManifestItem(
                 slot_id=requirement.slot_id,
                 role=requirement.role,
-                layout=requirement.layout,
+                page_archetype=requirement.page_archetype,
                 status="active",
                 path=str(path),
                 asset_id=f"asset-{index}",
@@ -149,7 +301,10 @@ def _fixtures(root: Path):
             RenderedPage(
                 frame_id=frame["frame_id"],
                 role=frame["role"],
-                layout=frame["layout"],
+                page_archetype=frame["page_archetype"],
+                template_family=plan.template_family,
+                density="standard",
+                composition_variant="render-qa-fixture",
                 path=str(path),
                 width=1080,
                 height=1440,
@@ -187,6 +342,7 @@ def _fixtures(root: Path):
         "title": "通勤底妆不搓泥",
         "content": "先给防晒成膜时间，再上底妆。",
         "cover_copy": "通勤底妆不搓泥",
+        "narrative_plan": _narrative_plan(),
         "storyboards": frames,
     }
     return package, asset_manifest, render_manifest
@@ -237,6 +393,50 @@ def test_render_qa_accepts_complete_editorial_manifests_and_labels_proxy_metrics
         result.cross_page_consistency,
         result.template_stiffness,
     } <= set(range(101))
+
+
+def test_render_qa_accepts_text_only_carousel_with_exact_empty_slot_sets(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    package = deepcopy(package)
+    for frame in package["storyboards"]:
+        frame["visual_slots"] = []
+    plan = _plan().model_copy(deep=True)
+    plan.required_assets = []
+    for frame in plan.frame_plan:
+        frame.asset_roles = []
+    assets = assets.model_copy(update={"items": []})
+    pages = [
+        page.model_copy(update={"probe": _probe_for_frame(frame)})
+        for page, frame in zip(
+            manifest.pages,
+            package["storyboards"],
+            strict=True,
+        )
+    ]
+    manifest = manifest.model_copy(
+        update={"pages": pages, "source_asset_sha256": {}}
+    )
+
+    assert validate_render(package, assets, manifest, plan) == []
+
+
+def test_render_qa_rejects_manifest_slot_not_declared_by_storyboard(tmp_path):
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    package = deepcopy(package)
+    package["storyboards"][0]["visual_slots"] = []
+    pages = list(manifest.pages)
+    pages[0] = pages[0].model_copy(
+        update={"probe": _probe_for_frame(package["storyboards"][0])}
+    )
+    manifest = manifest.model_copy(update={"pages": pages})
+
+    assert "asset_manifest_slot_set_mismatch" in _rule_ids(
+        validate_render(package, assets, manifest, _plan())
+    )
 
 
 def test_render_qa_rejects_source_hash_mismatch(tmp_path):
@@ -754,6 +954,57 @@ def test_editorial_state_missing_visual_plan_never_falls_back_to_legacy(tmp_path
     ]
 
 
+def test_render_qa_r1_recovery_uses_selected_narrative_when_package_copy_is_invalid(
+    tmp_path,
+):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    package, assets, _manifest = _fixtures(tmp_path)
+    package["narrative_plan"] = {"invalid": True}
+
+    result = render_qa_node(
+        {
+            "publish_package": package,
+            "selected_narrative_plan": NarrativePlan.model_validate(
+                _narrative_plan()
+            ),
+            "visual_plan": _plan(),
+            "asset_manifest": assets,
+            "render_manifest": None,
+        }
+    )
+
+    candidate = (
+        result["decision_output"]
+        .normalized_input.r1_input.content_candidate
+    )
+    assert candidate.narrative_plan == NarrativePlan.model_validate(
+        _narrative_plan()
+    )
+
+
+def test_render_qa_r1_recovery_rejects_invalid_narrative_without_selected_copy(
+    tmp_path,
+):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    package, assets, _manifest = _fixtures(tmp_path)
+    package["narrative_plan"] = {"invalid": True}
+
+    with pytest.raises(
+        ValueError,
+        match="requires selected_narrative_plan to recover",
+    ):
+        render_qa_node(
+            {
+                "publish_package": package,
+                "visual_plan": _plan(),
+                "asset_manifest": assets,
+                "render_manifest": None,
+            }
+        )
+
+
 def test_render_r1_task_identity_does_not_depend_on_issue_order():
     from src.nodes.node_p_render_qa import _build_r1_decision
 
@@ -768,7 +1019,11 @@ def test_render_r1_task_identity_does_not_depend_on_issue_order():
         message="contact missing",
         location_hint="render_manifest.contact_sheet_path",
     )
-    package = {"draft_id": "draft", "storyboards": []}
+    package = {
+        "draft_id": "draft",
+        "narrative_plan": _narrative_plan(),
+        "storyboards": [],
+    }
 
     alone = _build_r1_decision(package, [cover]).normalized_input.r1_input.editorial_tasks.mandatory[0].task_id
     reordered = _build_r1_decision(package, [unrelated, cover]).normalized_input.r1_input.editorial_tasks.mandatory[1].task_id
@@ -1058,32 +1313,29 @@ def test_proxy_cross_page_consistency_penalizes_measured_type_scale_variance(tmp
     assert consistent.cross_page_consistency > varied.cross_page_consistency
 
 
-def test_proxy_template_stiffness_penalizes_nonadjacent_layout_reuse(tmp_path):
+def test_proxy_template_stiffness_penalizes_nonadjacent_archetype_reuse(tmp_path):
     package, assets, manifest = _fixtures(tmp_path)
     diverse = _metric_result(package, assets, _manifest_with_probes(manifest, package))
     repeated_package = deepcopy(package)
     repeated_plan = deepcopy(_plan())
-    repeated_package["storyboards"][1]["layout"] = "three_state_diagnostic"
-    repeated_package["storyboards"][1]["visual_slots"][0]["role"] = "comparison"
-    repeated_plan.frame_plan[1].layout = "three_state_diagnostic"
-    repeated_plan.frame_plan[1].asset_roles = ["comparison"]
+    repeated_package["storyboards"][1]["page_archetype"] = "diagnostic"
+    repeated_plan.frame_plan[1].page_archetype = "diagnostic"
     slot_id = repeated_package["storyboards"][1]["visual_slots"][0]["slot_id"]
     requirement = next(
         item for item in repeated_plan.required_assets if item.slot_id == slot_id
     )
-    requirement.layout = "three_state_diagnostic"
-    requirement.role = "skin_detail"
+    requirement.page_archetype = "diagnostic"
     repeated_items = list(assets.items)
     item_index = next(
         index for index, item in enumerate(repeated_items) if item.slot_id == slot_id
     )
     repeated_items[item_index] = repeated_items[item_index].model_copy(
-        update={"layout": "three_state_diagnostic", "role": "skin_detail"}
+        update={"page_archetype": "diagnostic"}
     )
     repeated_assets = assets.model_copy(update={"items": repeated_items})
     repeated_pages = list(manifest.pages)
     repeated_pages[1] = repeated_pages[1].model_copy(
-        update={"layout": "three_state_diagnostic"}
+        update={"page_archetype": "diagnostic"}
     )
     repeated_manifest = manifest.model_copy(update={"pages": repeated_pages})
 
@@ -1202,7 +1454,7 @@ def test_probe_assets_must_match_each_frame_slots_exactly_once(tmp_path):
     assert probe_identity == [
         (
             "probe_asset_slot_missing",
-            "render_manifest.pages[0].probe.asset_results.cover-beauty-subject",
+                "render_manifest.pages[0].probe.asset_results.cover-background-token",
         ),
         (
             "duplicate_probe_asset_slot_id",

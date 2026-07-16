@@ -167,7 +167,7 @@ def _manifest_item(
     return AssetManifestItem(
         slot_id=requirement.slot_id,
         role=requirement.role,
-        layout=requirement.layout,
+        page_archetype=requirement.page_archetype,
         status=status,
         path=str(entry.path),
         asset_id=entry.asset_id,
@@ -669,7 +669,7 @@ def _download_pending_candidates(
             source_url=candidate.source_url,
             source_file_url=candidate.source_file_url,
             role=requirement.role,
-            layout=requirement.layout,
+            page_archetype=requirement.page_archetype,
             width=width,
             height=height,
             license=candidate.license,
@@ -718,7 +718,7 @@ def _pending_manifest_item(
     return AssetManifestItem(
         slot_id=requirement.slot_id,
         role=requirement.role,
-        layout=requirement.layout,
+        page_archetype=requirement.page_archetype,
         status="pending_external",
         path=str(pending.path),
         source_type="external",
@@ -807,6 +807,17 @@ def _search_provider(
 
 def resolve_assets(visual_plan: VisualPlan, catalog: AssetCatalog) -> AssetManifest:
     """Serialize external resolution by run, slot, and requirement contract."""
+
+    if not visual_plan.required_assets:
+        return AssetManifest(
+            items=[],
+            search_report=AssetSearchReport(
+                search_triggered=False,
+                queries=[],
+                provider_reports=[],
+                selection_reasons={},
+            ),
+        )
 
     has_external_provider = any(
         isinstance(getattr(provider, "name", None), str)

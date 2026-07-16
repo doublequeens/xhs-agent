@@ -138,7 +138,7 @@ def _footer(frame: CarouselFrame) -> str:
 def _card(frame: CarouselFrame, body: str) -> str:
     return "".join(
         (
-            f'<main class="card" data-layout="{escape(frame.layout, quote=True)}" '
+            f'<main class="card" data-layout="{escape(frame.page_archetype, quote=True)}" '
             f'data-frame-role="{escape(frame.role, quote=True)}" '
             f'data-frame-id="{escape(frame.frame_id, quote=True)}">',
             '<div class="font-probes" aria-hidden="true">'

@@ -19,58 +19,68 @@ class FakeProvider:
         return []
 
 
-def _plan(requirement: AssetRequirement) -> VisualPlan:
+def _template_selection() -> dict:
+    return {
+        "template_family": "pink_red",
+        "score": 10,
+        "reasons": ["deterministic test fixture"],
+        "rejected_families": {
+            family: ["not selected in deterministic fixture"]
+            for family in (
+                "deep_teal",
+                "soft_pink",
+                "coral_impact",
+                "green_catalog",
+                "white_quote",
+            )
+        },
+    }
+
+
+def _plan(requirement: AssetRequirement | None = None) -> VisualPlan:
+    frame_specs = (
+        ("cover", "cover", "cover", ()),
+        ("texture", "texture", "explanation", ()),
+        (
+            "face",
+            "face",
+            "diagnostic",
+            (requirement.role,) if requirement is not None else (),
+        ),
+        ("steps", "steps", "steps", ()),
+        ("save", "save", "save", ()),
+    )
     return VisualPlan(
-        design_system="beauty_editorial_v1",
+        design_system="beauty_editorial_v2",
+        template_family="pink_red",
+        template_selection=_template_selection(),
+        narrative_form="scenario_story",
         content_job="diagnose_and_adjust",
-        primary_visual_family="face_zone_map",
-        supporting_families=["beauty_editorial", "saveable_reference"],
         frame_plan=[
             FramePlanItem(
-                frame_id="cover",
-                role="cover",
-                layout="editorial_cover",
-                purpose="cover",
-            ),
-            FramePlanItem(
-                frame_id="texture",
-                role="texture",
-                layout="texture_baseline",
-                purpose="texture",
-            ),
-            FramePlanItem(
-                frame_id="face",
-                role="face",
-                layout="front_face_zone",
-                purpose="face",
-            ),
-            FramePlanItem(
-                frame_id="steps",
-                role="steps",
-                layout="step_timeline",
-                purpose="steps",
-            ),
-            FramePlanItem(
-                frame_id="save",
-                role="save",
-                layout="saveable_reference",
-                purpose="save",
-            ),
+                frame_id=frame_id,
+                role=role,
+                page_archetype=page_archetype,
+                purpose=role,
+                allowed_density=["standard"],
+                asset_roles=list(asset_roles),
+            )
+            for frame_id, role, page_archetype, asset_roles in frame_specs
         ],
-        required_assets=[requirement],
+        required_assets=[requirement] if requirement is not None else [],
     )
 
 
 def _requirement(
     *,
     role: str = "face_angle",
-    layout: str = "front_face_zone",
+    page_archetype: str = "diagnostic",
     fallback_asset_ids: list[str] | None = None,
 ) -> AssetRequirement:
     return AssetRequirement(
         slot_id="face-slot",
         role=role,
-        layout=layout,
+        page_archetype=page_archetype,
         min_width=1080,
         min_height=1440,
         context_tags=["face", "zone"],
@@ -87,7 +97,7 @@ def _entry(
     role: str = "face_angle",
     width: int = 1080,
     height: int = 1440,
-    layouts: tuple[str, ...] = ("front_face_zone",),
+    layouts: tuple[str, ...] = ("diagnostic",),
     tags: tuple[str, ...] = ("face", "zone", "mauve"),
     disabled_contexts: tuple[str, ...] = (),
     fallback_roles: tuple[str, ...] = (),
@@ -154,6 +164,24 @@ def test_local_match_prevents_provider_calls(tmp_path: Path) -> None:
     assert provider.search_calls == []
 
 
+def test_resolve_assets_returns_auditable_empty_manifest_without_calling_providers(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.resolver import resolve_assets
+
+    provider = FakeProvider()
+    catalog = _catalog(tmp_path, [], providers=[provider])
+
+    manifest = resolve_assets(_plan(), catalog)
+
+    assert manifest.items == []
+    assert manifest.search_report.search_triggered is False
+    assert manifest.search_report.queries == []
+    assert manifest.search_report.provider_reports == []
+    assert manifest.search_report.selection_reasons == {}
+    assert provider.search_calls == []
+
+
 def test_existing_but_incompatible_asset_triggers_gap_resolution(
     tmp_path: Path,
 ) -> None:
@@ -188,7 +216,7 @@ def test_explicit_fallback_is_used_only_when_named_by_requirement(
         tmp_path,
         asset_id="fallback-mask",
         role="face_zone_mask",
-        layouts=("front_face_zone",),
+        layouts=("diagnostic",),
     )
     primary = _entry(
         tmp_path,

@@ -7,7 +7,6 @@ import os
 import re
 import stat
 from pathlib import Path
-from types import SimpleNamespace
 
 from PIL import Image
 
@@ -293,8 +292,8 @@ def _approved_audit_matches_canonical(
         audit.sha256 == entry.sha256 == _value(item, "sha256")
         and audit.approved_sha256 == entry.sha256
         and audit.role == entry.role
-        and audit.layout in entry.allowed_layouts
-        and audit.layout == _value(item, "page_archetype")
+        and audit.page_archetype in entry.allowed_layouts
+        and audit.page_archetype == _value(item, "page_archetype")
         and audit.width == entry.width == _value(item, "width")
         and audit.height == entry.height == _value(item, "height")
         and tuple(audit.tags) == entry.tags
@@ -457,15 +456,6 @@ def _canonical_requirement(payload) -> AssetRequirement | None:
         return None
 
 
-def _legacy_eligibility_view(requirement: AssetRequirement):
-    """Bridge the Task 6 v2 requirement into the Task 7-owned eligibility API."""
-
-    return SimpleNamespace(
-        **requirement.model_dump(mode="python"),
-        layout=requirement.page_archetype,
-    )
-
-
 def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     issues: list[dict] = []
     if state.get("review_status") != "approved":
@@ -610,7 +600,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
             or _value(item, "role") != requirement.role
             or not entry_satisfies_requirement(
                 canonical_entry,
-                _legacy_eligibility_view(requirement),
+                requirement,
                 mode=eligibility_mode,
                 catalog_entries=canonical_entries,
                 authorizer_integrity=lambda entry: (
@@ -716,8 +706,8 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         for item in asset_items
     }
     storyboard_slots = {
-        slot_id: (role, layout)
-        for slot_id, role, layout in storyboard_slot_records
+        slot_id: (role, page_archetype)
+        for slot_id, role, page_archetype in storyboard_slot_records
     }
     slot_ids_match = set(plan_slots) == set(storyboard_slots) == set(manifest_slots)
     slot_bindings_match = slot_ids_match and all(

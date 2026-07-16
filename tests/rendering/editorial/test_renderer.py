@@ -510,7 +510,7 @@ def test_renderer_rejects_duplicate_visual_slot_ids_within_one_frame_before_brow
         )
 
 
-def test_renderer_rejects_asset_layout_that_does_not_match_declared_frame_slot(
+def test_renderer_rejects_asset_archetype_that_does_not_match_declared_frame_slot(
     tmp_path, visual_plan, storyboard, asset_manifest
 ):
     from src.rendering.editorial.renderer import (
@@ -518,12 +518,35 @@ def test_renderer_rejects_asset_layout_that_does_not_match_declared_frame_slot(
         render_carousel,
     )
 
-    first = asset_manifest.items[0].model_copy(update={"layout": "decision_tree"})
+    first = asset_manifest.items[0].model_copy(update={"page_archetype": "qa"})
     mismatched = asset_manifest.model_copy(
         update={"items": [first, *asset_manifest.items[1:]]}
     )
 
     with pytest.raises(EditorialCarouselRenderError, match="does not match"):
+        render_carousel(
+            visual_plan,
+            storyboard,
+            mismatched,
+            tmp_path,
+            playwright_factory=lambda: pytest.fail("browser must not launch"),
+        )
+
+
+def test_renderer_rejects_asset_role_that_does_not_match_declared_slot(
+    tmp_path, visual_plan, storyboard, asset_manifest
+):
+    from src.rendering.editorial.renderer import (
+        EditorialCarouselRenderError,
+        render_carousel,
+    )
+
+    first = asset_manifest.items[0].model_copy(update={"role": "skin_detail"})
+    mismatched = asset_manifest.model_copy(
+        update={"items": [first, *asset_manifest.items[1:]]}
+    )
+
+    with pytest.raises(EditorialCarouselRenderError, match="declared slot role"):
         render_carousel(
             visual_plan,
             storyboard,
@@ -543,12 +566,79 @@ def test_renderer_rejects_a_missing_declared_asset_slot_before_browser_launch(
 
     missing = asset_manifest.model_copy(update={"items": asset_manifest.items[1:]})
 
-    with pytest.raises(EditorialCarouselRenderError, match="cover-visual.*missing"):
+    with pytest.raises(
+        EditorialCarouselRenderError,
+        match="asset manifest slots do not match storyboard",
+    ):
         render_carousel(
             visual_plan,
             storyboard,
             missing,
             tmp_path,
+            playwright_factory=lambda: pytest.fail("browser must not launch"),
+        )
+
+
+def test_renderer_accepts_no_slots_but_rejects_missing_declared_slot(
+    tmp_path,
+    visual_plan,
+    storyboard,
+    asset_manifest,
+):
+    from src.rendering.editorial.renderer import (
+        EditorialCarouselRenderError,
+        render_carousel,
+    )
+    from src.schemas.assets import AssetManifest
+
+    no_asset_plan = visual_plan.model_copy(
+        update={
+            "frame_plan": [
+                frame.model_copy(update={"asset_roles": []})
+                for frame in visual_plan.frame_plan
+            ],
+            "required_assets": [],
+        }
+    )
+    no_asset_storyboard = storyboard.model_copy(
+        update={
+            "storyboards": [
+                frame.model_copy(update={"visual_slots": []})
+                for frame in storyboard.storyboards
+            ]
+        }
+    )
+    empty_manifest = AssetManifest.model_validate(
+        {
+            "items": [],
+            "search_report": {
+                "search_triggered": False,
+                "queries": [],
+                "provider_reports": [],
+                "selection_reasons": {},
+            },
+        }
+    )
+
+    rendered = render_carousel(
+        no_asset_plan,
+        no_asset_storyboard,
+        empty_manifest,
+        tmp_path / "text-only",
+        playwright_factory=fake_playwright(FakePage()),
+    )
+
+    assert rendered.source_asset_sha256 == {}
+
+    with pytest.raises(
+        EditorialCarouselRenderError,
+        match="asset manifest slots do not match storyboard",
+    ):
+        render_carousel(
+            visual_plan,
+            storyboard,
+            empty_manifest,
+            tmp_path / "missing-assets",
             playwright_factory=lambda: pytest.fail("browser must not launch"),
         )
 
@@ -581,10 +671,13 @@ def test_renderer_rejects_tampered_bytes_for_an_actually_used_asset(
         )
 
 
-def test_renderer_ignores_and_does_not_record_an_unused_manifest_asset(
+def test_renderer_rejects_an_unused_manifest_asset_before_browser_launch(
     tmp_path, visual_plan, storyboard, asset_manifest
 ):
-    from src.rendering.editorial.renderer import render_carousel
+    from src.rendering.editorial.renderer import (
+        EditorialCarouselRenderError,
+        render_carousel,
+    )
 
     unused = asset_manifest.items[0].model_copy(
         update={
@@ -597,15 +690,14 @@ def test_renderer_ignores_and_does_not_record_an_unused_manifest_asset(
         update={"items": [*asset_manifest.items, unused]}
     )
 
-    manifest = render_carousel(
-        visual_plan,
-        storyboard,
-        with_unused,
-        tmp_path / "images",
-        playwright_factory=fake_playwright(FakePage()),
-    )
-
-    assert "unused-slot" not in manifest.source_asset_sha256
-    assert manifest.source_asset_sha256 == {
-        item.slot_id: item.sha256 for item in asset_manifest.items
-    }
+    with pytest.raises(
+        EditorialCarouselRenderError,
+        match="asset manifest slots do not match storyboard",
+    ):
+        render_carousel(
+            visual_plan,
+            storyboard,
+            with_unused,
+            tmp_path / "images",
+            playwright_factory=lambda: pytest.fail("browser must not launch"),
+        )

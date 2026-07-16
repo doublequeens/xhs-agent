@@ -33,6 +33,25 @@ class EditorialCarouselRenderError(RuntimeError):
     """Raised when a complete editorial carousel cannot be rendered locally."""
 
 
+_LEGACY_RENDER_LAYOUT_BY_ARCHETYPE = {
+    "cover": "editorial_cover",
+    "thesis": "texture_baseline",
+    "scene": "texture_baseline",
+    "story_beat": "texture_baseline",
+    "explanation": "texture_baseline",
+    "steps": "step_timeline",
+    "checklist": "saveable_checklist",
+    "comparison": "left_right_comparison",
+    "diagnostic": "three_state_diagnostic",
+    "qa": "decision_tree",
+    "item_collection": "saveable_reference",
+    "quote": "texture_baseline",
+    "boundary": "saveable_checklist",
+    "save": "saveable_reference",
+    "closing": "texture_baseline",
+}
+
+
 _ROLE_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _RENDERED_PAGE_NAME = re.compile(r"^\d{2}-.+\.png$")
 
@@ -227,10 +246,15 @@ def _frame_assets(
                 f"{frame.frame_id} asset slot {slot.slot_id} is ambiguous"
             )
         item = matches[0]
-        if item.layout != frame.layout:
+        if item.role != slot.role:
             raise EditorialCarouselRenderError(
                 f"{frame.frame_id} asset slot {slot.slot_id} does not match "
-                "the declared frame layout"
+                "the declared slot role"
+            )
+        if item.page_archetype != frame.page_archetype:
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} asset slot {slot.slot_id} does not match "
+                "the declared frame page archetype"
             )
         path = Path(item.path)
         if "://" in item.path or not path.is_absolute() or not path.is_file():
@@ -249,6 +273,21 @@ def _frame_assets(
 def _resolve_storyboard_assets(
     storyboard: CarouselPayload, assets: AssetManifest
 ) -> tuple[dict[str, list[AssetManifestItem]], dict[str, str]]:
+    expected_slots = {
+        slot.slot_id
+        for frame in storyboard.storyboards
+        for slot in frame.visual_slots
+    }
+    manifest_slot_ids = [item.slot_id for item in assets.items]
+    manifest_slots = set(manifest_slot_ids)
+    if (
+        manifest_slots != expected_slots
+        or len(manifest_slot_ids) != len(manifest_slots)
+    ):
+        raise EditorialCarouselRenderError(
+            "asset manifest slots do not match storyboard"
+        )
+
     by_frame: dict[str, list[AssetManifestItem]] = {}
     used_hashes: dict[str, str] = {}
     for frame in storyboard.storyboards:
@@ -287,10 +326,12 @@ def _assert_plan_matches_storyboard(
             seen_slot_ids.add(slot.slot_id)
 
     planned = [
-        (frame.frame_id, frame.role, frame.layout) for frame in visual_plan.frame_plan
+        (frame.frame_id, frame.role, frame.page_archetype)
+        for frame in visual_plan.frame_plan
     ]
     rendered = [
-        (frame.frame_id, frame.role, frame.layout) for frame in storyboard.storyboards
+        (frame.frame_id, frame.role, frame.page_archetype)
+        for frame in storyboard.storyboards
     ]
     if planned != rendered:
         raise EditorialCarouselRenderError(
@@ -579,7 +620,7 @@ def render_carousel(
 ) -> RenderManifest:
     """Render one strict editorial carousel as a complete local Chromium set."""
     _assert_plan_matches_storyboard(visual_plan, storyboard)
-    if visual_plan.design_system != BEAUTY_EDITORIAL_V1.name:
+    if visual_plan.design_system != "beauty_editorial_v2":
         raise EditorialCarouselRenderError(
             f"unsupported design system: {visual_plan.design_system}"
         )
@@ -632,7 +673,11 @@ def render_carousel(
                     html_path = staging_dir / f"page-{index:02d}.html"
                     temporary_html.append(html_path)
                     try:
-                        renderer = LAYOUT_RENDERERS[frame.layout]
+                        renderer = LAYOUT_RENDERERS[
+                            _LEGACY_RENDER_LAYOUT_BY_ARCHETYPE[
+                                frame.page_archetype
+                            ]
+                        ]
                         card = renderer(frame, frame_assets[frame.frame_id])
                         document = _document_html(card)
                         _write_html(html_path, document)
@@ -681,7 +726,14 @@ def render_carousel(
                         RenderedPage(
                             frame_id=frame.frame_id,
                             role=frame.role,
-                            layout=frame.layout,
+                            page_archetype=frame.page_archetype,
+                            template_family=visual_plan.template_family,
+                            density=(
+                                "standard"
+                                if frame.content_density_hint == "auto"
+                                else frame.content_density_hint
+                            ),
+                            composition_variant="legacy_bridge",
                             path=str(final_path),
                             width=1080,
                             height=1440,

@@ -1546,6 +1546,27 @@ def _run_complete_editorial_guard(monkeypatch, tmp_path, mutate=None):
     return state, final_policy_guard_node(state)
 
 
+def test_final_policy_guard_accepts_text_only_carousel_with_empty_asset_bindings(
+    monkeypatch,
+    tmp_path,
+):
+    def make_text_only(state):
+        state["visual_plan"].required_assets = []
+        state["asset_manifest"].items = []
+        state["render_manifest"].source_asset_sha256 = {}
+        for frame in state["publish_package"]["storyboards"]:
+            frame["visual_slots"] = []
+
+    _state, result = _run_complete_editorial_guard(
+        monkeypatch,
+        tmp_path,
+        make_text_only,
+    )
+
+    assert result["final_policy_issues"] == []
+    assert route_after_final_guard(result) == "content_writer"
+
+
 @pytest.mark.parametrize(
     "field_name,empty_value",
     [
@@ -1875,7 +1896,7 @@ def test_final_policy_guard_rejects_external_requirement_fingerprint_drift(
         source_url="https://www.pexels.com/photo/asset/",
         source_file_url="https://images.pexels.com/photos/asset.svg",
         role="product_texture",
-        layout="editorial_cover",
+        page_archetype="cover",
         width=16,
         height=16,
         license="Pexels License",
@@ -2111,7 +2132,7 @@ def test_final_policy_guard_rejects_untrusted_or_aliased_render_paths(
     )
 
 
-def test_final_policy_guard_binds_role_layout_visible_text_and_unique_slots(
+def test_final_policy_guard_binds_role_archetype_visible_text_and_unique_slots(
     monkeypatch,
     tmp_path,
 ):

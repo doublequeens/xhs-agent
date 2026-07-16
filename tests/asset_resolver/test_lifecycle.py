@@ -45,7 +45,7 @@ def pending_asset(
         source_url=f"https://www.pexels.com/photo/{asset_id}/",
         source_file_url=f"https://images.pexels.com/photos/{asset_id}.webp",
         role="serum_texture",
-        layout="texture_baseline",
+        page_archetype="explanation",
         width=1080,
         height=1440,
         license="Pexels License",
@@ -192,6 +192,23 @@ def test_strict_audit_loader_rehydrates_canonical_pending_asset(tmp_path: Path) 
     assert load_pending_asset(pending.metadata_path, catalog(tmp_path)) == pending
 
 
+def test_audit_loader_accepts_legacy_layout_only_at_persistence_boundary(
+    tmp_path: Path,
+) -> None:
+    from src.asset_resolver.lifecycle import load_pending_asset
+
+    pending = pending_asset(tmp_path)
+    audit = json.loads(pending.metadata_path.read_text(encoding="utf-8"))
+    audit["layout"] = "texture_baseline"
+    audit.pop("page_archetype")
+    pending.metadata_path.write_text(json.dumps(audit), encoding="utf-8")
+
+    loaded = load_pending_asset(pending.metadata_path, catalog(tmp_path))
+
+    assert loaded.page_archetype == "explanation"
+    assert loaded == pending
+
+
 def test_audit_loader_requires_catalog_scope(tmp_path: Path) -> None:
     from src.asset_resolver.lifecycle import load_pending_asset
 
@@ -245,7 +262,7 @@ def test_strict_audit_loader_rejects_invalid_canonical_fields(
         ("candidate_rank", 1.0),
         ("tags", []),
         ("provider_attribution", []),
-        ("layout", "not-a-layout"),
+        ("page_archetype", "not-an-archetype"),
     ],
 )
 def test_pydantic_audit_schema_rejects_wrong_types_and_empty_contract_fields(
@@ -622,22 +639,68 @@ def test_reloaded_approved_stock_keeps_provenance_in_local_manifest(
     approve_external_asset(pending, catalog(tmp_path))
     reloaded = load_catalog(tmp_path / "manifest.json")
     plan = VisualPlan(
-        design_system="beauty_editorial_v1",
+        design_system="beauty_editorial_v2",
+        template_family="pink_red",
+        template_selection={
+            "template_family": "pink_red",
+            "score": 10,
+            "reasons": ["deterministic lifecycle fixture"],
+            "rejected_families": {
+                family: ["not selected in deterministic fixture"]
+                for family in (
+                    "deep_teal",
+                    "soft_pink",
+                    "coral_impact",
+                    "green_catalog",
+                    "white_quote",
+                )
+            },
+        },
+        narrative_form="scenario_story",
         content_job="diagnose_and_adjust",
-        primary_visual_family="face_zone_map",
-        supporting_families=["beauty_editorial", "saveable_reference"],
         frame_plan=[
-            FramePlanItem(frame_id="cover", role="cover", layout="editorial_cover", purpose="cover"),
-            FramePlanItem(frame_id="texture", role="texture", layout="texture_baseline", purpose="texture"),
-            FramePlanItem(frame_id="face", role="face", layout="front_face_zone", purpose="face"),
-            FramePlanItem(frame_id="steps", role="steps", layout="step_timeline", purpose="steps"),
-            FramePlanItem(frame_id="save", role="save", layout="saveable_reference", purpose="save"),
+            FramePlanItem(
+                frame_id="cover",
+                role="cover",
+                page_archetype="cover",
+                purpose="cover",
+                allowed_density=["standard"],
+            ),
+            FramePlanItem(
+                frame_id="texture",
+                role="texture",
+                page_archetype="explanation",
+                purpose="texture",
+                allowed_density=["standard"],
+                asset_roles=["serum_texture"],
+            ),
+            FramePlanItem(
+                frame_id="face",
+                role="face",
+                page_archetype="diagnostic",
+                purpose="face",
+                allowed_density=["standard"],
+            ),
+            FramePlanItem(
+                frame_id="steps",
+                role="steps",
+                page_archetype="steps",
+                purpose="steps",
+                allowed_density=["standard"],
+            ),
+            FramePlanItem(
+                frame_id="save",
+                role="save",
+                page_archetype="save",
+                purpose="save",
+                allowed_density=["standard"],
+            ),
         ],
         required_assets=[
             AssetRequirement(
                 slot_id="serum-slot",
                 role="serum_texture",
-                layout="texture_baseline",
+                page_archetype="explanation",
                 min_width=1080,
                 min_height=1440,
                 context_tags=["serum"],

@@ -20,16 +20,16 @@ TEST_ASSET_PATH = (
 )
 
 FRAME_SPECS = (
-    ("cover", "cover", "editorial_cover"),
-    ("baseline", "texture baseline", "texture_baseline"),
-    ("zone", "front face zone", "front_face_zone"),
-    ("choice", "decision/tree", "decision_tree"),
-    ("save", "saveable reference", "saveable_reference"),
+    ("cover", "cover", "cover"),
+    ("baseline", "texture baseline", "explanation"),
+    ("zone", "front face zone", "diagnostic"),
+    ("choice", "decision/tree", "qa"),
+    ("save", "saveable reference", "save"),
 )
 
 
 def make_frame(
-    layout: str,
+    page_archetype: str,
     *,
     frame_id: str = "frame",
     role: str = "detail",
@@ -38,7 +38,8 @@ def make_frame(
         {
             "frame_id": frame_id,
             "role": role,
-            "layout": layout,
+            "page_archetype": page_archetype,
+            "content_density_hint": "standard",
             "headline": "先看懂 <分区> & 再调整",
             "kicker": '编辑型 "护肤"',
             "content_blocks": [
@@ -74,7 +75,7 @@ def make_frame(
 
 
 def make_asset(
-    layout: str,
+    page_archetype: str,
     *,
     slot_id: str = "frame-visual",
     path: Path = TEST_ASSET_PATH,
@@ -83,7 +84,7 @@ def make_asset(
         {
             "slot_id": slot_id,
             "role": "product_texture",
-            "layout": layout,
+            "page_archetype": page_archetype,
             "status": "active",
             "path": str(path.resolve()),
             "asset_id": f"asset-{slot_id}",
@@ -100,19 +101,35 @@ def make_asset(
 def visual_plan() -> VisualPlan:
     return VisualPlan.model_validate(
         {
-            "design_system": "beauty_editorial_v1",
+            "design_system": "beauty_editorial_v2",
+            "template_family": "pink_red",
+            "template_selection": {
+                "template_family": "pink_red",
+                "score": 10,
+                "reasons": ["deterministic renderer fixture"],
+                "rejected_families": {
+                    family: ["not selected in deterministic renderer fixture"]
+                    for family in (
+                        "deep_teal",
+                        "soft_pink",
+                        "coral_impact",
+                        "green_catalog",
+                        "white_quote",
+                    )
+                },
+            },
+            "narrative_form": "scenario_story",
             "content_job": "diagnose_and_adjust",
-            "primary_visual_family": "face_zone_map",
-            "supporting_families": ["beauty_editorial", "saveable_reference"],
             "frame_plan": [
                 {
                     "frame_id": frame_id,
                     "role": role,
-                    "layout": layout,
+                    "page_archetype": page_archetype,
                     "purpose": f"render {role}",
+                    "allowed_density": ["standard"],
                     "asset_roles": ["product_texture"],
                 }
-                for frame_id, role, layout in FRAME_SPECS
+                for frame_id, role, page_archetype in FRAME_SPECS
             ],
             "required_assets": [],
         }
@@ -123,8 +140,8 @@ def visual_plan() -> VisualPlan:
 def storyboard() -> CarouselPayload:
     return CarouselPayload(
         storyboards=[
-            make_frame(layout, frame_id=frame_id, role=role)
-            for frame_id, role, layout in FRAME_SPECS
+            make_frame(page_archetype, frame_id=frame_id, role=role)
+            for frame_id, role, page_archetype in FRAME_SPECS
         ]
     )
 
@@ -132,8 +149,8 @@ def storyboard() -> CarouselPayload:
 @pytest.fixture
 def asset_manifest() -> AssetManifest:
     items = [
-        make_asset(layout, slot_id=f"{frame_id}-visual")
-        for frame_id, _role, layout in FRAME_SPECS
+        make_asset(page_archetype, slot_id=f"{frame_id}-visual")
+        for frame_id, _role, page_archetype in FRAME_SPECS
     ]
     return AssetManifest.model_validate(
         {

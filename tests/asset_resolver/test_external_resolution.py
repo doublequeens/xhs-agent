@@ -177,7 +177,7 @@ def texture_plan() -> VisualPlan:
     requirement = AssetRequirement(
         slot_id="serum-slot",
         role="serum_texture",
-        layout="texture_baseline",
+        page_archetype="explanation",
         min_width=1080,
         min_height=1440,
         context_tags=["serum", "drop"],
@@ -185,16 +185,62 @@ def texture_plan() -> VisualPlan:
         palette_tags=["ivory"],
     )
     return VisualPlan(
-        design_system="beauty_editorial_v1",
+        design_system="beauty_editorial_v2",
+        template_family="pink_red",
+        template_selection={
+            "template_family": "pink_red",
+            "score": 10,
+            "reasons": ["deterministic external-resolution fixture"],
+            "rejected_families": {
+                family: ["not selected in deterministic fixture"]
+                for family in (
+                    "deep_teal",
+                    "soft_pink",
+                    "coral_impact",
+                    "green_catalog",
+                    "white_quote",
+                )
+            },
+        },
+        narrative_form="scenario_story",
         content_job="diagnose_and_adjust",
-        primary_visual_family="face_zone_map",
-        supporting_families=["beauty_editorial", "saveable_reference"],
         frame_plan=[
-            FramePlanItem(frame_id="cover", role="cover", layout="editorial_cover", purpose="cover"),
-            FramePlanItem(frame_id="texture", role="texture", layout="texture_baseline", purpose="texture"),
-            FramePlanItem(frame_id="face", role="face", layout="front_face_zone", purpose="face"),
-            FramePlanItem(frame_id="steps", role="steps", layout="step_timeline", purpose="steps"),
-            FramePlanItem(frame_id="save", role="save", layout="saveable_reference", purpose="save"),
+            FramePlanItem(
+                frame_id="cover",
+                role="cover",
+                page_archetype="cover",
+                purpose="cover",
+                allowed_density=["standard"],
+            ),
+            FramePlanItem(
+                frame_id="texture",
+                role="texture",
+                page_archetype="explanation",
+                purpose="texture",
+                allowed_density=["standard"],
+                asset_roles=["serum_texture"],
+            ),
+            FramePlanItem(
+                frame_id="face",
+                role="face",
+                page_archetype="diagnostic",
+                purpose="face",
+                allowed_density=["standard"],
+            ),
+            FramePlanItem(
+                frame_id="steps",
+                role="steps",
+                page_archetype="steps",
+                purpose="steps",
+                allowed_density=["standard"],
+            ),
+            FramePlanItem(
+                frame_id="save",
+                role="save",
+                page_archetype="save",
+                purpose="save",
+                allowed_density=["standard"],
+            ),
         ],
         required_assets=[requirement],
     )
