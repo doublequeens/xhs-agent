@@ -13,7 +13,7 @@ ContentLock SHA-256：{content_lock_sha256}
 
 必须锁定：focus_keyword、topic、topic_id、angle、angle_id、target_group、core_pain、
 title、cover_copy、first_screen_promise、content、hashtags、frame 数量、frame 顺序、
-frame role、layout，以及 storyboard 内每一个可见字符串。
+template_family、frame role、page_archetype、density，以及 storyboard 内每一个可见字符串。
 
 禁止重新选题、重新写文案、替换关键词、改变目标人群或核心痛点。禁止增加、删除或
 改写护肤结论、步骤、用量、判断标准、风险提示和事实。禁止把参考图中的标题或内容
@@ -46,13 +46,14 @@ frame role、layout，以及 storyboard 内每一个可见字符串。
 - 中文字体：项目内 Source Han Serif SC SemiBold 只用于显示标题；Source Han Sans SC
   Regular/Medium 用于正文；Bodoni Moda Regular 用于页码或数字。禁止系统 fallback、
   书法体、手写体、卡通字体和超粗黑体。
-- 同套一致性：颜色、纸张、线条、字体和光线统一；构图必须随 layout 和信息任务变化，
+- 同套一致性：颜色、纸张、线条、字体和光线统一；构图必须随 page_archetype、density 和信息任务变化，
   不能把同一模板机械复制 5–7 次。
 
 ## 允许改变的内容
 
 只允许改变布局的视觉实现、换行、字号层级、留白、素材选择、插画、背景、光影、裁切和
-Design System 内的配色占比。不得改变 frame 数量、顺序、role、layout、信息任务或文字归属。
+Design System 内的配色占比。不得改变 template_family、frame 数量、顺序、role、
+page_archetype、density、信息任务或文字归属。
 
 ## 执行流程
 
@@ -62,11 +63,11 @@ Design System 内的配色占比。不得改变 frame 数量、顺序、role、l
 4. 找到同目录第一个不存在的 images-codex-vN，创建该目录和其 visual-bases 子目录；禁止
    覆盖 images、审计 JSON、publish-copy.txt、prompt 本身或已有 images-codex-vN。
 5. 先为封面单独调用一次 Codex 内置 image generation。它只生成无中文文字的视觉底图，
-   按封面 layout 为锁定文字留出安全区；不得调用 API、CLI 或要求 OPENAI_API_KEY。
+   按封面 page_archetype 和 density 为锁定文字留出安全区；不得调用 API、CLI 或要求 OPENAI_API_KEY。
 6. 用 view_image 检查封面底图。未达到 Style Lock 就只调整一个问题并重新生成封面；通过后
    将它作为后续页面的 style anchor。
 7. 按锁定顺序逐页处理剩余 frame。每个不同页面单独调用一次内置 image generation，参考
-   质量锚点、已通过的封面和紧邻上一页；生成与本页 role/layout/visual slots 对应、无中文
+   质量锚点、已通过的封面和紧邻上一页；生成与本页 role/page_archetype/density/visual slots 对应、无中文
    文字的视觉底图。
 8. 使用项目本地字体和确定性 HTML/CSS 把对应 storyboard 的锁定文字叠加到底图。不得让
    图像模型自由生成中文；不得修改项目生产代码。临时 HTML 只放在本次版本目录的工作区。

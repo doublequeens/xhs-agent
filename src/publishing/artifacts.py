@@ -271,7 +271,10 @@ def _lock_payload(lock: ContentLock) -> dict:
     return {field: serialized[field] for field in LOCK_FIELDS}
 
 
-def _frame_text_table(lock: ContentLock) -> str:
+def _frame_text_table(
+    lock: ContentLock,
+    template_family: str,
+) -> str:
     frames = lock.model_dump(mode="json")["storyboards"]
     rows: list[str] = []
     for index, frame in enumerate(frames, start=1):
@@ -283,8 +286,11 @@ def _frame_text_table(lock: ContentLock) -> str:
             "footer": frame.get("footer"),
         }
         rows.append(
-            f"{index}. frame_id={frame['frame_id']} role={frame['role']} "
-            f"layout={frame['layout']} visible_text="
+            f"{index}. template_family={template_family} "
+            f"frame_id={frame['frame_id']} role={frame['role']} "
+            f"page_archetype={frame['page_archetype']} "
+            f"density={frame.get('content_density_hint', 'auto')} "
+            "visible_text="
             + json.dumps(
                 visible,
                 ensure_ascii=False,
@@ -315,10 +321,16 @@ def _build_codex_rescue_prompt(
             raise ValueError("rescue reference paths must not contain CR, LF, or NUL")
         rendered_references.append(f"- {Path(raw_path)}")
     template = _TEMPLATE_PATH.read_text(encoding="utf-8")
+    visual_plan = package.get("visual_plan")
+    template_family = (
+        str(visual_plan.get("template_family") or "")
+        if isinstance(visual_plan, Mapping)
+        else ""
+    )
     return template.format(
         content_lock_json=canonical_content_bytes(_lock_payload(lock)).decode("utf-8"),
         content_lock_sha256=lock.canonical_sha256,
-        frame_text_table=_frame_text_table(lock),
+        frame_text_table=_frame_text_table(lock, template_family),
         package_directory=package_directory,
         audit_json_path=package_directory / f"{title}.json",
         current_images_directory=package_directory / "images",

@@ -117,7 +117,7 @@ def extract_storyboard_visible_text(storyboards) -> list[dict]:
         visible_text.append({
             "frame_id": str(frame.get("frame_id") or ""),
             "role": str(frame.get("role") or ""),
-            "layout": str(frame.get("layout") or ""),
+            "page_archetype": str(frame.get("page_archetype") or ""),
             "text_blocks": text_blocks,
         })
     return visible_text

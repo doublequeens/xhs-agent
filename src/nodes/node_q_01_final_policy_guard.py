@@ -7,6 +7,7 @@ import os
 import re
 import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 from PIL import Image
 
@@ -20,7 +21,6 @@ from src.schemas import AgentState
 from src.schemas.assets import AssetRequirement
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.nodes.node_p_editorial_carousel_renderer import PUBLISH_ROOT
-from src.editorial_carousel.strategy import ASSET_ADAPTER
 
 
 ASSET_ACTIVE_ROOT = ASSET_ROOT / "active"
@@ -294,7 +294,7 @@ def _approved_audit_matches_canonical(
         and audit.approved_sha256 == entry.sha256
         and audit.role == entry.role
         and audit.layout in entry.allowed_layouts
-        and audit.layout == _value(item, "layout")
+        and audit.layout == _value(item, "page_archetype")
         and audit.width == entry.width == _value(item, "width")
         and audit.height == entry.height == _value(item, "height")
         and tuple(audit.tags) == entry.tags
@@ -368,7 +368,7 @@ def _asset_item_matches_canonical(
             entry.ownership == "project_original"
             and entry.usage == "production"
             and bool(entry.tags)
-            and _value(item, "layout") in entry.allowed_layouts
+            and _value(item, "page_archetype") in entry.allowed_layouts
             and _value(item, "width") == entry.width
             and _value(item, "height") == entry.height
             and (
@@ -403,7 +403,7 @@ def _asset_item_matches_canonical(
         entry.ownership != "licensed_stock"
         or entry.usage != "production"
         or not entry.tags
-        or _value(item, "layout") not in entry.allowed_layouts
+        or _value(item, "page_archetype") not in entry.allowed_layouts
         or _value(item, "width") != entry.width
         or _value(item, "height") != entry.height
         or (
@@ -455,6 +455,15 @@ def _canonical_requirement(payload) -> AssetRequirement | None:
         )
     except (TypeError, ValueError):
         return None
+
+
+def _legacy_eligibility_view(requirement: AssetRequirement):
+    """Bridge the Task 6 v2 requirement into the Task 7-owned eligibility API."""
+
+    return SimpleNamespace(
+        **requirement.model_dump(mode="python"),
+        layout=requirement.page_archetype,
+    )
 
 
 def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
@@ -601,7 +610,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
             or _value(item, "role") != requirement.role
             or not entry_satisfies_requirement(
                 canonical_entry,
-                requirement,
+                _legacy_eligibility_view(requirement),
                 mode=eligibility_mode,
                 catalog_entries=canonical_entries,
                 authorizer_integrity=lambda entry: (
@@ -670,7 +679,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     plan_slots = {
         str(_value(item, "slot_id") or ""): (
             str(_value(item, "role") or ""),
-            str(_value(item, "layout") or ""),
+            str(_value(item, "page_archetype") or ""),
         )
         for item in plan_requirements
     }
@@ -683,7 +692,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                 (
                     str(_value(slot, "slot_id") or ""),
                     str(_value(slot, "role") or ""),
-                    str(frame.get("layout") or ""),
+                    str(frame.get("page_archetype") or ""),
                 )
             )
     storyboard_slot_ids = [record[0] for record in storyboard_slot_records]
@@ -702,7 +711,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     manifest_slots = {
         str(_value(item, "slot_id") or ""): (
             str(_value(item, "role") or ""),
-            str(_value(item, "layout") or ""),
+            str(_value(item, "page_archetype") or ""),
         )
         for item in asset_items
     }
@@ -713,18 +722,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
     slot_ids_match = set(plan_slots) == set(storyboard_slots) == set(manifest_slots)
     slot_bindings_match = slot_ids_match and all(
         plan_slots[slot_id] == manifest_slots[slot_id]
-        and storyboard_slots[slot_id][1] == plan_slots[slot_id][1]
-        and (
-            storyboard_slots[slot_id][0] == plan_slots[slot_id][0]
-            or plan_slots[slot_id][0]
-            in ASSET_ADAPTER.get(
-                (
-                    storyboard_slots[slot_id][1],
-                    storyboard_slots[slot_id][0],
-                ),
-                (),
-            )
-        )
+        and storyboard_slots[slot_id] == plan_slots[slot_id]
         for slot_id in plan_slots
     )
     if not (
@@ -760,7 +758,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         (
             str(_value(frame, "frame_id") or ""),
             str(_value(frame, "role") or ""),
-            str(_value(frame, "layout") or ""),
+            str(_value(frame, "page_archetype") or ""),
         )
         for frame in plan_frames
     ]
@@ -768,7 +766,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         (
             str(_value(frame, "frame_id") or ""),
             str(_value(frame, "role") or ""),
-            str(_value(frame, "layout") or ""),
+            str(_value(frame, "page_archetype") or ""),
         )
         for frame in storyboard_frames
     ]
@@ -776,7 +774,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         (
             str(_value(page, "frame_id") or ""),
             str(_value(page, "role") or ""),
-            str(_value(page, "layout") or ""),
+            str(_value(page, "page_archetype") or ""),
         )
         for page in pages
     ]
@@ -784,7 +782,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
         issues.append(
             _artifact_issue(
                 "rendered_page_order_mismatch",
-                "Rendered page frame, role, layout, and order must match plan and storyboard.",
+                "Rendered page frame, role, page archetype, and order must match plan and storyboard.",
                 "render_manifest.pages",
             )
         )

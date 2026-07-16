@@ -42,20 +42,23 @@ REFERENCE_PATHS = [
 
 
 def _storyboards(count: int = 5) -> list[dict]:
-    layouts = [
-        "editorial_cover",
-        "texture_baseline",
-        "front_face_zone",
-        "saveable_checklist",
-        "saveable_reference",
-        "decision_tree",
-        "three_state_diagnostic",
+    page_archetypes = [
+        "cover",
+        "scene",
+        "explanation",
+        "checklist",
+        "save",
+        "qa",
+        "boundary",
     ]
     return [
         {
             "frame_id": f"frame-{index}",
             "role": "cover" if index == 1 else f"detail-{index}",
-            "layout": layouts[index - 1],
+            "page_archetype": page_archetypes[index - 1],
+            "content_density_hint": (
+                "dense" if index in {4, 5} else "standard"
+            ),
             "headline": "精华用量判断" if index == 1 else f"第{index}页判断",
             "kicker": f"第{index}页眉题",
             "content_blocks": [
@@ -92,6 +95,21 @@ def _content_contract(frame_count: int = 5) -> dict:
 
 
 def package_payload(frame_count: int = 5) -> dict:
+    narrative_plan = {
+        "narrative_form": "diagnostic_qa",
+        "beats": [
+            {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+            {"beat_id": "scene", "kind": "scene", "purpose": "呈现使用场景"},
+            {"beat_id": "diagnose", "kind": "diagnostic", "purpose": "给出判断标准"},
+            {"beat_id": "save", "kind": "summary", "purpose": "保存判断清单"},
+        ],
+        "saveable_beat": {
+            "beat_id": "save",
+            "kind": "summary",
+            "purpose": "保存判断清单",
+        },
+        "closing_mode": "none",
+    }
     return {
         "focus_keyword": "精华用量",
         "focus_keyword_cli_present": True,
@@ -107,6 +125,8 @@ def package_payload(frame_count: int = 5) -> dict:
         "hashtags": ["#护肤", "#精华"],
         "storyboards": _storyboards(frame_count),
         "content_contract": _content_contract(frame_count),
+        "narrative_plan": narrative_plan,
+        "narrative_form": narrative_plan["narrative_form"],
         "internal_notes": "精华按1泵还是2泵",
     }
 
@@ -174,7 +194,10 @@ def exportable_package(tmp_path: Path, frame_count: int = 5) -> tuple[dict, Path
             {
                 "frame_id": frame["frame_id"],
                 "role": frame["role"],
-                "layout": frame["layout"],
+                "page_archetype": frame["page_archetype"],
+                "template_family": "deep_teal",
+                "density": frame["content_density_hint"],
+                "composition_variant": "stacked",
                 "path": str(path),
                 "width": 1080,
                 "height": 1440,
@@ -192,16 +215,33 @@ def exportable_package(tmp_path: Path, frame_count: int = 5) -> tuple[dict, Path
             "profile_version": "beauty-v1",
             "rendered_image_paths": [str(path) for path in paths],
             "visual_plan": {
-                "design_system": "beauty_editorial_v1",
+                "design_system": "beauty_editorial_v2",
+                "template_family": "deep_teal",
+                "template_selection": {
+                    "template_family": "deep_teal",
+                    "score": 100,
+                    "reasons": ["test fixture"],
+                    "rejected_families": {
+                        "pink_red": ["lower score"],
+                        "soft_pink": ["lower score"],
+                        "coral_impact": ["lower score"],
+                        "green_catalog": ["lower score"],
+                        "white_quote": ["lower score"],
+                    },
+                },
+                "narrative_form": package["narrative_form"],
                 "content_job": "diagnose_and_adjust",
-                "primary_visual_family": "beauty_editorial",
-                "supporting_families": [],
                 "frame_plan": [
                     {
                         "frame_id": frame["frame_id"],
                         "role": frame["role"],
-                        "layout": frame["layout"],
-                        "purpose": frame["headline"],
+                        "page_archetype": frame["page_archetype"],
+                        "purpose": (
+                            package["narrative_plan"]["saveable_beat"]["purpose"]
+                            if frame["page_archetype"] == "save"
+                            else frame["headline"]
+                        ),
+                        "allowed_density": ["sparse", "standard", "dense"],
                         "asset_roles": [],
                     }
                     for frame in package["storyboards"]
@@ -398,6 +438,8 @@ def test_content_lock_rejects_missing_locked_fields(missing):
 
 def test_rescue_prompt_locks_current_content_and_forbids_rewriting():
     package = package_payload()
+    package["visual_plan"] = {"template_family": "deep_teal"}
+    package["storyboards"][1]["headline"] = "防晒别急着叠✨"
     lock = build_content_lock(package)
     prompt = build_codex_rescue_prompt(package, lock, REFERENCE_PATHS)
 
@@ -407,6 +449,11 @@ def test_rescue_prompt_locks_current_content_and_forbids_rewriting():
     assert "这是一次 visual-only regeneration，不是内容创作" in prompt
     assert "禁止重新选题" in prompt
     assert "每张图片的所有可见文字必须逐字来自对应 storyboard" in prompt
+    assert "template_family=deep_teal" in prompt
+    assert "page_archetype=scene" in prompt
+    assert "density=standard" in prompt
+    assert "防晒别急着叠✨" in prompt
+    assert "layout=" not in prompt
     assert "images-codex-vN" in prompt
     assert all(str(path) in prompt for path in REFERENCE_PATHS)
 
@@ -570,7 +617,7 @@ def test_attestation_is_result_only_and_binds_current_inputs(tmp_path):
                     "asset_id": "pending",
                     "slot_id": "slot-1",
                     "role": "texture",
-                    "layout": "editorial_cover",
+                    "page_archetype": "cover",
                     "source_type": "stock",
                     "path": "/tmp/pending.png",
                     "status": "pending_external",

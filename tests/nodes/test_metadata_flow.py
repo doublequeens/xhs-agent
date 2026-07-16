@@ -123,19 +123,36 @@ def _narrative_metadata():
 
 
 def _visual_plan():
-    from src.editorial_carousel.strategy import build_visual_plan
+    from src.editorial_carousel import build_visual_plan
 
-    return build_visual_plan(_content_contract(), recent_signatures=[])
+    package = {
+        "topic_id": "tp_001",
+        "angle_id": "ag_001",
+        **_narrative_metadata(),
+    }
+    return build_visual_plan(
+        _content_contract(),
+        _narrative_plan(),
+        package,
+        [],
+    )
 
 
 def _storyboard_frames():
+    plan = _visual_plan()
+    requirements_by_frame = {
+        requirement.slot_id.rsplit("-", 1)[0]: requirement
+        for requirement in plan.required_assets
+    }
     frames = []
-    for index, item in enumerate(_visual_plan().frame_plan):
+    for index, item in enumerate(plan.frame_plan):
+        requirement = requirements_by_frame.get(item.frame_id)
         frames.append(
             {
                 "frame_id": item.frame_id,
                 "role": item.role,
-                "layout": item.layout,
+                "page_archetype": item.page_archetype,
+                "content_density_hint": item.allowed_density[0],
                 "headline": (
                     _content_contract()["first_screen_promise"]
                     if index == 0
@@ -149,13 +166,17 @@ def _storyboard_frames():
                     }
                 ],
                 "emphasis": ["要点"],
-                "visual_slots": [
-                    {
-                        "slot_id": f"{item.frame_id}-visual",
-                        "role": item.asset_roles[0],
-                        "semantic_tags": ["daily-routine"],
-                    }
-                ],
+                "visual_slots": (
+                    [
+                        {
+                            "slot_id": requirement.slot_id,
+                            "role": requirement.role,
+                            "semantic_tags": ["daily-routine"],
+                        }
+                    ]
+                    if requirement is not None
+                    else []
+                ),
                 "footer": "按需微调",
             }
         )
@@ -1197,9 +1218,14 @@ def test_storyboards_generator_preserves_package_and_writes_semantic_carousel(mo
     assert merged_package["risk_level"] == publish_package["risk_level"]
     assert merged_package["risk_flags"] == publish_package["risk_flags"]
     frames = merged_package["storyboards"]
-    assert [(frame["frame_id"], frame["layout"]) for frame in frames] == [
-        (item.frame_id, item.layout) for item in _visual_plan().frame_plan
+    assert [
+        (frame["frame_id"], frame["role"], frame["page_archetype"])
+        for frame in frames
+    ] == [
+        (item.frame_id, item.role, item.page_archetype)
+        for item in _visual_plan().frame_plan
     ]
+    assert any(frame["visual_slots"] == [] for frame in frames)
     assert frames[0]["headline"] == _content_contract()["first_screen_promise"]
     assert frames[3]["content_blocks"][0]["body"] == "第4张的单一信息任务"
     assert "Semantic Editorial Carousel Storyboard Generator" in captured["system_prompt"]
@@ -1315,6 +1341,58 @@ def test_carousel_payload_accepts_the_visual_plan_frame_count():
     assert len(payload.storyboards) == len(_visual_plan().frame_plan)
 
 
+def test_storyboard_payload_matches_page_archetypes_and_allows_empty_visual_slots():
+    from src.editorial_carousel import build_visual_plan
+    from src.nodes.node_o_storyboards_generator import _semantic_payload
+    from src.schemas.content_contract import ContentContract
+
+    contract = ContentContract.model_validate(
+        {**_content_contract(), "proof_mode": "none"}
+    )
+    package = {
+        "topic_id": "tp_001",
+        "angle_id": "ag_001",
+        **_narrative_metadata(),
+    }
+    plan = build_visual_plan(contract, _narrative_plan(), package, [])
+    raw_frames = [
+        {
+            "frame_id": frame.frame_id,
+            "role": frame.role,
+            "page_archetype": frame.page_archetype,
+            "content_density_hint": "auto",
+            "headline": (
+                contract.first_screen_promise
+                if index == 0
+                else frame.purpose
+            ),
+            "kicker": None,
+            "content_blocks": [
+                {"block_type": "text", "body": frame.purpose}
+            ],
+            "emphasis": [],
+            "visual_slots": [],
+            "footer": None,
+        }
+        for index, frame in enumerate(plan.frame_plan)
+    ]
+
+    payload = _semantic_payload(
+        {"storyboards": raw_frames},
+        plan,
+        contract,
+    )
+
+    assert [
+        (frame.frame_id, frame.role, frame.page_archetype)
+        for frame in payload.storyboards
+    ] == [
+        (frame.frame_id, frame.role, frame.page_archetype)
+        for frame in plan.frame_plan
+    ]
+    assert all(frame.visual_slots == [] for frame in payload.storyboards)
+
+
 def test_storyboard_generator_rejects_invalid_payload_before_state_write(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
 
@@ -1416,7 +1494,7 @@ def test_semantic_storyboard_rejects_cover_promise_mismatch_after_r2_patch(monke
                     content_snapshot=SimpleNamespace(
                         storyboard_visible_text=[
                             {
-                                "frame_id": "cover",
+                                "frame_id": _visual_plan().frame_plan[0].frame_id,
                                 "text_blocks": {"headline": "补丁改坏的首屏承诺"},
                             }
                         ]
@@ -1426,11 +1504,11 @@ def test_semantic_storyboard_rejects_cover_promise_mismatch_after_r2_patch(monke
         )
 
 
-def test_storyboard_generator_rejects_frame_order_or_layout_drift(monkeypatch):
+def test_storyboard_generator_rejects_frame_order_or_archetype_drift(monkeypatch):
     from src.nodes import node_o_storyboards_generator as module
 
     frames = _storyboard_frames()
-    frames[1]["layout"] = "decision_tree"
+    frames[1]["page_archetype"] = "qa"
 
     class FakeModel:
         def execute(self, _messages):
@@ -1440,7 +1518,7 @@ def test_storyboard_generator_rejects_frame_order_or_layout_drift(monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match="storyboard frames must exactly match visual_plan frame order and layouts",
+        match="storyboard frames must exactly match visual_plan frame order, roles, and page archetypes",
     ):
         module.storyboards_generator_node(
             {

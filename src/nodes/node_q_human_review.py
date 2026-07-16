@@ -90,7 +90,10 @@ def _storyboard_render_structure_signature(storyboards) -> list[dict]:
             {
                 "frame_id": frame.get("frame_id"),
                 "role": frame.get("role"),
-                "layout": frame.get("layout"),
+                "page_archetype": frame.get("page_archetype"),
+                "content_density_hint": frame.get(
+                    "content_density_hint"
+                ),
                 "content_block_types": [
                     block.get("block_type") if isinstance(block, dict) else block
                     for block in list(frame.get("content_blocks") or [])
@@ -202,6 +205,9 @@ def _review_artifacts(state: AgentState, publish_package: dict) -> dict:
     images = [page.get("path") for page in pages if page.get("path")]
     if not images:
         images = list(publish_package.get("rendered_image_paths") or [])
+    visual_plan = _json_value(state.get("visual_plan")) or {}
+    if not isinstance(visual_plan, dict):
+        visual_plan = {}
     return {
         "images": images,
         "render_manifest": render_manifest,
@@ -211,6 +217,21 @@ def _review_artifacts(state: AgentState, publish_package: dict) -> dict:
         "proxy_metric_label": (render_qa or {}).get("metric_kind"),
         "proxy_metric_note": (render_qa or {}).get("metric_note"),
         "pending_assets": _pending_asset_payload(asset_manifest),
+        "visual_summary": {
+            "template_family": visual_plan.get("template_family"),
+            "narrative_form": visual_plan.get("narrative_form"),
+            "frames": [
+                {
+                    "frame_id": frame.get("frame_id"),
+                    "page_archetype": frame.get("page_archetype"),
+                    "density": frame.get("content_density_hint"),
+                }
+                for frame in list(
+                    publish_package.get("storyboards") or []
+                )
+                if isinstance(frame, dict)
+            ],
+        },
     }
 
 
@@ -295,6 +316,7 @@ def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_
                     target_group=str(publish_package.get("target_group") or ""),
                     core_pain=str(publish_package.get("core_pain") or ""),
                     best_cover_copy=str(publish_package.get("cover_copy") or ""),
+                    narrative_plan=publish_package.get("narrative_plan"),
                     storyboard_visible_text=extract_storyboard_visible_text(
                         publish_package.get("storyboards")
                     ),

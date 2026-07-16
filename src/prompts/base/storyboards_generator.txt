@@ -6,39 +6,47 @@ Semantic Editorial Carousel Storyboard Generator
   "storyboards": [
     {
       "frame_id": "逐字复制 VisualPlan.frame_plan 对应 frame_id",
-      "role": "对应页面的单一语义角色",
-      "layout": "逐字复制 VisualPlan.frame_plan 对应 layout",
-      "headline": "本页标题，最多 80 字符",
-      "kicker": "可选短标签或 null",
+      "role": "逐字复制 VisualPlan.frame_plan 对应 role",
+      "page_archetype": "逐字复制 VisualPlan.frame_plan 对应 page_archetype",
+      "content_density_hint": "auto | sparse | standard | dense",
+      "headline": "本页可见标题，最多 80 字符",
+      "kicker": "可见短标签或 null",
       "content_blocks": [
         {
           "block_type": "text | bullets | steps | comparison | checklist | decision_tree | labels",
-          "heading": "可选小标题或 null",
-          "body": "可选正文或 null",
-          "items": ["结构化短项"]
+          "heading": "可见小标题或 null",
+          "body": "可见正文或 null",
+          "items": ["可见结构化短项"]
         }
       ],
-      "emphasis": ["需要强调的短语"],
+      "emphasis": ["可见强调短语"],
       "visual_slots": [
         {
-          "slot_id": "页面内唯一且稳定的 slot id",
-          "role": "与 VisualPlan asset role 一致的语义角色",
+          "slot_id": "逐字复制对应 AssetRequirement.slot_id",
+          "role": "逐字复制对应 asset role",
           "semantic_tags": ["仅语义标签"],
           "composition": "left | right | center | background | full_bleed | null",
           "palette_tags": ["结构化色彩标签"]
         }
       ],
-      "footer": "可选页脚或 null"
+      "footer": "可见页脚或 null"
     }
   ]
 }
 
 硬规则：
-- storyboards 的数量、顺序、frame_id 和 layout 必须逐项等于 VisualPlan.frame_plan；不得增加额外 frame，也不得删除、交换或重命名 frame。
+- storyboards 的数量、顺序、frame_id、role 和 page_archetype 必须逐项等于 VisualPlan.frame_plan；不得增加额外 frame，也不得删除、交换或重命名 frame。
 - 第一张必须使用 VisualPlan 的 cover frame；其 headline 必须逐字等于 content_contract.first_screen_promise。
-- 每页只完成 VisualPlan 对应 role/purpose 的一个信息任务，不得改变 topic、angle、受众、首屏承诺或正文结论。
-- content_blocks 只能使用 CarouselPayload 允许的结构化类型；visual_slots 只描述素材的语义职责，不选择具体素材。
+- 必须使用 publish_package.narrative_plan 和每个 frame purpose 安排信息；每页只完成对应的一个叙事任务。
+- 不得插入没有信息任务的空 closing page。
+- Do not force exactly three steps, items, quotes, or any other repeated cardinality.
+- 不得默认添加“收藏 + 关注”或其他无依据的互动结尾。
+- Emoji are allowed and remain ordinary visible Unicode strings; preserve them exactly.
+- Empty `visual_slots` is valid when the frame has no planned asset role.
+- 有 planned asset role 时，visual_slots 必须与 VisualPlan.required_assets 的 slot_id、role 和 page_archetype 精确绑定；只描述素材职责，不选择具体素材。
+- 不得改变 topic、angle、受众、首屏承诺、正文结论或 narrative form。
+- content_blocks 只能使用 CarouselPayload 允许的结构化类型。
 - 只输出 JSON 数据。禁止 HTML、CSS、自由坐标、字体路径、文件路径、网络 URL、image-generation prompt、image_prompt、negative_prompt 或任何图像生成指令。
 - 新合同没有 theme 字段；不得输出任何自由主题值。
 - 不得输出 publish_package 的 title、content、hashtags、images、notes 等其他元数据。
-- 不得把整段正文复制到页面，不得添加无意义互动结尾，不得生成 schema 之外的字段。
+- 不得把整段正文复制到页面，不得生成 schema 之外的字段。

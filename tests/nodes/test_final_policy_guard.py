@@ -1,13 +1,14 @@
 import hashlib
+import importlib
 import json
+import sys
 from copy import deepcopy
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from PIL import Image
 
-from src.graph import next_node
 from src.nodes.node_q_human_review import human_review_node
 from src.nodes.node_q_01_final_policy_guard import (
     final_policy_guard_node,
@@ -21,6 +22,24 @@ from src.nodes.node_q_human_review import route_after_human_review
 from src.nodes.publish_patch import extract_storyboard_visible_text
 from src.schemas import R1Output
 from src.schemas.content_contract import ContentContract
+
+
+def _narrative_plan():
+    return {
+        "narrative_form": "step_tutorial",
+        "beats": [
+            {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+            {"beat_id": "scene", "kind": "scene", "purpose": "呈现作息场景"},
+            {"beat_id": "steps", "kind": "steps", "purpose": "给出调整步骤"},
+            {"beat_id": "save", "kind": "summary", "purpose": "保存调整清单"},
+        ],
+        "saveable_beat": {
+            "beat_id": "save",
+            "kind": "summary",
+            "purpose": "保存调整清单",
+        },
+        "closing_mode": "none",
+    }
 
 
 def _publish_package(**overrides):
@@ -42,6 +61,8 @@ def _publish_package(**overrides):
         "risk_level": "medium",
         "risk_flags": ["medical-adjacent"],
         "profile_version": "wellness-v1",
+        "narrative_plan": _narrative_plan(),
+        "narrative_form": "step_tutorial",
         "content_contract": {
             "audience": "上班族",
             "trigger_situation": "通勤前",
@@ -90,7 +111,7 @@ def _editorial_guard_state(tmp_path: Path):
                         "license": "project_internal",
                         "dimensions": {"width": 16, "height": 16},
                         "sha256": asset_sha,
-                        "allowed_layouts": ["editorial_cover"],
+                        "allowed_layouts": ["cover"],
                         "tags": ["test"],
                         "disabled_contexts": [],
                         "fallback_roles": ["product_texture"],
@@ -108,12 +129,16 @@ def _editorial_guard_state(tmp_path: Path):
         page_path = image_dir / f"{index + 1:02d}-page.png"
         Image.new("RGB", (16, 16), (index * 20, 20, 40)).save(page_path)
         role = "cover" if index == 0 else "detail"
-        layout = "editorial_cover" if index == 0 else "texture_baseline"
+        page_archetype = "cover" if index == 0 else (
+            "save" if index == 3 else "explanation"
+        )
         pages.append(
             SimpleNamespace(
                 frame_id=f"frame-{index + 1}",
                 role=role,
-                layout=layout,
+                page_archetype=page_archetype,
+                template_family="deep_teal",
+                density="standard",
                 path=str(page_path),
                 sha256=hashlib.sha256(page_path.read_bytes()).hexdigest(),
                 probe=SimpleNamespace(
@@ -132,7 +157,8 @@ def _editorial_guard_state(tmp_path: Path):
             {
                 "frame_id": page.frame_id,
                 "role": page.role,
-                "layout": page.layout,
+                "page_archetype": page.page_archetype,
+                "content_density_hint": "standard",
                 "headline": f"Frame {index + 1}",
                 "content_blocks": [],
                 "visual_slots": (
@@ -149,7 +175,7 @@ def _editorial_guard_state(tmp_path: Path):
             SimpleNamespace(
                 slot_id="slot-1",
                 role="product_texture",
-                layout="editorial_cover",
+                page_archetype="cover",
                 status="active",
                 path=str(asset_path),
                 sha256=asset_sha,
@@ -190,11 +216,18 @@ def _editorial_guard_state(tmp_path: Path):
         "publish_package": package,
         "review_status": "approved",
         "visual_plan": SimpleNamespace(
+            template_family="deep_teal",
+            narrative_form="step_tutorial",
             frame_plan=[
                 SimpleNamespace(
                     frame_id=page.frame_id,
                     role=page.role,
-                    layout=page.layout,
+                    page_archetype=page.page_archetype,
+                    purpose=(
+                        _narrative_plan()["saveable_beat"]["purpose"]
+                        if page.page_archetype == "save"
+                        else f"purpose-{page.frame_id}"
+                    ),
                 )
                 for page in pages
             ],
@@ -202,7 +235,7 @@ def _editorial_guard_state(tmp_path: Path):
                 SimpleNamespace(
                     slot_id="slot-1",
                     role="product_texture",
-                    layout="editorial_cover",
+                    page_archetype="cover",
                     min_width=16,
                     min_height=16,
                     context_tags=[],
@@ -223,7 +256,8 @@ def _modern_storyboard_frame(frame_id="frame_001", **overrides):
     frame = {
         "frame_id": frame_id,
         "role": "cover",
-        "layout": "editorial_cover",
+        "page_archetype": "cover",
+        "content_density_hint": "standard",
         "kicker": "封面",
         "headline": "作息调整",
         "content_blocks": [
@@ -251,18 +285,18 @@ def _modern_storyboard_frame(frame_id="frame_001", **overrides):
 
 
 def _modern_storyboards():
-    layouts = (
-        "editorial_cover",
-        "texture_baseline",
-        "step_timeline",
-        "saveable_checklist",
-        "texture_baseline",
+    page_archetypes = (
+        "cover",
+        "scene",
+        "steps",
+        "save",
+        "explanation",
     )
     return [
         _modern_storyboard_frame(
             frame_id=f"frame_{index:03d}",
             role="cover" if index == 1 else "detail",
-            layout=layout,
+            page_archetype=page_archetype,
             headline=f"现代卡片 {index}",
             visual_slots=(
                 [
@@ -276,7 +310,7 @@ def _modern_storyboards():
                 else []
             ),
         )
-        for index, layout in enumerate(layouts, start=1)
+        for index, page_archetype in enumerate(page_archetypes, start=1)
     ]
 
 
@@ -293,6 +327,7 @@ def _r2_input(title="经验分享", body="分享我的作息调整记录。"):
             target_group="上班族",
             core_pain="熬夜后疲惫",
             best_cover_copy="cover",
+            narrative_plan=_narrative_plan(),
         ),
         revision_meta=SimpleNamespace(
             revision_id="rev_001",
@@ -335,6 +370,7 @@ def test_r2_compliance_node_blocks_publish_when_deterministic_guard_finds_issues
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
+                    "narrative_plan": _narrative_plan(),
                 },
                 "compliance_audit": {
                     "compliance_status": "fully_compliant",
@@ -384,6 +420,7 @@ def test_r2_compliance_node_does_not_block_clean_fully_compliant_safety_rules(mo
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
+                    "narrative_plan": _narrative_plan(),
                 },
                 "compliance_audit": {
                     "compliance_status": "fully_compliant",
@@ -440,6 +477,7 @@ def test_r2_compliance_node_blocks_publish_for_unresolved_claims(monkeypatch):
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
+                    "narrative_plan": _narrative_plan(),
                 },
                 "compliance_audit": {
                     "compliance_status": "fully_compliant",
@@ -476,7 +514,22 @@ def test_r2_compliance_node_blocks_publish_for_unresolved_claims(monkeypatch):
     assert "稳定提升深睡比例" in prompt_text
 
 
-def test_next_node_forces_r1_when_r2_audit_is_blocked():
+def test_next_node_forces_r1_when_r2_audit_is_blocked(monkeypatch):
+    render_qa_stub = ModuleType("src.nodes.node_p_render_qa")
+    render_qa_stub.route_after_render_qa = lambda _state: "human_review"
+    monkeypatch.setitem(
+        sys.modules,
+        "src.nodes.node_p_render_qa",
+        render_qa_stub,
+    )
+    previous_graph = sys.modules.pop("src.graph", None)
+    try:
+        next_node = importlib.import_module("src.graph").next_node
+    finally:
+        sys.modules.pop("src.graph", None)
+        if previous_graph is not None:
+            sys.modules["src.graph"] = previous_graph
+
     state = {
         "current_node": "R2_COMPLIANCE",
         "decision_output": SimpleNamespace(next_node="HASHTAG_SEO"),
@@ -505,6 +558,7 @@ def test_enforce_blocked_r2_decision_preserves_model_tasks_and_adds_deterministi
             target_group="上班族",
             core_pain="熬夜后疲惫",
             best_cover_copy="cover",
+            narrative_plan=_narrative_plan(),
         ),
         compliance_audit=SimpleNamespace(
             block_publish=True,
@@ -539,6 +593,7 @@ def test_enforce_blocked_r2_decision_preserves_model_tasks_and_adds_deterministi
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
+                    "narrative_plan": _narrative_plan(),
                 },
                 "editorial_tasks": {
                     "mandatory": [
@@ -615,6 +670,7 @@ def test_merge_blocked_r2_tasks_removes_stale_deterministic_tasks_and_is_idempot
             "target_group": "上班族",
             "core_pain": "熬夜后疲惫",
             "best_cover_copy": "cover",
+            "narrative_plan": _narrative_plan(),
         },
         "editorial_tasks": {
             "mandatory": [
@@ -759,7 +815,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
     assert visible[0].model_dump() == {
         "frame_id": "frame_001",
         "role": "cover",
-        "layout": "editorial_cover",
+        "page_archetype": "cover",
         "text_blocks": {
             "kicker": "旧标签",
             "headline": "新标题",
@@ -790,7 +846,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
                 }
             ],
         },
-        {"frame_id": "frame_002", "layout": "decision_tree"},
+        {"frame_id": "frame_002", "page_archetype": "qa"},
         {
             "frame_id": "frame_001",
             "visual_slots": [
@@ -802,7 +858,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
             ],
         },
     ],
-    ids=("content-block", "layout", "asset-slot-structure"),
+    ids=("content-block", "page-archetype", "asset-slot-structure"),
 )
 def test_human_review_modern_storyboard_edit_invalidates_downstream_artifacts(
     monkeypatch,
@@ -969,7 +1025,7 @@ def test_content_block_policy_task_uses_precise_location_and_patch_updates_card(
             {
                 "frame_id": "frame_004",
                 "role": "detail",
-                "layout": "saveable_checklist",
+                "page_archetype": "save",
                 "text_blocks": {
                     "content_blocks[0].items[1]": "咨询专业人士"
                 },
@@ -985,7 +1041,7 @@ def test_modern_content_blocks_and_emphasis_are_visible_text_atoms_and_reapplied
     visible = extract_storyboard_visible_text(storyboards)
 
     assert visible[0]["role"] == "cover"
-    assert visible[0]["layout"] == "editorial_cover"
+    assert visible[0]["page_archetype"] == "cover"
     assert "template" not in visible[0]
     assert visible[0]["text_blocks"] == {
         "kicker": "封面",
@@ -1012,6 +1068,92 @@ def test_modern_content_blocks_and_emphasis_are_visible_text_atoms_and_reapplied
     assert patched[0]["content_blocks"][0]["body"] == "先记录再调整"
     assert patched[0]["content_blocks"][0]["items"][1] == "新的项目"
     assert patched[0]["emphasis"][1] == "调整"
+
+
+def test_visible_text_extraction_preserves_emoji_and_v2_structure():
+    storyboards = [
+        _modern_storyboard_frame(
+            headline="防晒别急着叠✨",
+            content_density_hint="dense",
+        )
+    ]
+
+    visible = extract_storyboard_visible_text(storyboards)
+    reapplied = storyboard_module.apply_storyboard_visible_text_patch(
+        storyboards,
+        visible,
+    )
+
+    assert visible[0]["page_archetype"] == "cover"
+    assert visible[0]["text_blocks"]["headline"] == "防晒别急着叠✨"
+    assert reapplied[0]["headline"] == "防晒别急着叠✨"
+
+
+def test_human_review_structure_signature_keeps_archetype_and_density():
+    from src.nodes.node_q_human_review import (
+        _storyboard_render_structure_signature,
+    )
+
+    signature = _storyboard_render_structure_signature(
+        [
+            _modern_storyboard_frame(
+                page_archetype="diagnostic",
+                content_density_hint="dense",
+            )
+        ]
+    )
+
+    assert signature[0]["page_archetype"] == "diagnostic"
+    assert signature[0]["content_density_hint"] == "dense"
+    assert "layout" not in signature[0]
+
+
+def test_human_review_payload_summarizes_v2_visual_plan(monkeypatch):
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured.update(payload)
+        return {"approved": True}
+
+    monkeypatch.setattr(
+        "src.nodes.node_q_human_review.interrupt",
+        fake_interrupt,
+    )
+    storyboards = _modern_storyboards()
+
+    result = human_review_node(
+        {
+            "publish_package": _publish_package(storyboards=storyboards),
+            "visual_plan": {
+                "template_family": "deep_teal",
+                "narrative_form": "step_tutorial",
+                "frame_plan": [
+                    {
+                        "frame_id": frame["frame_id"],
+                        "role": frame["role"],
+                        "page_archetype": frame["page_archetype"],
+                    }
+                    for frame in storyboards
+                ],
+            },
+            "review_round": 0,
+            "final_policy_issues": [],
+        }
+    )
+
+    assert result["review_status"] == "approved"
+    assert captured["visual_summary"] == {
+        "template_family": "deep_teal",
+        "narrative_form": "step_tutorial",
+        "frames": [
+            {
+                "frame_id": frame["frame_id"],
+                "page_archetype": frame["page_archetype"],
+                "density": frame["content_density_hint"],
+            }
+            for frame in storyboards
+        ],
+    }
 
 
 @pytest.mark.parametrize(
@@ -1063,7 +1205,7 @@ def test_visible_text_patch_rejects_unknown_nonempty_frame_id():
                 {
                     "frame_id": "stale_frame",
                     "role": "cover",
-                    "layout": "editorial_cover",
+                    "page_archetype": "cover",
                     "text_blocks": {"headline": "错误目标"},
                 }
             ],
@@ -1075,7 +1217,7 @@ def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
         {
             "frame_id": "frame_001",
             "role": "cover",
-            "layout": "editorial_cover",
+            "page_archetype": "cover",
             "text_blocks": {"headline": "保证立即见效"},
         }
     ]
@@ -1091,6 +1233,7 @@ def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
             target_group="上班族",
             core_pain="熬夜后疲惫",
             best_cover_copy="cover",
+            narrative_plan=_narrative_plan(),
             storyboard_visible_text=storyboard_visible_text,
         ),
         revision_meta=SimpleNamespace(
@@ -1126,7 +1269,7 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
         {
             "frame_id": "frame_001",
             "role": "cover",
-            "layout": "editorial_cover",
+            "page_archetype": "cover",
             "text_blocks": {"headline": "作息调整记录"},
         }
     ]
@@ -1142,6 +1285,7 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
         target_group="上班族",
         core_pain="熬夜后疲惫",
         best_cover_copy="cover",
+        narrative_plan=_narrative_plan(),
         storyboard_visible_text=storyboard_visible_text,
         scores={
             "clarity_score": 1,
@@ -1174,7 +1318,7 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
         {
             "frame_id": "frame_001",
             "role": "cover",
-            "layout": "editorial_cover",
+            "page_archetype": "cover",
             "text_blocks": {"headline": "作息调整记录"},
         }
     ]
@@ -1193,6 +1337,7 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
+                    "narrative_plan": _narrative_plan(),
                 },
                 "revision_meta": {
                     "revision_id": "rev_002",
@@ -1232,7 +1377,7 @@ def test_visible_text_merge_rejects_unknown_frame_id_and_ignores_empty_frame_id(
                 {
                     "frame_id": "stale_frame",
                     "role": "cover",
-                    "layout": "editorial_cover",
+                    "page_archetype": "cover",
                     "text_blocks": {"headline": "错误目标"},
                 }
             ],
@@ -1259,11 +1404,12 @@ def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkey
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
                     "best_cover_copy": "cover",
+                    "narrative_plan": _narrative_plan(),
                     "storyboard_visible_text": [
                         {
                             "frame_id": "frame_001",
                             "role": "cover",
-                            "layout": "editorial_cover",
+                            "page_archetype": "cover",
                             "text_blocks": {"headline": "R2标题"},
                         }
                     ],
@@ -1615,7 +1761,7 @@ def _configure_asymmetric_fallback(state, active_root: Path, *, listed: bool) ->
             "license": "project_internal",
             "dimensions": {"width": 16, "height": 16},
             "sha256": fallback_sha,
-            "allowed_layouts": ["editorial_cover"],
+            "allowed_layouts": ["cover"],
             "tags": ["test"],
             "disabled_contexts": [],
             "fallback_roles": ["unrelated_role"],
@@ -1973,6 +2119,22 @@ def test_final_policy_guard_binds_role_layout_visible_text_and_unique_slots(
     assert "asset_slot_binding_mismatch" in rules
 
 
+def test_final_policy_guard_binds_rendered_page_archetype(monkeypatch, tmp_path):
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+    state["render_manifest"].pages[1].page_archetype = "qa"
+
+    result = final_policy_guard_node(state)
+
+    assert "rendered_page_order_mismatch" in {
+        issue["rule_id"] for issue in result["final_policy_issues"]
+    }
+
+
 def test_final_policy_guard_rejects_path_replacement_during_single_open_snapshot(
     monkeypatch,
     tmp_path,
@@ -2118,108 +2280,37 @@ def test_final_policy_guard_rejects_symlinked_active_asset(
     }
 
 
-def _real_reused_asset_guard_state(tmp_path: Path):
-    from src.asset_resolver.catalog import load_catalog
-    from src.asset_resolver.resolver import resolve_assets
-    from src.editorial_carousel.strategy import ASSET_ADAPTER, build_visual_plan
+def _reused_asset_guard_state(tmp_path: Path):
+    state, active_root = _editorial_guard_state(tmp_path)
+    manifest_path = active_root.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["assets"][0]["allowed_layouts"].append("explanation")
+    manifest_path.write_text(json.dumps(manifest))
 
-    catalog_path = (
-        Path(__file__).resolve().parents[2]
-        / "assets/visual/beauty-editorial-v1/manifest.json"
-    )
-    contract = ContentContract(
-        audience="通勤护肤人群",
-        trigger_situation="早上快速护肤",
-        decision_problem="如何对比并选择步骤",
-        first_screen_promise="一页看懂今天怎么选",
-        screenshot_asset="选择清单",
-        proof_asset="肤感对照",
-        visual_mode="text_plus_real_proof",
-        content_job="compare_and_choose",
-        primary_visual_family="comparison_decision",
-        primary_visual_subject="skin_macro",
-        proof_mode="diagram",
-        recommended_frame_count=5,
-    )
-    plan = build_visual_plan(contract, recent_signatures=[])
-    manifest = resolve_assets(plan, load_catalog(catalog_path))
-    requirements = {
-        (item.layout, item.role): item for item in plan.required_assets
-    }
-    storyboards = []
-    pages = []
-    image_root = tmp_path / "rendered"
-    image_root.mkdir()
-    for index, frame in enumerate(plan.frame_plan):
-        semantic_role = frame.asset_roles[0]
-        concrete_role = ASSET_ADAPTER[(frame.layout, semantic_role)][0]
-        requirement = requirements[(frame.layout, concrete_role)]
-        headline = f"Frame {index + 1}"
-        storyboards.append(
-            {
-                "frame_id": frame.frame_id,
-                "role": frame.role,
-                "layout": frame.layout,
-                "headline": headline,
-                "content_blocks": [],
-                "visual_slots": [
-                    {
-                        "slot_id": requirement.slot_id,
-                        "role": semantic_role,
-                    }
-                ],
-            }
-        )
-        page_path = image_root / f"{index + 1:02d}.png"
-        Image.new("RGB", (16, 16), (index * 20, 40, 60)).save(page_path)
-        pages.append(
-            SimpleNamespace(
-                frame_id=frame.frame_id,
-                role=frame.role,
-                layout=frame.layout,
-                path=str(page_path),
-                sha256=hashlib.sha256(page_path.read_bytes()).hexdigest(),
-                probe=SimpleNamespace(
-                    text_results=[SimpleNamespace(role="headline", text=headline)]
-                ),
-            )
-        )
-    contact_sheet = image_root / "contact-sheet.png"
-    Image.new("RGB", (32, 16), "white").save(contact_sheet)
-    package = _publish_package(
-        domain="beauty",
-        subdomain="skincare",
-        profile_version="beauty-v1",
-        content_contract=contract.model_dump(mode="json"),
-        storyboards=storyboards,
-        rendered_image_paths=[page.path for page in pages],
-    )
-    render_manifest = SimpleNamespace(
-        pages=pages,
-        source_asset_sha256={item.slot_id: item.sha256 for item in manifest.items},
-        contact_sheet_path=str(contact_sheet),
-        contact_sheet_sha256=hashlib.sha256(contact_sheet.read_bytes()).hexdigest(),
-        contact_sheet_page_sha256=[page.sha256 for page in pages],
-    )
-    return {
-        "publish_package": package,
-        "review_status": "approved",
-        "visual_plan": plan,
-        "asset_manifest": manifest,
-        "render_manifest": render_manifest,
-        "carousel_qa_result": {"passed": True},
-        "render_qa_result": {"passed": True},
-    }, catalog_path.parent / "active", image_root
+    state["publish_package"]["storyboards"][1]["visual_slots"] = [
+        {"slot_id": "slot-2", "role": "product_texture"}
+    ]
+    requirement = deepcopy(state["visual_plan"].required_assets[0])
+    requirement.slot_id = "slot-2"
+    requirement.page_archetype = "explanation"
+    state["visual_plan"].required_assets.append(requirement)
+
+    item = deepcopy(state["asset_manifest"].items[0])
+    item.slot_id = "slot-2"
+    item.page_archetype = "explanation"
+    state["asset_manifest"].items.append(item)
+    state["render_manifest"].source_asset_sha256["slot-2"] = item.sha256
+    return state, active_root, tmp_path
 
 
-def test_final_policy_guard_accepts_real_catalog_asset_reuse(
+def test_final_policy_guard_accepts_canonical_catalog_asset_reuse(
     monkeypatch,
     tmp_path,
 ):
     module = __import__(
         "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
     )
-    state, active_root, render_root = _real_reused_asset_guard_state(tmp_path)
+    state, active_root, render_root = _reused_asset_guard_state(tmp_path)
     monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
     monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
     paths = [item.path for item in state["asset_manifest"].items]
@@ -2254,7 +2345,7 @@ def test_final_policy_guard_rejects_conflicting_declaration_for_reused_asset(
     module = __import__(
         "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
     )
-    state, active_root, render_root = _real_reused_asset_guard_state(tmp_path)
+    state, active_root, render_root = _reused_asset_guard_state(tmp_path)
     monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
     monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
     items = list(state["asset_manifest"].items)
@@ -2266,12 +2357,7 @@ def test_final_policy_guard_rejects_conflicting_declaration_for_reused_asset(
     conflicting_index = next(
         index for index, item in enumerate(items) if item.path == repeated_path
     )
-    items[conflicting_index] = items[conflicting_index].model_copy(
-        update={"asset_id": "forged-reuse-declaration"}
-    )
-    state["asset_manifest"] = state["asset_manifest"].model_copy(
-        update={"items": items}
-    )
+    items[conflicting_index].asset_id = "forged-reuse-declaration"
 
     result = final_policy_guard_node(state)
 
@@ -2287,7 +2373,7 @@ def test_final_policy_guard_rejects_consistent_forged_reuse_provenance(
     module = __import__(
         "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
     )
-    state, active_root, render_root = _real_reused_asset_guard_state(tmp_path)
+    state, active_root, render_root = _reused_asset_guard_state(tmp_path)
     monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
     monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", render_root)
     items = list(state["asset_manifest"].items)
@@ -2296,17 +2382,9 @@ def test_final_policy_guard_rejects_consistent_forged_reuse_provenance(
         for path in {item.path for item in items}
         if sum(item.path == path for item in items) > 1
     )
-    items = [
-        (
-            item.model_copy(update={"asset_id": "forged-canonical-id"})
-            if item.path == repeated_path
-            else item
-        )
-        for item in items
-    ]
-    state["asset_manifest"] = state["asset_manifest"].model_copy(
-        update={"items": items}
-    )
+    for item in items:
+        if item.path == repeated_path:
+            item.asset_id = "forged-canonical-id"
 
     result = final_policy_guard_node(state)
 

@@ -54,13 +54,10 @@ def _final_content_contract(
             "publish_package.content_contract"
         )
     contract = ContentContract.model_validate(raw_contract)
-    if (
-        contract.content_job != visual_plan.content_job
-        or contract.primary_visual_family != visual_plan.primary_visual_family
-    ):
+    if contract.content_job != visual_plan.content_job:
         raise ValueError(
             "publish_package.content_contract must match visual_plan "
-            "content_job and primary_visual_family"
+            "content_job"
         )
     return contract
 
@@ -72,12 +69,17 @@ def _semantic_payload(
 ) -> CarouselPayload:
     payload = CarouselPayload.model_validate(raw_payload)
     expected = [
-        (item.frame_id, item.layout) for item in visual_plan.frame_plan
+        (item.frame_id, item.role, item.page_archetype)
+        for item in visual_plan.frame_plan
     ]
-    actual = [(item.frame_id, item.layout) for item in payload.storyboards]
+    actual = [
+        (item.frame_id, item.role, item.page_archetype)
+        for item in payload.storyboards
+    ]
     if actual != expected:
         raise ValueError(
-            "storyboard frames must exactly match visual_plan frame order and layouts"
+            "storyboard frames must exactly match visual_plan frame order, "
+            "roles, and page archetypes"
         )
     if payload.storyboards[0].headline != content_contract.first_screen_promise:
         raise ValueError(

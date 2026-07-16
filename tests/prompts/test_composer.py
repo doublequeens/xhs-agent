@@ -88,6 +88,13 @@ def test_storyboard_prompt_requires_semantic_carousel_contract():
     assert "CarouselPayload" in prompt
     assert "VisualPlan.frame_plan" in prompt
     assert "first_screen_promise" in prompt
+    assert '"page_archetype"' in prompt
+    assert '"content_density_hint"' in prompt
+    assert "publish_package.narrative_plan" in prompt
+    assert "Empty `visual_slots` is valid" in prompt
+    assert "exactly three" in prompt
+    assert "收藏 + 关注" in prompt
+    assert "Emoji" in prompt
     assert "HTML" in prompt
     assert "CSS" in prompt
     assert "坐标" in prompt
@@ -95,7 +102,18 @@ def test_storyboard_prompt_requires_semantic_carousel_contract():
     assert "image-generation prompt" in prompt
     assert "不得改变 topic" in prompt
     assert "不得增加额外 frame" in prompt
+    assert '"layout"' not in prompt
     assert "固定六张" not in prompt
+
+
+@pytest.mark.parametrize("task", ["r1_reflector", "decision_engine"])
+def test_visible_text_revision_prompts_use_v2_page_archetype(task):
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt(task, get_domain_profile("beauty"))
+
+    assert '"page_archetype"' in prompt
+    assert '"layout"' not in prompt
 
 
 @pytest.mark.parametrize("fixture_name", GOLDEN_FIXTURE_NAMES)

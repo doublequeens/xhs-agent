@@ -52,7 +52,7 @@ Decision Engine
           {
             "frame_id": "string",
             "role": "string",
-            "layout": "string",
+            "page_archetype": "string",
             "text_blocks": {"headline": "string", "content_blocks[0].items[1]": "string"}
           }
         ]
@@ -111,7 +111,7 @@ Decision Engine
           {
             "frame_id": "string",
             "role": "string",
-            "layout": "string",
+            "page_archetype": "string",
             "text_blocks": {"headline": "string", "content_blocks[0].items[1]": "string"}
           }
         ]
