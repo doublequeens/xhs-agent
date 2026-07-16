@@ -404,17 +404,19 @@ def test_asset_contracts_use_page_archetype():
     assert manifest_item.page_archetype == "diagnostic"
 
 
-def test_storyboard_visible_text_uses_page_archetype():
+def test_storyboard_visible_text_preserves_structural_metadata():
     visible = StoryboardVisibleText.model_validate(
         {
             "frame_id": "cover",
             "role": "cover",
             "page_archetype": "cover",
+            "content_density_hint": "dense",
             "text_blocks": {"headline": "先看懂分区"},
         }
     )
 
     assert visible.page_archetype == "cover"
+    assert visible.content_density_hint == "dense"
 
 
 @pytest.mark.parametrize(

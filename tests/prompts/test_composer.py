@@ -107,12 +107,14 @@ def test_storyboard_prompt_requires_semantic_carousel_contract():
 
 
 @pytest.mark.parametrize("task", ["r1_reflector", "decision_engine"])
-def test_visible_text_revision_prompts_use_v2_page_archetype(task):
+def test_visible_text_revision_prompts_preserve_v2_structural_metadata(task):
     from src.prompts.composer import compose_prompt
 
     prompt = compose_prompt(task, get_domain_profile("beauty"))
 
     assert '"page_archetype"' in prompt
+    assert '"content_density_hint"' in prompt
+    assert "page_archetype 与 content_density_hint" in prompt
     assert '"layout"' not in prompt
 
 

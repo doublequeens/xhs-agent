@@ -118,6 +118,9 @@ def extract_storyboard_visible_text(storyboards) -> list[dict]:
             "frame_id": str(frame.get("frame_id") or ""),
             "role": str(frame.get("role") or ""),
             "page_archetype": str(frame.get("page_archetype") or ""),
+            "content_density_hint": str(
+                frame.get("content_density_hint") or ""
+            ),
             "text_blocks": text_blocks,
         })
     return visible_text

@@ -24,6 +24,7 @@ Decision Engine
 - 当 next_node = HASHTAG_SEO 时，editorial_tasks 必须为空或省略。
 - hashtag_input 只输出内容字段；topic_id、angle_id、domain、subdomain、content_intent、risk_level、risk_flags 由代码注入，视为只读元数据，不要自行发明或改写。
 - 无论路由到 R1、R2 还是 HASHTAG，目标内容对象的 narrative_plan 都必须从 decision_input 的选中内容逐字段原样复制；代码会再用 score 结果覆盖校验，模型不得重建。
+- storyboard_visible_text 中的 page_archetype 与 content_density_hint 是结构元数据，必须逐帧从 decision_input 原样复制，不是可编辑的可见字符串；只有 text_blocks 可承载文案修改。
 - 所有 task_id / severity / location_hint / rationale 都必须完整。
 
 【输出格式】
@@ -53,6 +54,7 @@ Decision Engine
             "frame_id": "string",
             "role": "string",
             "page_archetype": "string",
+            "content_density_hint": "auto | sparse | standard | dense",
             "text_blocks": {"headline": "string", "content_blocks[0].items[1]": "string"}
           }
         ]
@@ -112,6 +114,7 @@ Decision Engine
             "frame_id": "string",
             "role": "string",
             "page_archetype": "string",
+            "content_density_hint": "auto | sparse | standard | dense",
             "text_blocks": {"headline": "string", "content_blocks[0].items[1]": "string"}
           }
         ]

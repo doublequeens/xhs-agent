@@ -37,6 +37,11 @@ Task 6 does not weaken eligibility checks before Task 7 migrates that API.
   of crashing while building an R1 decision.
 - Replaced stale `layout` fields in the R1 reflector and decision-engine visible-text
   prompt contracts.
+- Corrected the committed density gap by adding required `DensityHint` metadata to
+  `StoryboardVisibleText`, emitting it during extraction, and preserving authoritative
+  archetype/density values while merge/apply operations edit only `text_blocks`.
+- Updated R1 and decision prompt rules/examples so both `page_archetype` and
+  `content_density_hint` are copied as structural metadata through the R1/R2 boundary.
 
 ## TDD RED/GREEN evidence
 
@@ -62,7 +67,7 @@ Continuation RED for stale visible-text prompt fields:
 
 ```text
 pytest -q tests/prompts/test_composer.py \
-  -k visible_text_revision_prompts_use_v2_page_archetype
+  -k visible_text_revision_prompts
 
 2 failed, 49 deselected
 ```
@@ -71,6 +76,35 @@ After replacing `layout` with `page_archetype`:
 
 ```text
 2 passed, 49 deselected
+```
+
+Required density-metadata correction RED:
+
+```text
+pytest -q \
+  tests/schemas/test_editorial_carousel.py::test_storyboard_visible_text_preserves_structural_metadata \
+  tests/nodes/test_final_policy_guard.py::test_visible_text_extraction_preserves_emoji_and_v2_structure \
+  tests/nodes/test_final_policy_guard.py::test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan
+
+3 failed in 2.96s
+```
+
+The failures independently showed that the typed contract rejected density, extraction
+omitted it, and the R2 typed boundary rejected it. After adding the shared
+`DensityHint` field and extraction metadata:
+
+```text
+3 passed in 2.87s
+```
+
+Prompt-rule correction RED/GREEN:
+
+```text
+pytest -q tests/prompts/test_composer.py \
+  -k visible_text_revision_prompts
+
+2 failed, 49 deselected in 0.07s
+2 passed, 49 deselected in 0.02s
 ```
 
 ## Verification
@@ -82,7 +116,7 @@ pytest -q tests/nodes/test_carousel_qa.py tests/nodes/test_metadata_flow.py \
   tests/nodes/test_final_policy_guard.py tests/publishing/test_artifacts.py \
   tests/prompts/test_composer.py
 
-283 passed, 2 warnings in 18.87s
+283 passed, 2 warnings in 18.90s
 ```
 
 The warnings were pytest cleanup warnings for an already stale macOS temporary
@@ -139,6 +173,7 @@ These failures were not skipped or disguised.
 
 Production:
 
+- `src/schemas/decision.py`
 - `src/nodes/node_o_storyboards_generator.py`
 - `src/nodes/node_p_carousel_qa.py`
 - `src/nodes/node_q_01_final_policy_guard.py`
@@ -152,6 +187,7 @@ Production:
 
 Tests:
 
+- `tests/schemas/test_editorial_carousel.py`
 - `tests/nodes/test_carousel_qa.py`
 - `tests/nodes/test_final_policy_guard.py`
 - `tests/nodes/test_metadata_flow.py`

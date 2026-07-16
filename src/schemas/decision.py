@@ -3,7 +3,7 @@ from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.domain.models import ContentIntent, DomainName, RiskLevel
-from src.schemas.editorial_templates import PageArchetype
+from src.schemas.editorial_templates import DensityHint, PageArchetype
 
 from .narrative import NarrativePlan
 
@@ -57,6 +57,7 @@ class StoryboardVisibleText(BaseModel):
     frame_id: str
     role: str
     page_archetype: PageArchetype
+    content_density_hint: DensityHint
     text_blocks: dict[str, str] = Field(default_factory=dict)
 
 

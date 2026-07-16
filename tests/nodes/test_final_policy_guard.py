@@ -816,6 +816,7 @@ def test_human_review_patch_merges_visible_text_edit_and_routes_back_to_r2(monke
         "frame_id": "frame_001",
         "role": "cover",
         "page_archetype": "cover",
+        "content_density_hint": "standard",
         "text_blocks": {
             "kicker": "旧标签",
             "headline": "新标题",
@@ -1079,13 +1080,19 @@ def test_visible_text_extraction_preserves_emoji_and_v2_structure():
     ]
 
     visible = extract_storyboard_visible_text(storyboards)
+    assert visible[0]["page_archetype"] == "cover"
+    assert visible[0]["content_density_hint"] == "dense"
+    visible[0]["page_archetype"] = "save"
+    visible[0]["content_density_hint"] = "sparse"
     reapplied = storyboard_module.apply_storyboard_visible_text_patch(
         storyboards,
         visible,
     )
 
-    assert visible[0]["page_archetype"] == "cover"
+    assert visible[0]["content_density_hint"] == "sparse"
     assert visible[0]["text_blocks"]["headline"] == "防晒别急着叠✨"
+    assert reapplied[0]["page_archetype"] == "cover"
+    assert reapplied[0]["content_density_hint"] == "dense"
     assert reapplied[0]["headline"] == "防晒别急着叠✨"
 
 
@@ -1218,6 +1225,7 @@ def test_blocked_storyboard_tasks_carry_visible_text_into_r1_candidate():
             "frame_id": "frame_001",
             "role": "cover",
             "page_archetype": "cover",
+            "content_density_hint": "dense",
             "text_blocks": {"headline": "保证立即见效"},
         }
     ]
@@ -1270,6 +1278,7 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
             "frame_id": "frame_001",
             "role": "cover",
             "page_archetype": "cover",
+            "content_density_hint": "dense",
             "text_blocks": {"headline": "作息调整记录"},
         }
     ]
@@ -1311,6 +1320,8 @@ def test_r1_output_schema_retains_revised_storyboard_visible_text():
     )
 
     assert output.storyboard_visible_text[0].text_blocks["headline"] == "作息调整记录"
+    assert output.storyboard_visible_text[0].page_archetype == "cover"
+    assert output.storyboard_visible_text[0].content_density_hint == "dense"
 
 
 def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
@@ -1319,6 +1330,7 @@ def test_decision_engine_propagates_r1_storyboard_text_into_r2_input():
             "frame_id": "frame_001",
             "role": "cover",
             "page_archetype": "cover",
+            "content_density_hint": "dense",
             "text_blocks": {"headline": "作息调整记录"},
         }
     ]
@@ -1410,6 +1422,7 @@ def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkey
                             "frame_id": "frame_001",
                             "role": "cover",
                             "page_archetype": "cover",
+                            "content_density_hint": "sparse",
                             "text_blocks": {"headline": "R2标题"},
                         }
                     ],
@@ -1421,6 +1434,7 @@ def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkey
     monkeypatch.setattr(r2_module, "get_model", lambda *_args, **_kwargs: FakeModel())
     state = _r2_state()
     storyboards = _modern_storyboards()
+    storyboards[0]["content_density_hint"] = "dense"
     storyboards[3]["content_blocks"][0]["items"][1] = "每天250毫克"
     state["publish_package"] = _publish_package(storyboards=storyboards)
 
@@ -1429,6 +1443,8 @@ def test_r2_merges_partial_visible_text_with_all_cards_before_policy_scan(monkey
     visible_text = result["r2_output"].content_snapshot.storyboard_visible_text
     assert len(visible_text) == 5
     assert visible_text[0].text_blocks["headline"] == "R2标题"
+    assert visible_text[0].page_archetype == "cover"
+    assert visible_text[0].content_density_hint == "dense"
     assert (
         visible_text[3].text_blocks["content_blocks[0].items[1]"]
         == "每天250毫克"
