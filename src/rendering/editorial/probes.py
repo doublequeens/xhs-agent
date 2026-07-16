@@ -4,7 +4,7 @@ from typing import Any
 
 
 EXPECTED_FONT_FAMILIES = frozenset(
-    {"LXGW WenKai", "Bodoni Moda"}
+    {"Source Han Serif SC", "Source Han Sans SC", "Bodoni Moda"}
 )
 
 
@@ -12,8 +12,8 @@ FONT_PROBE_SCRIPT = r"""
 async () => {
   /* EDITORIAL_FONT_PROBE */
   const expected = [
-    ["LXGW WenKai", "字"],
-    ["LXGW WenKai", "字"],
+    ["Source Han Serif SC", "字"],
+    ["Source Han Sans SC", "字"],
     ["Bodoni Moda", "01"]
   ];
   await Promise.all(expected.map(([family, sample]) =>

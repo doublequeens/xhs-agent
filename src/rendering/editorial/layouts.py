@@ -244,42 +244,18 @@ def render_morning_evening_flow(
 def render_left_right_comparison(
     frame: CarouselFrame, assets: Sequence[AssetManifestItem]
 ) -> str:
-    # Comparison storyboards emit one `comparison` content_block whose items are
-    # the contrast pairs (problem first, solution second). Split the ITEMS across
-    # the two panels so both columns are always populated (previously split by
-    # block count, which left the right column empty for a single block).
-    pairs = [
-        (block_index, item_index, item)
-        for block_index, block in enumerate(frame.content_blocks)
-        for item_index, item in enumerate(block.items)
-    ]
-    midpoint = max(1, (len(pairs) + 1) // 2)
-
-    def _items(group: Sequence[tuple[int, int, str]]) -> str:
-        lis = "".join(
-            "".join(
-                (
-                    '<li class="block-item">',
-                    '<span class="item-marker numeral" aria-hidden="true">'
-                    f"{item_index + 1:02d}</span>",
-                    _copy(
-                        item,
-                        role=f"content_blocks[{block_index}].items[{item_index}]",
-                        class_name="item-copy",
-                        tag="span",
-                    ),
-                    "</li>",
-                )
-            )
-            for (block_index, item_index, item) in group
-        )
-        return f'<ol class="block-items">{lis}</ol>' if lis else ""
-
+    blocks = list(frame.content_blocks)
+    midpoint = max(1, (len(blocks) + 1) // 2)
+    left = "".join(_block(block, index) for index, block in enumerate(blocks[:midpoint]))
+    right = "".join(
+        _block(block, index + midpoint)
+        for index, block in enumerate(blocks[midpoint:])
+    )
     return _card(
         frame,
         '<section class="layout-body layout-left-right-comparison">'
-        f'<div class="comparison-panel comparison-left">{_items(pairs[:midpoint])}</div>'
-        f'<div class="comparison-panel comparison-right">{_items(pairs[midpoint:])}</div>'
+        f'<div class="comparison-panel comparison-left"><div class="panel-label">观察</div>{left}</div>'
+        f'<div class="comparison-panel comparison-right"><div class="panel-label">调整</div>{right}</div>'
         f'{_asset_gallery(assets, "comparison-visual")}'
         "</section>",
     )
