@@ -28,6 +28,7 @@
 | Beauty account workflow | `docs/superpowers/specs/2026-07-10-beauty-account-content-workflow-design.md` | — | 已实施 |
 | Run resume registry | `docs/superpowers/specs/2026-07-13-run-resume-registry-design.md` | `docs/superpowers/plans/2026-07-13-run-resume-registry.md` | 已实施 |
 | Editorial carousel | `docs/superpowers/specs/2026-07-13-editorial-carousel-workflow-design.md` | `docs/superpowers/plans/2026-07-14-editorial-carousel-workflow.md` | 已实施 |
+| Adaptive six-template content workflow | `docs/superpowers/specs/2026-07-16-adaptive-six-template-content-workflow-design.md` | — | 设计已确认，待实施 |
 | Project documentation | `docs/superpowers/specs/2026-07-15-project-documentation-design.md` | `docs/superpowers/plans/2026-07-15-project-documentation.md` | 当前任务 |
 | Project documentation governance | — | `docs/superpowers/plans/2026-07-15-project-documentation-governance.md` | 历史实施记录 |
 
