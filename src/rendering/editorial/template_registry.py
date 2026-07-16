@@ -77,28 +77,28 @@ FAMILY_COMPOSITION_VARIANTS: Mapping[
 _COLORS: Mapping[TemplateFamily, Mapping[str, str]] = MappingProxyType(
     {
         "pink_red": {
-            "background": "#FFF4F5",
-            "primary": "#E6284F",
-            "secondary": "#F4A6B8",
+            "background": "#F4A7BF",
+            "primary": "#DC2333",
+            "secondary": "#FFFFFF",
             "ink": "#35151D",
         },
         "deep_teal": {
-            "background": "#0C3F43",
-            "primary": "#F4E8D0",
-            "secondary": "#73B6AD",
-            "ink": "#F8F4E9",
+            "background": "#0E5A5A",
+            "primary": "#FFFFFF",
+            "secondary": "#7FD6D6",
+            "ink": "#FFFFFF",
         },
         "soft_pink": {
-            "background": "#F8E4E8",
-            "primary": "#A65369",
-            "secondary": "#F2B8C5",
+            "background": "#F8DADA",
+            "primary": "#EE5C5C",
+            "secondary": "#FFFFFF",
             "ink": "#432A31",
         },
         "coral_impact": {
-            "background": "#FF6F61",
-            "primary": "#7B1730",
-            "secondary": "#FFD4C8",
-            "ink": "#2F1118",
+            "background": "#F45A5A",
+            "primary": "#FFFFFF",
+            "secondary": "#FFE3E3",
+            "ink": "#FFFFFF",
         },
         "green_catalog": {
             "background": "#F3E9D2",
@@ -107,10 +107,10 @@ _COLORS: Mapping[TemplateFamily, Mapping[str, str]] = MappingProxyType(
             "ink": "#17351E",
         },
         "white_quote": {
-            "background": "#FFFEFA",
-            "primary": "#202020",
-            "secondary": "#A98D73",
-            "ink": "#202020",
+            "background": "#FFFFFF",
+            "primary": "#2A4A8C",
+            "secondary": "#4A66A0",
+            "ink": "#2A4A8C",
         },
     }
 )

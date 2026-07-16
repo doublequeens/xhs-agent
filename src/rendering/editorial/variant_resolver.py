@@ -74,6 +74,12 @@ def _composition(
         return stacked if item_count <= 4 else grid
     if archetype == "quote":
         return focus if density == "sparse" else stacked
+    if (
+        "red-panel" in variants
+        and archetype in {"thesis", "story_beat", "boundary", "closing"}
+        and density != "dense"
+    ):
+        return "red-panel"
     if density == "sparse":
         return focus
     if density == "dense":

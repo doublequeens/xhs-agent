@@ -25,6 +25,7 @@ def _visible_strings(frame: CarouselFrame) -> list[str]:
         if block.body:
             values.append(block.body)
         values.extend(block.items)
+    values.extend(frame.emphasis)
     if frame.footer:
         values.append(frame.footer)
     return values

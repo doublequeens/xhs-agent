@@ -8,6 +8,7 @@ def _frame(
     *,
     kicker: str | None = None,
     content_blocks: list[dict] | None = None,
+    emphasis: list[str] | None = None,
     footer: str | None = None,
 ) -> CarouselFrame:
     return CarouselFrame.model_validate(
@@ -19,6 +20,7 @@ def _frame(
             "headline": headline,
             "kicker": kicker,
             "content_blocks": content_blocks or [],
+            "emphasis": emphasis or [],
             "visual_slots": [],
             "footer": footer,
         }
@@ -89,3 +91,17 @@ def test_copy_metrics_allow_copy_without_emoji():
     metrics = measure_frame_copy(_frame("不要求每页都出现 emoji"))
 
     assert metrics.emoji_count == 0
+
+
+def test_copy_metrics_include_emphasis_copy():
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+
+    without_emphasis = measure_frame_copy(_frame("标题"))
+    with_emphasis = measure_frame_copy(
+        _frame("标题", emphasis=["温和✨", "先观察"])
+    )
+
+    assert with_emphasis.grapheme_count == (
+        without_emphasis.grapheme_count + 6
+    )
+    assert with_emphasis.emoji_count == 1
