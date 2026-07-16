@@ -169,6 +169,51 @@ Affected collection modules:
 the renderer away from `ASSET_ADAPTER`/v1 signatures is owned by later tasks.
 These failures were not skipped or disguised.
 
+## Review correction: executable malformed-narrative recovery
+
+The independent Task 6 review found that a malformed
+`publish_package.narrative_plan` produced a QA issue and routed to R1 without
+the `decision_output` that R1 requires. The recovery path now uses the
+authoritative `selected_narrative_plan` already carried by modern workflow
+state to construct the R1 input. If neither the package nor authoritative
+state contains a valid plan, Carousel QA raises a clear error instead of
+returning an impossible next state.
+
+RED:
+
+```text
+pytest -q tests/nodes/test_carousel_qa.py \
+  -k 'invalid_package_narrative or recovery_narrative_plan'
+
+2 failed, 27 deselected in 1.61s
+```
+
+The failures were the missing `decision_output` `KeyError` and the absence of
+the required clear failure when no authoritative recovery plan existed.
+
+GREEN:
+
+```text
+pytest -q tests/nodes/test_carousel_qa.py \
+  -k 'invalid_package_narrative or recovery_narrative_plan'
+
+2 passed, 27 deselected in 1.59s
+```
+
+Fresh Task 6 focused verification after the correction:
+
+```text
+pytest -q tests/nodes/test_carousel_qa.py tests/nodes/test_metadata_flow.py \
+  tests/nodes/test_final_policy_guard.py tests/publishing/test_artifacts.py \
+  tests/prompts/test_composer.py
+
+284 passed, 2 warnings in 11.81s
+```
+
+The warnings are the same stale macOS pytest temporary-directory cleanup
+warnings described above. Relevant schema tests remained `44 passed`; compileall
+and `git diff --check` exited successfully.
+
 ## Files changed
 
 Production:

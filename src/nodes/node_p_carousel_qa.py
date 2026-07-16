@@ -794,6 +794,7 @@ def _build_r1_tasks(issues: list[CarouselQAIssue]) -> EditorialTasks:
 def _build_r1_decision(
     package: dict,
     issues: list[CarouselQAIssue],
+    narrative_plan: NarrativePlan,
 ) -> DecisionOutput:
     draft_id = str(
         package.get("draft_id") or package.get("topic_id") or "carousel_qa"
@@ -814,9 +815,7 @@ def _build_r1_decision(
             angle=str(package.get("angle") or ""),
             target_group=str(package.get("target_group") or ""),
             core_pain=str(package.get("core_pain") or ""),
-            narrative_plan=NarrativePlan.model_validate(
-                package.get("narrative_plan")
-            ),
+            narrative_plan=narrative_plan,
             storyboard_visible_text=extract_storyboard_visible_text(
                 package.get("storyboards")
             ),
@@ -889,11 +888,24 @@ def carousel_qa_node(state: AgentState) -> dict:
     output = {"carousel_qa_result": result, "current_node": "CAROUSEL_QA"}
     if issues:
         try:
-            NarrativePlan.model_validate(package.get("narrative_plan"))
+            r1_narrative_plan = NarrativePlan.model_validate(
+                package.get("narrative_plan")
+            )
         except (TypeError, ValueError):
-            pass
-        else:
-            output["decision_output"] = _build_r1_decision(package, issues)
+            try:
+                r1_narrative_plan = NarrativePlan.model_validate(
+                    state.get("selected_narrative_plan")
+                )
+            except (TypeError, ValueError) as selected_error:
+                raise ValueError(
+                    "carousel_qa_node requires selected_narrative_plan to "
+                    "recover an invalid publish_package.narrative_plan."
+                ) from selected_error
+        output["decision_output"] = _build_r1_decision(
+            package,
+            issues,
+            r1_narrative_plan,
+        )
     return output
 
 

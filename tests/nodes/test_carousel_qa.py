@@ -137,6 +137,7 @@ def _state(plan=None, package=None):
     plan = plan or _plan()
     return {
         "visual_plan": plan,
+        "selected_narrative_plan": _narrative_plan(),
         "publish_package": package or _package(plan),
         "trends": [
             {
@@ -563,7 +564,10 @@ def test_carousel_qa_node_preserves_success_and_failure_routes():
     assert route_after_carousel_qa(failed) == "r1_reflector"
 
 
-def test_carousel_qa_node_reports_invalid_narrative_without_crashing():
+def test_carousel_qa_node_routes_invalid_package_narrative_through_executable_r1(
+    monkeypatch,
+):
+    from src.nodes import node_h_r1_reflector as r1_module
     from src.nodes.node_p_carousel_qa import (
         carousel_qa_node,
         route_after_carousel_qa,
@@ -577,8 +581,88 @@ def test_carousel_qa_node_reports_invalid_narrative_without_crashing():
     assert "narrative_plan_missing" in _rule_ids(
         result["carousel_qa_result"].issues
     )
-    assert "decision_output" not in result
     assert route_after_carousel_qa(result) == "r1_reflector"
+    assert (
+        result[
+            "decision_output"
+        ].normalized_input.r1_input.content_candidate.narrative_plan
+        == _narrative_plan()
+    )
+
+    candidate = (
+        result["decision_output"].normalized_input.r1_input.content_candidate
+    )
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "draft_id": candidate.draft_id,
+                "revised_title": candidate.best_title,
+                "revised_md": candidate.draft_md,
+                "topic_id": candidate.topic_id,
+                "topic": candidate.topic,
+                "angle_id": candidate.angle_id,
+                "angle": candidate.angle,
+                "target_group": candidate.target_group,
+                "core_pain": candidate.core_pain,
+                "best_cover_copy": candidate.best_cover_copy,
+                "narrative_plan": _narrative_plan().model_dump(mode="json"),
+                "storyboard_visible_text": [
+                    item.model_dump(mode="json")
+                    for item in candidate.storyboard_visible_text
+                ],
+                "scores": {
+                    "clarity_score": 9,
+                    "save_value_score": 9,
+                    "readability_score": 9,
+                    "authenticity_score": 9,
+                    "promise_alignment_score": 9,
+                },
+                "revision_meta": {
+                    "revision_id": "carousel_qa_recovery",
+                    "round": 2,
+                    "diff_summary": [],
+                    "next_actions": ["rerun_carousel_qa"],
+                },
+                "task_report": {
+                    "completed_task_ids": [],
+                    "skipped_task_ids": [],
+                    "notes": [],
+                },
+                "remaining_risks": [],
+                "editor_notes": [],
+                "should_run_R1_again": False,
+            }
+
+    monkeypatch.setattr(r1_module, "get_model", lambda *_args: FakeModel())
+    r1_result = r1_module.r1_reflector_node(
+        {
+            **result,
+            "domain_context": {
+                "domain": "beauty",
+                "profile_version": "beauty-v1",
+            },
+            "content_policy": {},
+            "evidence_briefs": {},
+        }
+    )
+
+    assert r1_result["selected_narrative_plan"] == _narrative_plan()
+
+
+def test_carousel_qa_node_fails_clearly_without_recovery_narrative_plan():
+    from src.nodes.node_p_carousel_qa import carousel_qa_node
+
+    package = _package()
+    package["narrative_plan"] = {"narrative_form": "scenario_story"}
+    state = _state(package=package)
+    state.pop("selected_narrative_plan")
+
+    with pytest.raises(
+        ValueError,
+        match="requires selected_narrative_plan to recover",
+    ):
+        carousel_qa_node(state)
 
 
 @pytest.mark.parametrize(
