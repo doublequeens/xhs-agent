@@ -1,204 +1,43 @@
-# Task 8 Report: Editorial carousel graph integration
+# Task 8 report: adaptive template variant resolution
 
-## Scope completed
+## Outcome
 
-- Added thin `asset_resolver` and `editorial_carousel_renderer` graph adapters.
-- Rewired the production graph to
-  `assembler -> visual_strategy_planner -> storyboard_generator -> asset_resolver -> carousel_qa -> editorial_carousel_renderer -> render_qa -> human_review -> final_policy_guard -> content_writer`, while retaining the old text-card node only as an exact-successor checkpoint target.
-- Added Human Review render/contact-sheet/QA/pending-asset payloads and explicit `asset_decisions` handling.
-- Integrated approval promotion and rejection routing. Rejection reloads the same run-scoped catalog with external providers disabled, so resolution advances to an already-downloaded pending candidate or an explicit local fallback without another provider call.
-- Allowed audited `pending_external` assets through pre-review Render QA only; pending assets remain blocked from Final Policy Guard.
-- Added legacy checkpoint hydration through `editorial_carousel.legacy`; modern checkpoints with the three editorial state slots resume untouched.
-- Strengthened Final Policy Guard to require human approval, passed Carousel/Render QA, no pending assets, active/fallback catalog paths, current asset/page/contact-sheet byte hashes, exact source-hash binding, visual-plan/storyboard/render page order, distinct complete 5–7 PNG paths, and contact-sheet page bindings.
-- Updated `ContentRecord.image_paths` persistence to use ordered final `RenderManifest.pages` paths.
-- Added CLI collection of one explicit approve/reject decision per pending asset.
-- Migrated compiled-graph integration fixtures to the modern semantic storyboard/editorial seams. Tests of the retired text-card path use the explicit legacy marker only.
-- Closed the Task 8 review findings across all six groups:
-  - CLI review omits empty asset decisions, supports a second approval after pending-asset handling, displays provenance, and records explicit decisions for every unresolved safety check.
-  - Modern `content_blocks` and emphasis atoms participate in visible-text extraction/reapplication and policy scanning; content/layout/slot edits invalidate every downstream plan/asset/QA/render artifact before R2 regeneration.
-  - Multi-asset review is a lifecycle deep-module operation with complete canonical preflight, a catalog-wide batch lock, snapshot compensation across incoming/promoted bytes, audits, and catalog manifest, and an in-boundary resolver finalize step.
-  - Legacy hydration now requires an explicit old editorial version/marker or a strict old-template shape at an old checkpoint seam. Partial or corrupt modern state is never downgraded, and stale legacy markers are cleared on modern hydration.
-  - Human decisions bind pending ID, slot, provider ID, requirement fingerprint, SHA-256, and canonical metadata path; a generic approval cannot synthesize safety clearance.
-  - Final Guard uses one `O_NOFOLLOW` file-descriptor snapshot for inode checks, SHA-256, and Pillow decoding, enforces trusted render-root containment and distinct canonical paths/inodes, binds ordered frame/role/layout/text probes, and rebinds unique asset slots across plan/storyboard/manifest.
-- Closed the second Task 8 review without loosening the modern artifact contract:
-  - Final Guard now permits intentional reuse of one catalog asset across unique slots while requiring each slot's exact requirement/layout/role/hash/provenance binding. A real beauty catalog -> strategy -> resolver -> guard integration covers background and skin-detail reuse; conflicting declarations for the same path/inode fail closed.
-  - Exact pre-Task-8 checkpoints at `storyboard_generator`, `carousel_qa`, and `render_qa` resume in an isolated `legacy_v1` lane without invoking the asset resolver. An R1 regeneration that produces a modern plan emits an explicit `modern_v2` transition, clears legacy state, invalidates downstream artifacts, and immediately returns to the full modern resolver/guard path.
-  - Batch, standalone approval/rejection, and direct catalog append operations share one catalog-review lock. Batch recovery is journaled durably; compensation attempts every asset/audit restoration, restores the manifest under its own lock with compare-and-swap, preserves a concurrent manifest write, retains the original exception, and retries incomplete recovery before later review work.
-  - Final Guard walks every trusted-root path component by directory file descriptor with `O_DIRECTORY | O_NOFOLLOW`, then validates and reads the final regular file from the same descriptor chain. An intermediate-directory symlink swap is rejected.
-  - Human Review's render-structure signature now includes the canonical complete `ContentContract`, so any planner/render contract edit invalidates downstream artifacts and routes through R2. Batch decision lookup accepts only the displayed canonical pending ID.
-- Closed the final Task 8 security/crash-consistency review:
-  - Recovery journals are strict Pydantic `version=1` records bound to transaction ID, catalog ID/root, run ID, and manifest path. Recovery verifies a non-symlink journal directory and journal inode, quarantines unknown/corrupt records, and validates every original/target manifest and audit snapshot hash, strict audit schema, source inode/hash, and incoming/active path containment before any mutation.
-  - Batch review is a real write-ahead transaction. The complete target manifest digest and target audits are durable before mutation; audit, asset move, manifest, and every reverse operation persist+fsync `intent`, perform the idempotent CAS/move plus file/parent fsync, then persist+fsync `done`. Journal rename/unlink and newly created/moved parent entries are fsynced. A previously committed approval is excluded from later transaction ownership and cannot be rolled back by a failed retry.
-  - The catalog review lock opens with `O_NOFOLLOW` and requires a stable regular single-link inode before and after `flock`, rejecting symlinks, hardlink aliases, and replacement races while preserving the global lock order.
-  - `modern_v2` is decisive over old shapes and spoofed legacy markers. Unknown versions fail closed; versionless legacy inference requires a strict old shape at one exact old successor; partial modern checkpoints remain modern and surface missing-artifact issues.
-  - Final Guard opens the absolute trusted root from `/` one component at a time with `O_DIRECTORY | O_NOFOLLOW`, retains every directory descriptor, and rechecks each parent/name inode after reading. It also verifies every final asset against the canonical active catalog; licensed stock additionally requires one matching strict approved audit with exact run/review/safety/reviewed-at/hash bindings. Project-original seed assets follow an explicit local canonical-catalog rule.
-- Closed the catalog-global recovery and shared-eligibility review:
-  - Before any run prepares new work, the catalog lock now drives recovery from every registry `prepared` entry. Each journal is located through the entry's exact raw `run_id`, validated with a run-bound catalog view, and fully rolled back before the current run snapshots or mutates the manifest. A journal-less `registered` entry is durably aborted and compacted as a pre-mutation crash orphan; a journal-less `prepared` entry blocks recovery.
-  - Run recovery directories use `sha256(run_id UTF-8)` keys, so case-insensitive filesystems cannot alias distinct `Run`/`run` identifiers while journal and registry payloads retain the exact raw run ID.
-  - The catalog review lock retains the authenticated catalog-root directory descriptor for the entire critical section. Durable mkdir, atomic write, hard-link move, quarantine, and unlink operations resolve catalog-relative paths from that descriptor; pathname identity remains a checkpoint, not the operation anchor.
-  - Absent-destination promotion uses `linkat` no-clobber semantics, verifies the destination inode/hash, rechecks the source name, and then unlinks the expected source inode/hash. A source swap after link removes only the newly linked destination and fails closed; a preexisting hardlink destination is never overwritten. Atomic writes verify the committed pathname inode and payload hash after rename.
-  - Resolver and Final Guard share one `entry_satisfies_requirement` deep module for base, exact, and explicit-fallback rules. Fallbacks must be named by `fallback_asset_ids` and authorized by a production primary-role catalog entry declaring the target role; Guard also rejects every pending-workflow field on project-original local items.
-- Closed the final link/unlink and registry-state recovery review:
-  - Registry transactions now durably transition `registered -> prepared -> committed|aborted`: registration precedes the journal, the validated journal precedes `prepared`, and mutations never begin before `prepared`. Only a journal-less `registered` entry is an abortable orphan; a journal-less `prepared` entry blocks all later APIs as recovery-required, while `registered` plus a valid journal is promoted and recovered.
-  - Registry entries bind the exact manifest/anchor path, initial manifest inode, and original manifest hash. Global recovery reconstructs each run-specific catalog from that durable binding, so persistent-manifest and rejection-anchor transactions recover correctly regardless of the caller API's current manifest.
-  - The global scanner resolves every journal through the same hashed run-directory validator used by writers, including no-symlink, owner, and `0700` checks plus the journal's raw-run binding.
-  - Asset promotion fsyncs the destination link before removing the source and exposes a precise `move.linked` crash point. Recovery accepts both paths only when they are exactly two hardlinks to the journal-bound inode/hash, rechecks that exact link count immediately before unlink, removes the destination, fsyncs its parent, and continues the prepared-transaction rollback. A concurrent third link or identity/hash mismatch fails closed.
-  - Durable unlink records `source_removed=True` when unlink succeeds but parent fsync fails. Move cleanup removes its new destination only while the original source name still resolves to the expected inode; once the source is gone, the destination remains as the recoverable last link.
+- Added Unicode grapheme-aware copy measurement across every visible storyboard
+  field.
+- Emoji are measured as grapheme clusters and remain optional; no emoji policy was
+  introduced.
+- Added immutable definitions for all six template families and all fifteen page
+  archetypes.
+- Added family-specific colors, repository-local display/body fonts, composition
+  variants, density thresholds, and minimum font sizes.
+- Added deterministic density and composition resolution driven by measured copy,
+  item cardinality, archetype, template family, and an optional explicit density
+  hint.
+- Added the pinned Noto Color Emoji v2.051 font and license from repository commit
+  `8998f5dd683424a73e2314a8c1f1e359c19e8742`.
 
-## TDD evidence
+## Contract details
 
-### Inherited RED
+- `measure_frame_copy(frame)` counts graphemes, Han characters, Latin words, emoji,
+  blocks, items, longest-item graphemes, and estimated lines.
+- `resolve_variant(...)` uses sparse/standard/dense thresholds plus item limits.
+  Explicit hints fail closed when measured copy does not fit.
+- Collection/checklist, comparison, steps, and quote archetypes select structural
+  variants from item cardinality and density; other archetypes use the registered
+  family focus/stack/grid progression.
+- Registry mappings are immutable and every font path is repository-local.
 
-- Previous implementer recorded the valid initial RED as `10 failed, 63 passed` for the Task 8 focused suite.
-- On takeover, the Task 8 four-file suite was already GREEN (`75 passed`), but `tests/test_main.py tests/nodes/test_render_qa.py` exposed one remaining old-checkpoint regression: `1 failed, 79 passed`. The terminal checkpoint fake had no `update_state`, and Task 8 hydration was unnecessarily trying to rewrite an already-terminal checkpoint.
-- First full-suite run after that fix exposed stale pre-Task-8 fixtures: `11 failed, 1045 passed, 2 skipped`.
+## Verification
 
-### Additional RED/GREEN cycles
+- Initial RED: `109 failed` because all three modules were absent.
+- Focused metrics/registry/variant plus schema suite:
+  `116 passed in 0.06s`
+- Pinned resource hashes:
+  - font: `72a635cb3d2f3524c51620cdde406b217204e8a6a06c6a096ff8ed4b5fd6e27b`
+  - license: `500bb1ccf43df7bbb522112f9133a52b16e1c35e809632f5d8609b179152de5b`
+- `python -m compileall -q src main.py`: passed
+- `git diff --check`: passed
 
-- Terminal legacy checkpoint hydration: RED `1 failed`; GREEN exact regression `1 passed`, then main/Render QA `80 passed`.
-- Final Guard ordered binding: reversing pages, package paths, and contact-sheet page bindings originally produced no issue; after the fix the focused test passed and the guard suite passed.
-- Final Guard distinct path completeness: duplicating one page path while updating all stored hashes originally passed; after the fix the focused test passed and the guard suite passed.
-- Human Review lifecycle orchestration: approve promotion routes to Render QA; rejection reloads the catalog twice with `allow_external=False` and routes through the renderer. Focused result: `2 passed`.
-- Real resolver evidence for reject-next and pending resume without provider calls: `2 passed`.
-- Asset resolver suite: `115 passed, 2 skipped` (the two opt-in live provider API tests).
-- Modern beauty compiled-graph integration: `5 passed`.
-- Modern domain compiled-graph integration: `8 passed`.
-- CLI lifecycle control: two initial failures showed empty decisions entering lifecycle and blocking the approved-to-guard transition; the real CLI-to-node-to-router tests now cover both no-pending and pending-then-second-review flows.
-- Modern storyboard visibility/invalidation: six focused failures reproduced missing `content_blocks` extraction/policy coverage and stale artifact reuse; all six pass after canonical visible atoms plus render-structure signatures and downstream invalidation.
-- Batch lifecycle closure: focused coverage proves rollback after the second approval, rollback of mixed approve/reject when final resolution fails, successful mixed commit plus idempotent retry, and rejection of stale bindings or implicit safety approval.
-- Legacy classification closure: corrupt/partial states and stale marker tests pass without weakening modern artifact requirements.
-- Secure Final Guard closure: focused tests cover valid artifacts, corrupt bytes, duplicate raw paths, symlinked active assets, symlink and hardlink page aliases, paths outside the trusted root, ordered role/layout mismatch, stale visible-text probes, duplicate/rebound slots, and path replacement after open.
-- The first closure full-suite run was `1076 passed, 2 skipped, 3 failed`; all three failures were modern integration fixtures with placeholder PNGs and incomplete bindings. The fixtures were upgraded to consistent modern artifacts rather than marked legacy. The fresh full run passed.
-- Second-review catalog reuse: two RED failures showed that physical reuse was rejected categorically and conflicting same-file declarations were not detected. The production catalog/strategy/resolver integration and conflict regression are GREEN.
-- Exact legacy resume: four RED integration failures exposed checkpoint-successor drift and unconditional modern resolver routing. Typed hydration with predecessor-aware `update_state(..., as_node=...)`, conditional storyboard routing, and the same-run `legacy_v1 -> modern_v2` transition made all four real-checkpointer cases GREEN.
-- Content-contract invalidation: the new contract-edit regression was RED because Human Review approved stale artifacts; canonical contract participation in the render-structure signature made it GREEN.
-- Lifecycle concurrency/recovery: the initial lifecycle run had one stale failure-injection seam after global locking moved below the public wrapper. The updated suite proves batch/standalone serialization, manifest CAS preservation under a simulated concurrent writer, aggregated move-plus-audit rollback failures, durable journal retention, successful recovery on retry, and canonical-ID-only decisions (`43 passed`).
-- Descriptor-chain traversal: focused regressions cover both final-file replacement after open and an intermediate directory swapped to a symlink; both fail closed under component-wise `openat` traversal.
-- Second-review combined focused verification passed with `179 passed`; the first subsequent full run found one stale exact-key assertion for the newly typed planner transition. Updating that contract assertion yielded the final clean run.
-- Final-review journal trust boundary: the external symlink journal directory test was RED because attacker-controlled recovery executed a move; path escape, unknown schema, and tampered audit snapshots were also RED. All four public retry regressions are GREEN under strict pre-mutation validation and quarantine.
-- Final-review crash protocol: 13 forward transition crash points and 9 rollback transition crash points simulate process death with a `BaseException`; every public retry converges to exactly one approved catalog entry and no journal. A separate retry-finalize failure proves a preexisting approval remains active, and the rollback-internal failure regression proves the original exception remains primary with aggregated compensation notes (`23 passed`).
-- Final-review lock boundary: symlink, hardlink-alias, and post-flock replacement tests were RED and are GREEN alongside the existing concurrent batch/standalone cases.
-- Final-review version boundary: `modern_v2 + old shape + marker`, unknown-version marker spoof, and Final Guard partial-modern marker bypass were all RED; all three are GREEN with version-first classification.
-- Final-review root/provenance boundary: a trusted-root parent replacement through a symlink was readable before the `/`-anchored descriptor chain; consistent forged provenance across every reused item passed before canonical lookup. Both are now rejected while the real catalog reuse integration remains GREEN.
-- The first final-review full run found three domain integration fixtures without canonical catalogs. Those fixtures now generate valid SVG project-original assets plus a validated canonical manifest; the exact regressions pass.
-- Transaction-ledger replay closure: a forged empty-operation journal could rewrite the manifest on recovery before the new test failed. Recovery now requires a durable catalog/run-bound transaction registry, a fresh non-reusable transaction ID, and an immutable plan hash covering both manifest snapshots and every operation. Registry state is authoritative: only `prepared` may roll back, while `committed` and `aborted` transactions can never be replayed as rollback work. Recovery directory/journal/registry ownership and modes plus bounded journal/base64/snapshot sizes fail closed.
-- Standalone lifecycle closure: approval and rejection previously used separate non-WAL mutation paths. Both now enter the same public batch transaction engine; the boolean lock bypass and direct catalog append writer were deleted. The standalone crash matrices cover 15 approval and 12 rejection forward points (`27 passed`), including registry, audit, move, manifest, finalize, and commit-ledger boundaries.
-- Descriptor-relative mutation closure: journal, registry, audit, manifest, move, and unlink writes use held component-wise `openat(O_NOFOLLOW)` directory descriptors, durable temp-file rename, parent fsync, and post-operation directory-binding validation. The catalog lock also validates owner/mode/link/identity before and after `flock` and after the critical section without masking a primary body exception.
-- Canonical Guard closure: the manifest parser now consumes the exact bytes from the Guard's secure descriptor snapshot rather than reopening its pathname. External audit comparison covers the complete canonical provenance/review record; project-original assets additionally bind ownership, production usage, tags, dimensions, layout, and active/fallback role semantics.
-- The first ledger-hardening full run found three domain integration fixtures missing newly enforced manifest dimensions; adding their real 1080x1440 declarations made the focused regressions and the fresh full run GREEN.
-- Multi-run registry closure: two RED public lifecycle tests showed that a top-level `run_id` made a committed run A block run B, while a run B retry attempted to validate and quarantine run A's legitimate crash journal. The registry is now catalog/root scoped with `run_id` on each transaction entry, and journals live in owner-only run subdirectories. Run B can commit while a pre-manifest run A transaction remains recoverable; run A recovery skips manifest compensation when manifest apply never began, preserving run B's catalog update.
-- Pre-mutation quota closure: 800 KiB audit, multi-asset aggregate, and small exact serialized-journal tests were RED because preparation created active directories and registered an unbounded transaction. Manifest and audit snapshots now use bounded identity-stable reads; every original/target snapshot, decoded aggregate, and the final base64-expanded journal bytes are checked before recovery-root creation, registry preparation, or active/catalog mutation. Destination directories are created only after durable move intent.
-- Registry retention closure: terminal entries with no remaining journal compact before registry quota enforcement, registry reads have a separate bounded maintenance ceiling, and a small-quota ten-transaction regression remains live. Freshness applies only to prepared work: an old committed journal is safely cleaned while an old prepared transaction fails closed.
-- Atomic identity closure: source-swap and destination-creation RED tests showed that descriptor-relative rename could still move the wrong inode or overwrite a concurrently created destination. Move now binds source inode/hash and destination absence at the rename point; audit and manifest atomic writes recheck CAS hash and the original metadata inode. Directory creation uses held-parent `mkdirat`, fsync, and inode revalidation. Catalog lock/root identity is rechecked at critical-section entry and before every durable mutation; lock replacement stops before move/manifest commit.
-- Current-requirement Guard closure: RED tests covered an undersized canonical asset and a local asset carrying an external URL. Final Guard now reconstructs the current `AssetRequirement`, applies the resolver's production/layout/minimum-dimension/orientation/disabled-context hard filters, requires the current external requirement fingerprint to match item/audit provenance, and requires every external-only field to be empty for project-original assets. A real external approved audit regression covers fingerprint drift.
-- The first current-requirement full run found three integration fixtures that declared every SVG as portrait even for square requirements. The fixture now emits actual requirement dimensions; the exact three regressions and the fresh full run pass.
-- Catalog-global recovery: three manifest crash regressions (`intent`, `applied`, `done`) were RED because run B committed without first restoring run A. A case-sensitive run-directory test exposed raw path keys, and repeated `transaction.registered` crashes grew the registry to two prepared entries. The five regressions are GREEN with registry-driven cross-run recovery, hashed directory keys, and prepared-orphan compaction.
-- Durable move/root binding: the post-link source-swap test was RED because the old rename path never reached a no-clobber link seam; the checkpoint-then-root-replacement test was RED because the replacement root manifest was overwritten. Both are GREEN with verified link+unlink and the held root descriptor. A preexisting hardlink-destination regression additionally proves no-clobber behavior.
-- Shared Guard eligibility: four local pending-workflow fields were accepted, a legal non-symmetric resolver fallback was rejected, and an unlisted fallback was not classified as a requirement violation. All six regressions are GREEN through the shared exact/fallback helper and complete local-field exclusion.
-- Pre-commit filesystem review: an open/restore race proved the retained root descriptor was not compared with the pre-open root inode, and an expected-absent atomic write could overwrite a last-moment creator. Both were RED. The lock now authenticates the opened root descriptor before lock-file creation and at every checkpoint; expected-absent writes use hard-link no-clobber commit. Expected unlink retains its verified descriptor through a final name/lock check and the unlink syscall.
-- Final recovery-state review: eight of the first nine regressions were RED. There was no post-link crash seam; source-parent fsync failure deleted the last link; prepared missing journals were silently compacted; registered+journal could not be represented; persistent/anchor recovery inherited the wrong caller manifest; and global scanning bypassed the canonical run-directory validator. The initial nine plus an exact third-hardlink rejection are GREEN under the four-state registry and journal-bound move recovery.
-
-## Final verification
-
-- Review-closure core files:
-  `pytest tests/test_main.py tests/asset_resolver/test_lifecycle.py tests/nodes/test_domain_nodes.py tests/nodes/test_final_policy_guard.py -q`
-  -> `162 passed` before the last CLI safety and secure-path additions.
-- Modern domain compiled-graph integration:
-  `pytest tests/integration/test_domain_workflow.py -q`
-  -> `8 passed`.
-- Full suite:
-  `pytest -q`
-  -> `1127 passed, 2 skipped, 4 warnings` in 29.48s.
-- Second-review focused suite:
-  `pytest tests/test_main.py tests/test_graph.py tests/nodes/test_domain_nodes.py tests/integration/test_legacy_editorial_resume.py tests/nodes/test_final_policy_guard.py tests/asset_resolver/test_lifecycle.py -q`
-  -> `179 passed`.
-- Lifecycle concurrency/recovery suite:
-  `pytest tests/asset_resolver/test_lifecycle.py -q`
-  -> `73 passed`.
-- Final-review targeted lifecycle/guard/resume suite:
-  `pytest tests/asset_resolver/test_lifecycle.py tests/nodes/test_final_policy_guard.py tests/test_main.py tests/integration/test_legacy_editorial_resume.py -q`
-  -> `186 passed, 4 warnings`.
-- Final-review broader focused suite:
-  `pytest tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py -q`
-  -> `298 passed, 2 skipped, 4 warnings`.
-- Bytecode compilation:
-  `python -m compileall -q main.py src tests`
-  -> passed.
-- `git diff --check` -> clean.
-- Transaction-ledger/standalone lifecycle suite:
-  `pytest tests/asset_resolver/test_lifecycle.py -q`
-  -> `102 passed`.
-- Hardened lifecycle/Guard combined suite:
-  `pytest tests/asset_resolver/test_lifecycle.py tests/nodes/test_final_policy_guard.py -q`
-  -> `164 passed, 4 warnings` after rerunning the one transient lock-create race regression.
-- Latest broader focused suite:
-  `pytest tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py -q`
-  -> `327 passed, 2 skipped, 4 warnings`.
-- Latest full suite:
-  `pytest -q`
-  -> `1156 passed, 2 skipped` (`1158 tests collected`).
-- Latest bytecode/diff verification:
-  `python -m compileall -q main.py src tests` and `git diff --check`
-  -> passed/clean.
-- Final link/registry precise crash suite:
-  `pytest -q tests/asset_resolver/test_lifecycle.py -k 'between_move_link or unbound_third_hardlink or rechecks_link_count or source_parent_fsync or prepared_transaction_missing or corrupt_prepared_journal or registered_journal or registry_manifest_not_current or validates_hashed_run_directory'`
-  -> `12 passed`.
-- Final lifecycle suite:
-  `pytest -q tests/asset_resolver/test_lifecycle.py`
-  -> `135 passed`.
-- Final full suite:
-  `pytest -q`
-  -> `1198 passed, 2 skipped, 4 warnings` (`1200 tests collected`).
-- Final bytecode/diff verification:
-  `python -m compileall -q main.py src tests` and `git diff --check`
-  -> passed/clean.
-- Final multi-run/quota/identity lifecycle suite:
-  `pytest tests/asset_resolver/test_lifecycle.py -q`
-  -> `113 passed`.
-- Final requirement/provenance Guard suite:
-  `pytest tests/nodes/test_final_policy_guard.py -q`
-  -> `65 passed, 4 warnings`.
-- Final broader focused suite:
-  `pytest tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py -q`
-  -> `341 passed, 2 skipped, 4 warnings`.
-- Final full suite:
-  `pytest -q`
-  -> `1170 passed, 2 skipped` (`1172 tests collected`).
-- Catalog-global recovery/no-clobber/root-fd targeted suite:
-  `pytest -q tests/asset_resolver/test_lifecycle.py -k 'new_run_recovers_prepared_manifest or run_recovery_directories_use_case_sensitive_hash_keys or registered_transaction_orphans or move_cleans_new_destination or hardlink_destination or root_replacement_after_checkpoint or root_swapped_during_root_open or expected_absent_atomic_write'`
-  -> `10 passed`.
-- Latest lifecycle suite:
-  `pytest -q tests/asset_resolver/test_lifecycle.py`
-  -> `123 passed`.
-- Latest Final Guard suite:
-  `pytest -q tests/nodes/test_final_policy_guard.py`
-  -> `71 passed, 4 warnings`.
-- Latest broader focused suite:
-  `pytest -q tests/asset_resolver tests/nodes/test_final_policy_guard.py tests/nodes/test_domain_nodes.py tests/nodes/test_visual_strategy_planner.py tests/test_main.py tests/test_graph.py tests/integration/test_legacy_editorial_resume.py`
-  -> `357 passed, 2 skipped, 4 warnings`.
-- Latest full suite:
-  `pytest -q`
-  -> `1186 passed, 2 skipped, 4 warnings` (`1188 tests collected`).
-- Latest bytecode/diff verification:
-  `python -m compileall -q main.py src tests` and `git diff --check`
-  -> passed/clean.
-
-## Self-review
-
-### Standards
-
-- No repository coding-standard document exists beyond the supplied agent/issue/domain workflow instructions; no issue-tracker mutation was required.
-- The graph nodes remain thin adapters. Batch decision matching, canonical audit verification, safety review, mutation, rollback, retry semantics, and resolver-finalize compensation live in `asset_resolver.lifecycle`.
-- Legacy compatibility is centralized in `src/editorial_carousel/legacy.py`; modern tests do not use the marker.
-- Manual smell review found no blocking duplicated policy logic or hidden provider calls. Human Review now prepares state and delegates the complete mutation boundary to the lifecycle module.
-
-### Spec
-
-- Verified explicit asset approval and rejection lifecycle, strict catalog/run-bound recovery records, crash-resumable write-ahead apply/rollback, canonical provenance/safety binding, hardened globally serialized writers, compare-and-swap rollback, durable recovery and retry, already-downloaded next/fallback resolution without repeat external calls, pending-asset exclusion from Final Guard, R1/R2/review routes, decisive modern versioning, exact legacy checkpoint resume, same-run legacy-to-modern transition, complete contract invalidation, intentional audited catalog reuse, `/`-anchored component-wise secure current-byte snapshots and ordered bindings, final PNG persistence, and CLI asset decision input.
-- No Task 8 requirement remains partial.
-
-## Concerns and follow-up boundaries
-
-- The two live provider tests remain intentionally skipped unless `RUN_LIVE_ASSET_PROVIDER_TESTS=1`; default tests make no network calls as required.
-- The default run's warnings are two explicit legacy storyboard fallback warnings plus transient pytest temporary-directory cleanup warnings on this macOS runner.
-- `main.py` still owns the pre-existing fixed-six-page export validator. The plan assigns dynamic 5–7 path validation and the new publish artifact exporter to Task 9, so Task 8 deliberately does not implement that later scope.
+External subagent review remained unavailable because of the existing local Codex
+usage limit. The controller reviewed the complete implementation and found no
+remaining Critical or Important issue.
