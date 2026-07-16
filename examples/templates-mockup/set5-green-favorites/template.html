@@ -2,21 +2,43 @@
 <style>
 @font-face{font-family:"Sans";src:url("../../../assets/fonts/templates/HarmonyOS_Sans_SC_Regular.ttf") format("truetype");font-weight:400;}
 @font-face{font-family:"SansM";src:url("../../../assets/fonts/templates/HarmonyOS_Sans_SC_Medium.ttf") format("truetype");font-weight:500;}
+@font-face{font-family:"Bodoni";src:url("../../../assets/fonts/beauty-editorial-v1/BodoniModa-Regular.ttf") format("truetype");}
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:#ddd;font-family:"Sans";}
-.page{position:relative;width:1080px;height:1350px;overflow:hidden;margin:0 auto;background:#1E5A2E;color:#F3E9D2;display:flex;flex-direction:column;padding:74px 80px;}
-.topbar{display:flex;justify-content:space-between;font-size:24px;letter-spacing:.16em;color:#E8C7A0;}
-.hero{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:40px;}
-.ttl{font-family:"SansM";font-size:104px;line-height:1.05;color:#F3E9D2;text-align:center;}
+.page{position:relative;width:1080px;height:1350px;overflow:hidden;margin:0 auto;background:#1E5A2E;color:#F3E9D2;display:flex;flex-direction:column;padding:70px 78px;}
+.topbar{display:flex;justify-content:space-between;font-size:23px;letter-spacing:.14em;color:#E8C7A0;}
+.foot{display:flex;justify-content:space-between;font-size:21px;color:#C9B088;}
+
+/* cover */
+.c .hero{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:38px;}
+.c .ttl{font-family:"SansM";font-size:104px;line-height:1.05;text-align:center;}
 .folders{display:flex;gap:28px;}
 .folder{width:230px;display:flex;flex-direction:column;}
 .folder .tab{height:30px;width:62%;border-radius:12px 12px 0 0;}
-.folder .body{height:210px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-family:"SansM";font-size:40px;color:#fff;}
+.folder .body{height:200px;border-radius:16px;display:flex;align-items:center;justify-content:center;font-family:"SansM";font-size:40px;color:#fff;}
 .fp .tab,.fp .body{background:#E58FA0;} .fp .tab{background:#C46B7D;}
 .fr .tab,.fr .body{background:#E0453A;} .fr .tab{background:#B82E25;}
-.foot{display:flex;justify-content:space-between;font-size:21px;color:#C9B088;}
+
+/* item page */
+.i .wrap{flex:1;display:flex;align-items:center;}
+.i .fcard{position:relative;width:100%;background:#F3E9D2;border-radius:18px;padding:54px 50px 46px;display:flex;flex-direction:column;gap:18px;box-shadow:0 14px 40px rgba(0,0,0,.18);}
+.i .ftab{position:absolute;top:-26px;left:44px;height:40px;width:200px;border-radius:14px 14px 0 0;display:flex;align-items:center;justify-content:center;font-family:"SansM";font-size:24px;color:#fff;letter-spacing:.06em;}
+.i .ftab.p{background:#C46B7D;} .i .ftab.r{background:#B82E25;} .i .ftab.y{background:#C99A2E;}
+.i .rank{font-family:"Bodoni";font-size:30px;color:#9a7a3a;}
+.i .name{font-family:"SansM";font-size:64px;color:#244a26;line-height:1.1;}
+.i .blurb{font-size:35px;line-height:1.6;color:#5a4632;}
+.i .keys{display:flex;gap:13px;flex-wrap:wrap;margin-top:4px;}
+.i .key{font-family:"SansM";font-size:27px;color:#244a26;background:#E2D6BA;padding:11px 24px;border-radius:999px;}
+.i .pg{position:absolute;right:78px;bottom:56px;font-family:"Bodoni";font-size:32px;color:#C9B088;}
+
+/* closing */
+.e{justify-content:center;align-items:center;text-align:center;}
+.e .h{font-family:"SansM";font-size:96px;line-height:1.15;}
+.e .sub{font-size:36px;color:#E8C7A0;margin-top:22px;}
 </style></head><body>
-<div class="page">
+
+<!-- cover -->
+<div class="page c">
   <div class="topbar"><span>FAVORITES 2026</span><span>本月好物</span></div>
   <div class="hero">
     <div class="ttl">本月<br/>护肤好物</div>
@@ -27,4 +49,61 @@ html,body{background:#ddd;font-family:"Sans";}
   </div>
   <div class="foot"><span>@成分党·文献派</span><span>科学护肤</span></div>
 </div>
+
+<!-- item 1 -->
+<div class="page i">
+  <div class="topbar"><span>FAVORITES 2026</span><span>本月好物</span></div>
+  <div class="wrap">
+    <div class="fcard">
+      <div class="ftab p">N°01 洁面</div>
+      <div class="rank">01 / 03</div>
+      <div class="name">温和洁面慕斯</div>
+      <div class="blurb">氨基酸配方，泡沫细密；洗完干净不紧绷，油皮早晚都能用。</div>
+      <div class="keys"><span class="key">氨基酸</span><span class="key">不紧绷</span><span class="key">早晚可用</span></div>
+    </div>
+  </div>
+  <div class="pg">02 / 05</div>
+  <div class="foot"><span>@成分党·文献派</span><span>科学护肤</span></div>
+</div>
+
+<!-- item 2 -->
+<div class="page i">
+  <div class="topbar"><span>FAVORITES 2026</span><span>本月好物</span></div>
+  <div class="wrap">
+    <div class="fcard">
+      <div class="ftab r">N°02 防晒</div>
+      <div class="rank">02 / 03</div>
+      <div class="name">清透防晒乳</div>
+      <div class="blurb">成膜快、不泛白、不搓泥；通勤紫外线足够应付，底妆服帖。</div>
+      <div class="keys"><span class="key">SPF30+</span><span class="key">成膜快</span><span class="key">不泛白</span></div>
+    </div>
+  </div>
+  <div class="pg">03 / 05</div>
+  <div class="foot"><span>@成分党·文献派</span><span>科学护肤</span></div>
+</div>
+
+<!-- item 3 -->
+<div class="page i">
+  <div class="topbar"><span>FAVORITES 2026</span><span>本月好物</span></div>
+  <div class="wrap">
+    <div class="fcard">
+      <div class="ftab y">N°03 面霜</div>
+      <div class="rank">03 / 03</div>
+      <div class="name">修护晚霜</div>
+      <div class="blurb">薄涂过夜，第二天皮肤稳定不泛红；换季救急常备。</div>
+      <div class="keys"><span class="key">修护</span><span class="key">过夜</span><span class="key">换季救急</span></div>
+    </div>
+  </div>
+  <div class="pg">04 / 05</div>
+  <div class="foot"><span>@成分党·文献派</span><span>科学护肤</span></div>
+</div>
+
+<!-- closing -->
+<div class="page e">
+  <div class="topbar"><span>FAVORITES 2026</span><span>本月好物</span></div>
+  <div class="h">下个月<br/>再分享</div>
+  <div class="sub">关注 @成分党·文献派 · 科学护肤</div>
+  <div class="foot" style="margin-top:auto"><span>@成分党·文献派</span><span>05 / 05</span></div>
+</div>
+
 </body></html>

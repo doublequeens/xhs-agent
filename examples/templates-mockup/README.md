@@ -10,9 +10,9 @@
 | `set1-pink-red/` | 粉红粗体 motivational | 粉 `#F4A7BF` / 红 `#DC2333` | 阿里普惠体 Heavy |
 | `set2-teal/` | 深青极简 | 深青 `#0E5A5A` / 白 | HarmonyOS Sans |
 | `set3-soft-pink/` | 浅粉治愈 | 浅粉 `#F8DADA` / 珊瑚 `#EE5C5C` | HarmonyOS Sans |
-| `set4-coral-promo/` | 珊瑚宣传封面（单图） | 珊瑚 `#F45A5A` / 白 | 普惠体 Heavy |
-| `set5-green-favorites/` | 墨绿"本月好物"（单图） | 墨绿 `#1E5A2E` + 粉/红文件夹 | HarmonyOS Sans |
-| `set6-white-quote/` | 留白手写语录（单图） | 白 + 蓝 `#2A4A8C` | 霞鹜文楷 |
+| `set4-coral-promo/` | 珊瑚宣传（封面 + 3 步骤 + 收尾） | 珊瑚 `#F45A5A` / 白 | 普惠体 Heavy |
+| `set5-green-favorites/` | 墨绿"本月好物"（封面 + 3 好物卡 + 收尾） | 墨绿 `#1E5A2E` + 粉/红文件夹 | HarmonyOS Sans |
+| `set6-white-quote/` | 留白手写语录（封面 + 3 语录 + 收尾） | 白 + 蓝 `#2A4A8C` | 霞鹜文楷 |
 
 总览图：`gallery-all-6.png`。
 
