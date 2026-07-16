@@ -87,6 +87,69 @@ def test_visual_strategy_planner_uses_recent_visual_signatures():
     assert len(repeated.frame_plan) == len(first.frame_plan) == 5
 
 
+def test_visual_strategy_planner_ignores_noncanonical_signature_aliases():
+    from src.nodes.node_p_visual_strategy_planner import (
+        visual_strategy_planner_node,
+    )
+
+    state = _state(
+        contract_for(
+            "understand_and_notice",
+            proof_mode="none",
+            recommended_frame_count=5,
+        ),
+        narrative_plan_for("cognitive_correction"),
+    )
+    baseline = visual_strategy_planner_node(state)["visual_plan"]
+    signature = {
+        "narrative_form": baseline.narrative_form,
+        "template_family": baseline.template_family,
+        "frame_plan_signature": [
+            frame.page_archetype for frame in baseline.frame_plan
+        ],
+        "frame_count": len(baseline.frame_plan),
+    }
+    state["memory_context"] = {
+        "recent_visual_signatures": [signature],
+        "recent_frame_plan_signatures": [signature],
+        "frame_plan_signatures": [signature],
+        "recent_content": [
+            signature,
+            {"visual_signature": signature},
+            {"frame_plan_signature": signature},
+        ],
+    }
+
+    result = visual_strategy_planner_node(state)["visual_plan"]
+
+    assert result == baseline
+
+
+def test_visual_strategy_planner_ignores_non_strict_embedded_visual_plan():
+    from src.nodes.node_p_visual_strategy_planner import (
+        visual_strategy_planner_node,
+    )
+
+    state = _state(
+        contract_for(
+            "understand_and_notice",
+            proof_mode="none",
+            recommended_frame_count=5,
+        ),
+        narrative_plan_for("cognitive_correction"),
+    )
+    baseline = visual_strategy_planner_node(state)["visual_plan"]
+    invalid_plan = baseline.model_dump(mode="json")
+    invalid_plan["design_system"] = "beauty_editorial_v1"
+    state["memory_context"]["recent_content"] = [
+        {"visual_plan": invalid_plan}
+    ]
+
+    result = visual_strategy_planner_node(state)["visual_plan"]
+
+    assert result == baseline
+
+
 @pytest.mark.parametrize(
     ("missing_key", "message"),
     [

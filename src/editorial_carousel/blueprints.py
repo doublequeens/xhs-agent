@@ -172,8 +172,8 @@ BLUEPRINTS: dict[NarrativeForm, tuple[FrameBlueprint, ...]] = {
         FrameBlueprint(
             "editorial-story",
             "reflective_editorial",
-            ("cover", "scene", "story_beat", "quote", "boundary"),
-            ("explanation", "save"),
+            ("cover", "scene", "story_beat", "quote", "save"),
+            ("explanation", "boundary"),
         ),
         FrameBlueprint(
             "editorial-principle",

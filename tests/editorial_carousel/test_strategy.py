@@ -188,6 +188,64 @@ def test_public_planner_builds_a_strict_v2_plan_for_every_narrative_form(form):
     assert plan.required_assets == []
 
 
+def test_reflective_five_page_story_blueprint_is_strict_valid():
+    from src.editorial_carousel import build_visual_plan
+
+    contract = contract_for(
+        "understand_and_notice",
+        proof_mode="none",
+        recommended_frame_count=5,
+    )
+    narrative_plan = NarrativePlan.model_validate(
+        {
+            "narrative_form": "reflective_editorial",
+            "beats": [
+                {
+                    "beat_id": "hook",
+                    "kind": "hook",
+                    "purpose": "提出值得停下来思考的问题",
+                },
+                {
+                    "beat_id": "scene",
+                    "kind": "scene",
+                    "purpose": "落到一个具体护肤场景",
+                },
+                {
+                    "beat_id": "tension",
+                    "kind": "tension",
+                    "purpose": "呈现习惯与真实需要之间的张力",
+                },
+                {
+                    "beat_id": "quote",
+                    "kind": "quote",
+                    "purpose": "给出可独立保存的反思句",
+                },
+            ],
+            "saveable_beat": {
+                "beat_id": "quote",
+                "kind": "quote",
+                "purpose": "给出可独立保存的反思句",
+            },
+            "closing_mode": "reflection",
+        }
+    )
+
+    plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package_for(contract, narrative_plan),
+        recent_signatures=[],
+    )
+
+    assert [frame.page_archetype for frame in plan.frame_plan] == [
+        "cover",
+        "scene",
+        "story_beat",
+        "quote",
+        "save",
+    ]
+
+
 @pytest.mark.parametrize(
     ("recommended_count", "beat_count", "expected_count"),
     [(5, 4, 5), (5, 7, 7), (7, 4, 7)],
@@ -226,13 +284,158 @@ def test_primary_visual_family_does_not_change_page_count_or_archetypes():
         proof_mode="none",
         primary_visual_family="beauty_editorial",
     )
-    package = publish_package_for(first_contract, narrative_plan)
+    first_package = publish_package_for(first_contract, narrative_plan)
+    second_package = publish_package_for(second_contract, narrative_plan)
 
-    first = build_visual_plan(first_contract, narrative_plan, package, [])
-    second = build_visual_plan(second_contract, narrative_plan, package, [])
+    first = build_visual_plan(
+        first_contract,
+        narrative_plan,
+        first_package,
+        [],
+    )
+    second = build_visual_plan(
+        second_contract,
+        narrative_plan,
+        second_package,
+        [],
+    )
 
     assert [frame.page_archetype for frame in first.frame_plan] == [
         frame.page_archetype for frame in second.frame_plan
+    ]
+
+
+def test_required_beat_fit_selects_the_best_matching_blueprint():
+    from src.editorial_carousel.planner import build_visual_plan
+
+    contract = contract_for(
+        "diagnose_and_adjust",
+        proof_mode="none",
+        recommended_frame_count=5,
+    )
+    narrative_plan = NarrativePlan.model_validate(
+        {
+            "narrative_form": "cognitive_correction",
+            "beats": [
+                {"beat_id": "hook", "kind": "hook", "purpose": "提出问题"},
+                {"beat_id": "qa", "kind": "qa", "purpose": "回答疑问"},
+                {
+                    "beat_id": "diagnostic",
+                    "kind": "diagnostic",
+                    "purpose": "给出判断标准",
+                },
+                {
+                    "beat_id": "explanation",
+                    "kind": "explanation",
+                    "purpose": "解释原因",
+                },
+            ],
+            "saveable_beat": {
+                "beat_id": "explanation",
+                "kind": "explanation",
+                "purpose": "解释原因",
+            },
+            "closing_mode": "reflection",
+        }
+    )
+
+    plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package_for(contract, narrative_plan),
+        [],
+    )
+
+    assert [frame.page_archetype for frame in plan.frame_plan] == [
+        "cover",
+        "qa",
+        "diagnostic",
+        "explanation",
+        "checklist",
+    ]
+
+
+def test_saveable_beat_fit_breaks_an_equal_required_beat_tie():
+    from src.editorial_carousel.planner import build_visual_plan
+
+    contract = contract_for(
+        "follow_steps",
+        proof_mode="none",
+        recommended_frame_count=5,
+    )
+    narrative_plan = NarrativePlan.model_validate(
+        {
+            "narrative_form": "cognitive_correction",
+            "beats": [
+                {
+                    "beat_id": "hook-one",
+                    "kind": "hook",
+                    "purpose": "提出问题",
+                },
+                {
+                    "beat_id": "hook-two",
+                    "kind": "hook",
+                    "purpose": "强化问题",
+                },
+                {
+                    "beat_id": "scene",
+                    "kind": "scene",
+                    "purpose": "进入具体场景",
+                },
+                {
+                    "beat_id": "steps",
+                    "kind": "steps",
+                    "purpose": "给出可保存的步骤",
+                },
+            ],
+            "saveable_beat": {
+                "beat_id": "steps",
+                "kind": "steps",
+                "purpose": "给出可保存的步骤",
+            },
+            "closing_mode": "action_prompt",
+        }
+    )
+
+    plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package_for(contract, narrative_plan),
+        [],
+    )
+
+    assert [frame.page_archetype for frame in plan.frame_plan] == [
+        "cover",
+        "comparison",
+        "explanation",
+        "steps",
+        "save",
+    ]
+
+
+def test_equal_blueprint_scores_use_the_stable_sha256_order():
+    from src.editorial_carousel.planner import build_visual_plan
+
+    narrative_plan = narrative_plan_for("cognitive_correction")
+    contract = contract_for(
+        "understand_and_notice",
+        proof_mode="none",
+        recommended_frame_count=5,
+    )
+
+    plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package_for(contract, narrative_plan),
+        [],
+    )
+
+    assert [frame.page_archetype for frame in plan.frame_plan] == [
+        "cover",
+        "qa",
+        "diagnostic",
+        "explanation",
+        "checklist",
     ]
 
 
@@ -252,6 +455,7 @@ def test_exact_recent_blueprint_signature_changes_an_equal_ranked_blueprint():
     ]
     signature = {
         "narrative_form": narrative_plan.narrative_form,
+        "template_family": original.template_family,
         "frame_plan_signature": original_archetypes,
         "frame_count": len(original_archetypes),
     }
@@ -269,43 +473,159 @@ def test_exact_recent_blueprint_signature_changes_an_equal_ranked_blueprint():
     assert len(repeated.frame_plan) == len(original.frame_plan) == 5
 
 
-def test_required_assets_are_empty_for_none_and_only_bind_matching_proof_pages():
+def test_template_history_and_mockup_metadata_cannot_rematerialize_frames():
     from src.editorial_carousel.planner import build_visual_plan
 
-    narrative_plan = narrative_plan_for("comparison")
-    no_proof = contract_for("compare_and_choose", proof_mode="none")
-    comparison_proof = contract_for(
-        "compare_and_choose",
-        proof_mode="comparison",
+    narrative_plan = narrative_plan_for("diagnostic_qa")
+    contract = contract_for(
+        "understand_and_notice",
+        proof_mode="none",
+        recommended_frame_count=5,
     )
-    package = publish_package_for(comparison_proof, narrative_plan)
+    package = publish_package_for(contract, narrative_plan)
+    baseline = build_visual_plan(contract, narrative_plan, package, [])
+    misleading_package = {
+        **package,
+        "template_family": "coral_impact",
+        "selected_family": "green_catalog",
+        "primary_visual_family": "step_flow",
+        "mockup_page_count": 12,
+        "mockup_count": 12,
+        "page_count": 12,
+    }
+    history = [
+        {
+            "narrative_form": "comparison",
+            "template_family": baseline.template_family,
+            "frame_plan_signature": [
+                "cover",
+                "scene",
+                "comparison",
+                "diagnostic",
+                "save",
+            ],
+            "frame_count": 5,
+        }
+    ]
 
-    pure_text_plan = build_visual_plan(no_proof, narrative_plan, package, [])
-    proof_plan = build_visual_plan(
-        comparison_proof,
+    repeated = build_visual_plan(
+        contract,
         narrative_plan,
-        package,
+        misleading_package,
+        history,
+    )
+
+    assert repeated.template_family != baseline.template_family
+    assert [frame.page_archetype for frame in repeated.frame_plan] == [
+        frame.page_archetype for frame in baseline.frame_plan
+    ]
+    assert len(repeated.frame_plan) == len(baseline.frame_plan) == 5
+
+
+@pytest.mark.parametrize(
+    ("proof_mode", "matching_archetypes"),
+    [
+        ("diagram", {"diagnostic", "explanation", "steps"}),
+        ("real_photo", {"scene", "story_beat"}),
+        ("product_texture", {"scene", "explanation"}),
+        ("comparison", {"comparison", "diagnostic"}),
+        ("none", set()),
+    ],
+)
+def test_required_assets_cover_every_proof_mode(
+    proof_mode,
+    matching_archetypes,
+):
+    from src.editorial_carousel.planner import build_visual_plan
+
+    narrative_plan = narrative_plan_for("step_tutorial")
+    contract = contract_for(
+        "follow_steps",
+        proof_mode=proof_mode,
+    )
+    plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package_for(contract, narrative_plan),
         [],
     )
 
-    assert pure_text_plan.required_assets == []
-    assert proof_plan.required_assets
+    if proof_mode == "none":
+        assert plan.required_assets == []
+        return
+
     proof_frames = {
         frame.frame_id: frame
-        for frame in proof_plan.frame_plan
-        if "comparison" in frame.asset_roles
+        for frame in plan.frame_plan
+        if proof_mode in frame.asset_roles
     }
+    assert proof_frames
     assert {
-        requirement.slot_id.removesuffix("-comparison")
-        for requirement in proof_plan.required_assets
+        requirement.slot_id.removesuffix(f"-{proof_mode}")
+        for requirement in plan.required_assets
     } == set(proof_frames)
     assert all(
-        requirement.page_archetype
+        requirement.role == proof_mode
+        and requirement.page_archetype in matching_archetypes
+        and requirement.page_archetype
         == proof_frames[
-            requirement.slot_id.removesuffix("-comparison")
+            requirement.slot_id.removesuffix(f"-{proof_mode}")
         ].page_archetype
-        for requirement in proof_plan.required_assets
+        for requirement in plan.required_assets
     )
+
+
+def test_required_assets_reject_mismatched_role_and_page_archetype_bindings():
+    from src.editorial_carousel.planner import required_assets_for
+    from src.schemas.visual_plan import FramePlanItem
+
+    contract = contract_for(
+        "compare_and_choose",
+        proof_mode="comparison",
+    )
+    frames = [
+        FramePlanItem(
+            frame_id="frame-01-scene",
+            role="scene",
+            page_archetype="scene",
+            purpose="错误地声明 comparison role",
+            allowed_density=["standard"],
+            asset_roles=["comparison"],
+        ),
+        FramePlanItem(
+            frame_id="frame-02-comparison",
+            role="comparison",
+            page_archetype="comparison",
+            purpose="缺少 matching role",
+            allowed_density=["standard"],
+            asset_roles=[],
+        ),
+        FramePlanItem(
+            frame_id="frame-03-diagnostic",
+            role="diagnostic",
+            page_archetype="diagnostic",
+            purpose="正确绑定 comparison role",
+            allowed_density=["standard"],
+            asset_roles=["comparison"],
+        ),
+    ]
+
+    requirements = required_assets_for(frames, contract)
+
+    assert [
+        (
+            requirement.slot_id,
+            requirement.role,
+            requirement.page_archetype,
+        )
+        for requirement in requirements
+    ] == [
+        (
+            "frame-03-diagnostic-comparison",
+            "comparison",
+            "diagnostic",
+        )
+    ]
 
 
 def test_public_planner_does_not_hydrate_incomplete_new_contracts():

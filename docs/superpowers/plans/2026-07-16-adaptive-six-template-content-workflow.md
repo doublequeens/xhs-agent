@@ -949,7 +949,7 @@ BLUEPRINTS = {
     ),
     "reflective_editorial": (
         FrameBlueprint("editorial-thesis", "reflective_editorial", ("cover", "quote", "explanation", "scene", "save"), ("story_beat", "boundary")),
-        FrameBlueprint("editorial-story", "reflective_editorial", ("cover", "scene", "story_beat", "quote", "boundary"), ("explanation", "save")),
+        FrameBlueprint("editorial-story", "reflective_editorial", ("cover", "scene", "story_beat", "quote", "save"), ("explanation", "boundary")),
         FrameBlueprint("editorial-principle", "reflective_editorial", ("cover", "thesis", "explanation", "quote", "checklist"), ("scene", "boundary")),
     ),
 }

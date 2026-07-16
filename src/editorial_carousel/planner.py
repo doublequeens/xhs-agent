@@ -7,7 +7,12 @@ from src.editorial_carousel.blueprints import (
     FrameBlueprint,
     materialize_blueprint,
 )
-from src.editorial_carousel.selector import SelectorInput, select_template
+from src.editorial_carousel.selector import (
+    RecentVisualSignature,
+    SelectorInput,
+    canonical_recent_signature,
+    select_template,
+)
 from src.schemas.assets import AssetRequirement
 from src.schemas.content_contract import ContentContract
 from src.schemas.editorial_templates import PageArchetype
@@ -65,60 +70,15 @@ PURPOSE_BY_ARCHETYPE: Final[dict[PageArchetype, str]] = {
 }
 
 
-def _signature_value(signature: Any, key: str) -> Any:
-    if isinstance(signature, Mapping):
-        return signature.get(key)
-    return getattr(signature, key, None)
-
-
-def _signature_archetypes(signature: Any) -> tuple[str, ...] | None:
-    raw = None
-    for key in (
-        "frame_plan_signature",
-        "page_archetypes",
-        "ordered_archetypes",
-        "frame_plan",
-    ):
-        raw = _signature_value(signature, key)
-        if raw is not None:
-            break
-    if isinstance(raw, str):
-        return tuple(part.strip() for part in raw.split("|") if part.strip())
-    if not isinstance(raw, Sequence):
-        return None
-    normalized: list[str] = []
-    for item in raw:
-        if isinstance(item, Mapping):
-            value = item.get("page_archetype")
-        else:
-            value = getattr(item, "page_archetype", item)
-        if not isinstance(value, str):
-            return None
-        normalized.append(value)
-    return tuple(normalized)
-
-
 def _matches_blueprint_signature(
-    signature: Any,
+    signature: RecentVisualSignature,
     blueprint: FrameBlueprint,
     archetypes: tuple[PageArchetype, ...],
 ) -> bool:
-    recent_blueprint_id = _signature_value(signature, "blueprint_id")
-    recent_archetypes = _signature_archetypes(signature)
-    raw_count = _signature_value(signature, "frame_count")
-    recent_count = (
-        len(recent_archetypes)
-        if raw_count is None and recent_archetypes is not None
-        else raw_count
-    )
-    same_form = _signature_value(signature, "narrative_form")
     return (
-        same_form == blueprint.narrative_form
-        and recent_count == len(archetypes)
-        and (
-            recent_blueprint_id == blueprint.blueprint_id
-            or recent_archetypes == archetypes
-        )
+        signature.narrative_form == blueprint.narrative_form
+        and signature.frame_count == len(archetypes)
+        and signature.frame_plan_signature == archetypes
     )
 
 
@@ -138,10 +98,7 @@ def _saveable_compatibility(
     saveable_beat: NarrativeBeat,
 ) -> int:
     compatible = ARCHETYPES_BY_BEAT_KIND[saveable_beat.kind]
-    return int(
-        bool(set(archetypes) & compatible)
-        or bool(set(archetypes) & {"save", "checklist", "comparison"})
-    )
+    return int(bool(set(archetypes) & compatible))
 
 
 def _select_blueprint(
@@ -152,12 +109,17 @@ def _select_blueprint(
 ) -> tuple[FrameBlueprint, tuple[PageArchetype, ...]]:
     topic_id = str(publish_package.get("topic_id") or "")
     angle_id = str(publish_package.get("angle_id") or "")
+    canonical_signatures = tuple(
+        canonical
+        for signature in recent_signatures
+        if (canonical := canonical_recent_signature(signature)) is not None
+    )
     candidates = []
     for blueprint in BLUEPRINTS[narrative_plan.narrative_form]:
         archetypes = materialize_blueprint(blueprint, frame_count)
         recent_penalty = sum(
             _matches_blueprint_signature(signature, blueprint, archetypes)
-            for signature in recent_signatures
+            for signature in canonical_signatures
         )
         tie_break = hashlib.sha256(
             f"{topic_id}|{angle_id}|{blueprint.blueprint_id}".encode("utf-8")

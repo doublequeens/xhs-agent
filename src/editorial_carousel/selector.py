@@ -60,6 +60,56 @@ class SelectorInput:
         )
 
 
+@dataclass(frozen=True)
+class RecentVisualSignature:
+    narrative_form: NarrativeForm
+    template_family: TemplateFamily
+    frame_plan_signature: tuple[PageArchetype, ...]
+    frame_count: int
+
+
+_SIGNATURE_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "narrative_form",
+        "template_family",
+        "frame_plan_signature",
+        "frame_count",
+    }
+)
+
+
+def canonical_recent_signature(
+    signature: Any,
+) -> RecentVisualSignature | None:
+    if not isinstance(signature, Mapping):
+        return None
+    if set(signature) != _SIGNATURE_FIELDS:
+        return None
+    narrative_form = signature.get("narrative_form")
+    template_family = signature.get("template_family")
+    raw_archetypes = signature.get("frame_plan_signature")
+    frame_count = signature.get("frame_count")
+    if (
+        narrative_form not in get_args(NarrativeForm)
+        or template_family not in get_args(TemplateFamily)
+        or not isinstance(raw_archetypes, list)
+        or not raw_archetypes
+        or any(
+            archetype not in get_args(PageArchetype)
+            for archetype in raw_archetypes
+        )
+        or type(frame_count) is not int
+        or frame_count != len(raw_archetypes)
+    ):
+        return None
+    return RecentVisualSignature(
+        narrative_form=narrative_form,
+        template_family=template_family,
+        frame_plan_signature=tuple(raw_archetypes),
+        frame_count=frame_count,
+    )
+
+
 FORM_AFFINITY: Final[dict[TemplateFamily, dict[NarrativeForm, int]]] = {
     "pink_red": {
         "cognitive_correction": 28,
@@ -193,60 +243,23 @@ PROOF_AFFINITY: Final[dict[TemplateFamily, dict[str, int]]] = {
 }
 
 
-def _signature_value(signature: Any, key: str) -> Any:
-    if isinstance(signature, Mapping):
-        return signature.get(key)
-    return getattr(signature, key, None)
-
-
-def _ordered_archetypes(signature: Any) -> tuple[str, ...] | None:
-    raw = None
-    for key in (
-        "frame_plan_signature",
-        "page_archetypes",
-        "ordered_archetypes",
-        "frame_plan",
-    ):
-        raw = _signature_value(signature, key)
-        if raw is not None:
-            break
-    if isinstance(raw, str):
-        return tuple(part.strip() for part in raw.split("|") if part.strip())
-    if not isinstance(raw, Sequence):
-        return None
-    archetypes: list[str] = []
-    for item in raw:
-        if isinstance(item, Mapping):
-            value = item.get("page_archetype")
-        else:
-            value = getattr(item, "page_archetype", item)
-        if not isinstance(value, str):
-            return None
-        archetypes.append(value)
-    return tuple(archetypes)
-
-
 def _is_exact_combination(
-    signature: Any,
+    signature: RecentVisualSignature,
     input_value: SelectorInput,
     family: TemplateFamily,
 ) -> bool:
-    archetypes = _ordered_archetypes(signature)
-    raw_count = _signature_value(signature, "frame_count")
-    frame_count = len(archetypes) if raw_count is None and archetypes else raw_count
     return (
-        _signature_value(signature, "narrative_form")
-        == input_value.narrative_form
-        and _signature_value(signature, "template_family") == family
-        and archetypes == input_value.page_archetypes
-        and frame_count == input_value.frame_count
+        signature.narrative_form == input_value.narrative_form
+        and signature.template_family == family
+        and signature.frame_plan_signature == input_value.page_archetypes
+        and signature.frame_count == input_value.frame_count
     )
 
 
 def _score_family(
     family: TemplateFamily,
     input_value: SelectorInput,
-    recent_signatures: Sequence[Any],
+    recent_signatures: Sequence[RecentVisualSignature],
 ) -> tuple[int, list[str]]:
     form_score = FORM_AFFINITY[family].get(input_value.narrative_form, 0)
     density_score = DENSITY_AFFINITY[family][input_value.estimated_density]
@@ -261,7 +274,7 @@ def _score_family(
     score = form_score + density_score + job_score + proof_score
 
     family_repeats = sum(
-        _signature_value(signature, "template_family") == family
+        signature.template_family == family
         for signature in recent_signatures[-3:]
     )
     if family_repeats:
@@ -291,8 +304,13 @@ def select_template(
     input_value: SelectorInput,
     recent_signatures: Sequence[Any],
 ) -> TemplateSelection:
+    canonical_signatures = tuple(
+        canonical
+        for signature in recent_signatures
+        if (canonical := canonical_recent_signature(signature)) is not None
+    )
     candidates = {
-        family: _score_family(family, input_value, recent_signatures)
+        family: _score_family(family, input_value, canonical_signatures)
         for family in get_args(TemplateFamily)
     }
     selected_family = min(
