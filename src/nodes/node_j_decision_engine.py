@@ -31,15 +31,18 @@ def _select_topic_angle_ids(source, decision_input):
     return topic_id, angle_id
 
 
-def _extract_selected_content_fields(source, decision_input):
+def _selected_content_payload(source, decision_input):
     if source == "TITLE_RANKER":
-        payload = _get_value(decision_input, "winner") or _get_value(decision_input, "content_candidate") or decision_input
+        return _get_value(decision_input, "winner") or _get_value(decision_input, "content_candidate") or decision_input
     elif source == "R1_REFLECTOR":
-        payload = _get_value(decision_input, "content_candidate") or _get_value(decision_input, "content_snapshot") or decision_input
+        return _get_value(decision_input, "content_candidate") or _get_value(decision_input, "content_snapshot") or decision_input
     elif source == "R2_COMPLIANCE":
-        payload = _get_value(decision_input, "content_snapshot") or decision_input
-    else:
-        raise ValueError(f"Unsupported decision source: {source}")
+        return _get_value(decision_input, "content_snapshot") or decision_input
+    raise ValueError(f"Unsupported decision source: {source}")
+
+
+def _extract_selected_content_fields(source, decision_input):
+    payload = _selected_content_payload(source, decision_input)
 
     fields = {
         "topic_id": _get_value(payload, "topic_id"),
@@ -56,6 +59,16 @@ def _extract_selected_content_fields(source, decision_input):
         raise ValueError(f"Missing selected content fields for source {source}: {', '.join(missing)}")
 
     return fields
+
+
+def _extract_selected_narrative_plan(source, decision_input):
+    narrative_plan = _get_value(
+        _selected_content_payload(source, decision_input),
+        "narrative_plan",
+    )
+    if narrative_plan is None:
+        raise ValueError(f"Missing narrative_plan for source {source}")
+    return narrative_plan
 
 
 def _dedupe_tasks(tasks):
@@ -430,6 +443,10 @@ def decision_engine_node(state: AgentState) -> AgentState:
             normalized_input = decision_output_json.get("normalized_input", {})
             hashtag_input = normalized_input.get("hashtag_input") if isinstance(normalized_input, dict) else None
             if hashtag_input is not None:
+                selected_narrative_plan = _extract_selected_narrative_plan(
+                    source,
+                    decision_input,
+                )
                 hashtag_input.update(
                     {
                         "topic_id": selected_fields["topic_id"],
@@ -439,6 +456,7 @@ def decision_engine_node(state: AgentState) -> AgentState:
                         "target_group": selected_fields["target_group"],
                         "core_pain": selected_fields["core_pain"],
                         "best_cover_copy": selected_fields["best_cover_copy"],
+                        "narrative_plan": selected_narrative_plan,
                         **topic_metadata,
                     }
                 )
