@@ -147,6 +147,57 @@ def test_virality_prompt_requires_integer_breakdown_scores():
     assert '"compliance_safety": 0,' in prompt
 
 
+def test_outline_prompt_follows_narrative_beats_without_fixed_six_part_order():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("outline_architect", get_domain_profile("beauty"))
+
+    assert "narrative_plan.beats" in prompt
+    assert "主体展开（至少 3 个逻辑分点）" not in prompt
+    assert "必须依次包含" not in prompt
+    assert "每篇必须以互动问题收尾" not in prompt
+
+
+def test_draft_prompt_allows_emoji_and_respects_none_closing_mode():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("draft_writer", get_domain_profile("beauty"))
+
+    assert "emoji" in prompt
+    assert "不得使用 emoji" not in prompt
+    assert "closing_mode=none" in prompt
+    assert "必须互动收尾" not in prompt
+
+
+def test_angle_prompt_requires_narrative_plan_and_cross_angle_form_variety():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("angle_strategist", get_domain_profile("beauty"))
+
+    assert '"narrative_plan"' in prompt
+    assert "至少使用两种不同 narrative_form" in prompt
+
+
+@pytest.mark.parametrize(
+    "task",
+    [
+        "novelty_guard",
+        "virality_scorer",
+        "title_ranker",
+        "decision_engine",
+        "r1_reflector",
+        "r2_compliance",
+    ],
+)
+def test_selected_copy_prompts_require_exact_narrative_plan_preservation(task):
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt(task, get_domain_profile("beauty"))
+
+    assert "narrative_plan" in prompt
+    assert "逐字段原样复制" in prompt
+
+
 def test_compose_prompt_rejects_unknown_task():
     from src.prompts.composer import compose_prompt
 

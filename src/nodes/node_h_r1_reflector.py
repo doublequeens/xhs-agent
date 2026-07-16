@@ -3,6 +3,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, R1Output
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.nodes.narrative_plan import require_same_narrative_plan
 
 def r1_reflector_node(state: AgentState) -> AgentState:
     """
@@ -52,5 +53,13 @@ def r1_reflector_node(state: AgentState) -> AgentState:
         r1_output = None
         raise RuntimeError(f"Process terminated due to error: {e}")
 
+    selected_narrative_plan = r1_input.content_candidate.narrative_plan
+    require_same_narrative_plan(
+        r1_output_json.get("narrative_plan"),
+        selected_narrative_plan,
+        stage="r1_reflector",
+    )
+
     return {"r1_output": r1_output,
+            "selected_narrative_plan": selected_narrative_plan,
             "current_node": "R1_REFLECTOR"}

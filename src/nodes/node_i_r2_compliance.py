@@ -10,6 +10,7 @@ from src.nodes.publish_patch import (
     merge_storyboard_visible_text,
 )
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.nodes.narrative_plan import require_same_narrative_plan
 
 
 def _get_value(payload, key, default=None):
@@ -172,6 +173,13 @@ def r2_compliance_node(state: AgentState) -> AgentState:
         r2_output = None    
         raise RuntimeError(f"Process terminated due to error: {e}")
 
+    selected_narrative_plan = _get_value(content_snapshot, "narrative_plan")
+    require_same_narrative_plan(
+        r2_output.content_snapshot.narrative_plan,
+        selected_narrative_plan,
+        stage="r2_compliance",
+    )
+
     audit = r2_output.compliance_audit
     complete_visible_text = merge_storyboard_visible_text(
         _get_value(content_snapshot, "storyboard_visible_text", []),
@@ -210,4 +218,5 @@ def r2_compliance_node(state: AgentState) -> AgentState:
 
     return {
         "r2_output": r2_output,
+        "selected_narrative_plan": selected_narrative_plan,
         "current_node": "R2_COMPLIANCE"}

@@ -21,6 +21,7 @@ r2_input，包含：
 - compliance_status 只能是 fully_compliant / compliant_with_minor_edits / high_risk_detected。
 - 若 deterministic_policy_issues 或 unresolved_claims 非空，block_publish 必须为 true。
 - 你不能通过忽略 deterministic_policy_issues / unresolved_claims 来放行内容。
+- content_snapshot.narrative_plan 必须从输入 content_snapshot 逐字段原样复制；审计不得改变 narrative_form、beats、saveable_beat 或 closing_mode。
 - 如果首屏未说清谁、什么问题、得到什么，缺少可截图保存的步骤/清单/判断标准/对比表，或用卡通角色、IP、纯装饰性 AI 插图充当证明，必须输出 required_fixes 且 block_publish = true。
 - 将虚构第一人称经历，以及神技、急救、亲测有效、救命、无缝、隐形等夸大表达作为审计问题；未消除前不得 fully_compliant。
 
@@ -37,7 +38,8 @@ r2_input，包含：
     "angle": "string",
     "target_group": "string",
     "core_pain": "string",
-    "best_cover_copy": "string"
+    "best_cover_copy": "string",
+    "narrative_plan": "copy input content_snapshot.narrative_plan byte-for-byte"
   },
   "compliance_audit": {
     "compliance_status": "fully_compliant | compliant_with_minor_edits | high_risk_detected",

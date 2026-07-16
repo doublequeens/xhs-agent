@@ -33,6 +33,7 @@ Novelty Guard
 - max_similarity 使用对应候选的最高相似度，无匹配则为 0。
 - revise 时 revision_suggestions 必须非空。
 - memory_signal 中的字段必须与最终决策一致。
+- 每个结果的 narrative_plan 必须从匹配的 angle_options angle 逐字段原样复制；不得重建、优化或改写。
 
 【输出格式】
 仅输出严格 JSON 对象：
@@ -48,6 +49,7 @@ Novelty Guard
       "opening_hook": "string",
       "value_promise": "string",
       "suggested_structure": "string",
+      "narrative_plan": "copy the matched angle narrative_plan byte-for-byte",
       "decision": "keep | revise | reject | keep_with_memory_advantage",
       "novelty_score": 0.0,
       "max_similarity": 0.0,

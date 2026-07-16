@@ -6,6 +6,7 @@ from src.models import get_model
 from src.schemas import AgentState
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas import DecisionOutput
+from src.nodes.narrative_plan import find_narrative_plan
 
 
 def _get_value(payload, key, default=None):
@@ -59,16 +60,6 @@ def _extract_selected_content_fields(source, decision_input):
         raise ValueError(f"Missing selected content fields for source {source}: {', '.join(missing)}")
 
     return fields
-
-
-def _extract_selected_narrative_plan(source, decision_input):
-    narrative_plan = _get_value(
-        _selected_content_payload(source, decision_input),
-        "narrative_plan",
-    )
-    if narrative_plan is None:
-        raise ValueError(f"Missing narrative_plan for source {source}")
-    return narrative_plan
 
 
 def _dedupe_tasks(tasks):
@@ -259,6 +250,37 @@ def _propagate_storyboard_visible_text(decision_output_json, decision_input):
     return updated_output
 
 
+def _inject_authoritative_narrative_plan(decision_output_json, narrative_plan):
+    normalized_input = _get_value(decision_output_json, "normalized_input")
+    if not isinstance(normalized_input, dict):
+        return decision_output_json
+
+    destination_by_node = {
+        "R1_REFLECTOR": ("r1_input", "content_candidate"),
+        "R2_COMPLIANCE": ("r2_input", "content_snapshot"),
+        "HASHTAG_SEO": ("hashtag_input", None),
+    }
+    destination = destination_by_node.get(
+        _get_value(decision_output_json, "next_node")
+    )
+    if destination is None:
+        return decision_output_json
+
+    destination_key, container_key = destination
+    destination_payload = normalized_input.get(destination_key)
+    if not isinstance(destination_payload, dict):
+        return decision_output_json
+
+    if container_key is None:
+        destination_payload["narrative_plan"] = narrative_plan
+        return decision_output_json
+
+    container = destination_payload.get(container_key)
+    if isinstance(container, dict):
+        container["narrative_plan"] = narrative_plan
+    return decision_output_json
+
+
 def _merge_blocked_r2_tasks(r1_input, blocked_tasks):
     editorial_tasks = dict(r1_input["editorial_tasks"])
     existing_mandatory = [
@@ -398,6 +420,12 @@ def decision_engine_node(state: AgentState) -> AgentState:
 
     selected_fields = _extract_selected_content_fields(source, decision_input)
     topic_metadata = get_topic_metadata(state.get("trends", []), selected_fields["topic_id"])
+    selected_narrative_plan = find_narrative_plan(
+        state["scores"],
+        topic_id=selected_fields["topic_id"],
+        angle_id=selected_fields["angle_id"],
+        stage="decision_engine",
+    )
     domain_context = state.get("domain_context", {})
     content_policy = state.get("content_policy", {})
     
@@ -438,15 +466,15 @@ def decision_engine_node(state: AgentState) -> AgentState:
                 decision_output_json,
                 decision_input,
             )
+        decision_output_json = _inject_authoritative_narrative_plan(
+            decision_output_json,
+            selected_narrative_plan.model_dump(mode="json"),
+        )
 
         try:
             normalized_input = decision_output_json.get("normalized_input", {})
             hashtag_input = normalized_input.get("hashtag_input") if isinstance(normalized_input, dict) else None
             if hashtag_input is not None:
-                selected_narrative_plan = _extract_selected_narrative_plan(
-                    source,
-                    decision_input,
-                )
                 hashtag_input.update(
                     {
                         "topic_id": selected_fields["topic_id"],
@@ -456,13 +484,18 @@ def decision_engine_node(state: AgentState) -> AgentState:
                         "target_group": selected_fields["target_group"],
                         "core_pain": selected_fields["core_pain"],
                         "best_cover_copy": selected_fields["best_cover_copy"],
-                        "narrative_plan": selected_narrative_plan,
+                        "narrative_plan": selected_narrative_plan.model_dump(
+                            mode="json"
+                        ),
                         **topic_metadata,
                     }
                 )
             decision_output = DecisionOutput(**decision_output_json)
             # 解析成功，跳出循环并返回
-            return {"decision_output": decision_output}
+            return {
+                "decision_output": decision_output,
+                "selected_narrative_plan": selected_narrative_plan,
+            }
         except Exception as e:
             print(f"[Attempt {attempt + 1}/{max_retries}] 格式校验失败，触发大模型自修复机制: {e}")
             if attempt == max_retries - 1:

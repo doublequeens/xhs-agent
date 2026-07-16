@@ -3,6 +3,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, TitleWinner
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.nodes.narrative_plan import (
+    find_narrative_plan,
+    require_same_narrative_plan,
+)
 
 def title_ranker_node(state: AgentState) -> AgentState:
     """
@@ -57,6 +61,18 @@ def title_ranker_node(state: AgentState) -> AgentState:
         winner = {}
         raise RuntimeError(f"Process terminated due to error: {e}")
 
+    expected_plan = find_narrative_plan(
+        draft_results,
+        topic_id=winner.topic_id,
+        angle_id=winner.angle_id,
+        stage="title_ranker",
+    )
+    require_same_narrative_plan(
+        winner.narrative_plan,
+        expected_plan,
+        stage="title_ranker",
+    )
 
     return {"title_winner": winner,
+           "selected_narrative_plan": expected_plan,
            "current_node": "TITLE_RANKER"}

@@ -3,6 +3,10 @@ from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import HumanMessage, SystemMessage
 from src.schemas import AgentState, OutlineItem
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.nodes.narrative_plan import (
+    find_narrative_plan,
+    require_same_narrative_plan,
+)
 
 def outline_architect_node(state: AgentState) -> AgentState:
     """
@@ -48,5 +52,17 @@ def outline_architect_node(state: AgentState) -> AgentState:
         print(f"Failed to transform to OutlineItem schema, please check the detail: {e}")
         outline_results = []
         raise RuntimeError(f"Process terminated due to error: {e}")
+    for outline in outline_results:
+        expected_plan = find_narrative_plan(
+            score_results,
+            topic_id=outline.topic_id,
+            angle_id=outline.angle_id,
+            stage="outline_architect",
+        )
+        require_same_narrative_plan(
+            outline.narrative_plan,
+            expected_plan,
+            stage="outline_architect",
+        )
     return {"outlines": outline_results}
         

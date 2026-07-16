@@ -9,10 +9,236 @@ from src.domain.models import DomainContext
 from src.schemas.angle import AngleStrategy, ContentAngle
 from src.domain import build_content_policy, get_domain_profile
 from src.domain.router import resolve_domain
+from src.schemas.narrative import NarrativePlan
+from src.schemas.novelty_guard import NoveltyCheckResults
 from src.nodes.node_a_00_domain_confirmation import domain_confirmation_node
 from src.nodes.node_a_01_retrieve_memory import retrieve_memory_node
 from src.nodes.node_b_novelty_guard import get_memory_matches, novelty_guard_node
 from src.nodes.node_a_00_domain_router import domain_router_node
+
+
+def narrative_plan(narrative_form="scenario_story", *, closing_mode="reflection"):
+    beats = [
+        {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+        {"beat_id": "scene", "kind": "scene", "purpose": "呈现具体场景"},
+        {"beat_id": "reveal", "kind": "reveal", "purpose": "揭示关键发现"},
+        {"beat_id": "lesson", "kind": "summary", "purpose": "总结可保存结论"},
+    ]
+    return NarrativePlan(
+        narrative_form=narrative_form,
+        beats=beats,
+        saveable_beat=beats[-1],
+        closing_mode=closing_mode,
+    )
+
+
+def invoke_outline_node(monkeypatch, *, narrative, model_narrative=None):
+    from src.nodes import node_d_outline_architect as module
+
+    output_plan = model_narrative or narrative
+
+    class FakeModel:
+        def execute(self, _messages):
+            return [
+                {
+                    "outline_id": "outline_001",
+                    "outline_md": "她先观察场景，再记录关键变化，最后自然结束。",
+                    "topic_id": "tp_001",
+                    "topic": "睡前仪式",
+                    "angle_id": "ag_001",
+                    "angle": "场景观察",
+                    "target_group": "上班族",
+                    "core_pain": "入睡慢",
+                    "narrative_plan": output_plan.model_dump(mode="json"),
+                }
+            ]
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+    result = module.outline_architect_node(
+        {
+            "scores": [
+                {
+                    "topic_id": "tp_001",
+                    "angle_id": "ag_001",
+                    "narrative_plan": narrative,
+                }
+            ],
+            "domain_context": {
+                "domain": "wellness",
+                "profile_version": "wellness-v1",
+            },
+            "content_policy": {},
+            "evidence_briefs": {},
+        }
+    )
+    return result["outlines"][0]
+
+
+def invoke_draft_node(
+    monkeypatch,
+    *,
+    outline,
+    draft_md,
+    model_narrative=None,
+):
+    from src.nodes import node_e_draft_writer as module
+
+    output_plan = model_narrative or outline.narrative_plan
+
+    class FakeModel:
+        def execute(self, _messages):
+            return [
+                {
+                    "draft_id": "draft_001",
+                    "draft_md": draft_md,
+                    "topic_id": outline.topic_id,
+                    "topic": outline.topic,
+                    "angle_id": outline.angle_id,
+                    "angle": outline.angle,
+                    "target_group": outline.target_group,
+                    "core_pain": outline.core_pain,
+                    "narrative_plan": output_plan.model_dump(mode="json"),
+                }
+            ]
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+    result = module.draft_writer_node(
+        {
+            "outlines": [outline],
+            "domain_context": {
+                "domain": "wellness",
+                "profile_version": "wellness-v1",
+            },
+            "content_policy": {},
+            "evidence_briefs": {},
+        }
+    )
+    return result["drafts"][0]
+
+
+def test_outline_and_draft_preserve_none_closing_mode(monkeypatch):
+    narrative = narrative_plan("scenario_story", closing_mode="none")
+
+    outline = invoke_outline_node(monkeypatch, narrative=narrative)
+    draft = invoke_draft_node(
+        monkeypatch,
+        outline=outline,
+        draft_md="她停下来观察变化，然后按边界结束。",
+    )
+
+    assert outline.narrative_plan == narrative
+    assert draft.narrative_plan == narrative
+    assert "你呢" not in draft.draft_md
+    assert "评论区" not in draft.draft_md
+
+
+def test_outline_rejects_model_rewritten_narrative_plan(monkeypatch):
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        invoke_outline_node(
+            monkeypatch,
+            narrative=narrative_plan(),
+            model_narrative=narrative_plan("cognitive_correction"),
+        )
+
+
+def test_draft_rejects_model_rewritten_narrative_plan(monkeypatch):
+    outline = invoke_outline_node(monkeypatch, narrative=narrative_plan())
+
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        invoke_draft_node(
+            monkeypatch,
+            outline=outline,
+            draft_md="正文",
+            model_narrative=narrative_plan("cognitive_correction"),
+        )
+
+
+def test_virality_scorer_rejects_model_rewritten_narrative_plan(monkeypatch):
+    from src.nodes import node_c_virality_scorer as module
+
+    authoritative_plan = narrative_plan()
+    novelty_results = NoveltyCheckResults(
+        novelty_results=[
+            {
+                "topic_id": "tp_001",
+                "topic": "睡前仪式",
+                "target_group": "上班族",
+                "core_pain": "入睡慢",
+                "angle_id": "ag_001",
+                "angle": "场景观察",
+                "opening_hook": "hook",
+                "value_promise": "promise",
+                "suggested_structure": "structure",
+                "narrative_plan": authoritative_plan,
+                "decision": "keep",
+                "novelty_score": 0.9,
+                "max_similarity": 0.0,
+                "matched_history": [],
+                "reason": "足够新颖",
+                "revision_suggestions": [],
+                "memory_signal": {
+                    "decision": "keep",
+                    "novelty_score": 0.9,
+                    "max_similarity": 0.0,
+                    "rejected_by_memory": False,
+                    "similar_to_recent_content": False,
+                    "similar_to_high_performing_pattern": False,
+                    "similar_to_low_performing_pattern": False,
+                    "recommended_for_virality_scorer": True,
+                },
+            }
+        ]
+    )
+
+    class FakeModel:
+        def execute(self, _messages):
+            return [
+                {
+                    "total_score": 8.5,
+                    "breakdown": {
+                        "click_potential": 8,
+                        "save_value": 9,
+                        "comment_potential": 7,
+                        "execution_barrier": 3,
+                        "compliance_safety": 9,
+                        "memory_fit_score": 8,
+                    },
+                    "strengths": ["场景明确"],
+                    "weaknesses": ["篇幅需控制"],
+                    "optimization_suggestions": ["保留边界"],
+                    "absorbed_memory_suggestions": [],
+                    "memory_decision": "keep",
+                    "novelty_score": 0.9,
+                    "max_similarity": 0.0,
+                    "topic_id": "tp_001",
+                    "topic": "睡前仪式",
+                    "target_group": "上班族",
+                    "core_pain": "入睡慢",
+                    "angle_id": "ag_001",
+                    "angle": "场景观察",
+                    "opening_hook": "hook",
+                    "value_promise": "promise",
+                    "suggested_structure": "structure",
+                    "narrative_plan": narrative_plan(
+                        "cognitive_correction"
+                    ).model_dump(mode="json"),
+                }
+            ]
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        module.virality_scorer_node(
+            {
+                "novelty_check_results": novelty_results,
+                "trends": [],
+                "domain_context": {
+                    "domain": "wellness",
+                    "profile_version": "wellness-v1",
+                },
+                "content_policy": {},
+            }
+        )
 
 
 def test_domain_router_node_returns_context_and_policy():
@@ -887,6 +1113,7 @@ def test_get_memory_matches_passes_exact_domain_scope(monkeypatch):
                     opening_hook="hook",
                     value_promise="promise",
                     suggested_structure="structure",
+                    narrative_plan=narrative_plan(),
                 ),
                 ContentAngle(
                     angle_id="ag_002",
@@ -894,6 +1121,7 @@ def test_get_memory_matches_passes_exact_domain_scope(monkeypatch):
                     opening_hook="hook",
                     value_promise="promise",
                     suggested_structure="structure",
+                    narrative_plan=narrative_plan("cognitive_correction"),
                 ),
                 ContentAngle(
                     angle_id="ag_003",
@@ -901,6 +1129,7 @@ def test_get_memory_matches_passes_exact_domain_scope(monkeypatch):
                     opening_hook="hook",
                     value_promise="promise",
                     suggested_structure="structure",
+                    narrative_plan=narrative_plan(),
                 ),
             ],
         )
@@ -923,6 +1152,95 @@ def test_get_memory_matches_passes_exact_domain_scope(monkeypatch):
         "domain": "wellness",
         "subdomain": "sleep",
     }
+
+
+def test_novelty_guard_rejects_model_rewritten_narrative_plan(monkeypatch):
+    from src.nodes import node_b_novelty_guard as module
+
+    authoritative_plan = narrative_plan()
+    rewritten_plan = narrative_plan("cognitive_correction")
+    angles = AngleStrategy(
+        topic_id="tp_001",
+        topic="睡前仪式",
+        target_group="上班族",
+        core_pain="入睡慢",
+        angles=[
+            ContentAngle(
+                angle_id=f"ag_{index:03d}",
+                angle=f"角度 {index}",
+                opening_hook="hook",
+                value_promise="promise",
+                suggested_structure="structure",
+                narrative_plan=(
+                    authoritative_plan
+                    if index == 1
+                    else narrative_plan("cognitive_correction")
+                ),
+            )
+            for index in range(1, 4)
+        ],
+    )
+
+    class FakeVectorMemory:
+        def __init__(self, _persist_dir):
+            pass
+
+        def query_similar(self, **_kwargs):
+            return []
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "novelty_results": [
+                    {
+                        "topic_id": "tp_001",
+                        "topic": "睡前仪式",
+                        "target_group": "上班族",
+                        "core_pain": "入睡慢",
+                        "angle_id": "ag_001",
+                        "angle": "角度 1",
+                        "opening_hook": "hook",
+                        "value_promise": "promise",
+                        "suggested_structure": "structure",
+                        "narrative_plan": rewritten_plan.model_dump(mode="json"),
+                        "decision": "keep",
+                        "novelty_score": 0.9,
+                        "max_similarity": 0.0,
+                        "matched_history": [],
+                        "reason": "足够新颖",
+                        "revision_suggestions": [],
+                        "memory_signal": {
+                            "decision": "keep",
+                            "novelty_score": 0.9,
+                            "max_similarity": 0.0,
+                            "rejected_by_memory": False,
+                            "similar_to_recent_content": False,
+                            "similar_to_high_performing_pattern": False,
+                            "similar_to_low_performing_pattern": False,
+                            "recommended_for_virality_scorer": True,
+                        },
+                    }
+                ]
+            }
+
+    monkeypatch.setattr(module, "XHSVectorMemory", FakeVectorMemory)
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        module.novelty_guard_node(
+            {
+                "angles": [angles],
+                "domain_context": DomainContext(
+                    domain="wellness",
+                    subdomain="sleep",
+                    classification_source="explicit",
+                    classification_confidence=1.0,
+                    profile_version="wellness-v1",
+                    risk_level="low",
+                ),
+                "content_policy": {},
+            }
+        )
 
 
 def test_novelty_guard_node_requires_domain_context_before_vector_query(monkeypatch):

@@ -8,6 +8,10 @@ from src.schemas import AgentState, AngleStrategy, NoveltyCheckResults, NoveltyM
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from memory.vector_memory import XHSVectorMemory
 from memory.embedding import build_embedding_text
+from src.nodes.narrative_plan import (
+    find_narrative_plan,
+    require_same_narrative_plan,
+)
 
 
 def _require_domain_scope(domain_context) -> tuple[str, str]:
@@ -137,5 +141,26 @@ def novelty_guard_node(state: AgentState) -> AgentState:
         print(f"Failed to transform to NoveltyCheckResult schema, please check the detail: {e}")
         novelty_check_results = []
         raise RuntimeError(f"Process terminated due to error: {e}")
+
+    angle_candidates = [
+        {
+            **angle.model_dump(),
+            "topic_id": topic.topic_id,
+        }
+        for topic in angle_options
+        for angle in topic.angles
+    ]
+    for result in novelty_check_results.novelty_results:
+        expected_plan = find_narrative_plan(
+            angle_candidates,
+            topic_id=result.topic_id,
+            angle_id=result.angle_id,
+            stage="novelty_guard",
+        )
+        require_same_narrative_plan(
+            result.narrative_plan,
+            expected_plan,
+            stage="novelty_guard",
+        )
 
     return {"novelty_check_results": novelty_check_results}

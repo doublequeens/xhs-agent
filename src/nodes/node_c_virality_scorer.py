@@ -6,6 +6,10 @@ from langchain_core.prompts import PromptTemplate
 from src.schemas import AgentState, ScoreResult
 from src.models import get_model
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.nodes.narrative_plan import (
+    find_narrative_plan,
+    require_same_narrative_plan,
+)
 
 def virality_scorer_node(state: AgentState) -> AgentState:
     """
@@ -77,7 +81,19 @@ def virality_scorer_node(state: AgentState) -> AgentState:
             )
             continue
 
+        novelty_candidates = novelty_check_results.novelty_results
         for score in score_options:
+            expected_plan = find_narrative_plan(
+                novelty_candidates,
+                topic_id=score.topic_id,
+                angle_id=score.angle_id,
+                stage="virality_scorer",
+            )
+            require_same_narrative_plan(
+                score.narrative_plan,
+                expected_plan,
+                stage="virality_scorer",
+            )
             print(
                 f"Score for topic {score.topic} and angle {score.angle}: "
                 f"{score.total_score}"

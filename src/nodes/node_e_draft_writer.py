@@ -3,6 +3,10 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, DraftItem
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.nodes.narrative_plan import (
+    find_narrative_plan,
+    require_same_narrative_plan,
+)
 
 def draft_writer_node(state: AgentState) -> AgentState:
     """
@@ -48,4 +52,16 @@ def draft_writer_node(state: AgentState) -> AgentState:
         print(f"Failed to transform to Draft schema, please check the detail: {e}")
         draft_results = []
         raise RuntimeError(f"Process terminated due to error: {e}")
+    for draft in draft_results:
+        expected_plan = find_narrative_plan(
+            outline_results,
+            topic_id=draft.topic_id,
+            angle_id=draft.angle_id,
+            stage="draft_writer",
+        )
+        require_same_narrative_plan(
+            draft.narrative_plan,
+            expected_plan,
+            stage="draft_writer",
+        )
     return {"drafts": draft_results}

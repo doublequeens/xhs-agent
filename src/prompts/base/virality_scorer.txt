@@ -34,6 +34,7 @@ novelty_check_results，其中每个 novelty_results 元素都是一个独立候
 - revise 候选若进入 Top 3，optimization_suggestions 必须吸收 revision_suggestions。
 - strengths / weaknesses / optimization_suggestions 都必须具体，不要空泛。
 - 评分时必须将 novelty_check_results 与同 topic_id 的 trends.content_contract 配对；没有可执行内容契约的候选直接拒绝，不得以高点击潜力弥补。
+- 每个 Top 3 结果的 narrative_plan 必须从匹配的 novelty result 逐字段原样复制；评分不得改变 narrative_form、beats、saveable_beat 或 closing_mode。
 
 【输出格式】
 仅输出严格 JSON 数组，按 total_score 从高到低排序：
@@ -63,6 +64,7 @@ novelty_check_results，其中每个 novelty_results 元素都是一个独立候
     "angle": "string",
     "opening_hook": "string",
     "value_promise": "string",
-    "suggested_structure": "string"
+    "suggested_structure": "string",
+    "narrative_plan": "copy the matched novelty result narrative_plan byte-for-byte"
   }
 ]

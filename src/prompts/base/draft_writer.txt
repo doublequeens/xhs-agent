@@ -16,10 +16,13 @@ Draft Writer
 - 允许第一人称分享语气，但不要伪造具体经历、专业身份、保证结果或精确效果时间线。
 - 不得使用神技、急救、亲测有效、救命、无缝、隐形等夸大词。
 - 不要输出结构提示、步骤编号、模板文字或面向写作者的注释。
+- emoji 可以用于语气、条目标记和扫读层级，但不得堆叠或替代信息；emoji 允许但不强制。
 
 【内容要求】
-- 自然融入 outline 的逻辑顺序。
-- 让读者看到真实困扰场景、判断逻辑、可执行方法、总结区域和互动收尾。
+- 保留 outline.narrative_plan，不改变 narrative_form、beats、saveable_beat 或 closing_mode。
+- 严格按 outline.narrative_plan.beats 的顺序完成正文语义任务，不输出结构提示词或 beat ID。
+- closing_mode=none 时正文可以自然结束，不得补互动问题。
+- closing_mode=focused_question 时只提出一个与正文决策直接相关的问题。
 - 不得把 system 规则直接暴露给读者。
 - 不同 draft 必须有区分度，不要写成同一种表达模式。
 - 必须兑现首屏中“谁、什么问题、得到什么”的承诺，并保留可截图保存的步骤、清单、判断标准或对比表；不能以卡通角色、IP 或纯装饰性 AI 插图充当证明。
@@ -34,6 +37,7 @@ outline_results 数组。每个元素至少包含：
 - angle
 - target_group
 - core_pain
+- narrative_plan
 
 【输出格式】
 仅输出严格 JSON 数组：
@@ -46,6 +50,7 @@ outline_results 数组。每个元素至少包含：
     "angle_id": "string",
     "angle": "string",
     "target_group": "string",
-    "core_pain": "string"
+    "core_pain": "string",
+    "narrative_plan": "copy outline.narrative_plan byte-for-byte"
   }
 ]

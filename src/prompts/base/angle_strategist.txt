@@ -17,6 +17,7 @@ trend_options 列表，每个元素至少包含：
 【核心任务】
 - 针对同一个 topic_id 设计 3 个互不重复的 angle。
 - 3 个角度尽量覆盖不同读者动机，例如经验验证、认知纠偏、场景共鸣，但不要机械套模板。
+- 同一 topic 的 3 个角度至少使用两种不同 narrative_form，除非 content_policy 使其他叙事形式不安全；此时必须选择安全形式。
 - 每个角度都必须明确说明读者能获得什么实际收获。
 - 可以使用第一人称、生活化、经验型语气，但不得伪造具体个人经历或专业身份。
 - 不得使用或建议使用夸大词：神技、急救、亲测有效、救命、无缝、隐形。
@@ -26,7 +27,11 @@ trend_options 列表，每个元素至少包含：
 - 不是同一逻辑的不同措辞。
 - opening_hook 要体现该角度的差异，而不是只改标题词。
 - value_promise 必须清楚、可执行。
-- suggested_structure 要能指导后续成文，但不直接写正文。
+- suggested_structure 是一行自然语言结构摘要，能指导后续成文，但不直接写正文。
+- narrative_plan.beats 必须包含 4–8 个 beat，beat_id 在该 plan 内稳定且唯一。
+- saveable_beat 必须逐字段等于 beats 中的一个 beat。
+- narrative purpose 只描述一个明确的语义写作任务；不写 emoji 或排版指令。
+- 后续正文可以自然使用 emoji，但 emoji 从不强制。
 
 【输出格式】
 仅输出严格 JSON 数组：
@@ -42,21 +47,69 @@ trend_options 列表，每个元素至少包含：
         "angle": "string",
         "opening_hook": "string",
         "value_promise": "string",
-        "suggested_structure": "string"
+        "suggested_structure": "one-sentence human-readable summary",
+        "narrative_plan": {
+          "narrative_form": "cognitive_correction | step_tutorial | checklist_collection | comparison | diagnostic_qa | scenario_story | story_reversal | reflective_editorial",
+          "beats": [
+            {
+              "beat_id": "stable_short_id",
+              "kind": "hook | scene | tension | misconception | reveal | principle | explanation | example | steps | checklist | comparison | diagnostic | qa | quote | boundary | summary | action",
+              "purpose": "one semantic writing task"
+            }
+          ],
+          "saveable_beat": {
+            "beat_id": "must match a beat above",
+            "kind": "must match the same beat above",
+            "purpose": "must match the same beat above"
+          },
+          "closing_mode": "none | boundary | reflection | focused_question | action_prompt"
+        }
       },
       {
         "angle_id": "ag_002",
         "angle": "string",
         "opening_hook": "string",
         "value_promise": "string",
-        "suggested_structure": "string"
+        "suggested_structure": "one-sentence human-readable summary",
+        "narrative_plan": {
+          "narrative_form": "cognitive_correction | step_tutorial | checklist_collection | comparison | diagnostic_qa | scenario_story | story_reversal | reflective_editorial",
+          "beats": [
+            {
+              "beat_id": "stable_short_id",
+              "kind": "hook | scene | tension | misconception | reveal | principle | explanation | example | steps | checklist | comparison | diagnostic | qa | quote | boundary | summary | action",
+              "purpose": "one semantic writing task"
+            }
+          ],
+          "saveable_beat": {
+            "beat_id": "must match a beat above",
+            "kind": "must match the same beat above",
+            "purpose": "must match the same beat above"
+          },
+          "closing_mode": "none | boundary | reflection | focused_question | action_prompt"
+        }
       },
       {
         "angle_id": "ag_003",
         "angle": "string",
         "opening_hook": "string",
         "value_promise": "string",
-        "suggested_structure": "string"
+        "suggested_structure": "one-sentence human-readable summary",
+        "narrative_plan": {
+          "narrative_form": "cognitive_correction | step_tutorial | checklist_collection | comparison | diagnostic_qa | scenario_story | story_reversal | reflective_editorial",
+          "beats": [
+            {
+              "beat_id": "stable_short_id",
+              "kind": "hook | scene | tension | misconception | reveal | principle | explanation | example | steps | checklist | comparison | diagnostic | qa | quote | boundary | summary | action",
+              "purpose": "one semantic writing task"
+            }
+          ],
+          "saveable_beat": {
+            "beat_id": "must match a beat above",
+            "kind": "must match the same beat above",
+            "purpose": "must match the same beat above"
+          },
+          "closing_mode": "none | boundary | reflection | focused_question | action_prompt"
+        }
       }
     ]
   }

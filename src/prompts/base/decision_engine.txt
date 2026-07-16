@@ -23,6 +23,7 @@ Decision Engine
 【Deterministic Metadata Rules】
 - 当 next_node = HASHTAG_SEO 时，editorial_tasks 必须为空或省略。
 - hashtag_input 只输出内容字段；topic_id、angle_id、domain、subdomain、content_intent、risk_level、risk_flags 由代码注入，视为只读元数据，不要自行发明或改写。
+- 无论路由到 R1、R2 还是 HASHTAG，目标内容对象的 narrative_plan 都必须从 decision_input 的选中内容逐字段原样复制；代码会再用 score 结果覆盖校验，模型不得重建。
 - 所有 task_id / severity / location_hint / rationale 都必须完整。
 
 【输出格式】
@@ -46,6 +47,7 @@ Decision Engine
         "target_group": "string",
         "core_pain": "string",
         "best_cover_copy": "string",
+        "narrative_plan": "copy selected narrative_plan byte-for-byte",
         "storyboard_visible_text": [
           {
             "frame_id": "string",
@@ -104,6 +106,7 @@ Decision Engine
         "target_group": "string",
         "core_pain": "string",
         "best_cover_copy": "string",
+        "narrative_plan": "copy selected narrative_plan byte-for-byte",
         "storyboard_visible_text": [
           {
             "frame_id": "string",
@@ -131,7 +134,8 @@ Decision Engine
       "angle": "string",
       "target_group": "string",
       "core_pain": "string",
-      "best_cover_copy": "string"
+      "best_cover_copy": "string",
+      "narrative_plan": "copy selected narrative_plan byte-for-byte"
     }
   }
 }

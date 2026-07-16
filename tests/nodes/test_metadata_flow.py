@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from src.domain import build_content_policy, get_domain_profile, get_topic_metadata
 from src.schemas import CarouselPayload
+from src.schemas.decision import DecisionOutput
 from src.schemas.draft import DraftItem
 from src.schemas.narrative import NarrativePlan
 from src.schemas.topic import TopicItem
@@ -407,6 +408,13 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
                     narrative_plan=narrative_plan,
                 )
             ),
+            "scores": [
+                SimpleNamespace(
+                    topic_id="tp_001",
+                    angle_id="ag_001",
+                    narrative_plan=narrative_plan,
+                )
+            ],
             "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
@@ -429,6 +437,254 @@ def test_decision_engine_overwrites_llm_hashtag_metadata(monkeypatch):
     assert hashtag_input.core_pain == "熬夜后疲惫"
     assert hashtag_input.best_cover_copy == "cover"
     assert hashtag_input.narrative_plan == narrative_plan
+
+
+def test_title_ranker_rejects_model_rewritten_narrative_plan(monkeypatch):
+    from src.nodes import node_g_title_ranker as module
+
+    authoritative_plan = _narrative_plan()
+    rewritten_plan = authoritative_plan.model_copy(
+        update={"narrative_form": "cognitive_correction"}
+    )
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "ranking": [
+                    {
+                        "draft_id": "draft_001",
+                        "total_score": 9.2,
+                        "best_title_for_this_draft": "睡眠改善指南",
+                        "reason": "场景明确",
+                    }
+                ],
+                "winner": {
+                    "draft_id": "draft_001",
+                    "draft_md": "content",
+                    "best_title": "睡眠改善指南",
+                    "best_title_id": "title_001",
+                    "safer_title": "睡眠习惯参考",
+                    "safer_title_id": "title_002",
+                    "best_cover_copy": "cover",
+                    "why_win": ["场景明确"],
+                    "must_fix_if_selected": [],
+                    "optional_improvements": [],
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "睡眠策略",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "narrative_plan": rewritten_plan.model_dump(mode="json"),
+                },
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda: FakeModel())
+
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        module.title_ranker_node(
+            {
+                "drafts": [
+                    DraftItem(
+                        draft_id="draft_001",
+                        draft_md="content",
+                        topic_id="tp_001",
+                        topic="睡眠改善",
+                        angle_id="ag_001",
+                        angle="睡眠策略",
+                        target_group="上班族",
+                        core_pain="熬夜后疲惫",
+                        narrative_plan=authoritative_plan,
+                    )
+                ],
+                "titles_options": [],
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+            }
+        )
+
+
+def test_r1_reflector_rejects_model_rewritten_narrative_plan(monkeypatch):
+    from src.nodes import node_h_r1_reflector as module
+
+    authoritative_plan = _narrative_plan()
+    rewritten_plan = authoritative_plan.model_copy(
+        update={"narrative_form": "cognitive_correction"}
+    )
+    decision_output = DecisionOutput.model_validate(
+        {
+            "next_node": "R1_REFLECTOR",
+            "normalized_input": {
+                "r1_input": {
+                    "content_candidate": {
+                        "draft_id": "draft_001",
+                        "draft_md": "content",
+                        "best_title": "睡眠改善指南",
+                        "best_title_id": "title_001",
+                        "safer_title": "睡眠习惯参考",
+                        "safer_title_id": "title_002",
+                        "best_cover_copy": "cover",
+                        "why_win": ["场景明确"],
+                        "topic_id": "tp_001",
+                        "topic": "睡眠改善",
+                        "angle_id": "ag_001",
+                        "angle": "睡眠策略",
+                        "target_group": "上班族",
+                        "core_pain": "熬夜后疲惫",
+                        "narrative_plan": authoritative_plan,
+                    },
+                    "editorial_tasks": {"mandatory": [], "optional": []},
+                    "revision_meta": {
+                        "revision_id": "rev_001",
+                        "round": 1,
+                        "diff_summary": [],
+                        "next_actions": [],
+                    },
+                    "decision_trace": {
+                        "source_node": "TITLE_RANKER",
+                        "why_this_route": ["需要编辑复核"],
+                    },
+                }
+            },
+        }
+    )
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "draft_id": "draft_001",
+                "revised_title": "睡眠改善指南",
+                "revised_md": "content",
+                "topic_id": "tp_001",
+                "topic": "睡眠改善",
+                "angle_id": "ag_001",
+                "angle": "睡眠策略",
+                "target_group": "上班族",
+                "core_pain": "熬夜后疲惫",
+                "best_cover_copy": "cover",
+                "narrative_plan": rewritten_plan.model_dump(mode="json"),
+                "storyboard_visible_text": [],
+                "scores": {
+                    "clarity_score": 9,
+                    "save_value_score": 9,
+                    "readability_score": 9,
+                    "authenticity_score": 9,
+                    "promise_alignment_score": 9,
+                },
+                "revision_meta": {
+                    "revision_id": "rev_002",
+                    "round": 2,
+                    "diff_summary": [],
+                    "next_actions": ["Ready for R2 compliance review"],
+                },
+                "task_report": {
+                    "completed_task_ids": [],
+                    "skipped_task_ids": [],
+                    "notes": [],
+                },
+                "remaining_risks": [],
+                "editor_notes": [],
+                "should_run_R1_again": False,
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda *_args: FakeModel())
+
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        module.r1_reflector_node(
+            {
+                "decision_output": decision_output,
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "evidence_briefs": {},
+            }
+        )
+
+
+def test_r2_compliance_rejects_model_rewritten_narrative_plan(monkeypatch):
+    from src.nodes import node_i_r2_compliance as module
+
+    authoritative_plan = _narrative_plan()
+    rewritten_plan = authoritative_plan.model_copy(
+        update={"narrative_form": "cognitive_correction"}
+    )
+    decision_output = DecisionOutput.model_validate(
+        {
+            "next_node": "R2_COMPLIANCE",
+            "normalized_input": {
+                "r2_input": {
+                    "content_snapshot": {
+                        "draft_id": "draft_001",
+                        "revised_title": "睡眠改善指南",
+                        "revised_md": "content",
+                        "topic_id": "tp_001",
+                        "topic": "睡眠改善",
+                        "angle_id": "ag_001",
+                        "angle": "睡眠策略",
+                        "target_group": "上班族",
+                        "core_pain": "熬夜后疲惫",
+                        "best_cover_copy": "cover",
+                        "narrative_plan": authoritative_plan,
+                    },
+                    "revision_meta": {
+                        "revision_id": "rev_001",
+                        "round": 1,
+                        "diff_summary": [],
+                        "next_actions": [],
+                    },
+                    "decision_trace": {
+                        "source_node": "R1_REFLECTOR",
+                        "why_this_route": ["编辑完成"],
+                    },
+                }
+            },
+        }
+    )
+
+    class FakeModel:
+        def execute(self, _messages):
+            return {
+                "content_snapshot": {
+                    "draft_id": "draft_001",
+                    "revised_title": "睡眠改善指南",
+                    "revised_md": "content",
+                    "topic_id": "tp_001",
+                    "topic": "睡眠改善",
+                    "angle_id": "ag_001",
+                    "angle": "睡眠策略",
+                    "target_group": "上班族",
+                    "core_pain": "熬夜后疲惫",
+                    "best_cover_copy": "cover",
+                    "narrative_plan": rewritten_plan.model_dump(mode="json"),
+                },
+                "compliance_audit": {
+                    "compliance_status": "fully_compliant",
+                    "issues": [],
+                    "required_fixes": [],
+                    "suggested_fixes": [],
+                    "block_publish": False,
+                    "matched_policy_rules": [],
+                    "unresolved_claims": [],
+                },
+                "revision_meta": {
+                    "revision_id": "rev_001",
+                    "round": 1,
+                    "diff_summary": [],
+                    "next_actions": [],
+                },
+            }
+
+    monkeypatch.setattr(module, "get_model", lambda *_args: FakeModel())
+
+    with pytest.raises(ValueError, match="must preserve the selected narrative_plan"):
+        module.r2_compliance_node(
+            {
+                "decision_output": decision_output,
+                "domain_context": _domain_context(),
+                "content_policy": _content_policy(),
+                "evidence_briefs": {},
+                "publish_package": {},
+            }
+        )
 
 
 def test_title_ranker_decision_hashtag_preserves_narrative_plan(monkeypatch):
@@ -481,7 +737,7 @@ def test_title_ranker_decision_hashtag_preserves_narrative_plan(monkeypatch):
                     "angle": "睡眠策略",
                     "target_group": "上班族",
                     "core_pain": "熬夜后疲惫",
-                    "narrative_plan": authoritative_plan.model_dump(mode="json"),
+                    "narrative_plan": contradictory_plan.model_dump(mode="json"),
                 },
             }
 
@@ -498,7 +754,7 @@ def test_title_ranker_decision_hashtag_preserves_narrative_plan(monkeypatch):
                     angle="睡眠策略",
                     target_group="上班族",
                     core_pain="熬夜后疲惫",
-                    narrative_plan=authoritative_plan,
+                    narrative_plan=contradictory_plan,
                 )
             ],
             "titles_options": [],
@@ -536,6 +792,13 @@ def test_title_ranker_decision_hashtag_preserves_narrative_plan(monkeypatch):
     decision_result = decision_module.decision_engine_node(
         {
             **title_ranker_result,
+            "scores": [
+                SimpleNamespace(
+                    topic_id="tp_001",
+                    angle_id="ag_001",
+                    narrative_plan=authoritative_plan,
+                )
+            ],
             "trends": [_topic()],
             "domain_context": _domain_context(),
             "content_policy": _content_policy(),
