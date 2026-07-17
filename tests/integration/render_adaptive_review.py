@@ -27,12 +27,16 @@ FIXTURE_ROOT = REPOSITORY_ROOT / "tests" / "fixtures" / "adaptive_editorial"
 # Six fixture IDs mapped one-to-one to the six production template families.
 # Each fixture's ``expected_template_family`` is the source of truth; this map
 # is deliberately redundant so a fixture/family drift fails loudly here.
+# The pair selection also ensures the review covers the 5/6/7-page content
+# range: ``step_tutorial`` yields a 6-page deep_teal sheet and
+# ``checklist_collection`` yields a 7-page green_catalog sheet (its top-level
+# ``visible_copy.items`` anchor the dense checklist archetype).
 FIXTURE_FAMILY_MAP = (
     ("cognitive_correction", "pink_red"),
     ("step_tutorial", "deep_teal"),
     ("diagnostic_qa", "soft_pink"),
     ("story_reversal", "coral_impact"),
-    ("comparison", "green_catalog"),
+    ("checklist_collection", "green_catalog"),
     ("reflective_editorial", "white_quote"),
 )
 
