@@ -31,20 +31,7 @@ def _text_only_carousel(family: str, frame_count: int):
     specs = _MATRIX_FRAME_SPECS[:frame_count]
     frames = [
         make_frame(page_archetype, frame_id=frame_id, role=role).model_copy(
-            update={
-                "visual_slots": [],
-                # Headings are stripped so the fixture renders uniformly across
-                # all six families: white_quote forces .block-heading onto the
-                # display face (templates/white_quote.py), which the renderer's
-                # non-headline font check rejects. That template/renderer
-                # mismatch is out of scope for this fix and is tracked as a
-                # concern in the task-10 report. Bodies and items still probe
-                # body-copy rendering for every family.
-                "content_blocks": [
-                    block.model_copy(update={"heading": None})
-                    for block in make_frame(page_archetype).content_blocks
-                ],
-            }
+            update={"visual_slots": []}
         )
         for frame_id, role, page_archetype in specs
     ]

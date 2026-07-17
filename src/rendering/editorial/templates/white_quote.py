@@ -16,7 +16,8 @@ from ..primitives import (
 FAMILY: TemplateFamily = "white_quote"
 FAMILY_CSS = """
 .template-white-quote{background:#FFF;color:#2A4A8C}
-.template-white-quote .template-headline,.template-white-quote .block-heading{color:#2A4A8C;font-family:var(--template-display)}
+.template-white-quote .template-headline{color:#2A4A8C;font-family:var(--template-display)}
+.template-white-quote .block-heading{color:#2A4A8C}
 .template-white-quote .template-kicker,.template-white-quote .footer-copy,.template-white-quote .page-number{color:#4A66A0}
 .template-white-quote .family-decoration{position:absolute;left:50%;top:8px;width:160px;height:1px;transform:translateX(-50%);background:#9FB0CC}
 .template-white-quote.variant-centered-focus .template-headline{font-size:82px;line-height:1.45;text-align:center}
