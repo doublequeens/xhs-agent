@@ -5,54 +5,96 @@
 @font-face{font-family:"Bodoni";src:url("../../../assets/fonts/beauty-editorial-v1/BodoniModa-Regular.ttf") format("truetype");}
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:#ddd;font-family:"Sans";}
-.page{position:relative;width:1080px;height:1350px;overflow:hidden;margin:0 auto;display:flex;flex-direction:column;padding:78px 80px;background:#F8DADA;color:#3a2020;}
+.page{position:relative;width:1080px;height:1440px;overflow:hidden;margin:0 auto;display:flex;flex-direction:column;padding:90px 88px;background:#F8DADA;color:#3a2020;}
 
 /* cover */
-.c .topbar{display:flex;justify-content:space-between;font-size:22px;letter-spacing:.16em;color:#b06a72;}
-.c .hero{flex:1;display:flex;flex-direction:column;justify-content:center;gap:26px;}
-.c .row{display:flex;align-items:center;gap:34px;}
-.c .num{font-family:"SansM";font-size:300px;line-height:.78;color:#EE5C5C;letter-spacing:-.04em;}
-.c .ttl{font-family:"SansM";font-size:78px;line-height:1.12;color:#D8444C;}
-.c .sub{font-size:34px;color:#7a444c;max-width:560px;}
-.c .doodle{align-self:flex-end;font-size:96px;line-height:1;}
-.c .foot{display:flex;justify-content:space-between;font-size:21px;color:#a86a72;}
+.cover .topbar{display:flex;justify-content:space-between;font-size:24px;letter-spacing:.16em;color:#b06a72;}
+.cover .hero{flex:1;display:flex;flex-direction:column;justify-content:center;gap:30px;}
+.cover .row{display:flex;align-items:center;gap:36px;}
+.cover .num{font-family:"SansM";font-size:280px;line-height:.8;color:#EE5C5C;letter-spacing:-.04em;}
+.cover .ttl{font-family:"SansM";font-size:84px;line-height:1.12;color:#D8444C;}
+.cover .sub{font-size:36px;color:#7a444c;max-width:560px;}
+.cover .doodle{align-self:flex-end;font-size:110px;line-height:1;}
+.cover .foot{display:flex;justify-content:space-between;font-size:23px;color:#a86a72;}
 
-/* inner */
-.i .wrap{flex:1;display:flex;align-items:center;}
-.i .card{position:relative;background:#fff;border-radius:32px;padding:62px 56px;width:100%;display:flex;flex-direction:column;gap:20px;box-shadow:0 16px 44px rgba(216,68,76,.16);}
-.i .daisy{position:absolute;top:-30px;right:44px;font-size:64px;}
-.i .tip{align-self:flex-start;background:#EE5C5C;color:#fff;font-family:"SansM";font-size:27px;padding:10px 28px;border-radius:999px;letter-spacing:.08em;}
-.i .h{font-family:"SansM";font-size:60px;color:#3a2020;line-height:1.15;}
-.i .p{font-size:35px;line-height:1.65;color:#6a4444;}
-.i .keys{display:flex;gap:13px;flex-wrap:wrap;}
-.i .key{font-size:27px;color:#D8444C;background:#FDEAEC;padding:12px 24px;border-radius:999px;}
-.i .pg{position:absolute;right:80px;bottom:58px;font-family:"Bodoni";font-size:32px;color:#d8a0a0;}
+/* scene-sparse */
+.scene-sparse .wrap{flex:1;display:flex;align-items:center;}
+.scene-sparse .card{position:relative;background:#fff;border-radius:36px;padding:80px 64px;width:100%;display:flex;flex-direction:column;gap:28px;box-shadow:0 18px 50px rgba(216,68,76,.16);}
+.scene-sparse .daisy{position:absolute;top:-34px;right:50px;font-size:72px;}
+.scene-sparse .tip{align-self:flex-start;background:#EE5C5C;color:#fff;font-family:"SansM";font-size:30px;padding:12px 32px;border-radius:999px;letter-spacing:.08em;}
+.scene-sparse .h{font-family:"SansM";font-size:62px;color:#3a2020;line-height:1.18;}
+.scene-sparse .p{font-size:36px;line-height:1.65;color:#6a4444;max-width:760px;}
+.scene-sparse .pg{position:absolute;right:88px;bottom:70px;font-family:"Bodoni";font-size:34px;color:#d8a0a0;}
+
+/* diagnostic-standard */
+.diagnostic-standard .wrap{flex:1;display:flex;align-items:center;}
+.diagnostic-standard .card{position:relative;background:#fff;border-radius:36px;padding:64px 60px;width:100%;display:flex;flex-direction:column;gap:22px;box-shadow:0 16px 46px rgba(216,68,76,.15);}
+.diagnostic-standard .tip{align-self:flex-start;background:#FDEAEC;color:#D8444C;font-family:"SansM";font-size:28px;padding:10px 28px;border-radius:999px;letter-spacing:.08em;}
+.diagnostic-standard .h{font-family:"SansM";font-size:56px;color:#3a2020;line-height:1.18;}
+.diagnostic-standard .rows{display:flex;flex-direction:column;gap:14px;}
+.diagnostic-standard .row{display:flex;justify-content:space-between;align-items:center;padding:18px 0;border-top:1px dashed #e6c0c6;font-size:32px;color:#6a4444;}
+.diagnostic-standard .row b{font-family:"SansM";color:#D8444C;font-weight:500;}
+.diagnostic-standard .pg{position:absolute;right:88px;bottom:70px;font-family:"Bodoni";font-size:34px;color:#d8a0a0;}
+
+/* save */
+.save{justify-content:center;align-items:center;text-align:center;}
+.save .icon{font-size:150px;line-height:1;}
+.save .h{font-family:"SansM";font-size:84px;line-height:1.18;color:#D8444C;margin-top:24px;}
+.save .sub{font-size:34px;color:#7a444c;margin-top:18px;max-width:680px;}
+.save .doodle{font-size:90px;margin-top:14px;}
+.save .foot{position:absolute;bottom:80px;font-size:24px;color:#a86a72;}
 </style></head><body>
 
-<!-- cover -->
-<div class="page c">
+<!-- COVER -->
+<div class="page cover" data-page="cover">
   <div class="topbar"><span>MISTIPS</span><span>科学护肤</span></div>
   <div class="hero">
     <div class="row">
       <div class="num">5</div>
-      <div><div class="ttl">护肤<br/>清晰法则</div><div class="sub" style="margin-top:16px;">看懂这 5 条，少走弯路</div></div>
+      <div><div class="ttl">护肤<br/>清晰法则</div><div class="sub" style="margin-top:18px;">看懂这几条，少走弯路</div></div>
     </div>
     <div class="doodle">👧 ✨</div>
   </div>
   <div class="foot"><span>@成分党·文献派</span><span>科学护肤</span></div>
 </div>
 
-<!-- inner -->
-<div class="page i">
+<!-- SCENE-SPARSE -->
+<div class="page scene-sparse" data-page="scene-sparse">
   <div class="wrap">
     <div class="card">
       <div class="daisy">🌼</div>
-      <div class="tip">TIP 1</div>
+      <div class="tip">日常场景</div>
       <div class="h">精简，是第一步</div>
-      <div class="p">护肤不是越多越好。把步骤收敛到「清洁 — 保湿 — 防晒」三件套，皮肤反而更稳、更耐造。</div>
-      <div class="keys"><span class="key">清洁</span><span class="key">保湿</span><span class="key">防晒</span></div>
+      <div class="p">护肤不是越多越好。把步骤收敛到「清洁 — 保湿 — 防晒」，皮肤反而更稳、更耐造。</div>
     </div>
   </div>
+  <div class="pg">@成分党·文献派</div>
+</div>
+
+<!-- DIAGNOSTIC-STANDARD -->
+<div class="page diagnostic-standard" data-page="diagnostic-standard">
+  <div class="wrap">
+    <div class="card">
+      <div class="tip">肤质自测</div>
+      <div class="h">你是外油内干吗</div>
+      <div class="rows">
+        <div class="row"><span>洗脸后紧绷感</span><b>明显</b></div>
+        <div class="row"><span>T 区出油速度</span><b>1–2 小时</b></div>
+        <div class="row"><span>两颊手感</span><b>粗糙发干</b></div>
+        <div class="row"><span>换季泛红频率</span><b>偶尔</b></div>
+      </div>
+    </div>
   </div>
+  <div class="pg">@成分党·文献派</div>
+</div>
+
+<!-- SAVE -->
+<div class="page save" data-page="save">
+  <div class="icon">💌</div>
+  <div class="h">收藏起来<br/>慢慢看</div>
+  <div class="sub">把这份法则收进收藏夹，需要时翻一翻</div>
+  <div class="doodle">🌸</div>
+  <div class="foot">@成分党·文献派 · 科学护肤</div>
+</div>
 
 </body></html>

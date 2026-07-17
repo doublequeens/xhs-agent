@@ -5,45 +5,114 @@
 @font-face{font-family:"SansM";src:url("../../../assets/fonts/templates/HarmonyOS_Sans_SC_Medium.ttf") format("truetype");font-weight:500;}
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:#ddd;}
-.page{position:relative;width:1080px;height:1350px;overflow:hidden;margin:0 auto;background:#FFFFFF;color:#2A4A8C;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:120px 104px;}
-.q{font-family:"WK";font-size:100px;line-height:1.55;color:#2A4A8C;}
-.sm{font-family:"WKR";font-size:36px;line-height:1.95;color:#4A66A0;margin-top:36px;}
-.end{font-family:"SansM";font-size:30px;letter-spacing:.14em;color:#2A4A8C;margin-top:34px;}
-.handle{position:absolute;bottom:64px;font-family:"SansM";font-size:24px;color:#8AA0C8;}
-.pg{position:absolute;top:64px;right:80px;font-family:"SansM";font-size:24px;color:#9FB0CC;letter-spacing:.1em;}
+.page{position:relative;width:1080px;height:1440px;overflow:hidden;margin:0 auto;background:#FFFFFF;color:#2A4A8C;display:flex;flex-direction:column;padding:120px 104px;}
+.rule{position:absolute;left:50%;top:64px;width:180px;height:1px;transform:translateX(-50%);background:#9FB0CC;}
+.handle{position:absolute;bottom:80px;left:50%;transform:translateX(-50%);font-family:"SansM";font-size:26px;color:#8AA0C8;}
+.pg{position:absolute;top:80px;right:96px;font-family:"SansM";font-size:26px;color:#9FB0CC;letter-spacing:.1em;}
+
+/* cover (centered focus) */
+.cover{justify-content:center;align-items:center;text-align:center;}
+.cover .q{font-family:"WK";font-size:104px;line-height:1.5;color:#2A4A8C;}
+.cover .sm{font-family:"WKR";font-size:36px;line-height:1.9;color:#4A66A0;margin-top:40px;}
+
+/* quote-sparse */
+.quote-sparse{justify-content:center;align-items:center;text-align:center;}
+.quote-sparse .mark{font-family:"WK";font-size:120px;line-height:1;color:#D7DFEE;}
+.quote-sparse .q{font-family:"WK";font-size:96px;line-height:1.55;color:#2A4A8C;margin-top:20px;}
+.quote-sparse .sm{font-family:"WKR";font-size:32px;line-height:1.85;color:#4A66A0;margin-top:30px;}
+
+/* explanation-standard */
+.explanation-standard{justify-content:flex-start;}
+.explanation-standard .kicker{font-family:"SansM";font-size:28px;letter-spacing:.14em;color:#4A66A0;}
+.explanation-standard .h{font-family:"WK";font-size:72px;line-height:1.4;color:#2A4A8C;margin-top:18px;}
+.explanation-standard .body{margin-top:48px;display:flex;flex-direction:column;gap:30px;align-items:center;}
+.explanation-standard .col{max-width:760px;display:flex;flex-direction:column;gap:10px;}
+.explanation-standard .col h3{font-family:"SansM";font-size:38px;color:#2A4A8C;}
+.explanation-standard .col p{font-family:"WKR";font-size:32px;line-height:1.7;color:#4A66A0;}
+
+/* checklist-dense */
+.checklist-dense .kicker{font-family:"SansM";font-size:28px;letter-spacing:.14em;color:#4A66A0;}
+.checklist-dense .h{font-family:"WK";font-size:68px;line-height:1.4;color:#2A4A8C;margin-top:18px;}
+.checklist-dense .grid{margin-top:42px;display:grid;grid-template-columns:1fr 1fr;gap:24px;}
+.checklist-dense .cell{padding:28px;border:1px solid #D7DFEE;border-radius:18px;display:flex;flex-direction:column;gap:10px;}
+.checklist-dense .cell .ch{font-family:"SansM";font-size:32px;color:#2A4A8C;}
+.checklist-dense .cell .cp{font-family:"WKR";font-size:28px;line-height:1.55;color:#4A66A0;}
+.checklist-dense .cell .mark{font-family:"SansM";font-size:28px;color:#9FB0CC;}
+
+/* boundary */
+.boundary{justify-content:center;align-items:center;text-align:center;}
+.boundary .mark{font-family:"WK";font-size:120px;line-height:1;color:#D7DFEE;}
+.boundary .q{font-family:"WK";font-size:104px;line-height:1.5;color:#2A4A8C;margin-top:24px;}
+.boundary .sm{font-family:"WKR";font-size:34px;line-height:1.85;color:#4A66A0;margin-top:28px;}
 </style></head><body>
 
-<!-- 01 cover quote -->
-<div class="page">
+<!-- COVER -->
+<div class="page cover" data-page="cover">
+  <div class="rule"></div>
+  <div class="pg">护肤 · 语录</div>
   <div class="q">护肤的第一步，<br/>是好好爱自己。</div>
   <div class="sm">不必焦虑瑕疵，<br/>规律与耐心，皮肤会慢慢回应你。</div>
-  <div class="end">— TO BE CONTINUED —</div>
   <div class="handle">@成分党·文献派</div>
-  </div>
+</div>
 
-<!-- 02 -->
-<div class="page">
-  <div class="q">不必焦虑瑕疵，<br/>规律，比完美更重要。</div>
+<!-- QUOTE-SPARSE -->
+<div class="page quote-sparse" data-page="quote-sparse">
+  <div class="rule"></div>
+  <div class="pg">壹</div>
+  <div class="mark">"</div>
+  <div class="q">规律，<br/>比完美更重要。</div>
+  <div class="sm">每天进步一点点，<br/>时间会给你答案。</div>
   <div class="handle">@成分党·文献派</div>
-  </div>
+</div>
 
-<!-- 03 -->
-<div class="page">
-  <div class="q">防晒，<br/>是送给未来自己的礼物。</div>
+<!-- EXPLANATION-STANDARD -->
+<div class="page explanation-standard" data-page="explanation-standard">
+  <div class="rule"></div>
+  <div class="pg">贰</div>
+  <div class="kicker">护肤随笔</div>
+  <div class="h">为什么<br/>慢即是快</div>
+  <div class="body">
+    <div class="col">
+      <h3>皮肤的代谢周期</h3>
+      <p>约 28 天一次更替，急功近利的猛药往往让节奏紊乱。</p>
+    </div>
+    <div class="col">
+      <h3>耐心的复利</h3>
+      <p>清洁、保湿、防晒三件套，长期坚持比短期猛药更稳。</p>
+    </div>
+    <div class="col">
+      <h3>留白与节制</h3>
+      <p>留出皮肤自我修复的时间，比堆叠产品更有意义。</p>
+    </div>
+  </div>
   <div class="handle">@成分党·文献派</div>
-  </div>
+</div>
 
-<!-- 04 -->
-<div class="page">
-  <div class="q">精简步骤，<br/>把时间还给生活。</div>
+<!-- CHECKLIST-DENSE -->
+<div class="page checklist-dense" data-page="checklist-dense">
+  <div class="rule"></div>
+  <div class="pg">叁</div>
+  <div class="kicker">每日清单</div>
+  <div class="h">这些小事<br/>值得坚持</div>
+  <div class="grid">
+    <div class="cell"><div class="mark">— 晨</div><div class="ch">温水洁面</div><div class="cp">保留皮脂膜。</div></div>
+    <div class="cell"><div class="mark">— 晨</div><div class="ch">防晒先行</div><div class="cp">通勤不可省。</div></div>
+    <div class="cell"><div class="mark">— 晚</div><div class="ch">温和卸妆</div><div class="cp">不过度摩擦。</div></div>
+    <div class="cell"><div class="mark">— 晚</div><div class="ch">保湿锁水</div><div class="cp">清爽乳液即可。</div></div>
+    <div class="cell"><div class="mark">— 周</div><div class="ch">分区护理</div><div class="cp">T 区控油。</div></div>
+    <div class="cell"><div class="mark">— 周</div><div class="ch">规律作息</div><div class="cp">皮肤需要休息。</div></div>
+  </div>
   <div class="handle">@成分党·文献派</div>
-  </div>
+</div>
 
-<!-- 05 closing -->
-<div class="page">
+<!-- BOUNDARY -->
+<div class="page boundary" data-page="boundary">
+  <div class="rule"></div>
+  <div class="pg">结语</div>
+  <div class="mark">"</div>
   <div class="q">慢慢来，<br/>比较快。</div>
-  <div class="end">— 完 · FOLLOW FOR MORE —</div>
+  <div class="sm">把节奏交给时间，<br/>皮肤会回应你的耐心。</div>
   <div class="handle">@成分党·文献派</div>
-  </div>
+</div>
 
 </body></html>

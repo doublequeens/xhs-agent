@@ -6,84 +6,98 @@
 @font-face{font-family:"Bodoni";src:url("../../../assets/fonts/beauty-editorial-v1/BodoniModa-Regular.ttf") format("truetype");}
 *{box-sizing:border-box;margin:0;padding:0;}
 html,body{background:#ddd;font-family:"Sans";}
-.page{position:relative;width:1080px;height:1350px;overflow:hidden;margin:0 auto;background:#F45A5A;color:#fff;display:flex;flex-direction:column;padding:74px 78px;}
+.page{position:relative;width:1080px;height:1440px;overflow:hidden;margin:0 auto;background:#F45A5A;color:#fff;display:flex;flex-direction:column;padding:90px 88px;}
 
 /* cover */
-.c{justify-content:center;align-items:center;text-align:center;}
-.c .tag{font-family:"SansM";font-size:30px;letter-spacing:.22em;color:rgba(255,255,255,.9);}
-.c .h{font-family:"Heavy";font-size:138px;line-height:1.08;margin-top:28px;}
-.c .sub{font-family:"Heavy";font-size:54px;color:#FFE3E3;margin-top:18px;}
-.c .row{display:flex;align-items:center;gap:18px;margin-top:44px;font-family:"SansM";font-size:34px;}
-.c .chat{font-size:46px;}
-.pause{position:absolute;left:60px;bottom:60px;width:64px;height:64px;border-radius:50%;background:#5C1414;display:flex;align-items:center;justify-content:center;gap:8px;}
-.pause i{display:block;width:7px;height:26px;background:#fff;}
-.handle{position:absolute;right:60px;bottom:68px;font-family:"SansM";font-size:24px;color:rgba(255,255,255,.9);}
+.cover{justify-content:center;align-items:center;text-align:center;}
+.cover .tag{font-family:"SansM";font-size:32px;letter-spacing:.22em;color:rgba(255,255,255,.92);}
+.cover .h{font-family:"Heavy";font-size:148px;line-height:1.06;margin-top:30px;}
+.cover .sub{font-family:"Heavy";font-size:56px;color:#FFE3E3;margin-top:20px;}
+.cover .row{display:flex;align-items:center;gap:18px;margin-top:48px;font-family:"SansM";font-size:36px;}
+.cover .chat{font-size:48px;}
+.cover .deco{position:absolute;left:-90px;bottom:-80px;width:380px;height:380px;border-radius:50%;background:#7B1730;opacity:.28;}
 
-/* step */
-.s .body{flex:1;display:flex;flex-direction:column;justify-content:center;gap:18px;}
-.s .tag{font-family:"SansM";font-size:28px;letter-spacing:.12em;color:#FFD9D9;}
-.s .big{font-family:"Heavy";font-size:230px;line-height:.85;}
-.s .h{font-family:"Heavy";font-size:72px;line-height:1.15;}
-.s .p{font-family:"Sans";font-size:37px;line-height:1.6;max-width:860px;color:rgba(255,255,255,.95);}
-.s .keys{display:flex;gap:14px;flex-wrap:wrap;margin-top:6px;}
-.s .key{font-family:"SansM";font-size:28px;padding:12px 26px;border-radius:999px;background:rgba(255,255,255,.18);}
-.s .pg{align-self:flex-end;font-family:"Bodoni";font-size:32px;color:rgba(255,255,255,.8);}
+/* story-beat */
+.story-beat .body{flex:1;display:flex;flex-direction:column;justify-content:center;gap:26px;}
+.story-beat .tag{font-family:"SansM";font-size:30px;letter-spacing:.12em;color:#FFD9D9;}
+.story-beat .h{font-family:"Heavy";font-size:72px;line-height:1.14;}
+.story-beat .beat{display:flex;gap:24px;align-items:flex-start;padding:22px 0;border-bottom:5px solid rgba(255,255,255,.72);}
+.story-beat .beat:last-of-type{border-bottom:none;}
+.story-beat .mark{font-family:"Heavy";font-size:64px;line-height:1;color:rgba(255,255,255,.5);min-width:90px;}
+.story-beat .btxt h3{font-family:"Heavy";font-size:46px;line-height:1.18;}
+.story-beat .btxt p{font-family:"Sans";font-size:32px;line-height:1.5;color:rgba(255,255,255,.95);margin-top:6px;max-width:760px;}
+.story-beat .pg{align-self:flex-end;font-family:"Bodoni";font-size:34px;color:rgba(255,255,255,.82);}
 
-/* closing */
-.e{justify-content:center;align-items:center;text-align:center;}
-.e .h{font-family:"Heavy";font-size:120px;line-height:1.12;}
-.e .sub{font-family:"Heavy";font-size:48px;color:#FFE3E3;margin-top:22px;}
-.e .row{display:flex;align-items:center;gap:16px;margin-top:40px;font-family:"SansM";font-size:34px;}
-.e .chat{font-size:44px;}
+/* steps-dense */
+.steps-dense .tag{font-family:"SansM";font-size:30px;letter-spacing:.12em;color:#FFD9D9;}
+.steps-dense .h{font-family:"Heavy";font-size:68px;line-height:1.14;margin-top:8px;}
+.steps-dense .grid{flex:1;display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:24px;align-content:start;}
+.steps-dense .cell{padding:26px;background:rgba(255,255,255,.18);border-radius:22px;display:flex;flex-direction:column;gap:10px;}
+.steps-dense .cell .ch{font-family:"Heavy";font-size:38px;}
+.steps-dense .cell .cp{font-family:"Sans";font-size:28px;line-height:1.45;color:rgba(255,255,255,.94);}
+.steps-dense .cell .num{font-family:"Heavy";font-size:54px;line-height:1;color:#FFE3E3;}
+.steps-dense .pg{align-self:flex-end;font-family:"Bodoni";font-size:34px;color:rgba(255,255,255,.82);margin-top:16px;}
+
+/* boundary */
+.boundary{justify-content:center;align-items:center;text-align:center;}
+.boundary .icon{font-size:150px;line-height:1;}
+.boundary .h{font-family:"Heavy";font-size:118px;line-height:1.12;margin-top:24px;}
+.boundary .sub{font-family:"Heavy";font-size:48px;color:#FFE3E3;margin-top:22px;}
+.boundary .row{display:flex;align-items:center;gap:16px;margin-top:40px;font-family:"SansM";font-size:36px;}
+.boundary .chat{font-size:44px;}
+.boundary .handle{position:absolute;bottom:80px;font-family:"SansM";font-size:26px;color:rgba(255,255,255,.9);}
 </style></head><body>
 
-<!-- 01 cover -->
-<div class="page c">
+<!-- COVER -->
+<div class="page cover" data-page="cover">
   <div class="tag">本周护肤重点</div>
   <div class="h">跟着做<br/>就对了！</div>
-  <div class="sub">油皮夏日急救 3 步</div>
+  <div class="sub">油皮夏日急救指南</div>
   <div class="row"><span class="chat">💬</span>评论区告诉我你的痛点</div>
-  <div class="handle">@成分党·文献派</div>
+  <div class="deco"></div>
+  <div class="handle" style="position:absolute;right:88px;bottom:90px;font-family:'SansM';font-size:26px;color:rgba(255,255,255,.9);">@成分党·文献派</div>
 </div>
 
-<!-- 02 step -->
-<div class="page s">
+<!-- STORY-BEAT -->
+<div class="page story-beat" data-page="story-beat">
   <div class="body">
-    <div class="tag">STEP 01</div>
-    <div class="big">01</div>
-    <div class="h">温和清洁，别过度</div>
-    <div class="p">晨间用温水或少量氨基酸洁面，保留夜间皮脂膜；越洗越干，反而出更多油。</div>
-    <div class="keys"><span class="key">温水</span><span class="key">氨基酸</span><span class="key">≤30 秒</span></div>
+    <div class="tag">一个护肤故事</div>
+    <div class="h">从烂脸到稳</div>
+    <div class="beat">
+      <div class="mark">A</div>
+      <div class="btxt"><h3>猛药翻车期</h3><p>跟风刷酸，屏障受损，泛红脱皮轮番来。</p></div>
+    </div>
+    <div class="beat">
+      <div class="mark">B</div>
+      <div class="btxt"><h3>精简修复期</h3><p>停掉猛药，回到清洁—保湿—防晒三件套。</p></div>
+    </div>
+    <div class="beat">
+      <div class="mark">C</div>
+      <div class="btxt"><h3>稳定维持期</h3><p>皮肤回到平衡，再渐进加入活性物。</p></div>
+    </div>
   </div>
-  </div>
+  <div class="pg">@成分党·文献派</div>
+</div>
 
-<!-- 03 step -->
-<div class="page s">
-  <div class="body">
-    <div class="tag">STEP 02</div>
-    <div class="big">02</div>
-    <div class="h">精简水乳，给吸收时间</div>
-    <div class="p">水乳后等 1–2 分钟、手背不黏再叠防晒；吸收不充分会搓泥、斑驳。</div>
-    <div class="keys"><span class="key">等 1–2 分钟</span><span class="key">不黏为准</span></div>
+<!-- STEPS-DENSE -->
+<div class="page steps-dense" data-page="steps-dense">
+  <div class="tag">急救步骤拆解</div>
+  <div class="h">每一步<br/>都别省</div>
+  <div class="grid">
+    <div class="cell"><div class="num">01</div><div class="ch">温和清洁</div><div class="cp">温水或氨基酸洁面，≤30 秒。</div></div>
+    <div class="cell"><div class="num">02</div><div class="ch">水乳等待</div><div class="cp">手背不黏再叠防晒。</div></div>
+    <div class="cell"><div class="num">03</div><div class="ch">防晒成膜</div><div class="cp">2–3 分钟后再上妆。</div></div>
+    <div class="cell"><div class="num">04</div><div class="ch">分区护理</div><div class="cp">T 区控油，两颊保湿。</div></div>
   </div>
-  </div>
+  <div class="pg">@成分党·文献派</div>
+</div>
 
-<!-- 04 step -->
-<div class="page s">
-  <div class="body">
-    <div class="tag">STEP 03</div>
-    <div class="big">03</div>
-    <div class="h">防晒先行，等它成膜</div>
-    <div class="p">涂完防晒耐心等 2–3 分钟成膜再上妆，底妆服帖、不破坏膜层。</div>
-    <div class="keys"><span class="key">SPF30+</span><span class="key">等 2–3 分钟</span></div>
-  </div>
-  </div>
-
-<!-- 05 closing -->
-<div class="page e">
-  <div class="h">收藏 + 关注<br/>更多干货</div>
-  <div class="sub">每天一个科学护肤小习惯</div>
-  <div class="row"><span class="chat">💬</span>你最想解决的护肤问题？</div>
+<!-- BOUNDARY -->
+<div class="page boundary" data-page="boundary">
+  <div class="icon">🧴</div>
+  <div class="h">护肤没有<br/>一劳永逸</div>
+  <div class="sub">坚持规律，皮肤会回应你</div>
+  <div class="row"><span class="chat">💬</span>下一步想解决什么？</div>
   <div class="handle">@成分党·文献派</div>
 </div>
 
