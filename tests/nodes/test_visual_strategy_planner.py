@@ -110,7 +110,6 @@ def test_visual_strategy_planner_ignores_noncanonical_signature_aliases():
         "frame_count": len(baseline.frame_plan),
     }
     state["memory_context"] = {
-        "recent_visual_signatures": [signature],
         "recent_frame_plan_signatures": [signature],
         "frame_plan_signatures": [signature],
         "recent_content": [
@@ -123,6 +122,41 @@ def test_visual_strategy_planner_ignores_noncanonical_signature_aliases():
     result = visual_strategy_planner_node(state)["visual_plan"]
 
     assert result == baseline
+
+
+def test_visual_strategy_planner_honors_canonical_recent_visual_signatures():
+    from src.nodes.node_p_visual_strategy_planner import (
+        visual_strategy_planner_node,
+    )
+
+    state = _state(
+        contract_for(
+            "understand_and_notice",
+            proof_mode="none",
+            recommended_frame_count=5,
+        ),
+        narrative_plan_for("cognitive_correction"),
+    )
+    first = visual_strategy_planner_node(state)["visual_plan"]
+    # The canonical v2 key is honored directly (no visual_plan fallback needed).
+    state["memory_context"]["recent_visual_signatures"] = [
+        {
+            "narrative_form": first.narrative_form,
+            "template_family": first.template_family,
+            "frame_plan_signature": [
+                frame.page_archetype for frame in first.frame_plan
+            ],
+            "frame_count": len(first.frame_plan),
+        }
+    ]
+
+    repeated = visual_strategy_planner_node(state)["visual_plan"]
+
+    assert (
+        repeated.template_family != first.template_family
+        or repeated.frame_plan != first.frame_plan
+    )
+    assert len(repeated.frame_plan) == len(first.frame_plan) == 5
 
 
 def test_visual_strategy_planner_ignores_non_strict_embedded_visual_plan():
