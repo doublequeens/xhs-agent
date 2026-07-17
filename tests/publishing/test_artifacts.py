@@ -714,17 +714,23 @@ def test_export_writes_complete_portable_publish_artifacts(tmp_path, frame_count
     assert audit["content_lock"]["canonical_sha256"] == result.content_lock.canonical_sha256
     assert audit["visual_plan"] == package["visual_plan"]
     assert audit["asset_manifest"] == package["asset_manifest"]
-    assert audit["render_manifest"] == {
-        **package["render_manifest"],
-        "pages": [
-            {
-                **page,
-                "path": Path(page["path"]).relative_to(package_dir).as_posix(),
-            }
-            for page in package["render_manifest"]["pages"]
-        ],
-        "contact_sheet_path": "images/contact-sheet.png",
-    }
+    # The audit serializes the validated ``RenderManifest`` pydantic model
+    # (``model_dump(mode="json")``), which normalises the package's raw int
+    # probes into their declared float fields and coerces ``None`` sequences
+    # to empty lists. Build the expected dict by validating through the same
+    # model so the assertion compares the same normalised shape and only
+    # verifies the path-rewriting + contact_sheet_path portability transform.
+    from src.schemas.render_manifest import RenderManifest
+
+    expected_render_manifest = RenderManifest.model_validate(
+        package["render_manifest"]
+    ).model_dump(mode="json")
+    for page, raw_page in zip(
+        expected_render_manifest["pages"], package["render_manifest"]["pages"]
+    ):
+        page["path"] = Path(raw_page["path"]).relative_to(package_dir).as_posix()
+    expected_render_manifest["contact_sheet_path"] = "images/contact-sheet.png"
+    assert audit["render_manifest"] == expected_render_manifest
     assert audit["rendered_image_paths"] == [
         Path(path).relative_to(package_dir).as_posix()
         for path in package["rendered_image_paths"]

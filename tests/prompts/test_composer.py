@@ -130,13 +130,26 @@ def test_task10_golden_fixture_names_and_copy_never_enter_production_prompts(
         for task in TASK_FILES
     )
 
+    # Collect every fixture-owned copy string so the isolation check covers
+    # the v2 envelope's ``visible_copy`` (cover/save anchors plus any dense
+    # archetype item lists) instead of the retired per-frame ``frame_copy``.
+    def _visible_copy_values(node):
+        if isinstance(node, str):
+            yield node
+        elif isinstance(node, dict):
+            for value in node.values():
+                yield from _visible_copy_values(value)
+        elif isinstance(node, list):
+            for value in node:
+                yield from _visible_copy_values(value)
+
     isolated_copy = {
         fixture_name,
         fixture["synthetic_title"],
         fixture["package"]["focus_keyword"],
         fixture["package"]["topic"],
         fixture["package"]["cover_copy"],
-        *(frame["headline"] for frame in fixture["frame_copy"].values()),
+        *_visible_copy_values(fixture.get("visible_copy", {})),
     }
     assert all(value not in production_prompt for value in isolated_copy)
 
