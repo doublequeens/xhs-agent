@@ -704,3 +704,173 @@ def test_backfill_vector_scope_defers_marker_until_structured_rows_exist(tmp_pat
 def test_examples_import_without_running_main():
     runpy.run_path(str(ROOT / "examples" / "memory_demo.py"), run_name="__test__")
     runpy.run_path(str(ROOT / "examples" / "vector_memory_demo.py"), run_name="__test__")
+
+
+def _record_with_visual_signatures() -> ContentRecord:
+    from datetime import datetime, timedelta, timezone
+
+    now_iso = datetime.now(timezone(timedelta(hours=8))).isoformat()
+    return ContentRecord(
+        content_id="content-signatures",
+        topic="早C晚A",
+        created_at=now_iso,
+        status="reviewed",
+        platform="xiaohongshu",
+        topic_id="tp_visual",
+        angle_id="ag_visual",
+        angle="成分搭配",
+        target_group="敏感肌",
+        core_pain="无法坚持",
+        title="早C晚A实用指南",
+        cover_copy="cover",
+        content="body",
+        hashtags=["#早C晚A"],
+        content_format="educational_cards",
+        visual_style="domain_editorial",
+        card_count=5,
+        storyboards=["frame-1"],
+        image_paths=["/tmp/image-1.png"],
+        strategy_tags=["skincare"],
+        compliance_status="compliant_with_minor_edits",
+        embedding_text="早C晚A",
+        domain="beauty",
+        subdomain="skincare",
+        content_intent="how_to",
+        profile_version="beauty-v1",
+        risk_level="low",
+        narrative_form="comparison",
+        narrative_signature=["hook:cover", "comparison:对比", "save:保存"],
+        template_family="green_catalog",
+        frame_plan_signature=["cover", "comparison", "save"],
+        density_profile=["sparse", "standard", "dense"],
+    )
+
+
+def test_save_generated_content_roundtrips_visual_signatures(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "signatures.db")
+    manager.init_db(SCHEMA_PATH)
+
+    manager.save_generated_content(_record_with_visual_signatures())
+    content = manager.get_content_by_id("content-signatures")
+
+    assert content is not None
+    assert content["narrative_form"] == "comparison"
+    assert content["narrative_signature"] == ["hook:cover", "comparison:对比", "save:保存"]
+    assert content["template_family"] == "green_catalog"
+    assert content["frame_plan_signature"] == ["cover", "comparison", "save"]
+    assert content["density_profile"] == ["sparse", "standard", "dense"]
+
+
+def test_save_generated_content_overwrites_visual_signatures_on_conflict(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "signatures-overwrite.db")
+    manager.init_db(SCHEMA_PATH)
+
+    first = _record_with_visual_signatures()
+    manager.save_generated_content(first)
+
+    updated = _record_with_visual_signatures()
+    updated.template_family = "deep_teal"
+    updated.frame_plan_signature = ["cover", "scene", "steps", "save"]
+    updated.density_profile = ["standard", "dense"]
+    manager.save_generated_content(updated)
+
+    content = manager.get_content_by_id("content-signatures")
+    assert content is not None
+    assert content["template_family"] == "deep_teal"
+    assert content["frame_plan_signature"] == ["cover", "scene", "steps", "save"]
+    assert content["density_profile"] == ["standard", "dense"]
+
+
+def test_save_generated_content_persists_empty_visual_signatures(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "signatures-empty.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-empty-signatures",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    content = manager.get_content_by_id("content-empty-signatures")
+    assert content is not None
+    assert content["narrative_form"] is None
+    assert content["narrative_signature"] == []
+    assert content["template_family"] is None
+    assert content["frame_plan_signature"] == []
+    assert content["density_profile"] == []
+
+
+def test_build_memory_context_returns_recent_visual_signatures(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "signatures-context.db")
+    manager.init_db(SCHEMA_PATH)
+
+    manager.save_generated_content(_record_with_visual_signatures())
+
+    context = manager.build_memory_context(domain="beauty", subdomain="skincare")
+    assert context.recent_visual_signatures == [
+        {
+            "narrative_form": "comparison",
+            "template_family": "green_catalog",
+            "frame_plan_signature": ["cover", "comparison", "save"],
+            "frame_count": 3,
+            "density_profile": ["sparse", "standard", "dense"],
+        }
+    ]
+
+
+def test_build_memory_context_skips_rows_without_visual_signatures(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "signatures-partial.db")
+    manager.init_db(SCHEMA_PATH)
+
+    manager.save_generated_content(_record_with_visual_signatures())
+    from datetime import datetime, timedelta, timezone
+    now_iso = datetime.now(timezone(timedelta(hours=8))).isoformat()
+    manager.save_generated_content(
+        ContentRecord(
+            content_id="content-no-signatures",
+            topic="睡眠改善",
+            created_at=now_iso,
+            domain="beauty",
+            subdomain="skincare",
+        )
+    )
+
+    context = manager.build_memory_context(domain="beauty", subdomain="skincare")
+    assert len(context.recent_visual_signatures) == 1
+    assert context.recent_visual_signatures[0]["template_family"] == "green_catalog"
+
+
+def test_memory_context_to_prompt_payload_exposes_recent_visual_signatures():
+    from memory.memory_context import memory_context_to_prompt_payload
+    from memory.models import MemoryContext
+
+    context = MemoryContext(
+        same_subdomain_recent=[],
+        same_domain_patterns=[],
+        global_format_patterns=[],
+        topics_to_avoid=[],
+        angles_to_avoid=[],
+        recent_hashtags=[],
+        recent_visual_signatures=[
+            {
+                "narrative_form": "comparison",
+                "template_family": "green_catalog",
+                "frame_plan_signature": ["cover", "comparison", "save"],
+                "frame_count": 3,
+                "density_profile": ["sparse", "standard", "dense"],
+            }
+        ],
+    )
+
+    payload = memory_context_to_prompt_payload(context)
+
+    assert payload["recent_visual_signatures"] == [
+        {
+            "narrative_form": "comparison",
+            "template_family": "green_catalog",
+            "frame_plan_signature": ["cover", "comparison", "save"],
+            "frame_count": 3,
+            "density_profile": ["sparse", "standard", "dense"],
+        }
+    ]

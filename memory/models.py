@@ -51,6 +51,16 @@ class ContentRecord:
 
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    # Persisted v2 visual signatures. Populated by content_writer_node from
+    # the final ``NarrativePlan``/``VisualPlan``/``RenderManifest`` so that
+    # future runs can reuse them via ``MemoryContext.recent_visual_signatures``
+    # for template/frame diversity. ``narrative_signature`` is stored as JSON.
+    narrative_form: Optional[str] = None
+    narrative_signature: list[str] = field(default_factory=list)
+    template_family: Optional[str] = None
+    frame_plan_signature: list[str] = field(default_factory=list)
+    density_profile: list[str] = field(default_factory=list)
+
 
 @dataclass
 class MetricsRecord:
@@ -90,3 +100,4 @@ class MemoryContext:
     topics_to_avoid: list[str]
     angles_to_avoid: list[str]
     recent_hashtags: list[str]
+    recent_visual_signatures: list[dict[str, Any]] = field(default_factory=list)

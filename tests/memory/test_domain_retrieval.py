@@ -211,3 +211,74 @@ def test_memory_context_prompt_payload_preserves_labeled_pattern_signals():
     assert payload["same_domain_patterns"][0]["performance_signal"] == "high"
     assert payload["same_domain_patterns"][1]["performance_signal"] == "low"
     assert payload["global_format_patterns"] == [{"title": "format item", "content_format": "cards", "views": 10}]
+
+
+def test_build_memory_context_returns_recent_visual_signatures_from_persisted_rows(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="beauty-skincare-visual",
+        topic="屏障修护",
+        created_at=_now_iso(hours_ago=18),
+        angle="成分拆解",
+        title="修护屏障的三步法",
+        hashtags=["#修护"],
+        content=f"屏障修护 content body",
+        content_format="checklist",
+        visual_style="clean_lab",
+        card_count=5,
+        domain="beauty",
+        subdomain="skincare",
+        content_intent="how_to",
+        profile_version="beauty-v1",
+        risk_level="low",
+        narrative_form="comparison",
+        narrative_signature=["hook:cover", "comparison:contrast", "save:keep"],
+        template_family="green_catalog",
+        frame_plan_signature=["cover", "comparison", "save"],
+        density_profile=["sparse", "standard", "dense"],
+    )
+    manager.save_generated_content(record)
+
+    context = manager.build_memory_context(domain="beauty", subdomain="skincare", recent_days=14)
+
+    assert context.recent_visual_signatures == [
+        {
+            "narrative_form": "comparison",
+            "template_family": "green_catalog",
+            "frame_plan_signature": ["cover", "comparison", "save"],
+            "frame_count": 3,
+            "density_profile": ["sparse", "standard", "dense"],
+        }
+    ]
+
+
+def test_build_memory_context_skips_rows_lacking_persisted_visual_signatures(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "memory.db")
+    manager.init_db(SCHEMA_PATH)
+
+    _save_content(
+        manager,
+        content_id="beauty-skincare-no-signatures",
+        domain="beauty",
+        subdomain="skincare",
+        topic="清洁",
+        angle="成分拆解",
+        title="清洁指南",
+        hashtags=["#清洁"],
+        content_format="checklist",
+        visual_style="clean_lab",
+        card_count=5,
+        views=10,
+        likes=2,
+        saves=1,
+        comments=0,
+        shares=0,
+        followers_gained=0,
+        hours_ago=12,
+    )
+
+    context = manager.build_memory_context(domain="beauty", subdomain="skincare", recent_days=14)
+
+    assert context.recent_visual_signatures == []

@@ -7,6 +7,7 @@ import pytest
 
 from memory.migrations import (
     migrate_contents_domain_fields,
+    migrate_contents_visual_signature_fields,
     migrate_metrics_collection_schema,
     migrate_topic_generation_schema,
 )
@@ -773,3 +774,117 @@ def test_init_db_rolls_back_all_schema_changes_when_metrics_migration_fails(
     assert _table_columns(connection, "metrics") == ["content_id", "updated_at"]
     assert not _table_exists(connection, "metrics_history")
     assert not _table_exists(connection, "metrics_collection_runs")
+
+
+def test_migrate_contents_visual_signature_fields_is_idempotent_and_adds_all_columns(tmp_path):
+    db_path = tmp_path / "legacy-signatures.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.commit()
+
+    migrate_contents_visual_signature_fields(connection)
+    migrate_contents_visual_signature_fields(connection)
+
+    columns = set(_table_columns(connection))
+    assert {
+        "narrative_form",
+        "narrative_signature",
+        "template_family",
+        "frame_plan_signature",
+        "density_profile",
+    } <= columns
+
+
+def test_fresh_schema_includes_visual_signature_columns(tmp_path):
+    db_path = tmp_path / "fresh-signatures.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    columns = set(_table_columns(connection))
+    assert {
+        "narrative_form",
+        "narrative_signature",
+        "template_family",
+        "frame_plan_signature",
+        "density_profile",
+    } <= columns
+
+
+def test_init_db_adds_visual_signature_columns_to_legacy_database(tmp_path):
+    db_path = tmp_path / "manager-signatures.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.commit()
+    connection.close()
+
+    manager = XHSMemoryManager(db_path)
+    manager.init_db(SCHEMA_PATH)
+
+    columns = set(_table_columns(manager.connect()))
+    assert {
+        "narrative_form",
+        "narrative_signature",
+        "template_family",
+        "frame_plan_signature",
+        "density_profile",
+    } <= columns
+
+
+def test_migrate_contents_visual_signature_fields_rolls_back_on_failure(tmp_path):
+    db_path = tmp_path / "rollback-signatures.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.commit()
+
+    class FailingConnection:
+        def __init__(self, inner: sqlite3.Connection):
+            self.inner = inner
+            self.alter_calls = 0
+
+        def execute(self, sql, params=()):
+            normalized_sql = " ".join(sql.split()).upper()
+            if normalized_sql.startswith("ALTER TABLE CONTENTS ADD COLUMN NARRATIVE_SIGNATURE"):
+                self.alter_calls += 1
+                if self.alter_calls == 1:
+                    raise RuntimeError("boom")
+            return self.inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        migrate_contents_visual_signature_fields(FailingConnection(connection))
+
+    columns = set(_table_columns(connection))
+    # The first column (narrative_form) is added before the failure on
+    # narrative_signature, so it must have been rolled back to keep the
+    # migration atomic.
+    assert "narrative_form" not in columns
+    assert "narrative_signature" not in columns

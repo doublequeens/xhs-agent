@@ -18,6 +18,14 @@ LEGACY_DOMAIN_DEFAULTS = {
     "risk_level": "low",
 }
 
+VISUAL_SIGNATURE_COLUMNS: dict[str, str] = {
+    "narrative_form": "TEXT",
+    "narrative_signature": "TEXT",
+    "template_family": "TEXT",
+    "frame_plan_signature": "TEXT",
+    "density_profile": "TEXT",
+}
+
 METRICS_COLLECTION_COLUMNS: dict[str, str] = {
     "impressions": "INTEGER",
     "cover_click_rate": "REAL",
@@ -83,6 +91,31 @@ def migrate_contents_domain_fields(connection: sqlite3.Connection) -> None:
         raise
     else:
         connection.execute("RELEASE migrate_contents_domain_fields")
+
+
+def migrate_contents_visual_signature_fields(connection: sqlite3.Connection) -> None:
+    """Add the v2 visual-signature columns to legacy ``contents`` tables.
+
+    Mirrors ``migrate_contents_domain_fields``: idempotent, single SAVEPOINT,
+    no destructive actions. Five columns store the persisted v2 plan identity
+    (``narrative_form``/``template_family``) plus the JSON-encoded signatures
+    (``narrative_signature``/``frame_plan_signature``/``density_profile``).
+    """
+
+    connection.execute("SAVEPOINT migrate_contents_visual_signature_fields")
+    try:
+        existing_columns = _existing_columns(connection)
+        for column_name, column_type in VISUAL_SIGNATURE_COLUMNS.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    f"ALTER TABLE contents ADD COLUMN {column_name} {column_type}"
+                )
+    except Exception:
+        connection.execute("ROLLBACK TO migrate_contents_visual_signature_fields")
+        connection.execute("RELEASE migrate_contents_visual_signature_fields")
+        raise
+    else:
+        connection.execute("RELEASE migrate_contents_visual_signature_fields")
 
 
 def migrate_metrics_collection_schema(connection: sqlite3.Connection) -> None:

@@ -12,6 +12,7 @@ from typing import Any, Iterator, Optional
 from memory.migrations import (
     deduplicate_content_post_ids,
     migrate_contents_domain_fields,
+    migrate_contents_visual_signature_fields,
     migrate_metrics_collection_schema,
     migrate_topic_generation_schema,
 )
@@ -174,6 +175,7 @@ class XHSMemoryManager:
                     if statement.upper().startswith("CREATE TABLE"):
                         conn.execute(statement)
                 migrate_contents_domain_fields(conn)
+                migrate_contents_visual_signature_fields(conn)
                 migrate_metrics_collection_schema(conn)
                 deduplicate_content_post_ids(conn)
                 migrate_topic_generation_schema(conn)
@@ -268,9 +270,14 @@ class XHSMemoryManager:
                     strategy_tags_json,
                     compliance_status,
                     embedding_text,
-                    metadata_json
+                    metadata_json,
+                    narrative_form,
+                    narrative_signature,
+                    template_family,
+                    frame_plan_signature,
+                    density_profile
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(content_id) DO UPDATE SET
                     status = CASE
                         WHEN contents.post_id IS NOT NULL THEN contents.status
@@ -305,7 +312,12 @@ class XHSMemoryManager:
                     strategy_tags_json = excluded.strategy_tags_json,
                     compliance_status = excluded.compliance_status,
                     embedding_text = excluded.embedding_text,
-                    metadata_json = excluded.metadata_json
+                    metadata_json = excluded.metadata_json,
+                    narrative_form = excluded.narrative_form,
+                    narrative_signature = excluded.narrative_signature,
+                    template_family = excluded.template_family,
+                    frame_plan_signature = excluded.frame_plan_signature,
+                    density_profile = excluded.density_profile
                 """,
                 (
                     record.content_id,
@@ -340,6 +352,11 @@ class XHSMemoryManager:
                     record.compliance_status,
                     record.embedding_text,
                     json_dumps(record.metadata),
+                    record.narrative_form,
+                    json_dumps(record.narrative_signature),
+                    record.template_family,
+                    json_dumps(record.frame_plan_signature),
+                    json_dumps(record.density_profile),
                 ),
             )
             _insert_event(
@@ -1205,7 +1222,12 @@ class XHSMemoryManager:
                     strategy_tags_json,
                     content_format,
                     visual_style,
-                    card_count
+                    card_count,
+                    narrative_form,
+                    narrative_signature,
+                    template_family,
+                    frame_plan_signature,
+                    density_profile
                 FROM contents
                 WHERE created_at >= ?
                   AND domain = ?
@@ -1390,6 +1412,10 @@ class XHSMemoryManager:
             recent_hashtags.extend(item.get("hashtags", []))
         recent_hashtags = self._unique_non_empty(recent_hashtags)
 
+        recent_visual_signatures = self._extract_recent_visual_signatures(
+            recent_contents
+        )
+
         return MemoryContext(
             same_subdomain_recent=recent_contents,
             same_domain_patterns=[
@@ -1400,6 +1426,7 @@ class XHSMemoryManager:
             topics_to_avoid=recent_topics,
             angles_to_avoid=recent_angles,
             recent_hashtags=recent_hashtags,
+            recent_visual_signatures=recent_visual_signatures,
         )
 
     def get_content_by_id(self, content_id: str) -> Optional[dict[str, Any]]:
@@ -1422,6 +1449,13 @@ class XHSMemoryManager:
         data["image_paths"] = json_loads(data.pop("image_paths_json", None), [])
         data["strategy_tags"] = json_loads(data.pop("strategy_tags_json", None), [])
         data["metadata"] = json_loads(data.pop("metadata_json", None), {})
+        data["narrative_signature"] = json_loads(
+            data.pop("narrative_signature", None), []
+        )
+        data["frame_plan_signature"] = json_loads(
+            data.pop("frame_plan_signature", None), []
+        )
+        data["density_profile"] = json_loads(data.pop("density_profile", None), [])
         return data
 
     def _calculate_rates(
@@ -1482,6 +1516,13 @@ class XHSMemoryManager:
         data = dict(row)
         data["hashtags"] = json_loads(data.pop("hashtags_json", None), [])
         data["strategy_tags"] = json_loads(data.pop("strategy_tags_json", None), [])
+        data["narrative_signature"] = json_loads(
+            data.pop("narrative_signature", None), []
+        )
+        data["frame_plan_signature"] = json_loads(
+            data.pop("frame_plan_signature", None), []
+        )
+        data["density_profile"] = json_loads(data.pop("density_profile", None), [])
         return data
 
     def _performance_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1524,6 +1565,38 @@ class XHSMemoryManager:
                 }
             )
         return patterns
+
+    def _extract_recent_visual_signatures(
+        self,
+        contents: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Project recent rows into the v2 ``recent_visual_signatures`` shape.
+
+        Rows lacking the persisted v2 identity (``narrative_form`` or
+        ``template_family``) are skipped so legacy entries do not pollute the
+        modern signature channel. ``frame_count`` is derived from the persisted
+        ``frame_plan_signature`` length. The shape matches the task-11 brief
+        exactly: ``narrative_form``, ``template_family``,
+        ``frame_plan_signature``, ``frame_count``, ``density_profile``.
+        """
+
+        signatures: list[dict[str, Any]] = []
+        for item in contents:
+            narrative_form = item.get("narrative_form")
+            template_family = item.get("template_family")
+            if not narrative_form or not template_family:
+                continue
+            frame_plan_signature = list(item.get("frame_plan_signature") or [])
+            signatures.append(
+                {
+                    "narrative_form": narrative_form,
+                    "template_family": template_family,
+                    "frame_plan_signature": frame_plan_signature,
+                    "frame_count": len(frame_plan_signature),
+                    "density_profile": list(item.get("density_profile") or []),
+                }
+            )
+        return signatures
 
     def _extract_global_format_patterns(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         patterns: list[dict[str, Any]] = []

@@ -46,7 +46,13 @@ CREATE TABLE IF NOT EXISTS contents (
 
     embedding_text TEXT,
 
-    metadata_json TEXT
+    metadata_json TEXT,
+
+    narrative_form TEXT,
+    narrative_signature TEXT,
+    template_family TEXT,
+    frame_plan_signature TEXT,
+    density_profile TEXT
 );
 
 CREATE TABLE IF NOT EXISTS metrics (

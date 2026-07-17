@@ -9,6 +9,9 @@ from src.schemas.visual_plan import VisualPlan
 
 def _recent_visual_signatures(state: AgentState) -> list[Any]:
     memory_context = state.get("memory_context") or {}
+    direct = memory_context.get("recent_visual_signatures")
+    if isinstance(direct, list):
+        return list(direct)
     signatures = []
     recent_content = (
         memory_context.get("recent_content")

@@ -4,6 +4,7 @@ from src.domain.topic_metadata import get_topic_metadata
 from memory.memory_manager import XHSMemoryManager, utc_now_iso
 from memory.models import ContentRecord
 from src.schemas.agent_state import AgentState
+from typing import Any, Optional
 
 
 def _get_value(payload, key, default=None):
@@ -52,15 +53,76 @@ def _final_rendered_paths(state: AgentState, publish_package: dict) -> list[str]
         raise ValueError(
             "content_writer_node requires render_manifest before persistence."
         )
-    paths = [
-        _get_value(page, "path")
-        for page in list(_get_value(render_manifest, "pages") or [])
-    ]
+    pages = list(_get_value(render_manifest, "pages") or [])
+    paths = [_get_value(page, "path") for page in pages]
     if not paths or any(not isinstance(path, str) or not path for path in paths):
         raise ValueError(
             "content_writer_node requires complete final rendered image paths."
         )
     return paths
+
+
+def _derive_visual_signatures(
+    state: AgentState, publish_package: dict
+) -> dict[str, Any]:
+    """Derive the five persisted v2 visual signatures from final artifacts.
+
+    Sourcing follows the task-11 brief:
+    - ``narrative_form``/``narrative_signature`` come from
+      ``publish_package['narrative_plan']``.
+    - ``template_family`` is the persisted ``VisualPlan`` identity.
+    - ``frame_plan_signature`` comes from each storyboard ``page_archetype``.
+    - ``density_profile`` comes from ``render_manifest.pages[*].density``.
+
+    Derivation is defensive: missing sources yield empty lists or ``None``
+    so an R2-approved run whose upstream narrative_plan or render_manifest
+    is incomplete still persists.
+    """
+
+    narrative_plan = _get_value(publish_package, "narrative_plan")
+    narrative_form: Optional[str] = None
+    narrative_signature: list[str] = []
+    if isinstance(narrative_plan, dict) and narrative_plan:
+        narrative_form = narrative_plan.get("narrative_form")
+        beats = narrative_plan.get("beats") or []
+        for beat in beats:
+            if not isinstance(beat, dict):
+                continue
+            kind = beat.get("kind")
+            purpose = beat.get("purpose")
+            if not kind or not purpose:
+                continue
+            narrative_signature.append(f"{kind}:{purpose}")
+
+    visual_plan = state.get("visual_plan")
+    template_family = (
+        _get_value(visual_plan, "template_family") if visual_plan else None
+    )
+
+    frame_plan_signature: list[str] = []
+    storyboards = _get_value(publish_package, "storyboards") or []
+    for frame in storyboards:
+        if not isinstance(frame, dict):
+            continue
+        archetype = _get_value(frame, "page_archetype")
+        if archetype:
+            frame_plan_signature.append(archetype)
+
+    render_manifest = state.get("render_manifest")
+    density_profile: list[str] = []
+    if render_manifest:
+        for page in list(_get_value(render_manifest, "pages") or []):
+            density = _get_value(page, "density")
+            if density:
+                density_profile.append(density)
+
+    return {
+        "narrative_form": narrative_form,
+        "narrative_signature": narrative_signature,
+        "template_family": template_family,
+        "frame_plan_signature": frame_plan_signature,
+        "density_profile": density_profile,
+    }
 
 
 def content_writer_node(state: AgentState) -> AgentState:
@@ -88,6 +150,7 @@ def content_writer_node(state: AgentState) -> AgentState:
     content_contract = _require_content_contract(publish_package)
     storyboards = list(_get_value(publish_package, "storyboards") or [])
     rendered_image_paths = _final_rendered_paths(state, publish_package)
+    visual_signatures = _derive_visual_signatures(state, publish_package)
 
     record = ContentRecord(
         content_id=make_content_id(),
@@ -130,6 +193,11 @@ def content_writer_node(state: AgentState) -> AgentState:
             "risk_level": topic_metadata["risk_level"],
             "content_contract": content_contract,
         },
+        narrative_form=visual_signatures["narrative_form"],
+        narrative_signature=visual_signatures["narrative_signature"],
+        template_family=visual_signatures["template_family"],
+        frame_plan_signature=visual_signatures["frame_plan_signature"],
+        density_profile=visual_signatures["density_profile"],
     )
 
     database = XHSMemoryManager("data/xhs_memory.db")

@@ -26,6 +26,7 @@ def memory_context_to_prompt_payload(context: MemoryContext) -> dict[str, Any]:
         "recent_angles_to_avoid": context.angles_to_avoid,
         "high_performing_patterns": high_patterns,
         "low_performing_patterns": low_patterns,
+        "recent_visual_signatures": context.recent_visual_signatures,
         "usage_rules": [
             "不要生成 topics_to_avoid 中高度相似的主题",
             "不要重复 angles_to_avoid 中高度相似的切入角度",

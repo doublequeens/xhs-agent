@@ -63,6 +63,21 @@ def _publish_package(**overrides):
             "proof_mode": "diagram",
             "recommended_frame_count": 6,
         },
+        "narrative_plan": {
+            "narrative_form": "step_tutorial",
+            "beats": [
+                {"beat_id": "b1", "kind": "hook", "purpose": "建立场景"},
+                {"beat_id": "b2", "kind": "steps", "purpose": "拆解步骤"},
+                {"beat_id": "b3", "kind": "diagnostic", "purpose": "判断标准"},
+                {"beat_id": "b4", "kind": "action", "purpose": "促发行动"},
+            ],
+            "saveable_beat": {
+                "beat_id": "b4",
+                "kind": "action",
+                "purpose": "促发行动",
+            },
+            "closing_mode": "action_prompt",
+        },
     }
     package.update(overrides)
     return package
@@ -359,3 +374,139 @@ def test_content_writer_requires_real_r2_compliance_before_manager_creation(monk
 
     with pytest.raises(ValueError, match="r2_output.compliance_audit.compliance_status"):
         module.content_writer_node(state)
+
+
+def _storyboards_with_archetype():
+    return [
+        {"frame_id": "frame-01", "page_archetype": "cover", "role": "cover"},
+        {"frame_id": "frame-02", "page_archetype": "scene", "role": "scene"},
+        {"frame_id": "frame-03", "page_archetype": "steps", "role": "steps"},
+        {"frame_id": "frame-04", "page_archetype": "save", "role": "save"},
+    ]
+
+
+def _render_manifest_with_density():
+    return SimpleNamespace(
+        pages=[
+            SimpleNamespace(path="/tmp/01-cover.png", density="sparse"),
+            SimpleNamespace(path="/tmp/02-scene.png", density="standard"),
+            SimpleNamespace(path="/tmp/03-steps.png", density="standard"),
+            SimpleNamespace(path="/tmp/04-save.png", density="dense"),
+        ]
+    )
+
+
+def _visual_plan_with_family():
+    return SimpleNamespace(template_family="deep_teal")
+
+
+def test_content_writer_derives_visual_signatures_from_publish_package_and_manifest(
+    monkeypatch,
+):
+    fake_manager = _FakeManager()
+    captured = {}
+    topic = _topic()
+    trends = [topic]
+
+    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
+    monkeypatch.setattr(
+        module,
+        "get_topic_metadata",
+        lambda _trends, _topic_id: {
+            "domain": topic.domain,
+            "subdomain": topic.subdomain,
+            "content_intent": topic.content_intent,
+            "risk_level": topic.risk_level,
+            "risk_flags": list(topic.risk_flags),
+        },
+    )
+    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
+    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
+
+    def capture_save(record):
+        captured["record"] = record
+        fake_manager.saved_records.append(record)
+
+    fake_manager.save_generated_content = capture_save
+
+    module.content_writer_node(
+        {
+            "review_status": "approved",
+            "trends": trends,
+            "publish_package": _publish_package(
+                storyboards=_storyboards_with_archetype(),
+            ),
+            "domain_context": {"profile_version": "wellness-v1"},
+            "r2_output": SimpleNamespace(
+                compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
+            ),
+            "render_manifest": _render_manifest_with_density(),
+            "visual_plan": _visual_plan_with_family(),
+        }
+    )
+
+    record = captured["record"]
+    assert record.narrative_form == "step_tutorial"
+    assert record.narrative_signature == [
+        "hook:建立场景",
+        "steps:拆解步骤",
+        "diagnostic:判断标准",
+        "action:促发行动",
+    ]
+    assert record.template_family == "deep_teal"
+    assert record.frame_plan_signature == ["cover", "scene", "steps", "save"]
+    assert record.density_profile == ["sparse", "standard", "standard", "dense"]
+
+
+def test_content_writer_leaves_visual_signatures_empty_when_sources_missing(monkeypatch):
+    fake_manager = _FakeManager()
+    captured = {}
+    topic = _topic()
+    trends = [topic]
+
+    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
+    monkeypatch.setattr(
+        module,
+        "get_topic_metadata",
+        lambda _trends, _topic_id: {
+            "domain": topic.domain,
+            "subdomain": topic.subdomain,
+            "content_intent": topic.content_intent,
+            "risk_level": topic.risk_level,
+            "risk_flags": list(topic.risk_flags),
+        },
+    )
+    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
+    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
+
+    def capture_save(record):
+        captured["record"] = record
+        fake_manager.saved_records.append(record)
+
+    fake_manager.save_generated_content = capture_save
+
+    package = _publish_package()
+    package.pop("narrative_plan")
+    package["storyboards"] = [{"frame_id": "frame-01"}]
+
+    module.content_writer_node(
+        {
+            "review_status": "approved",
+            "trends": trends,
+            "publish_package": package,
+            "domain_context": {"profile_version": "wellness-v1"},
+            "r2_output": SimpleNamespace(
+                compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
+            ),
+            "render_manifest": SimpleNamespace(
+                pages=[SimpleNamespace(path="/tmp/01-cover.png")]
+            ),
+        }
+    )
+
+    record = captured["record"]
+    assert record.narrative_form is None
+    assert record.narrative_signature == []
+    assert record.template_family is None
+    assert record.frame_plan_signature == []
+    assert record.density_profile == []
