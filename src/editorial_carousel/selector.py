@@ -83,7 +83,7 @@ def canonical_recent_signature(
 ) -> RecentVisualSignature | None:
     if not isinstance(signature, Mapping):
         return None
-    if set(signature) != _SIGNATURE_FIELDS:
+    if not _SIGNATURE_FIELDS <= set(signature):
         return None
     narrative_form = signature.get("narrative_form")
     template_family = signature.get("template_family")

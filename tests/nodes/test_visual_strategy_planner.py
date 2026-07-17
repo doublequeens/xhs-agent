@@ -138,7 +138,8 @@ def test_visual_strategy_planner_honors_canonical_recent_visual_signatures():
         narrative_plan_for("cognitive_correction"),
     )
     first = visual_strategy_planner_node(state)["visual_plan"]
-    # The canonical v2 key is honored directly (no visual_plan fallback needed).
+    # The canonical v2 key is honored directly (no visual_plan fallback needed),
+    # including the full persisted 5-key shape (with density_profile).
     state["memory_context"]["recent_visual_signatures"] = [
         {
             "narrative_form": first.narrative_form,
@@ -147,6 +148,7 @@ def test_visual_strategy_planner_honors_canonical_recent_visual_signatures():
                 frame.page_archetype for frame in first.frame_plan
             ],
             "frame_count": len(first.frame_plan),
+            "density_profile": ["standard"] * len(first.frame_plan),
         }
     ]
 
