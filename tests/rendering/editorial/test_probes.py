@@ -280,6 +280,6 @@ def test_probe_rejects_a_headline_that_wraps_to_more_than_two_lines(tmp_path):
             browser.close()
 
     assert any(
-        issue["kind"] == "headline_lines" and issue["lines"] > 2
+        issue["kind"] == "headline_lines" and issue["lines"] > issue["maximum"]
         for issue in report["issues"]
     )

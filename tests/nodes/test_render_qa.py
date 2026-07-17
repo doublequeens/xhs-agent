@@ -1605,7 +1605,7 @@ def test_render_qa_rechecks_canvas_safe_margin_fonts_and_text_tokens(tmp_path):
         item for item in probe["text_results"] if item["role"] == "headline"
     )
     headline["font_family"] = "Arial"
-    headline["line_count"] = 3
+    headline["line_count"] = 4
     body = next(
         item for item in probe["text_results"] if item["role"].endswith(".body")
     )

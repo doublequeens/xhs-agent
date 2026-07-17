@@ -293,17 +293,17 @@ def _probe_attestation_issues(
             )
         if (role.endswith(".body") or ".items[" in role) and font_size:
             ratio = float(_get_value(text, "line_height") or 0) / font_size
-            if not 1.35 <= ratio <= 1.8:
+            if not 1.35 <= ratio <= 1.55:
                 issues.append(
                     _issue(
                         "body_line_height_invalid",
-                        "Body copy line height must remain between 1.4 and 1.5.",
+                        "Body copy line height must remain within the editorial hard range (1.35–1.55).",
                         f"{text_location}.line_height",
                         frame_id=frame_id,
                     )
                 )
         maximum_lines = (
-            2 if density == "sparse" else 4 if density == "dense" else 2
+            2 if density == "sparse" else 4 if density == "dense" else 3
         )
         if (
             role == "headline"
@@ -312,7 +312,7 @@ def _probe_attestation_issues(
             issues.append(
                 _issue(
                     "headline_line_count_invalid",
-                    "Headline must render in at most two lines.",
+                    "Headline must render within the density line budget (sparse ≤2, standard ≤3, dense ≤4).",
                     f"{text_location}.line_count",
                     frame_id=frame_id,
                 )

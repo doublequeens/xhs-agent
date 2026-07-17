@@ -234,3 +234,101 @@ these were already modified at task start and are part of Task 10's scope.
 ## 8. Commit
 
 Subject: `feat: render adaptive templates with emoji QA`
+
+---
+
+## Review fix
+
+Surgical fixes on top of `8f4dfb1`, addressing review findings. All five
+existing-Task-10 files preserved; targeted edits only.
+
+### Fix 1 — node-side body line-height range aligned to probe
+`src/nodes/node_p_render_qa.py:296` — changed the persisted-data recheck
+from `if not 1.35 <= ratio <= 1.8:` to `if not 1.35 <= ratio <= 1.55:`,
+exactly matching `LAYOUT_PROBE_SCRIPT`'s hard range
+(`1.35 - 0.005` … `1.55 + 0.005`). Message at :300 updated to
+`"Body copy line height must remain within the editorial hard range (1.35–1.55)."`.
+Verified: `test_render_qa_rechecks_canvas_safe_margin_fonts_and_text_tokens`
+still emits `body_line_height_invalid` (its injected `line_height =
+font_size * 1.2` → ratio 1.2, outside `[1.35, 1.55]`).
+
+### Fix 2 — headline line-count gate aligned to density-aware probe maxima
+`src/nodes/node_p_render_qa.py:305-307` — standard-density `maximum_lines`
+raised from `2` to `3`, now `2 if density == "sparse" else 4 if density ==
+"dense" else 3`, exactly matching `LAYOUT_PROBE_SCRIPT`'s
+`.template-headline` block. A 3-line standard headline no longer bounces
+after a real-Chromium render. Message at :315 updated to
+`"Headline must render within the density line budget (sparse ≤2, standard
+≤3, dense ≤4)."`.
+`tests/nodes/test_render_qa.py:1608` — the recheck test injects
+`headline["line_count"] = 3` on a standard-density page (`density="standard"`
+in `_fixtures`); under the aligned max of 3, `3 > 3` is false, so the
+injected defect was bumped to `line_count = 4` (a legitimate over-budget
+rejection). `headline_line_count_invalid` still fires. Grep of
+`tests/nodes/test_render_qa.py` confirmed the only `line_count` override is
+this one site; every other probe sets the default `1`, which is in range for
+all densities.
+
+### Fix 3 — added the missing brief Step 1 matrix test
+`tests/rendering/editorial/test_chromium_smoke.py` — added
+`test_chromium_renders_each_family_at_each_page_count`, parametrized over
+`family × frame_count ∈ {5, 6, 7}` (6 × 3 = 18 real-Chromium carousel
+renders), behind the file's existing `_local_chromium_available` skip guard.
+Each case builds a VALID v2 `VisualPlan` + `CarouselPayload` +
+`AssetManifest` with exactly `frame_count` text-only frames (empty
+`required_assets`, empty per-frame `visual_slots`), first frame
+`page_archetype="cover"`, and the `save` archetype at position 4 (satisfies
+the saveable-archetype validator). Asserts `len(manifest.pages) ==
+frame_count`, `{p.template_family} == {family}`, all `(1080, 1440)`.
+
+Fixture note / concern: the standard `make_frame` content blocks include
+`heading`s, but `templates/white_quote.py:19` forces `.block-heading` onto
+the display face (`font-family:var(--template-display)`), which the
+renderer's non-headline font check (`renderer.py:459`,
+`expected_family = body_family`) rejects — so a full `render_carousel` of
+white_quote with headings hard-fails. That template/renderer mismatch is
+pre-existing (Task 9 CSS vs. the renderer font check) and is OUT OF SCOPE
+for this fix (no templates / no renderer edits). To deliver the full 6×3
+matrix without touching templates, the fixture uniformly strips `heading`
+from content blocks (bodies + items still probe body-copy rendering for
+every family). The white_quote `.block-heading` incompatibility is tracked
+as a concern below.
+
+### Fix 4 — primitives reuses probes emoji/grapheme helpers (no regex dup)
+`src/rendering/editorial/primitives.py` — removed the private
+`_GRAPHEME_RE`/`_EMOJI_RE` and the now-unused `import regex`; `_render_copy_value`
+now imports and uses `GRAPHEME_RE` and `extract_emoji_graphemes` from
+`.probes`. Behavior is byte-identical: `extract_emoji_graphemes(grapheme)` is
+truthy iff the grapheme contains an Extended_Pictographic char, exactly
+matching the old `_EMOJI_RE.search(grapheme)`. No import cycle: `probes.py`
+imports only `src.schemas.editorial_templates` and does not reference
+`primitives`.
+
+### Fix 5 — stale headline-line assertion made density-budget-relative
+`tests/rendering/editorial/test_probes.py` —
+`test_probe_rejects_a_headline_that_wraps_to_more_than_two_lines` assertion
+changed from `issue["lines"] > 2` to `issue["lines"] > issue["maximum"]`,
+so it asserts "exceeds the density budget" regardless of the per-density
+max and is not misleading under the v2 dense max of 4.
+
+### Verification
+```
+pytest -q tests/rendering/editorial/test_renderer.py \
+          tests/rendering/editorial/test_probes.py \
+          tests/rendering/editorial/test_chromium_smoke.py \
+          tests/nodes/test_render_qa.py
+→ 119 passed (was 101; +18 from the new matrix), only the pre-existing
+  _pytest/pathlib.py tmp-dir rm_rf environmental warnings.
+python -m compileall -q src main.py → exit 0
+git diff --check → clean
+```
+
+### Concern carried forward
+`templates/white_quote.py:19` sets `.block-heading` to the display face,
+which `renderer.py:_validate_layout_report` rejects for non-headline copy.
+This makes any white_quote carousel containing block headings fail the
+real-Chromium render. It predates this fix and is out of scope here (would
+require editing a template or the renderer's font check). The new matrix
+fixture sidesteps it by omitting headings; a follow-up should either drop
+the `.block-heading` display-font override in white_quote or teach the
+renderer/probe to permit the display face on subheadings.

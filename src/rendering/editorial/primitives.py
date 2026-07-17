@@ -5,8 +5,6 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, get_args
 
-import regex
-
 from src.schemas.assets import AssetManifestItem
 from src.schemas.editorial_templates import (
     PageArchetype,
@@ -15,6 +13,7 @@ from src.schemas.editorial_templates import (
 )
 from src.schemas.storyboard import CarouselFrame, ContentBlock
 
+from .probes import GRAPHEME_RE, extract_emoji_graphemes
 from .template_registry import TEMPLATE_REGISTRY
 
 
@@ -68,20 +67,16 @@ _BASE_TEMPLATE_CSS = """
 """
 
 
-_GRAPHEME_RE = regex.compile(r"\X")
-_EMOJI_RE = regex.compile(r"\p{Extended_Pictographic}")
-
-
 def _render_copy_value(value: str) -> str:
     return "".join(
         (
             '<span class="emoji-grapheme" '
             f'data-emoji-grapheme="{escape(grapheme, quote=True)}">'
             f"{escape(grapheme, quote=True)}</span>"
-            if _EMOJI_RE.search(grapheme)
+            if extract_emoji_graphemes(grapheme)
             else escape(grapheme, quote=True)
         )
-        for grapheme in _GRAPHEME_RE.findall(value)
+        for grapheme in GRAPHEME_RE.findall(value)
     )
 
 

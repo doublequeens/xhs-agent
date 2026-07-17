@@ -11,6 +11,85 @@ from src.schemas.editorial_templates import TemplateFamily
 
 ALL_TEMPLATE_FAMILIES = get_args(TemplateFamily)
 
+_MATRIX_FRAME_SPECS = (
+    ("cover", "cover", "cover"),
+    ("baseline", "texture baseline", "explanation"),
+    ("zone", "front face zone", "diagnostic"),
+    ("choice", "decision tree", "qa"),
+    ("save", "saveable reference", "save"),
+    ("extra-baseline", "extra baseline", "explanation"),
+    ("extra-zone", "extra zone", "diagnostic"),
+)
+
+
+def _text_only_carousel(family: str, frame_count: int):
+    from conftest import make_frame
+    from src.schemas.assets import AssetManifest, AssetSearchReport
+    from src.schemas.storyboard import CarouselPayload
+    from src.schemas.visual_plan import VisualPlan
+
+    specs = _MATRIX_FRAME_SPECS[:frame_count]
+    frames = [
+        make_frame(page_archetype, frame_id=frame_id, role=role).model_copy(
+            update={
+                "visual_slots": [],
+                # Headings are stripped so the fixture renders uniformly across
+                # all six families: white_quote forces .block-heading onto the
+                # display face (templates/white_quote.py), which the renderer's
+                # non-headline font check rejects. That template/renderer
+                # mismatch is out of scope for this fix and is tracked as a
+                # concern in the task-10 report. Bodies and items still probe
+                # body-copy rendering for every family.
+                "content_blocks": [
+                    block.model_copy(update={"heading": None})
+                    for block in make_frame(page_archetype).content_blocks
+                ],
+            }
+        )
+        for frame_id, role, page_archetype in specs
+    ]
+    plan = VisualPlan.model_validate(
+        {
+            "design_system": "beauty_editorial_v2",
+            "template_family": family,
+            "template_selection": {
+                "template_family": family,
+                "score": 100,
+                "reasons": ["chromium matrix fixture"],
+                "rejected_families": {
+                    other: ["chromium matrix fixture"]
+                    for other in ALL_TEMPLATE_FAMILIES
+                    if other != family
+                },
+            },
+            "narrative_form": "scenario_story",
+            "content_job": "diagnose_and_adjust",
+            "frame_plan": [
+                {
+                    "frame_id": frame_id,
+                    "role": role,
+                    "page_archetype": page_archetype,
+                    "purpose": f"matrix {role}",
+                    "allowed_density": ["sparse", "standard", "dense"],
+                    "asset_roles": [],
+                }
+                for frame_id, role, page_archetype in specs
+            ],
+            "required_assets": [],
+        }
+    )
+    storyboard = CarouselPayload(storyboards=frames)
+    assets = AssetManifest(
+        items=[],
+        search_report=AssetSearchReport(
+            search_triggered=False,
+            queries=[],
+            provider_reports=[],
+            selection_reasons={},
+        ),
+    )
+    return plan, storyboard, assets
+
 
 def _local_chromium_available() -> bool:
     try:
@@ -175,4 +254,25 @@ def test_real_chromium_renders_emoji_without_tofu_or_text_drift(
     assert not any(
         "missing_glyph" in issue or "missing-glyph" in issue
         for issue in probe.issues
+    )
+
+
+@pytest.mark.skipif(
+    not _local_chromium_available(),
+    reason="local Playwright Chromium is unavailable",
+)
+@pytest.mark.parametrize("frame_count", [5, 6, 7])
+@pytest.mark.parametrize("family", ALL_TEMPLATE_FAMILIES)
+def test_chromium_renders_each_family_at_each_page_count(
+    family, frame_count, tmp_path
+):
+    from src.rendering.editorial.renderer import render_carousel
+
+    plan, storyboard, assets = _text_only_carousel(family, frame_count)
+    manifest = render_carousel(plan, storyboard, assets, tmp_path)
+
+    assert len(manifest.pages) == frame_count
+    assert {page.template_family for page in manifest.pages} == {family}
+    assert all(
+        (page.width, page.height) == (1080, 1440) for page in manifest.pages
     )
