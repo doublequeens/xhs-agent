@@ -28,7 +28,10 @@ class RenderQAResult(BaseModel):
         default=None,
         ge=0,
         le=100,
-        description="Higher means more measured layout reuse across the carousel.",
+        description=(
+            "Higher means more repeated archetype-density-composition signatures "
+            "or reuse of the exact recent visual combination."
+        ),
     )
 
     @model_validator(mode="after")

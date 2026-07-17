@@ -12,6 +12,7 @@ class StrictModel(BaseModel):
 class TextProbeResult(StrictModel):
     role: str = Field(min_length=1)
     text: str
+    emoji_graphemes: list[str] = Field(default_factory=list)
     visible: bool
     overflow: bool
     ink_clipped: bool

@@ -15,9 +15,14 @@ from src.schemas.narrative import NarrativePlan
 from src.schemas.render_manifest import FontLoadReport, RenderManifest, RenderedPage
 from src.schemas.render_qa import RenderQAIssue
 from src.schemas.visual_plan import VisualPlan
+from src.rendering.editorial.probes import (
+    extract_emoji_graphemes,
+    template_font_families,
+)
 
 
-EXPECTED_FONTS = ["Source Han Serif SC", "Source Han Sans SC", "Bodoni Moda"]
+DISPLAY_FONT, BODY_FONT, EMOJI_FONT = template_font_families("soft_pink")
+EXPECTED_FONTS = [DISPLAY_FONT, BODY_FONT, EMOJI_FONT]
 
 
 def _narrative_plan() -> dict:
@@ -1048,12 +1053,13 @@ def _probe_for_frame(
                 {
                     "role": role,
                     "text": text,
+                    "emoji_graphemes": extract_emoji_graphemes(text),
                     "visible": True,
                     "overflow": False,
                     "ink_clipped": False,
                     "layout_clipped": False,
                     "font_family": (
-                        "Source Han Serif SC" if role == "headline" else "Source Han Sans SC"
+                        DISPLAY_FONT if role == "headline" else BODY_FONT
                     ),
                     "font_size": headline_size if role == "headline" else 25.0,
                     "line_height": (headline_size * 1.17 if role == "headline" else 32.5),
@@ -1072,11 +1078,12 @@ def _probe_for_frame(
                     {
                         "role": f"content_blocks[{block_index}].{field}",
                         "text": text,
+                        "emoji_graphemes": extract_emoji_graphemes(text),
                         "visible": True,
                         "overflow": False,
                         "ink_clipped": False,
                         "layout_clipped": False,
-                        "font_family": "Source Han Sans SC",
+                        "font_family": BODY_FONT,
                         "font_size": body_size,
                         "line_height": body_size * 1.45,
                         "line_count": 1,
@@ -1091,11 +1098,12 @@ def _probe_for_frame(
                 {
                     "role": f"content_blocks[{block_index}].items[{item_index}]",
                     "text": text,
+                    "emoji_graphemes": extract_emoji_graphemes(text),
                     "visible": True,
                     "overflow": False,
                     "ink_clipped": False,
                     "layout_clipped": False,
-                    "font_family": "Source Han Sans SC",
+                    "font_family": BODY_FONT,
                     "font_size": body_size,
                     "line_height": body_size * 1.45,
                     "line_count": 1,
@@ -1105,16 +1113,37 @@ def _probe_for_frame(
                     "height": 50.0,
                 }
             )
+    for emphasis_index, text in enumerate(frame.get("emphasis") or []):
+        texts.append(
+            {
+                "role": f"emphasis[{emphasis_index}]",
+                "text": text,
+                "emoji_graphemes": extract_emoji_graphemes(text),
+                "visible": True,
+                "overflow": False,
+                "ink_clipped": False,
+                "layout_clipped": False,
+                "font_family": BODY_FONT,
+                "font_size": 22.0,
+                "line_height": 29.7,
+                "line_count": 1,
+                "x": 84.0,
+                "y": 1100.0,
+                "width": 180.0,
+                "height": 40.0,
+            }
+        )
     if frame.get("footer"):
         texts.append(
             {
                 "role": "footer",
                 "text": frame["footer"],
+                "emoji_graphemes": extract_emoji_graphemes(frame["footer"]),
                 "visible": True,
                 "overflow": False,
                 "ink_clipped": False,
                 "layout_clipped": False,
-                "font_family": "Source Han Sans SC",
+                "font_family": BODY_FONT,
                 "font_size": 22.0,
                 "line_height": 29.7,
                 "line_count": 1,
@@ -1348,6 +1377,79 @@ def test_proxy_template_stiffness_penalizes_nonadjacent_archetype_reuse(tmp_path
 
     _assert_proxy_available(diverse, repeated)
     assert repeated.template_stiffness > diverse.template_stiffness
+
+
+def test_proxy_template_stiffness_uses_full_render_signature(tmp_path):
+    package, assets, manifest = _fixtures(tmp_path)
+    pages = list(manifest.pages)
+    pages[3] = pages[3].model_copy(
+        update={
+            "page_archetype": pages[2].page_archetype,
+            "density": pages[2].density,
+            "composition_variant": "different-composition",
+        }
+    )
+    package = deepcopy(package)
+    package["storyboards"][3]["page_archetype"] = pages[2].page_archetype
+    plan = _plan().model_copy(deep=True)
+    plan.frame_plan[3].page_archetype = pages[2].page_archetype
+    slot_id = package["storyboards"][3]["visual_slots"][0]["slot_id"]
+    requirement = next(
+        item for item in plan.required_assets if item.slot_id == slot_id
+    )
+    requirement.page_archetype = pages[2].page_archetype
+    items = list(assets.items)
+    item_index = next(
+        index for index, item in enumerate(items) if item.slot_id == slot_id
+    )
+    items[item_index] = items[item_index].model_copy(
+        update={"page_archetype": pages[2].page_archetype}
+    )
+    assets = assets.model_copy(update={"items": items})
+    manifest = manifest.model_copy(update={"pages": pages})
+
+    result = _metric_result(
+        package,
+        assets,
+        _manifest_with_probes(manifest, package),
+        plan,
+    )
+
+    assert result.template_stiffness == 0
+
+
+def test_proxy_template_stiffness_adds_recent_combination_penalty(tmp_path):
+    from src.nodes.node_p_render_qa import render_qa_node
+
+    package, assets, manifest = _fixtures(tmp_path)
+    plan = _plan()
+    baseline = render_qa_node(
+        {
+            "publish_package": package,
+            "visual_plan": plan,
+            "asset_manifest": assets,
+            "render_manifest": manifest,
+            "memory_context": {"recent_content": []},
+        }
+    )["render_qa_result"]
+    repeated = render_qa_node(
+        {
+            "publish_package": package,
+            "visual_plan": plan,
+            "asset_manifest": assets,
+            "render_manifest": manifest,
+            "memory_context": {
+                "recent_content": [
+                    {"visual_plan": plan.model_dump(mode="python")}
+                ]
+            },
+        }
+    )["render_qa_result"]
+
+    assert repeated.template_stiffness == min(
+        100,
+        baseline.template_stiffness + 30,
+    )
 
 
 def test_render_qa_checks_source_snapshot_against_requirement_minimums(tmp_path):

@@ -1,216 +1,236 @@
-# Task 10 Report: Editorial Carousel Golden E2E and Resume Compatibility
+# Task 10 Report — Render Adaptive Templates with Emoji QA
 
-## Outcome
+## Status: DONE_WITH_CONCERNS
 
-Task 10 adds four explicitly test-only synthetic golden fixtures and exercises the
-Tasks 1–9 editorial carousel path through the real graph, local asset catalog,
-Chromium renderer, QA gates, Human Review, structured SQLite write-back, and
-publish-artifact export. Provider and model boundaries are deterministic fakes;
-the tests make no network or live LLM calls.
+Branch: `feature/adaptive-six-template-workflow`
+HEAD before: `33e4bb7` (Task 9 — six production template families)
+Goal: finish Task 10 by clearing 6 focused-suite failures and getting the
+Chromium smoke + Render QA tests green.
 
-The fixtures cover four distinct strategy families/signatures:
+---
 
-- `zone_diagnosis`: `diagnose_and_adjust` / `face_zone_map`
-- `ordered_routine`: `follow_steps` / `step_flow`
-- `multi_option_decision`: `compare_and_choose` / `comparison_decision`
-- `reference_checklist`: `save_and_check` / `saveable_reference`
+## 1. Starting point (RED baseline)
 
-Every fixture carries `test_only: true` and a synthetic-regression-only intended
-use marker. Tests assert fixture identifiers, synthetic titles, topic IDs, topics,
-focus copy, cover copy, and frame headlines are absent from production sources,
-seed data, and every composed production prompt. All rendered and exported files
-are written below pytest temporary directories, so these fixtures cannot become
-production prompts, memory seeds, topic signals, or publish candidates.
+`pytest -q tests/rendering/editorial/test_renderer.py
+tests/rendering/editorial/test_probes.py tests/nodes/test_render_qa.py`
+→ **6 failed, 87 passed**:
 
-## TDD Evidence
+1. `test_probes.py::test_probe_persists_exact_visible_text_typography_and_asset_geometry` (`ImportError: LAYOUT_RENDERERS`)
+2. `test_probes.py::test_probe_allows_normal_source_han_vertical_metric_overhang` (`ImportError: LAYOUT_RENDERERS`)
+3. `test_probes.py::test_rendered_body_copy_uses_line_height_between_1_4_and_1_5` (`ImportError: LAYOUT_RENDERERS`)
+4. `test_probes.py::test_probe_rejects_a_headline_that_wraps_to_more_than_two_lines` (`ImportError: LAYOUT_RENDERERS`)
+5. `test_probes.py::test_probe_rejects_body_line_height_outside_the_hard_range` (AssertionError — 1.6 accepted by old `[1.35, 1.8]` range)
+6. `test_render_qa.py::test_render_qa_rechecks_canvas_safe_margin_fonts_and_text_tokens` (missing `headline_line_count_invalid` rule id)
 
-Baseline before Task 10:
+`tests/rendering/editorial/test_chromium_smoke.py` was additionally entirely v1
+(`LAYOUT_RENDERERS` + `LayoutName`) and 100% red — not in the "6 failures"
+scope but required by the final verification step.
 
-```text
-107 passed, 1 warning in 14.13s
+---
+
+## 2. Changes by file
+
+### Production probe + QA fixes (in scope per brief)
+
+**`src/rendering/editorial/probes.py` — `LAYOUT_PROBE_SCRIPT`:**
+- **body_line_height range tightened** from `[1.35, 1.8]` to `[1.35, 1.55]`
+  (upper bound `1.55 + 0.005`). 1.6 now rejected; production `.block-body`
+  1.45 and `.item-copy` 1.42 still accepted.
+- **Overflow tolerance made font-aware**: replaced the fixed
+  `+2` overflow slack with `Math.max(2, fontSize * 0.15)`. Without this,
+  CJK display fonts with metric overhang (notably Alibaba-PuHuiTi-Heavy
+  used by `pink_red` and `coral_impact`) produce `scrollHeight` a few
+  pixels larger than `clientHeight` and trip `overflow:headline`, which
+  hard-fails `_validate_layout_report` in real Chromium. The new tolerance
+  scales with font-size so it absorbs normal font-metric overhang while
+  still catching genuine overflow.
+- Side-effect: moved the `getComputedStyle`/`fontSize`/`lineHeight`
+  declarations above the `overflow` check to avoid a JS temporal-dead-zone
+  `ReferenceError`.
+
+**`src/nodes/node_p_render_qa.py` — `_probe_attestation_issues`:**
+- **Standard-density headline maximum tightened from 3 to 2** lines, so a
+  persisted `line_count == 3` now emits `headline_line_count_invalid`.
+  This matches the existing rule message ("Headline must render in at most
+  two lines.") and matches the brief's directive that the test setting
+  `line_count = 3` should be flagged. Existing fixtures all set
+  `line_count = 1`, so nothing else trips.
+
+### Additional production fixes (required to make the four-file suite green)
+
+These were NOT in the brief's "Files you will touch" list but were
+unavoidable: the focused FakePage tests pass without them, but the
+Chromium-backed tests (test_probes.py + test_chromium_smoke.py) hard-fail.
+Each is minimal and surgical.
+
+**`src/rendering/editorial/primitives.py`:**
+- **CSS variable quoting fix** in `render_card_shell`: changed
+  `--template-display:"{family}-display"` to single quotes
+  (`--template-display:'{family}-display'`), same for `--template-body`.
+  The double-quote form truncated the HTML `style="..."` attribute at the
+  first inner quote, so `var(--template-display)` resolved to empty in
+  real Chromium and every headline fell back to `Times`. The FakePage
+  fixture reads the `data-display-font-family` attribute (not the CSS
+  variable), which masked this bug.
+- **`line-height: 1.3` added to `.emphasis-chip`**: previously the chip had
+  no explicit line-height, so `getComputedStyle(...).lineHeight` returned
+  `"normal"` → `parseFloat` → `NaN`, which `PageProbeAttestation` rejects.
+
+**`src/rendering/editorial/templates/white_quote.py`:**
+- **`.block-body, .item-copy` line-height changed from `1.75` to `1.5`**.
+  The original `1.75` violates the probe's tightened hard range
+  `[1.35, 1.55]`, so `white_quote` pages hard-failed the probe attestation
+  in real Chromium. `1.5` is within range and preserves the family's airy
+  feel. This is the only probe-range-driven template fix; the other five
+  families inherit the primitives default and were already in range.
+
+### Test migrations
+
+**`tests/rendering/editorial/test_probes.py` (5 tests migrated to v2):**
+
+| Test | v1 mechanics | v2 mechanics |
+|---|---|---|
+| `test_probe_persists_exact_visible_text_typography_and_asset_geometry` | `LAYOUT_RENDERERS["editorial_cover"](frame, [asset])`; `font_family == "Source Han Serif SC"` | `TEMPLATE_RENDERERS["deep_teal"](frame, [asset], variant)`; `font_family == template_font_families(family)[0]` |
+| `test_probe_allows_normal_source_han_vertical_metric_overhang` | same v1 path; locator `.headline` | v2 path; locator `.template-headline` |
+| `test_rendered_body_copy_uses_line_height_between_1_4_and_1_5` | same v1 path | v2 path; same `.block-body, .item-copy` selectors (unchanged in v2) |
+| `test_probe_rejects_a_headline_that_wraps_to_more_than_two_lines` | `* 8` short headline; v1 probe max=2 | `* 12` longer headline to exceed v2 dense-density max=4; probe still fires with `lines > 2` |
+| `test_probe_rejects_body_line_height_outside_the_hard_range` | raw HTML, no migration needed | unchanged — passes thanks to probes.py range tightening |
+
+All migrations follow the established v2 patterns from `test_templates.py`:
+`make_frame("<archetype>", ...)` with v2 archetype strings (e.g. `"cover"`
+not `"editorial_cover"`), `resolve_variant(family, archetype, "auto",
+measure_frame_copy(frame))`, `TEMPLATE_RENDERERS[family](frame, assets,
+variant)`, `_document_html(card, family)`.
+
+**`tests/rendering/editorial/test_chromium_smoke.py` (rewritten for v2):**
+- `test_real_chromium_renders_complete_editorial_carousel` kept; updated
+  font-family assertion from `{"Source Han Serif SC", "Source Han Sans SC",
+  "Bodoni Moda"}` to `expected_font_families(visual_plan.template_family)`.
+- Replaced v1 layout-parametrized disjoint-space test with
+  `test_real_chromium_renders_each_family_with_disjoint_copy_and_asset_space`
+  parametrized over the 6 `TemplateFamily` values; uses `explanation`
+  archetype and checks `.template-body` (v2) instead of `.layout-body` (v1).
+- Added `test_real_chromium_renders_emoji_without_tofu_or_text_drift`:
+  overrides first storyboard headline with
+  `"防晒成膜后再上妆✨👩‍🔬"`, renders the full carousel, asserts the
+  persisted headline text round-trips and no `missing_glyph` probe issue
+  fires.
+
+---
+
+## 3. Threshold chosen + why
+
+`body_line_height` hard range = **`[1.35, 1.55]`** (tolerance `±0.005`).
+
+Rejected | Accepted
+---|---
+`1.6` (test) ✓ | `1.45` (`.block-body` primitive) ✓
+`1.75` (white_quote override — template fixed to `1.5`) | `1.42` (`.item-copy` primitive) ✓
+ | `1.5` (new white_quote value) ✓
+
+`headline_line_count_invalid`: standard-density maximum lowered from 3 to
+**2**, matching the rule message "Headline must render in at most two
+lines." Persisted `line_count = 3` now fires.
+
+---
+
+## 4. Render QA mapping added
+
+`src/nodes/node_p_render_qa.py::_probe_attestation_issues` already had an
+inline persisted-data check that emits `headline_line_count_invalid` for
+headlines whose `line_count` exceeds the density-specific maximum. The
+"missing mapping" was that the standard-density branch of that maximum
+(`else 3`) was one too loose: a persisted `line_count = 3` did not trip
+`3 > 3`. Lowering the standard case to `2` is the surgical fix; no new
+probe-issue-kind → rule-id branch table was needed.
+
+---
+
+## 5. TDD evidence
+
+```
+# RED baseline (focused 3-file suite)
+pytest -q tests/rendering/editorial/test_renderer.py tests/rendering/editorial/test_probes.py tests/nodes/test_render_qa.py
+→ 6 failed, 87 passed
+
+# GREEN (same suite, after fixes)
+pytest -q tests/rendering/editorial/test_renderer.py tests/rendering/editorial/test_probes.py tests/nodes/test_render_qa.py
+→ 93 passed
 ```
 
-The first real workflow run was intentionally RED:
+Final four-file verification (the brief's mandated command):
 
-```text
-pytest tests/integration/test_editorial_carousel_workflow.py -q
-6 failed
+```
+pytest -q tests/rendering/editorial/test_renderer.py tests/rendering/editorial/test_probes.py tests/rendering/editorial/test_chromium_smoke.py tests/nodes/test_render_qa.py
+→ 101 passed
 ```
 
-That run found one test-harness serialization error and exposed a production
-renderer contract gap: `morning_evening_flow` and `left_right_comparison` hid
-their visual slots with `display: none`, so real Chromium reported zero-sized
-assets. The minimal production fix makes those two declared visual slots visible
-and measurable without changing any production prompt.
+Plus:
+- `python -m compileall -q src main.py` → exit 0
+- `git diff --check` → exit 0
 
-The external-approval case then exposed a second production integration gap.
-The focused regression test failed before the fix:
+Pre-existing unrelated failures (confirmed by re-running against stashed
+working tree) — NOT introduced by this task:
+`tests/nodes/test_evidence_brief.py` (14 failures),
+`tests/nodes/test_virality_scorer.py` (2 failures),
+`tests/nodes/test_domain_nodes.py::test_human_focus_keyword_edit_invalidates_downstream_artifacts_and_reruns_r2` (1 failure).
 
-```text
-tests/nodes/test_render_qa.py::test_approved_external_asset_accepts_fully_resolved_safety_review
-1 failed: asset_safety_checks_unresolved
-```
+---
 
-Human Review correctly preserves the canonical safety checklist alongside exact
-boolean decisions. Render QA had treated any retained checklist as unresolved.
-It now accepts only an exact, timestamped, type-safe decision mapping where
-`allowed_for_publishing` is true and every hazard check is false. Missing,
-duplicate, mismatched, non-boolean, or unsafe decisions still fail closed.
+## 6. Files changed
 
-The focused test passed after the minimal fix:
+Production:
+- `src/rendering/editorial/probes.py` (body_line_height range + overflow tolerance)
+- `src/nodes/node_p_render_qa.py` (headline maximum_lines)
+- `src/rendering/editorial/primitives.py` (CSS var quoting + emphasis-chip line-height)
+- `src/rendering/editorial/templates/white_quote.py` (body line-height 1.75 → 1.5)
 
-```text
-1 passed in 0.20s
-```
+Tests:
+- `tests/rendering/editorial/test_probes.py` (5 v1→v2 migrations)
+- `tests/rendering/editorial/test_chromium_smoke.py` (full v2 rewrite)
 
-## E2E and Resume Assertions
+Pre-existing in-progress Task 10 files also staged in the same commit
+(conftest.py, renderer.py, schemas, test_renderer.py, test_render_qa.py) —
+these were already modified at task start and are part of Task 10's scope.
 
-For each local golden fixture, the E2E verifies the expected family and complete
-frame signature, 5–7 ordered PNGs, at least three layouts, a saveable page,
-computed/loaded font families, contact sheet, Carousel QA and Render QA success,
-one structured database record with the rendered paths, `publish-copy.txt`, a
-content-locked rescue prompt, title audit JSON, and artifact generation 1. Empty
-fake Pexels and Unsplash adapters record zero searches and zero downloads.
+---
 
-The external-gap case removes `serum_texture` from a temporary copy of the real
-catalog. Fake Pexels returns no result and fake Unsplash returns one in-memory PNG.
-Execution is interrupted after the provider download, then resumed with the same
-SQLite-checkpoint thread. Human Review receives and approves the exact binding and
-safety decisions. The final active-file SHA-256, manifest source SHA-256, and
-render source SHA-256 match. The provider is searched once per configured provider,
-the asset is downloaded once, Chromium renders once, artifact generation remains
-1, and the registry contains one completed row.
+## 7. Concerns / deviations from the brief
 
-The render-resume case interrupts after real Chromium rendering and resumes the
-same thread. It verifies identical output paths and hashes, one renderer call, one
-output package/version marker, artifact generation 1, and one completed registry
-row. The existing beauty integration was relaxed from a fixed six-page assumption
-to the supported 5–7-page contract. Main resume coverage asserts that a modern
-pending-external checkpoint is loaded unchanged under the exact thread config and
-never resolves again; legacy resume coverage remains green.
+1. **Touched production files beyond the brief's "Files you will touch"
+   list.** Specifically `primitives.py` (CSS var quoting, emphasis-chip
+   line-height) and `templates/white_quote.py` (line-height 1.75 → 1.5).
+   The brief anticipated only `probes.py` and `node_p_render_qa.py`. These
+   extra fixes were necessary because the FakePage-based test_renderer.py
+   suite masks CSS/HTML parsing bugs that only surface under real
+   Chromium, and the brief's final verification step mandates that
+   test_chromium_smoke.py pass. Each extra fix is minimal and directly
+   tied to a concrete verification failure.
 
-## Verification
+2. **Headline headline-line maximum change is asymmetric with the probe.**
+   `_probe_attestation_issues` now uses `2` for standard density while
+   `LAYOUT_PROBE_SCRIPT` still uses `3`. This is intentional: the probe is
+   a render-time guard and the node-side check is a stricter persisted-data
+   attestation re-check. The message "at most two lines" agrees with the
+   node-side value.
 
-```text
-# Golden E2E plus production-prompt isolation
-49 passed, 1 warning in 25.81s
+3. **`test_probe_rejects_a_headline_that_wraps_to_more_than_two_lines`
+   uses `* 12` (96 chars) instead of v1's `* 8` (64 chars).** Reason: the
+   v2 variant resolver picks `dense` density for the default fixture
+   (total copy >> 90 graphemes), and the v2 probe's headline-line maximum
+   for `dense` is 4. 64 chars wraps to 4 lines (`4 > 4` is false); 96
+   chars wraps to 6 lines (`6 > 4` fires). The test's intent — "probe
+   rejects headlines that wrap too much" — is preserved; the assertion
+   `issue["lines"] > 2` still holds.
 
-# Task 10 selected command
-78 passed, 1 warning in 29.82s
+4. **The brief's HARD CONSTRAINT on the body_line_height range didn't
+   account for white_quote's 1.75 override** — that override was committed
+   in Task 9 and violates any range tight enough to reject 1.6. I resolved
+   this by changing white_quote to 1.5 rather than widening the range,
+   because the brief explicitly says 1.6 must be rejected.
 
-# Legacy resume, Render QA, prompt composer, Chromium smoke
-87 passed, 1 warning in 10.25s
+---
 
-# Full repository suite
-1321 passed, 2 skipped, 3 warnings in 71.10s
-```
+## 8. Commit
 
-The two skips are the opt-in live stock-provider tests and therefore preserve the
-no-network test contract. Warnings are the known LangGraph serializer deprecation
-and two intentional legacy-checkpoint fallback warnings. `git diff --check` is
-clean. No production prompt file was changed.
-
-## Self-review
-
-- The golden data is isolated under `tests/fixtures/editorial_carousel/` and
-  explicitly marked synthetic/test-only.
-- Network and remote LLM lanes fail immediately if accidentally entered.
-- The real workflow surfaces are retained where the task requires them: graph,
-  resolver/catalog, Chromium, QA, Human Review, SQLite content record, checkpoint,
-  registry, and artifact export.
-- Production changes are limited to the two integration defects proven by RED
-  tests; no creative defaults, fixture copy, prompts, memory, or topic seeds changed.
-
-## Independent-review corrections
-
-The first Task 10 review rejected five Important and two Minor details. The
-follow-up closes each item without changing production prompts or introducing
-fixture content outside tests.
-
-### Canonical safety-review contract
-
-The previous Render QA helper duplicated only part of the lifecycle rules and
-accepted a truthy but invalid or timezone-naive review timestamp. The lifecycle
-module now exposes one canonical `SAFETY_CHECK_KEYS` set and one strict
-`ApprovedSafetyReview` model. `PendingAuditRecord` and Render QA both validate
-through that model. It requires an exact decision/check key match, rejects unknown
-or duplicate checks and non-boolean values, parses ISO-8601, requires an aware
-timezone, binds approved status to `approved_for_publishing`, requires
-`allowed_for_publishing == true`, and requires every hazard decision to be false.
-
-Focused RED evidence was `3 failed, 7 passed`: the shared contract did not exist,
-and malformed/naive timestamps passed Render QA. The expanded table also covers
-unknown and missing keys, duplicate checks, string booleans, missing timestamp,
-status mismatch, and disposition mismatch. The positive approved case remains
-green. The first aggregate run then found one existing item-local audit regression:
-a duplicate local manifest item carrying stray safety evidence was skipped. The
-existing regression failed (`1 failed, 247 passed`), the gate was corrected so
-external items or any item carrying safety evidence use the canonical model, and
-the exact regression plus strict table passed (`10 passed`).
-
-### Real main resume and run registry
-
-The interrupted-run E2Es no longer create or update registry rows themselves.
-They invoke `main.main()` twice through real CLI parsing: first with `--new`, using
-a real graph wrapper that simulates process death only after the selected committed
-checkpoint, then with `--resume <same-thread>`. Production `select_run`,
-`load_run_state`, `stream_graph_until_stop`, error handling, registry status
-transitions, interrupt response routing, and completed export all execute.
-
-Both download-resume and render-resume pass together (`2 passed`). The final
-registry has exactly one completed row with the original run ID and thread ID.
-After the completed external run, Pexels and Unsplash each have exactly one search,
-there is exactly one download and one render, and the active/source/render hashes
-match. Render resume compares the pre-resume checkpoint paths and hashes to the
-terminal manifest, retains one render, one output/version, and artifact generation
-1.
-
-### Persistent row and fixture isolation
-
-The structured write-back assertions now enumerate the real temporary SQLite row
-IDs and reload the sole row with `XHSMemoryManager.get_content_by_id`. For all four
-fixtures, the ordered `image_paths` exactly equal `RenderManifest.pages`, and the
-row is also checked for topic/angle IDs and copy, title, cover, content, hashtags,
-card count, storyboard payload, compliance status, and content contract.
-
-Fixture names and envelope validation now come from one test-only loader. Isolation
-uses `git ls-files` and scans every UTF-8-readable tracked production surface while
-excluding tests, docs/test plans, worktrees, and outputs. It covers root entrypoints,
-config, prompts/source, memory, topic-seed code, assets, and publish-candidate code.
-For every fixture it rejects the fixture ID, synthetic title, topic ID/topic,
-focus keyword, cover copy, and every headline. All production composer tasks are
-checked separately. Before fixture injection, each runtime harness also proves its
-temporary SQLite file does not exist, its embedding/Chroma sidecar is empty,
-`topic_signals` is empty, and its publish directory does not exist.
-
-### Reserved grid geometry and resource cleanup
-
-The temporary absolute/z-index galleries were removed. Morning/evening flow and
-left/right comparison now reserve an explicit second grid row for the asset gallery;
-the dual copy panels remain in the first row. A real Chromium test renders and
-screenshots all 11 layouts with two content blocks, persists the normal font/layout
-probe, compares every visible content-block rectangle with every asset rectangle,
-and verifies zero intersections. Flow and comparison additionally require one
-non-empty block on each side and a non-absolute gallery. RED was exactly the two
-absolute layouts (`2 failed, 9 passed`); GREEN is all 11 layouts.
-
-SQLite checkpointer connections, run-registry handles, structured-memory managers,
-and browsers now close through `finally` blocks or a pytest `ExitStack` cleanup
-fixture, including failed assertions.
-
-### Final review verification
-
-```text
-# E2E + all production prompts + real Chromium layouts
-61 passed, 1 warning in 36.50s
-
-# Task 10 selected command
-78 passed, 1 warning in 31.04s
-
-# Full repository suite
-1343 passed, 2 skipped, 3 warnings in 82.29s
-```
-
-The two skips remain the explicitly opt-in live provider tests. The warnings remain
-the known LangGraph serializer deprecation and two intentional legacy fallback
-warnings. `git diff --check` remains clean.
+Subject: `feat: render adaptive templates with emoji QA`

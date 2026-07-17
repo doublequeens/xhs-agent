@@ -47,6 +47,7 @@ def _assert_unrelated_entries_preserved(output_dir: Path) -> None:
 def test_renderer_uses_repo_fonts_without_system_fallback(
     tmp_path, visual_plan, storyboard, asset_manifest
 ):
+    from src.rendering.editorial.probes import expected_font_families
     from src.rendering.editorial.renderer import render_carousel
 
     page = FakePage()
@@ -59,15 +60,52 @@ def test_renderer_uses_repo_fonts_without_system_fallback(
     )
 
     assert manifest.fonts.all_loaded is True
-    assert set(manifest.fonts.computed_families) == {
-        "Source Han Serif SC",
-        "Source Han Sans SC",
-        "Bodoni Moda",
-    }
+    assert set(manifest.fonts.computed_families) == set(
+        expected_font_families(visual_plan.template_family)
+    )
     assert all("document.fonts" in html for html in page.loaded_html[:5])
     assert all("@font-face" in html for html in page.loaded_html[:5])
+    assert all("Noto Color Emoji" in html for html in page.loaded_html[:5])
     assert all("PingFang" not in html for html in page.loaded_html[:5])
     assert all("http://" not in html and "https://" not in html for html in page.loaded_html)
+
+
+def test_renderer_resolves_and_persists_adaptive_variants(
+    tmp_path, visual_plan, storyboard, asset_manifest
+):
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+    from src.rendering.editorial.renderer import render_carousel
+    from src.rendering.editorial.variant_resolver import resolve_variant
+
+    page = FakePage()
+    manifest = render_carousel(
+        visual_plan,
+        storyboard,
+        asset_manifest,
+        tmp_path,
+        playwright_factory=fake_playwright(page),
+    )
+
+    expected = [
+        resolve_variant(
+            visual_plan.template_family,
+            frame.page_archetype,
+            frame.content_density_hint,
+            measure_frame_copy(frame),
+        )
+        for frame in storyboard.storyboards
+    ]
+    assert [
+        (page.density, page.composition_variant)
+        for page in manifest.pages
+    ] == [
+        (variant.density, variant.composition_variant)
+        for variant in expected
+    ]
+    assert all(
+        f'data-template-family="{visual_plan.template_family}"' in html
+        for html in page.loaded_html[: len(storyboard.storyboards)]
+    )
 
 
 def test_renderer_emits_ordered_manifest_contact_sheet_and_source_hashes(

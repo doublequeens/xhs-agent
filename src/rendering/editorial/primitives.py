@@ -5,6 +5,8 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Callable, Mapping, Sequence, get_args
 
+import regex
+
 from src.schemas.assets import AssetManifestItem
 from src.schemas.editorial_templates import (
     PageArchetype,
@@ -24,11 +26,11 @@ TemplateRenderer = Callable[
 
 _BASE_TEMPLATE_CSS = """
 *{box-sizing:border-box}
-.template-card{position:relative;isolation:isolate;width:1080px;height:1440px;overflow:hidden;padding:84px;background:var(--template-bg);color:var(--template-ink);display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:34px;font-family:var(--template-body);font-weight:400}
+.template-card{position:relative;isolation:isolate;width:1080px;height:1440px;overflow:hidden;padding:84px;background:var(--template-bg);color:var(--template-ink);display:grid;grid-template-rows:auto minmax(0,1fr) auto;gap:34px;font-family:var(--template-body),"Noto Color Emoji";font-weight:400}
 .template-card::before{content:"";position:absolute;inset:28px;border:1px solid color-mix(in srgb,var(--template-primary) 30%,transparent);pointer-events:none}
 .template-header{position:relative;z-index:1;display:grid;gap:14px;min-width:0}
 .template-kicker{font-size:25px;line-height:1.3;font-weight:700;letter-spacing:.14em;color:var(--template-secondary)}
-.template-headline{margin:0;max-width:920px;font-family:var(--template-display);font-size:68px;line-height:1.12;letter-spacing:-.035em;overflow-wrap:anywhere;color:var(--template-primary)}
+.template-headline{margin:0;max-width:920px;font-family:var(--template-display),"Noto Color Emoji";font-size:68px;line-height:1.12;letter-spacing:-.035em;overflow-wrap:anywhere;color:var(--template-primary)}
 .template-body{position:relative;z-index:1;min-width:0;min-height:0;display:grid;gap:24px;overflow:hidden}
 .copy-grid{min-width:0;min-height:0;display:grid;gap:18px;align-content:center}
 .content-block{min-width:0;display:grid;gap:11px;align-content:start}
@@ -39,7 +41,7 @@ _BASE_TEMPLATE_CSS = """
 .item-marker{font-family:var(--template-display);font-size:20px;line-height:1;color:var(--template-secondary)}
 .item-copy{min-width:0;font-size:26px;line-height:1.42;overflow-wrap:anywhere}
 .emphasis-list{display:flex;flex-wrap:wrap;gap:10px;margin-top:4px}
-.emphasis-chip{padding:8px 16px;border-radius:999px;background:color-mix(in srgb,var(--template-secondary) 22%,transparent);font-size:22px;font-weight:700;color:var(--template-primary)}
+.emphasis-chip{padding:8px 16px;border-radius:999px;background:color-mix(in srgb,var(--template-secondary) 22%,transparent);font-size:22px;line-height:1.3;font-weight:700;color:var(--template-primary)}
 .asset-gallery{min-width:0;min-height:0;display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:14px;place-items:center}
 .asset-figure{width:100%;height:100%;min-height:0;margin:0;display:grid;place-items:center;overflow:hidden}
 .asset-figure img{display:block;max-width:100%;max-height:100%;object-fit:contain}
@@ -62,7 +64,25 @@ _BASE_TEMPLATE_CSS = """
 .font-probe-display{font-family:var(--template-display)}
 .font-probe-body{font-family:var(--template-body)}
 .font-probe-emoji{font-family:"Noto Color Emoji"}
+.emoji-grapheme{font-family:"Noto Color Emoji";font-style:normal;font-weight:400}
 """
+
+
+_GRAPHEME_RE = regex.compile(r"\X")
+_EMOJI_RE = regex.compile(r"\p{Extended_Pictographic}")
+
+
+def _render_copy_value(value: str) -> str:
+    return "".join(
+        (
+            '<span class="emoji-grapheme" '
+            f'data-emoji-grapheme="{escape(grapheme, quote=True)}">'
+            f"{escape(grapheme, quote=True)}</span>"
+            if _EMOJI_RE.search(grapheme)
+            else escape(grapheme, quote=True)
+        )
+        for grapheme in _GRAPHEME_RE.findall(value)
+    )
 
 
 def copy_atom(
@@ -75,7 +95,7 @@ def copy_atom(
     return (
         f'<{tag} class="{escape(class_name, quote=True)}" data-card-copy '
         f'data-copy-role="{escape(role, quote=True)}">'
-        f"{escape(value, quote=True)}</{tag}>"
+        f"{_render_copy_value(value)}</{tag}>"
     )
 
 
@@ -248,9 +268,11 @@ def render_card_shell(
         f"--template-primary:{definition.colors['primary']};"
         f"--template-secondary:{definition.colors['secondary']};"
         f"--template-ink:{definition.colors['ink']};"
-        f'--template-display:"{family_class}-display";'
-        f'--template-body:"{family_class}-body";'
+        f"--template-display:'{family_class}-display';"
+        f"--template-body:'{family_class}-body';"
     )
+    display_font = f"{family_class}-display"
+    body_font = f"{family_class}-body"
     return (
         f"<style>{_BASE_TEMPLATE_CSS}</style>"
         f'<main class="card template-card {family_class} density-{variant.density} '
@@ -259,6 +281,9 @@ def render_card_shell(
         f'data-page-archetype="{frame.page_archetype}" '
         f'data-density="{variant.density}" '
         f'data-composition-variant="{escape(variant.composition_variant, quote=True)}" '
+        f'data-display-font-family="{display_font}" '
+        f'data-body-font-family="{body_font}" '
+        'data-emoji-font-family="Noto Color Emoji" '
         f'data-frame-role="{escape(frame.role, quote=True)}" '
         f'data-frame-id="{escape(frame.frame_id, quote=True)}" '
         f'style="{style}">'

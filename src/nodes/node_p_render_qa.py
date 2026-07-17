@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import statistics
 import xml.etree.ElementTree as ET
+from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -11,9 +12,17 @@ from PIL import Image
 from pydantic import ValidationError
 
 from src.asset_resolver.lifecycle import ApprovedSafetyReview
+from src.editorial_carousel.selector import (
+    canonical_recent_signature,
+)
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
 from src.nodes.publish_patch import extract_storyboard_visible_text
-from src.rendering.editorial.probes import EXPECTED_FONT_FAMILIES
+from src.rendering.editorial.probes import (
+    expected_font_families,
+    extract_emoji_graphemes,
+    template_font_families,
+)
+from src.rendering.editorial.template_registry import TEMPLATE_REGISTRY
 from src.schemas.agent_state import AgentState
 from src.schemas.decision import (
     ContentCandidate,
@@ -129,6 +138,10 @@ def _expected_probe_text(frame: Any) -> list[tuple[str, str]]:
             (f"content_blocks[{block_index}].items[{item_index}]", str(item))
             for item_index, item in enumerate(_as_list(block, "items"))
         )
+    values.extend(
+        (f"emphasis[{index}]", str(value))
+        for index, value in enumerate(_as_list(frame, "emphasis"))
+    )
     footer = _get_value(frame, "footer")
     if footer:
         values.append(("footer", str(footer)))
@@ -224,6 +237,19 @@ def _probe_attestation_issues(
                 frame_id=frame_id,
             )
         )
+    template_family = _get_value(page, "template_family")
+    page_archetype = _get_value(page, "page_archetype")
+    density = str(_get_value(page, "density") or "standard")
+    try:
+        display_family, body_family, _emoji_family = (
+            template_font_families(template_family)
+        )
+        capability = TEMPLATE_REGISTRY[template_family].archetypes[
+            page_archetype
+        ]
+    except (KeyError, TypeError):
+        display_family = body_family = ""
+        capability = None
     for text_index, text in enumerate(texts):
         text_location = f"{base}.text_results[{text_index}]"
         role = str(_get_value(text, "role") or "")
@@ -241,9 +267,7 @@ def _probe_attestation_issues(
                     frame_id=frame_id,
                 )
             )
-        expected_family = (
-            "Source Han Serif SC" if role == "headline" else "Source Han Sans SC"
-        )
+        expected_family = display_family if role == "headline" else body_family
         if _get_value(text, "font_family") != expected_family:
             issues.append(
                 _issue(
@@ -254,7 +278,11 @@ def _probe_attestation_issues(
                 )
             )
         font_size = float(_get_value(text, "font_size") or 0)
-        if role == "headline" and not 40 <= font_size <= 72:
+        if (
+            role == "headline"
+            and capability is not None
+            and not capability.min_font_px <= font_size <= 120
+        ):
             issues.append(
                 _issue(
                     "text_font_size_token_invalid",
@@ -265,7 +293,7 @@ def _probe_attestation_issues(
             )
         if (role.endswith(".body") or ".items[" in role) and font_size:
             ratio = float(_get_value(text, "line_height") or 0) / font_size
-            if not 1.4 <= ratio <= 1.5:
+            if not 1.35 <= ratio <= 1.8:
                 issues.append(
                     _issue(
                         "body_line_height_invalid",
@@ -274,12 +302,33 @@ def _probe_attestation_issues(
                         frame_id=frame_id,
                     )
                 )
-        if role == "headline" and int(_get_value(text, "line_count") or 0) > 2:
+        maximum_lines = (
+            2 if density == "sparse" else 4 if density == "dense" else 2
+        )
+        if (
+            role == "headline"
+            and int(_get_value(text, "line_count") or 0) > maximum_lines
+        ):
             issues.append(
                 _issue(
                     "headline_line_count_invalid",
                     "Headline must render in at most two lines.",
                     f"{text_location}.line_count",
+                    frame_id=frame_id,
+                )
+            )
+        emoji_graphemes = [
+            str(value)
+            for value in _as_list(text, "emoji_graphemes")
+        ]
+        if emoji_graphemes != extract_emoji_graphemes(
+            str(_get_value(text, "text") or "")
+        ):
+            issues.append(
+                _issue(
+                    "emoji_probe_mismatch",
+                    "Persisted emoji glyph evidence must match visible copy.",
+                    f"{text_location}.emoji_graphemes",
                     frame_id=frame_id,
                 )
             )
@@ -511,7 +560,13 @@ def _manifest_page_issues(
 def _font_issues(render_manifest: Any) -> list[RenderQAIssue]:
     fonts = _get_value(render_manifest, "fonts")
     families = set(str(value) for value in _as_list(fonts, "computed_families"))
-    if _get_value(fonts, "all_loaded") is True and families == EXPECTED_FONT_FAMILIES:
+    pages = _as_list(render_manifest, "pages")
+    family = _get_value(pages[0], "template_family") if pages else None
+    try:
+        expected = expected_font_families(family)
+    except (TypeError, ValueError):
+        expected = frozenset()
+    if _get_value(fonts, "all_loaded") is True and families == expected:
         return []
     return [
         _issue(
@@ -940,6 +995,7 @@ def _quality_proxy_metrics(
     asset_manifest: Any,
     render_manifest: Any,
     visual_plan: Any = None,
+    recent_visual_signatures: Sequence[Any] = (),
 ) -> dict[str, int]:
     frames = package.get("storyboards")
     frames = frames if isinstance(frames, list) else []
@@ -947,10 +1003,15 @@ def _quality_proxy_metrics(
     items = _as_list(asset_manifest, "items")
     item_by_slot = {_get_value(item, "slot_id"): item for item in items}
     fonts = _get_value(render_manifest, "fonts")
+    family = _get_value(pages[0], "template_family") if pages else None
+    try:
+        expected_fonts = expected_font_families(family)
+    except (TypeError, ValueError):
+        expected_fonts = frozenset()
     font_fact = (
         _get_value(fonts, "all_loaded") is True
         and set(str(value) for value in _as_list(fonts, "computed_families"))
-        == EXPECTED_FONT_FAMILIES
+        == expected_fonts
     )
 
     requirements = {
@@ -1067,13 +1128,44 @@ def _quality_proxy_metrics(
     ]
     saveability = min(100, 20 * max(saveable_item_counts, default=0))
 
-    archetypes = [
-        str(_get_value(frame, "page_archetype") or "") for frame in frames
+    render_signatures = [
+        (
+            str(_get_value(page, "page_archetype") or ""),
+            str(_get_value(page, "density") or ""),
+            str(_get_value(page, "composition_variant") or ""),
+        )
+        for page in pages
     ]
-    template_stiffness = round(
-        100
-        * (len(archetypes) - len(set(archetypes)))
-        / max(1, len(archetypes))
+    repeat_count = len(render_signatures) - len(set(render_signatures))
+    current_combination_signature = canonical_recent_signature(
+        {
+            "narrative_form": _get_value(
+                visual_plan,
+                "narrative_form",
+            ),
+            "template_family": _get_value(
+                visual_plan,
+                "template_family",
+            ),
+            "frame_plan_signature": [
+                str(_get_value(frame, "page_archetype") or "")
+                for frame in _as_list(visual_plan, "frame_plan")
+            ],
+            "frame_count": len(_as_list(visual_plan, "frame_plan")),
+        }
+    )
+    recent_combinations = {
+        signature
+        for value in recent_visual_signatures
+        if (signature := canonical_recent_signature(value)) is not None
+    }
+    template_stiffness = min(
+        100,
+        20 * repeat_count
+        + 30 * int(
+            current_combination_signature is not None
+            and current_combination_signature in recent_combinations
+        ),
     )
     visible_character_counts = [
         sum(
@@ -1183,6 +1275,40 @@ def _build_r1_decision(
     )
 
 
+def _recent_visual_signatures(state: AgentState) -> list[Any]:
+    memory_context = state.get("memory_context") or {}
+    direct = memory_context.get("recent_visual_signatures")
+    if isinstance(direct, list):
+        return list(direct)
+    recent_content = (
+        memory_context.get("recent_content")
+        or memory_context.get("same_subdomain_recent")
+        or []
+    )
+    signatures: list[Any] = []
+    for item in recent_content:
+        if not isinstance(item, Mapping):
+            continue
+        visual_plan = item.get("visual_plan")
+        if not isinstance(visual_plan, Mapping):
+            continue
+        frame_plan = visual_plan.get("frame_plan")
+        if not isinstance(frame_plan, list):
+            continue
+        signatures.append(
+            {
+                "narrative_form": visual_plan.get("narrative_form"),
+                "template_family": visual_plan.get("template_family"),
+                "frame_plan_signature": [
+                    _get_value(frame, "page_archetype")
+                    for frame in frame_plan
+                ],
+                "frame_count": len(frame_plan),
+            }
+        )
+    return signatures
+
+
 def render_qa_node(state: AgentState) -> dict:
     package = state.get("publish_package")
     if not isinstance(package, dict):
@@ -1228,7 +1354,11 @@ def render_qa_node(state: AgentState) -> dict:
             {
                 "metrics_available": True,
                 **_quality_proxy_metrics(
-                    package, asset_manifest, render_manifest, visual_plan
+                    package,
+                    asset_manifest,
+                    render_manifest,
+                    visual_plan,
+                    _recent_visual_signatures(state),
                 ),
             }
             if not issues

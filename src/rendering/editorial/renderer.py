@@ -25,8 +25,17 @@ from src.schemas.storyboard import CarouselFrame, CarouselPayload
 from src.schemas.visual_plan import VisualPlan
 
 from .design_system import BEAUTY_EDITORIAL_V1
-from .layouts import LAYOUT_RENDERERS
-from .probes import EXPECTED_FONT_FAMILIES, probe_fonts, probe_layout
+from .copy_metrics import measure_frame_copy
+from .layouts import TEMPLATE_RENDERERS
+from .probes import (
+    expected_font_families,
+    extract_emoji_graphemes,
+    probe_fonts,
+    probe_layout,
+    template_font_families,
+)
+from .template_registry import TEMPLATE_REGISTRY
+from .variant_resolver import resolve_variant
 
 
 class EditorialCarouselRenderError(RuntimeError):
@@ -56,32 +65,35 @@ _ROLE_SEPARATOR = re.compile(r"[^a-z0-9]+")
 _RENDERED_PAGE_NAME = re.compile(r"^\d{2}-.+\.png$")
 
 
-def _font_css() -> str:
-    paths = BEAUTY_EDITORIAL_V1.font_paths
+def _font_css(family) -> str:
+    paths = TEMPLATE_REGISTRY[family].fonts
     missing = [str(path) for path in paths.values() if not path.is_file()]
     if missing:
         raise EditorialCarouselRenderError(
             "font files are missing: " + ", ".join(missing)
         )
+    display_family, body_family, emoji_family = template_font_families(
+        family
+    )
     return f"""
 @font-face {{
-  font-family: "Source Han Serif SC";
-  src: url("{paths['display'].resolve().as_uri()}") format("opentype");
-  font-style: normal; font-weight: 600; font-display: block;
+  font-family: "{display_family}";
+  src: url("{paths['display'].resolve().as_uri()}") format("truetype");
+  font-style: normal; font-weight: 700; font-display: block;
 }}
 @font-face {{
-  font-family: "Source Han Sans SC";
-  src: url("{paths['body_regular'].resolve().as_uri()}") format("opentype");
+  font-family: "{body_family}";
+  src: url("{paths['body'].resolve().as_uri()}") format("truetype");
   font-style: normal; font-weight: 400; font-display: block;
 }}
 @font-face {{
-  font-family: "Source Han Sans SC";
-  src: url("{paths['body_medium'].resolve().as_uri()}") format("opentype");
-  font-style: normal; font-weight: 500; font-display: block;
+  font-family: "{body_family}";
+  src: url("{paths['body_bold'].resolve().as_uri()}") format("truetype");
+  font-style: normal; font-weight: 700; font-display: block;
 }}
 @font-face {{
-  font-family: "Bodoni Moda";
-  src: url("{paths['numeral'].resolve().as_uri()}") format("truetype");
+  font-family: "{emoji_family}";
+  src: url("{paths['emoji'].resolve().as_uri()}") format("truetype");
   font-style: normal; font-weight: 400; font-display: block;
 }}
 """
@@ -200,12 +212,18 @@ body { background: var(--ivory); color: var(--ink); font-family: "Source Han San
 """
 
 
-def _document_html(card_html: str) -> str:
+_DOCUMENT_SAFETY_CSS = """
+html,body{margin:0;width:1080px;height:1440px;overflow:hidden}
+body{font-family:var(--template-body),"Noto Color Emoji";font-weight:400}
+"""
+
+
+def _document_html(card_html: str, family) -> str:
     return "".join(
         (
             '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
             '<meta name="viewport" content="width=1080, initial-scale=1">',
-            f"<style>{_font_css()}{_CARD_CSS}</style>",
+            f"<style>{_font_css(family)}{_DOCUMENT_SAFETY_CSS}</style>",
             "</head><body>",
             card_html,
             "<script>window.__editorialFontsReady = document.fonts.ready;</script>",
@@ -343,7 +361,11 @@ def _write_html(path: Path, html: str) -> None:
     path.write_text(html, encoding="utf-8")
 
 
-def _validate_font_report(report: dict, frame_id: str) -> FontLoadReport:
+def _validate_font_report(
+    report: dict,
+    frame_id: str,
+    family,
+) -> FontLoadReport:
     all_loaded = report.get("all_loaded") is True
     families = report.get("computed_families")
     if not isinstance(families, list) or any(
@@ -352,7 +374,7 @@ def _validate_font_report(report: dict, frame_id: str) -> FontLoadReport:
         raise EditorialCarouselRenderError(
             f"{frame_id} font probe returned invalid computed families"
         )
-    if not all_loaded or set(families) != EXPECTED_FONT_FAMILIES:
+    if not all_loaded or set(families) != expected_font_families(family):
         raise EditorialCarouselRenderError(
             f"{frame_id} font probe failed without the exact repo font families"
         )
@@ -375,6 +397,10 @@ def _expected_copy(frame: CarouselFrame) -> list[tuple[str, str]]:
             (f"content_blocks[{block_index}].items[{item_index}]", item)
             for item_index, item in enumerate(block.items)
         )
+    expected.extend(
+        (f"emphasis[{index}]", value)
+        for index, value in enumerate(frame.emphasis)
+    )
     if frame.footer:
         expected.append(("footer", frame.footer))
     return expected
@@ -389,7 +415,7 @@ def _probe_issue_label(issue: object) -> str:
 
 
 def _validate_layout_report(
-    report: dict, frame: CarouselFrame
+    report: dict, frame: CarouselFrame, family
 ) -> PageProbeAttestation:
     try:
         attestation = PageProbeAttestation.model_validate(
@@ -424,15 +450,19 @@ def _validate_layout_report(
         raise EditorialCarouselRenderError(
             f"{frame.frame_id} layout probe failed: {attestation.issues}"
         )
+    display_family, body_family, _emoji_family = template_font_families(
+        family
+    )
     for item in attestation.text_results:
-        expected_family = (
-            "Source Han Serif SC"
-            if item.role == "headline"
-            else "Source Han Sans SC"
-        )
+        expected_family = display_family if item.role == "headline" else body_family
         if item.font_family != expected_family:
             raise EditorialCarouselRenderError(
                 f"{frame.frame_id} layout probe used an unexpected font for {item.role}"
+            )
+        if item.emoji_graphemes != extract_emoji_graphemes(item.text):
+            raise EditorialCarouselRenderError(
+                f"{frame.frame_id} layout probe emoji evidence does not match "
+                f"visible text for {item.role}"
             )
     expected_slots = [slot.slot_id for slot in frame.visual_slots]
     actual_slots = [asset.slot_id for asset in attestation.asset_results]
@@ -581,7 +611,10 @@ def _publish_staging(staging_dir: Path, output_dir: Path, invocation: str) -> No
         )
 
 
-def _contact_sheet_html(page_paths: Sequence[Path]) -> str:
+def _contact_sheet_html(page_paths: Sequence[Path], family) -> str:
+    display_family, body_family, emoji_family = template_font_families(
+        family
+    )
     cells = "".join(
         '<figure class="contact-cell">'
         f'<img src="{escape(path.resolve().as_uri(), quote=True)}" alt="rendered page {index}">'
@@ -593,17 +626,21 @@ def _contact_sheet_html(page_paths: Sequence[Path]) -> str:
         (
             '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">',
             "<style>",
-            _font_css(),
+            _font_css(family),
             "*{box-sizing:border-box}html,body{margin:0;background:#292625}"
             '.contact-sheet{width:1320px;padding:42px;display:grid;grid-template-columns:repeat(3,1fr);gap:28px;background:#292625}'
             '.contact-cell{position:relative;margin:0;padding:12px;background:#F7F2EA}'
             '.contact-cell img{display:block;width:100%;height:auto}'
             '.contact-cell figcaption{position:absolute;right:22px;bottom:20px;padding:5px 10px;background:#F7F2EA;color:#9A707B;font-size:22px}'
-            '.font-probes{position:absolute;opacity:0}.font-probe-display{font-family:"Source Han Serif SC"}'
-            '.font-probe-body{font-family:"Source Han Sans SC"}.font-probe-numeral,.numeral{font-family:"Bodoni Moda"}',
+            f'.font-probes{{position:absolute;opacity:0}}.font-probe-display{{font-family:"{display_family}"}}'
+            f'.font-probe-body{{font-family:"{body_family}"}}.font-probe-emoji{{font-family:"{emoji_family}"}}'
+            f'.numeral{{font-family:"{display_family}","{emoji_family}"}}',
             "</style></head><body>",
-            '<div class="font-probes" aria-hidden="true"><span class="font-probe-display">字</span><span class="font-probe-body">字</span><span class="font-probe-numeral">01</span></div>',
-            f'<main class="contact-sheet">{cells}</main>',
+            '<div class="font-probes" aria-hidden="true"><span class="font-probe-display">字</span><span class="font-probe-body">字</span><span class="font-probe-emoji">✨</span></div>',
+            f'<main class="contact-sheet" data-template-family="{family}" '
+            f'data-display-font-family="{display_family}" '
+            f'data-body-font-family="{body_family}" '
+            f'data-emoji-font-family="{emoji_family}">{cells}</main>',
             "<script>window.__editorialFontsReady = document.fonts.ready;</script>",
             "</body></html>",
         )
@@ -673,13 +710,23 @@ def render_carousel(
                     html_path = staging_dir / f"page-{index:02d}.html"
                     temporary_html.append(html_path)
                     try:
-                        renderer = LAYOUT_RENDERERS[
-                            _LEGACY_RENDER_LAYOUT_BY_ARCHETYPE[
-                                frame.page_archetype
-                            ]
-                        ]
-                        card = renderer(frame, frame_assets[frame.frame_id])
-                        document = _document_html(card)
+                        variant = resolve_variant(
+                            visual_plan.template_family,
+                            frame.page_archetype,
+                            frame.content_density_hint,
+                            measure_frame_copy(frame),
+                        )
+                        card = TEMPLATE_RENDERERS[
+                            visual_plan.template_family
+                        ](
+                            frame,
+                            frame_assets[frame.frame_id],
+                            variant,
+                        )
+                        document = _document_html(
+                            card,
+                            visual_plan.template_family,
+                        )
                         _write_html(html_path, document)
                         page.goto(html_path.resolve().as_uri(), wait_until="load")
                     except EditorialCarouselRenderError:
@@ -691,7 +738,9 @@ def render_carousel(
 
                     try:
                         current_font_report = _validate_font_report(
-                            probe_fonts(page), frame.frame_id
+                            probe_fonts(page),
+                            frame.frame_id,
+                            visual_plan.template_family,
                         )
                     except EditorialCarouselRenderError:
                         raise
@@ -704,7 +753,9 @@ def render_carousel(
 
                     try:
                         layout_report = _validate_layout_report(
-                            probe_layout(page), frame
+                            probe_layout(page),
+                            frame,
+                            visual_plan.template_family,
                         )
                     except Exception as exc:
                         if isinstance(exc, EditorialCarouselRenderError):
@@ -728,12 +779,10 @@ def render_carousel(
                             role=frame.role,
                             page_archetype=frame.page_archetype,
                             template_family=visual_plan.template_family,
-                            density=(
-                                "standard"
-                                if frame.content_density_hint == "auto"
-                                else frame.content_density_hint
+                            density=variant.density,
+                            composition_variant=(
+                                variant.composition_variant
                             ),
-                            composition_variant="legacy_bridge",
                             path=str(final_path),
                             width=1080,
                             height=1440,
@@ -748,13 +797,21 @@ def render_carousel(
                 temporary_html.append(contact_html_path)
                 try:
                     _write_html(
-                        contact_html_path, _contact_sheet_html(staged_page_paths)
+                        contact_html_path,
+                        _contact_sheet_html(
+                            staged_page_paths,
+                            visual_plan.template_family,
+                        ),
                     )
                     page.set_viewport_size({"width": 1404, "height": 3200})
                     page.goto(
                         contact_html_path.resolve().as_uri(), wait_until="load"
                     )
-                    _validate_font_report(probe_fonts(page), "contact-sheet")
+                    _validate_font_report(
+                        probe_fonts(page),
+                        "contact-sheet",
+                        visual_plan.template_family,
+                    )
                     page.locator(".contact-sheet").screenshot(
                         path=str(staged_contact_sheet_path)
                     )

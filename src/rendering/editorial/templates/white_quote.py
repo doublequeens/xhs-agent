@@ -22,7 +22,7 @@ FAMILY_CSS = """
 .template-white-quote.variant-centered-focus .template-headline{font-size:82px;line-height:1.45;text-align:center}
 .template-white-quote.variant-editorial-column .template-body{max-width:760px;width:100%;justify-self:center}
 .template-white-quote.variant-quiet-grid .content-block{padding:26px;border:1px solid #D7DFEE}
-.template-white-quote .block-body,.template-white-quote .item-copy{line-height:1.75}
+.template-white-quote .block-body,.template-white-quote .item-copy{line-height:1.5}
 .template-white-quote .emphasis-chip{border:1px solid #D7DFEE;background:#FFF;color:#2A4A8C}
 """
 _MODE_BY_VARIANT = {

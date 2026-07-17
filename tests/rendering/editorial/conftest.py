@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import html
 import re
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -39,7 +40,7 @@ def make_frame(
             "frame_id": frame_id,
             "role": role,
             "page_archetype": page_archetype,
-            "content_density_hint": "standard",
+            "content_density_hint": "auto",
             "headline": "先看懂 <分区> & 再调整",
             "kicker": '编辑型 "护肤"',
             "content_blocks": [
@@ -190,14 +191,7 @@ class FakePage:
         fail_screenshot_at: int | None = None,
         fail_before_write_at: int | None = None,
     ) -> None:
-        self.font_report = font_report or {
-            "all_loaded": True,
-            "computed_families": [
-                "Source Han Serif SC",
-                "Source Han Sans SC",
-                "Bodoni Moda",
-            ],
-        }
+        self.font_report = font_report
         self.probe_issues = probe_issues or []
         self.fail_screenshot_at = fail_screenshot_at
         self.fail_before_write_at = fail_before_write_at
@@ -207,30 +201,74 @@ class FakePage:
 
     def _layout_report(self) -> dict:
         document = self.loaded_html[-1]
-        matches = re.findall(
-            r'<[^>]*data-card-copy[^>]*data-copy-role="([^"]+)"[^>]*>'
-            r"(.*?)</[^>]+>",
+        display_family = re.search(
+            r'data-display-font-family="([^"]+)"',
             document,
-            flags=re.DOTALL,
-        )
+        ).group(1)
+        body_family = re.search(
+            r'data-body-font-family="([^"]+)"',
+            document,
+        ).group(1)
+
+        class CopyParser(HTMLParser):
+            def __init__(self) -> None:
+                super().__init__()
+                self.active: dict | None = None
+                self.depth = 0
+                self.matches: list[dict] = []
+
+            def handle_starttag(self, tag, attrs):
+                values = dict(attrs)
+                if self.active is not None:
+                    self.depth += 1
+                    emoji = values.get("data-emoji-grapheme")
+                    if emoji is not None:
+                        self.active["emoji_graphemes"].append(emoji)
+                    return
+                if "data-card-copy" in values:
+                    self.active = {
+                        "tag": tag,
+                        "role": values["data-copy-role"],
+                        "text": [],
+                        "emoji_graphemes": [],
+                    }
+                    self.depth = 0
+
+            def handle_endtag(self, tag):
+                if self.active is None:
+                    return
+                if self.depth:
+                    self.depth -= 1
+                    return
+                if tag == self.active["tag"]:
+                    self.matches.append(self.active)
+                    self.active = None
+
+            def handle_data(self, data):
+                if self.active is not None:
+                    self.active["text"].append(data)
+
+        parser = CopyParser()
+        parser.feed(document)
         texts = []
-        for role, raw_text in matches:
-            value = html.unescape(re.sub(r"<[^>]+>", "", raw_text))
+        for match in parser.matches:
+            role = match["role"]
+            value = html.unescape("".join(match["text"]))
             if role == "headline":
                 font_family, font_size, line_height = (
-                    "Source Han Serif SC",
+                    display_family,
                     64.0,
                     74.88,
                 )
             elif role.endswith(".body") or ".items[" in role:
                 font_family, font_size, line_height = (
-                    "Source Han Sans SC",
+                    body_family,
                     29.0,
                     42.05,
                 )
             else:
                 font_family, font_size, line_height = (
-                    "Source Han Sans SC",
+                    body_family,
                     25.0,
                     33.0,
                 )
@@ -238,6 +276,7 @@ class FakePage:
                 {
                     "role": role,
                     "text": value,
+                    "emoji_graphemes": match["emoji_graphemes"],
                     "visible": True,
                     "overflow": False,
                     "ink_clipped": False,
@@ -284,7 +323,26 @@ class FakePage:
     def evaluate(self, script: str):
         if "EDITORIAL_FONT_PROBE" in script:
             self.events.append("fonts-ready")
-            return self.font_report
+            if self.font_report is not None:
+                return self.font_report
+            document = self.loaded_html[-1]
+            return {
+                "all_loaded": True,
+                "computed_families": [
+                    re.search(
+                        r'data-display-font-family="([^"]+)"',
+                        document,
+                    ).group(1),
+                    re.search(
+                        r'data-body-font-family="([^"]+)"',
+                        document,
+                    ).group(1),
+                    re.search(
+                        r'data-emoji-font-family="([^"]+)"',
+                        document,
+                    ).group(1),
+                ],
+            }
         if "EDITORIAL_LAYOUT_PROBE" in script:
             self.events.append("layout-probe")
             return self._layout_report()

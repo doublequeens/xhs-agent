@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from src.schemas.render_manifest import TextProbeResult
+
 
 def _local_chromium_available() -> bool:
     try:
@@ -19,6 +21,31 @@ pytestmark = pytest.mark.skipif(
     not _local_chromium_available(),
     reason="local Playwright Chromium is unavailable",
 )
+
+
+def test_text_probe_result_preserves_emoji_graphemes():
+    result = TextProbeResult.model_validate(
+        {
+            "role": "headline",
+            "text": "防晒成膜后再上妆✨👩‍🔬",
+            "emoji_graphemes": ["✨", "👩‍🔬"],
+            "visible": True,
+            "overflow": False,
+            "ink_clipped": False,
+            "layout_clipped": False,
+            "font_family": "template-deep-teal-display",
+            "font_size": 68,
+            "line_height": 76,
+            "line_count": 1,
+            "x": 84,
+            "y": 84,
+            "width": 700,
+            "height": 80,
+        }
+    )
+
+    assert result.text == "防晒成膜后再上妆✨👩‍🔬"
+    assert result.emoji_graphemes == ["✨", "👩‍🔬"]
 
 
 def test_probe_detects_text_range_clipped_by_an_overflow_ancestor():
@@ -60,16 +87,26 @@ def test_probe_persists_exact_visible_text_typography_and_asset_geometry(tmp_pat
     from playwright.sync_api import sync_playwright
 
     from conftest import make_asset, make_frame
-    from src.rendering.editorial.layouts import LAYOUT_RENDERERS
-    from src.rendering.editorial.probes import probe_fonts, probe_layout
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+    from src.rendering.editorial.layouts import TEMPLATE_RENDERERS
+    from src.rendering.editorial.probes import (
+        probe_fonts,
+        probe_layout,
+        template_font_families,
+    )
     from src.rendering.editorial.renderer import _document_html
+    from src.rendering.editorial.variant_resolver import resolve_variant
 
-    frame = make_frame("editorial_cover", frame_id="cover", role="cover")
+    family = "deep_teal"
+    frame = make_frame("cover", frame_id="cover", role="cover")
+    variant = resolve_variant(family, "cover", "auto", measure_frame_copy(frame))
     document = _document_html(
-        LAYOUT_RENDERERS["editorial_cover"](
+        TEMPLATE_RENDERERS[family](
             frame,
-            [make_asset("editorial_cover", slot_id="cover-visual")],
-        )
+            [make_asset("cover", slot_id="cover-visual")],
+            variant,
+        ),
+        family,
     )
     path = tmp_path / "probe-attestation.html"
     path.write_text(document, encoding="utf-8")
@@ -86,7 +123,7 @@ def test_probe_persists_exact_visible_text_typography_and_asset_geometry(tmp_pat
     assert report["canvas"] == {"width": 1080, "height": 1440}
     headline = next(item for item in report["texts"] if item["role"] == "headline")
     assert headline["text"] == frame.headline
-    assert headline["font_family"] == "Source Han Serif SC"
+    assert headline["font_family"] == template_font_families(family)[0]
     assert headline["font_size"] > 0
     assert headline["line_count"] in {1, 2}
     asset = next(item for item in report["assets"] if item["slot_id"] == "cover-visual")
@@ -99,16 +136,22 @@ def test_probe_allows_normal_source_han_vertical_metric_overhang(tmp_path):
     from playwright.sync_api import sync_playwright
 
     from conftest import make_asset, make_frame
-    from src.rendering.editorial.layouts import LAYOUT_RENDERERS
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+    from src.rendering.editorial.layouts import TEMPLATE_RENDERERS
     from src.rendering.editorial.probes import probe_fonts, probe_layout
     from src.rendering.editorial.renderer import _document_html
+    from src.rendering.editorial.variant_resolver import resolve_variant
 
-    frame = make_frame("editorial_cover", frame_id="cover", role="cover")
+    family = "deep_teal"
+    frame = make_frame("cover", frame_id="cover", role="cover")
+    variant = resolve_variant(family, "cover", "auto", measure_frame_copy(frame))
     document = _document_html(
-        LAYOUT_RENDERERS["editorial_cover"](
+        TEMPLATE_RENDERERS[family](
             frame,
-            [make_asset("editorial_cover", slot_id="cover-visual")],
-        )
+            [make_asset("cover", slot_id="cover-visual")],
+            variant,
+        ),
+        family,
     )
     document_path = tmp_path / "source-han-overhang.html"
     document_path.write_text(document, encoding="utf-8")
@@ -118,7 +161,7 @@ def test_probe_allows_normal_source_han_vertical_metric_overhang(tmp_path):
             page = browser.new_page(viewport={"width": 1080, "height": 1440})
             page.goto(document_path.as_uri(), wait_until="load")
             probe_fonts(page)
-            metrics = page.locator(".headline").evaluate(
+            metrics = page.locator(".template-headline").evaluate(
                 "element => ({clientHeight: element.clientHeight, scrollHeight: element.scrollHeight})"
             )
             report = probe_layout(page)
@@ -166,16 +209,22 @@ def test_rendered_body_copy_uses_line_height_between_1_4_and_1_5(tmp_path):
     from playwright.sync_api import sync_playwright
 
     from conftest import make_asset, make_frame
-    from src.rendering.editorial.layouts import LAYOUT_RENDERERS
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+    from src.rendering.editorial.layouts import TEMPLATE_RENDERERS
     from src.rendering.editorial.probes import probe_fonts
     from src.rendering.editorial.renderer import _document_html
+    from src.rendering.editorial.variant_resolver import resolve_variant
 
-    frame = make_frame("editorial_cover", frame_id="cover", role="cover")
+    family = "deep_teal"
+    frame = make_frame("cover", frame_id="cover", role="cover")
+    variant = resolve_variant(family, "cover", "auto", measure_frame_copy(frame))
     document = _document_html(
-        LAYOUT_RENDERERS["editorial_cover"](
+        TEMPLATE_RENDERERS[family](
             frame,
-            [make_asset("editorial_cover", slot_id="cover-visual")],
-        )
+            [make_asset("cover", slot_id="cover-visual")],
+            variant,
+        ),
+        family,
     )
     document_path = tmp_path / "body-line-height.html"
     document_path.write_text(document, encoding="utf-8")
@@ -199,18 +248,24 @@ def test_probe_rejects_a_headline_that_wraps_to_more_than_two_lines(tmp_path):
     from playwright.sync_api import sync_playwright
 
     from conftest import make_asset, make_frame
-    from src.rendering.editorial.layouts import LAYOUT_RENDERERS
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+    from src.rendering.editorial.layouts import TEMPLATE_RENDERERS
     from src.rendering.editorial.probes import probe_fonts, probe_layout
     from src.rendering.editorial.renderer import _document_html
+    from src.rendering.editorial.variant_resolver import resolve_variant
 
-    frame = make_frame("editorial_cover", frame_id="cover", role="cover").model_copy(
-        update={"headline": "分区护理判断标准" * 8}
+    family = "deep_teal"
+    frame = make_frame("cover", frame_id="cover", role="cover").model_copy(
+        update={"headline": "分区护理判断标准" * 12}
     )
+    variant = resolve_variant(family, "cover", "auto", measure_frame_copy(frame))
     document = _document_html(
-        LAYOUT_RENDERERS["editorial_cover"](
+        TEMPLATE_RENDERERS[family](
             frame,
-            [make_asset("editorial_cover", slot_id="cover-visual")],
-        )
+            [make_asset("cover", slot_id="cover-visual")],
+            variant,
+        ),
+        family,
     )
     document_path = tmp_path / "three-line-headline.html"
     document_path.write_text(document, encoding="utf-8")
