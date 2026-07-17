@@ -1,0 +1,71 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "reflective_editorial",
+  "synthetic_title": "合成回归反思编辑",
+  "narrative_form": "reflective_editorial",
+  "narrative_plan": {
+    "narrative_form": "reflective_editorial",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "提出值得反思的护肤观点"},
+      {"beat_id": "quote", "kind": "quote", "purpose": "突出可独立阅读的判断"},
+      {"beat_id": "explain", "kind": "explanation", "purpose": "解释判断背后的逻辑"},
+      {"beat_id": "scene", "kind": "scene", "purpose": "呈现支撑判断的合成场景"},
+      {"beat_id": "boundary", "kind": "boundary", "purpose": "说明反思的适用边界与可保存要点"}
+    ],
+    "saveable_beat": {
+      "beat_id": "boundary",
+      "kind": "boundary",
+      "purpose": "说明反思的适用边界与可保存要点"
+    },
+    "closing_mode": "reflection"
+  },
+  "content_contract": {
+    "audience": "合成测试反思读者",
+    "trigger_situation": "希望从更高视角理解护肤决策时",
+    "decision_problem": "如何用五页完成观点、解释与边界的反思",
+    "first_screen_promise": "五页完成合成反思编辑验证",
+    "screenshot_asset": "合成反思编辑卡",
+    "proof_asset": "合成反思对照表",
+    "visual_mode": "text_card",
+    "content_job": "understand_and_notice",
+    "primary_visual_family": "beauty_editorial",
+    "primary_visual_subject": "checklist",
+    "proof_mode": "none",
+    "recommended_frame_count": 5
+  },
+  "package": {
+    "focus_keyword": "合成反思编辑验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-reflective-topic",
+    "topic": "合成护肤反思编辑",
+    "angle_id": "synthetic-reflective-angle",
+    "angle": "用观点+边界替代单一建议",
+    "target_group": "合成测试反思读者",
+    "core_pain": "被密集建议淹没而无法提炼自己的判断",
+    "title": "合成回归反思编辑",
+    "cover_copy": "把这条观点收下来✨",
+    "content": "仅用于验证五页反思编辑与纯文字封面。",
+    "hashtags": ["#合成回归", "#反思编辑"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "white_quote",
+  "expected_archetypes": [
+    "cover",
+    "quote",
+    "explanation",
+    "scene",
+    "save"
+  ],
+  "visible_copy": {
+    "cover": "把这条观点收下来✨",
+    "save": "反思编辑对照卡"
+  }
+}

@@ -10,6 +10,7 @@
 - 通过记忆和可选证据检索减少重复，执行内容与合规策略检查。
 - 生成结构化 `VisualPlan`、`CarouselPayload`，解析素材并绑定来源、许可和哈希。
 - 用现代 editorial renderer 输出 5–7 张 1080×1440 PNG 和 contact sheet。
+- 自适应选择 6 个生产 template family 之一：根据 8 种 narrative form、density、content job 和 proof mode 评分，页面数量由 `ContentContract.recommended_frame_count` 驱动，与手工 mockup 数量无关。
 - 在 Human Review 暂停，允许人工审核或按现代 schema 编辑可见文字。
 - 运行 Final Guard，导出 `publish-copy.txt`、审计 JSON 和 Codex 图像救援 prompt。
 - 通过 checkpoint 与 run registry 支持超时或进程中断后的恢复。
@@ -125,6 +126,7 @@ pytest -q
 ```bash
 pytest -q tests/metrics_collector/test_launchd.py tests/trend_collector/test_trend_launchd.py
 pytest -q tests/integration/test_editorial_carousel_workflow.py
+pytest -q tests/integration/test_adaptive_six_template_workflow.py
 ```
 
 只有在明确需要验证官方素材 provider 时才启用 live 测试：

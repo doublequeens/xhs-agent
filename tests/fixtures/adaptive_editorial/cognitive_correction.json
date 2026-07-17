@@ -1,0 +1,71 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "cognitive_correction",
+  "synthetic_title": "合成回归认知纠偏",
+  "narrative_form": "cognitive_correction",
+  "narrative_plan": {
+    "narrative_form": "cognitive_correction",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "抛出常见的护肤认知误区"},
+      {"beat_id": "myth", "kind": "misconception", "purpose": "呈现广泛流传的错误做法"},
+      {"beat_id": "reveal", "kind": "reveal", "purpose": "揭示真实成因与机制"},
+      {"beat_id": "explain", "kind": "explanation", "purpose": "解释正确做法背后的逻辑"},
+      {"beat_id": "action", "kind": "action", "purpose": "提供可保存的纠正执行卡"}
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存的纠正执行卡"
+    },
+    "closing_mode": "boundary"
+  },
+  "content_contract": {
+    "audience": "合成测试护肤新手",
+    "trigger_situation": "看到互相矛盾的护肤建议时",
+    "decision_problem": "如何识别并纠正常见护肤误区",
+    "first_screen_promise": "五页完成合成认知纠偏验证",
+    "screenshot_asset": "合成认知纠偏卡",
+    "proof_asset": "合成误区对照表",
+    "visual_mode": "text_card",
+    "content_job": "save_and_check",
+    "primary_visual_family": "beauty_editorial",
+    "primary_visual_subject": "checklist",
+    "proof_mode": "none",
+    "recommended_frame_count": 5
+  },
+  "package": {
+    "focus_keyword": "合成认知纠偏验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-correction-topic-reveal",
+    "topic": "合成护肤认知纠偏",
+    "angle_id": "synthetic-correction-angle-reveal",
+    "angle": "用对照卡呈现误区与正确做法",
+    "target_group": "合成测试护肤新手",
+    "core_pain": "被互相矛盾的建议困扰而无法判断",
+    "title": "合成回归认知纠偏",
+    "cover_copy": "别再被这条护肤流言带偏✨",
+    "content": "仅用于验证五页认知纠偏、纯文字封面与可保存执行卡。本合成回归输入覆盖误区识别、机制揭示、正确做法解释与执行卡留存四个段落，用以驱动标准密度下的 pink_red 模板选择与渲染路径，确保每一页可见文字、emoji 与字体加载均通过 Render QA 校验，且不依赖任何外部素材 provider。本输入同时校验认知纠偏叙事结构在多页渲染中的稳定性，包括误区对照、成因揭示、正确做法解释与可保存执行卡四类段落在 pink_red 模板上的密度自适应，以及 emoji 与中文混排时的字体回退行为，确保每一帧都通过 Render QA 的字体探测、布局探测与安全边距校验，不依赖任何外部素材 provider，仅使用仓库内置字体与 approved 素材 manifest。",
+    "hashtags": ["#合成回归", "#认知纠偏"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "pink_red",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "diagnostic",
+    "explanation",
+    "save"
+  ],
+  "visible_copy": {
+    "cover": "别再被这条护肤流言带偏✨",
+    "save": "认知纠偏对照卡"
+  }
+}

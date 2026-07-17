@@ -39,3 +39,13 @@ domain_router -> domain_confirmation -> memory_retriever
 ## 输出边界
 
 终端导出会在 `outputs/publish/<date>-<domain>-<title>/` 下创建 PNG、publish copy、审计和救援 prompt 等发布产物。输出是供人工发布和复核的本地包，不包含对小红书平台的自动登录、上传或发布动作。
+
+## 自适应六模板
+
+视觉规划阶段运行自适应六模板工作流：根据 `NarrativePlan.narrative_form`（八种形式）和 `ContentContract` 在六个生产家族（`pink_red`、`deep_teal`、`soft_pink`、`coral_impact`、`green_catalog`、`white_quote`）中选择唯一家族，再按 `ContentContract.recommended_frame_count`（5–7）确定 frame plan 长度。页面数量是内容驱动，与手工 mockup 数量无关。
+
+每个 `FramePlanItem` 携带 `allowed_density`（sparse/standard/dense）和 `page_archetype`，渲染器据此选择排版密度和组件布局；不会出现截断、省略号、隐藏文字或低于最小字号的情况。Emoji 作为 grapheme 与正文一起渲染，使用仓库固定字体（`Source Han Serif SC`、`Source Han Sans SC`、`Bodoni Moda`，emoji 走 `Noto Color Emoji`）。
+
+当 `ContentContract.proof_mode=none` 时，`AssetManifest.items` 可以为空，对应纯文字 carousel；空 manifest 仍要经过 Carousel QA、Render QA 和 ContentLock 校验，渲染器只产出文字版页面。需要外部素材时，由 `asset_resolver` 按 `AssetRequirement` 解析并绑定来源、许可和哈希。
+
+旧 v1 checkpoint 通过 `src/editorial_carousel/legacy.py` 迁移：迁移器把可识别的旧 storyboard strategy 翻译成现代 `narrative_form`、补齐 `NarrativePlan`、重建现代 `VisualPlan`，再从现代 storyboard seam 进入图，不会重新启用删除的固定卡片路径。

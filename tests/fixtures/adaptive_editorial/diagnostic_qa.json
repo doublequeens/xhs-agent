@@ -1,0 +1,73 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "diagnostic_qa",
+  "synthetic_title": "合成回归诊断问答",
+  "narrative_form": "diagnostic_qa",
+  "narrative_plan": {
+    "narrative_form": "diagnostic_qa",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "提出常见护肤诊断疑问"},
+      {"beat_id": "scene", "kind": "scene", "purpose": "呈现需要诊断的合成场景"},
+      {"beat_id": "diagnostic", "kind": "diagnostic", "purpose": "给出判断标准与阈值"},
+      {"beat_id": "qa", "kind": "qa", "purpose": "回答最常被追问的疑问"},
+      {"beat_id": "action", "kind": "action", "purpose": "提供可保存的诊断卡"},
+      {"beat_id": "boundary", "kind": "boundary", "purpose": "说明诊断适用边界"}
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存的诊断卡"
+    },
+    "closing_mode": "focused_question"
+  },
+  "content_contract": {
+    "audience": "合成测试自诊人群",
+    "trigger_situation": "出现护肤不适却不确定原因时",
+    "decision_problem": "如何用六页完成自我诊断与下一步判断",
+    "first_screen_promise": "六页完成合成诊断问答验证",
+    "screenshot_asset": "合成诊断卡",
+    "proof_asset": "合成判断阈值表",
+    "visual_mode": "text_card",
+    "content_job": "diagnose_and_adjust",
+    "primary_visual_family": "beauty_editorial",
+    "primary_visual_subject": "checklist",
+    "proof_mode": "none",
+    "recommended_frame_count": 6
+  },
+  "package": {
+    "focus_keyword": "合成诊断问答验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-diagnostic-topic",
+    "topic": "合成护肤诊断问答",
+    "angle_id": "synthetic-diagnostic-angle",
+    "angle": "用判断阈值替代主观猜测",
+    "target_group": "合成测试自诊人群",
+    "core_pain": "不确定护肤不适是否需要调整方案",
+    "title": "合成回归诊断问答",
+    "cover_copy": "先诊断再调整看这张✨",
+    "content": "仅用于验证六页诊断问答与纯文字封面。",
+    "hashtags": ["#合成回归", "#诊断问答"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "soft_pink",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "diagnostic",
+    "qa",
+    "save",
+    "explanation"
+  ],
+  "visible_copy": {
+    "cover": "先诊断再调整看这张✨",
+    "save": "自我诊断对照卡"
+  }
+}

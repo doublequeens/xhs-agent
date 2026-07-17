@@ -3,13 +3,50 @@
   "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
   "fixture_id": "reference_checklist",
   "synthetic_title": "合成回归丁参考清单",
-  "expected_primary_family": "saveable_reference",
-  "expected_frame_signature": [
-    ["cover", "editorial_cover"],
-    ["checklist", "saveable_checklist"],
-    ["decision", "decision_tree"],
-    ["comparison", "left_right_comparison"],
-    ["save", "saveable_reference"]
+  "narrative_form": "checklist_collection",
+  "narrative_plan": {
+    "narrative_form": "checklist_collection",
+    "beats": [
+      {
+        "beat_id": "hook",
+        "kind": "hook",
+        "purpose": "建立合成清单目标"
+      },
+      {
+        "beat_id": "thesis",
+        "kind": "principle",
+        "purpose": "提出参考清单核心原则"
+      },
+      {
+        "beat_id": "collection",
+        "kind": "checklist",
+        "purpose": "给出可保存的核对清单"
+      },
+      {
+        "beat_id": "decision",
+        "kind": "diagnostic",
+        "purpose": "提供分流判断"
+      },
+      {
+        "beat_id": "action",
+        "kind": "action",
+        "purpose": "提供可保存参考页"
+      }
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存参考页"
+    },
+    "closing_mode": "boundary"
+  },
+  "expected_template_family": "deep_teal",
+  "expected_archetypes": [
+    "cover",
+    "thesis",
+    "item_collection",
+    "diagnostic",
+    "checklist"
   ],
   "content_contract": {
     "audience": "合成测试人群丁",
@@ -22,7 +59,7 @@
     "content_job": "save_and_check",
     "primary_visual_family": "saveable_reference",
     "primary_visual_subject": "checklist",
-    "proof_mode": "diagram",
+    "proof_mode": "none",
     "recommended_frame_count": 5
   },
   "package": {
@@ -37,7 +74,10 @@
     "title": "合成回归丁参考清单",
     "cover_copy": "五页完成合成参考清单验证",
     "content": "仅用于验证保存页、参考页与输出工件。",
-    "hashtags": ["#合成回归", "#清单验证"],
+    "hashtags": [
+      "#合成回归",
+      "#清单验证"
+    ],
     "domain": "beauty",
     "subdomain": "skincare",
     "profile_version": "beauty-v1",
@@ -45,13 +85,10 @@
     "risk_level": "low",
     "risk_flags": [],
     "content_format": "educational_cards",
-    "visual_style": "beauty_editorial_v1"
+    "visual_style": "beauty_editorial_v2"
   },
-  "frame_copy": {
-    "cover": {"headline": "五页完成合成参考清单验证", "body": "先确认本次清单的检查范围。", "items": ["页面", "素材", "工件"]},
-    "checklist": {"headline": "逐项勾选关键事实", "body": "每个检查项都对应可验证证据。", "items": ["页数正确", "字体正确", "素材正确"]},
-    "decision": {"headline": "发现差异就分流", "body": "根据差异类型进入对应处理路径。", "items": ["内容差异", "渲染差异", "工件差异"]},
-    "comparison": {"headline": "比较前后快照", "body": "只比较锁定范围内的确定字段。", "items": ["源哈希", "渲染哈希", "输出版本"]},
-    "save": {"headline": "保存最终参考页", "body": "将通过项整理为独立参考。", "items": ["可复核", "可恢复", "不重复"]}
+  "visible_copy": {
+    "cover": "五页完成合成参考清单验证",
+    "save": "保存最终参考页"
   }
 }

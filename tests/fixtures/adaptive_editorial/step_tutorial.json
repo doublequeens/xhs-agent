@@ -1,0 +1,73 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "step_tutorial",
+  "synthetic_title": "合成回归步骤教程",
+  "narrative_form": "step_tutorial",
+  "narrative_plan": {
+    "narrative_form": "step_tutorial",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "说明早高峰妆前等待目标"},
+      {"beat_id": "scene", "kind": "scene", "purpose": "呈现赶时间的真实场景"},
+      {"beat_id": "steps", "kind": "steps", "purpose": "给出有顺序的等待流程"},
+      {"beat_id": "diagnostic", "kind": "diagnostic", "purpose": "说明每步完成标准"},
+      {"beat_id": "explain", "kind": "explanation", "purpose": "解释为什么不能立刻叠加"},
+      {"beat_id": "action", "kind": "action", "purpose": "提供可保存执行卡"}
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存执行卡"
+    },
+    "closing_mode": "action_prompt"
+  },
+  "content_contract": {
+    "audience": "合成测试通勤人群",
+    "trigger_situation": "早高峰需要快速完成妆前护理时",
+    "decision_problem": "如何判断每一层何时可以继续",
+    "first_screen_promise": "六页完成合成妆前等待顺序验证",
+    "screenshot_asset": "合成妆前顺序卡",
+    "proof_asset": "合成吸收状态示意",
+    "visual_mode": "text_card",
+    "content_job": "follow_steps",
+    "primary_visual_family": "step_flow",
+    "primary_visual_subject": "process",
+    "proof_mode": "none",
+    "recommended_frame_count": 6
+  },
+  "package": {
+    "focus_keyword": "合成妆前等待验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-step-topic",
+    "topic": "合成妆前等待顺序",
+    "angle_id": "synthetic-step-angle",
+    "angle": "按状态推进而不是按秒数推进",
+    "target_group": "合成测试通勤人群",
+    "core_pain": "赶时间时连续叠加导致搓泥",
+    "title": "合成回归步骤教程",
+    "cover_copy": "赶时间也别连着叠✨",
+    "content": "仅用于验证六页步骤教程、emoji 和纯文字素材路径。",
+    "hashtags": ["#合成回归", "#步骤验证"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "deep_teal",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "steps",
+    "diagnostic",
+    "save",
+    "explanation"
+  ],
+  "visible_copy": {
+    "cover": "赶时间也别连着叠✨",
+    "save": "妆前等待顺序卡"
+  }
+}

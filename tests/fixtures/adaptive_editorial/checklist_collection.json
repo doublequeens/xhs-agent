@@ -1,0 +1,86 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "checklist_collection",
+  "synthetic_title": "合成回归清单合集",
+  "narrative_form": "checklist_collection",
+  "narrative_plan": {
+    "narrative_form": "checklist_collection",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "提出合成合集的浏览目标"},
+      {"beat_id": "scene", "kind": "scene", "purpose": "呈现需要清单合集的合成场景"},
+      {"beat_id": "checklist", "kind": "checklist", "purpose": "给出主清单与核对顺序"},
+      {"beat_id": "compare", "kind": "comparison", "purpose": "对比可选条目与取舍依据"},
+      {"beat_id": "explain", "kind": "explanation", "purpose": "解释条目排序的逻辑"},
+      {"beat_id": "action", "kind": "action", "purpose": "提供可保存的执行卡"},
+      {"beat_id": "boundary", "kind": "boundary", "purpose": "说明合成合集的适用边界"}
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存的执行卡"
+    },
+    "closing_mode": "none"
+  },
+  "content_contract": {
+    "audience": "合成测试清单读者",
+    "trigger_situation": "需要把多条护肤要点收纳为可保存清单时",
+    "decision_problem": "如何在七个页面里完成核对、对比与执行",
+    "first_screen_promise": "七页完成合成清单合集验证",
+    "screenshot_asset": "合成清单合集卡",
+    "proof_asset": "合成条目对照表",
+    "visual_mode": "text_card",
+    "content_job": "compare_and_choose",
+    "primary_visual_family": "saveable_reference",
+    "primary_visual_subject": "checklist",
+    "proof_mode": "none",
+    "recommended_frame_count": 7
+  },
+  "package": {
+    "focus_keyword": "合成清单合集验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-checklist-topic",
+    "topic": "合成护肤清单合集",
+    "angle_id": "synthetic-checklist-angle",
+    "angle": "按核对顺序组织可保存的多页清单",
+    "target_group": "合成测试清单读者",
+    "core_pain": "护肤要点分散，难以一次性核对完成",
+    "title": "合成回归清单合集",
+    "cover_copy": "七页收齐整套核对清单✨",
+    "content": "仅用于验证七页清单合集、纯文字封面、可保存执行卡与 green_catalog 模板选择。本合成回归输入驱动标准密度下的多页清单渲染，覆盖主清单、对比、解释与边界四个段落，用以校验每页可见文字、emoji 与字体加载均通过 Render QA 校验，且不依赖任何外部素材 provider，仅使用仓库内置字体。",
+    "hashtags": ["#合成回归", "#清单合集"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "green_catalog",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "item_collection",
+    "checklist",
+    "save",
+    "comparison",
+    "boundary"
+  ],
+  "visible_copy": {
+    "cover": "七页收齐整套核对清单✨",
+    "checklist": {
+      "heading": "合成核对清单",
+      "items": [
+        "确认肤质基线",
+        "记录使用顺序",
+        "核对单次用量",
+        "观察吸收状态",
+        "对比可选替代",
+        "留存执行快照"
+      ]
+    },
+    "save": "清单合集执行卡"
+  }
+}

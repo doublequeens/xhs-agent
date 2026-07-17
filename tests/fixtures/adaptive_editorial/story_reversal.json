@@ -1,0 +1,73 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "story_reversal",
+  "synthetic_title": "合成回归反转故事",
+  "narrative_form": "story_reversal",
+  "narrative_plan": {
+    "narrative_form": "story_reversal",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "提出常见的护肤路径假设"},
+      {"beat_id": "scene", "kind": "scene", "purpose": "呈现遵循该假设的合成场景"},
+      {"beat_id": "myth", "kind": "misconception", "purpose": "展示假设的盲点"},
+      {"beat_id": "reveal", "kind": "reveal", "purpose": "揭示反转后的真实路径"},
+      {"beat_id": "steps", "kind": "steps", "purpose": "给出反转后的执行步骤"},
+      {"beat_id": "action", "kind": "action", "purpose": "提供可保存的反转执行卡"}
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存的反转执行卡"
+    },
+    "closing_mode": "none"
+  },
+  "content_contract": {
+    "audience": "合成测试反转读者",
+    "trigger_situation": "被常规护肤路径带偏后需要反转时",
+    "decision_problem": "如何用六页完成假设、反转与执行",
+    "first_screen_promise": "六页完成合成反转故事验证",
+    "screenshot_asset": "合成反转故事卡",
+    "proof_asset": "合成反转对照表",
+    "visual_mode": "text_card",
+    "content_job": "follow_steps",
+    "primary_visual_family": "step_flow",
+    "primary_visual_subject": "process",
+    "proof_mode": "none",
+    "recommended_frame_count": 6
+  },
+  "package": {
+    "focus_keyword": "合成反转故事验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-reversal-topic-flip",
+    "topic": "合成护肤反转故事",
+    "angle_id": "synthetic-reversal-angle-flip",
+    "angle": "用反转结构替代线性建议",
+    "target_group": "合成测试反转读者",
+    "core_pain": "按常规路径反复尝试却始终不见效",
+    "title": "合成回归反转故事",
+    "cover_copy": "原来这条路径才是反的✨",
+    "content": "仅用于验证六页反转故事、纯文字封面与可保存执行卡。本合成回归输入驱动标准密度下的 coral_impact 模板选择与多页反转叙事渲染，覆盖场景、盲点、反转揭示、执行步骤与行动卡五个段落，用以校验每页可见文字、emoji 与字体加载均通过 Render QA 校验，且不依赖任何外部素材 provider，仅使用仓库内置字体。",
+    "hashtags": ["#合成回归", "#反转故事"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "coral_impact",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "story_beat",
+    "explanation",
+    "save",
+    "comparison"
+  ],
+  "visible_copy": {
+    "cover": "原来这条路径才是反的✨",
+    "save": "反转执行对照卡"
+  }
+}

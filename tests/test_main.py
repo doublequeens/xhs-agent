@@ -679,11 +679,20 @@ def valid_publish_package_with_rendered_images(
         "decision_tree",
         "three_state_diagnostic",
     ]
+    archetypes = [
+        "cover",
+        "diagnostic",
+        "diagnostic",
+        "checklist",
+        "save",
+        "diagnostic",
+        "diagnostic",
+    ]
     frames = [
         {
             "frame_id": f"frame-{index}",
             "role": "cover" if index == 1 else f"detail-{index}",
-            "layout": layouts[index - 1],
+            "page_archetype": archetypes[index - 1],
             "headline": title if index == 1 else f"第{index}页",
             "kicker": "通勤护肤",
             "content_blocks": [
@@ -712,7 +721,10 @@ def valid_publish_package_with_rendered_images(
         {
             "frame_id": frame["frame_id"],
             "role": frame["role"],
-            "layout": frame["layout"],
+            "page_archetype": frame["page_archetype"],
+            "template_family": "pink_red",
+            "density": "standard",
+            "composition_variant": "synthetic-regression",
             "path": str(path),
             "width": 1080,
             "height": 1440,
@@ -776,7 +788,7 @@ def valid_publish_package_with_rendered_images(
             "content_job": "diagnose_and_adjust",
             "primary_visual_family": "face_zone_map",
             "primary_visual_subject": "face_map",
-            "proof_mode": "product_texture",
+            "proof_mode": "none",
             "recommended_frame_count": frame_count,
         },
         "domain": domain,
@@ -784,16 +796,32 @@ def valid_publish_package_with_rendered_images(
         "profile_version": profile_version,
         "rendered_image_paths": [str(path) for path in paths],
         "visual_plan": {
-            "design_system": "beauty_editorial_v1",
+            "design_system": "beauty_editorial_v2",
+            "template_family": "pink_red",
+            "template_selection": {
+                "template_family": "pink_red",
+                "score": 64,
+                "reasons": ["synthetic regression input"],
+                "rejected_families": {
+                    family: ["synthetic regression input"]
+                    for family in (
+                        "deep_teal",
+                        "soft_pink",
+                        "coral_impact",
+                        "green_catalog",
+                        "white_quote",
+                    )
+                },
+            },
+            "narrative_form": "cognitive_correction",
             "content_job": "diagnose_and_adjust",
-            "primary_visual_family": "face_zone_map",
-            "supporting_families": [],
             "frame_plan": [
                 {
                     "frame_id": frame["frame_id"],
                     "role": frame["role"],
-                    "layout": frame["layout"],
+                    "page_archetype": frame["page_archetype"],
                     "purpose": frame["headline"],
+                    "allowed_density": ["sparse", "standard", "dense"],
                     "asset_roles": [],
                 }
                 for frame in frames

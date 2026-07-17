@@ -3,13 +3,50 @@
   "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
   "fixture_id": "ordered_routine",
   "synthetic_title": "合成回归乙顺序流程",
-  "expected_primary_family": "step_flow",
-  "expected_frame_signature": [
-    ["cover", "editorial_cover"],
-    ["sequence", "step_timeline"],
-    ["routine", "morning_evening_flow"],
-    ["decision", "decision_tree"],
-    ["save", "saveable_checklist"]
+  "narrative_form": "step_tutorial",
+  "narrative_plan": {
+    "narrative_form": "step_tutorial",
+    "beats": [
+      {
+        "beat_id": "hook",
+        "kind": "hook",
+        "purpose": "建立合成顺序流程目标"
+      },
+      {
+        "beat_id": "scene",
+        "kind": "scene",
+        "purpose": "呈现顺序问题场景"
+      },
+      {
+        "beat_id": "steps",
+        "kind": "steps",
+        "purpose": "给出有顺序的步骤"
+      },
+      {
+        "beat_id": "decision",
+        "kind": "diagnostic",
+        "purpose": "提供分支判断标准"
+      },
+      {
+        "beat_id": "action",
+        "kind": "action",
+        "purpose": "提供可保存顺序流程卡"
+      }
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存顺序流程卡"
+    },
+    "closing_mode": "action_prompt"
+  },
+  "expected_template_family": "deep_teal",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "steps",
+    "diagnostic",
+    "save"
   ],
   "content_contract": {
     "audience": "合成测试人群乙",
@@ -22,7 +59,7 @@
     "content_job": "follow_steps",
     "primary_visual_family": "step_flow",
     "primary_visual_subject": "process",
-    "proof_mode": "diagram",
+    "proof_mode": "none",
     "recommended_frame_count": 5
   },
   "package": {
@@ -37,7 +74,10 @@
     "title": "合成回归乙顺序流程",
     "cover_copy": "五页走完合成顺序流程验证",
     "content": "仅用于验证顺序、断点与幂等输出。",
-    "hashtags": ["#合成回归", "#顺序验证"],
+    "hashtags": [
+      "#合成回归",
+      "#顺序验证"
+    ],
     "domain": "beauty",
     "subdomain": "skincare",
     "profile_version": "beauty-v1",
@@ -45,13 +85,10 @@
     "risk_level": "low",
     "risk_flags": [],
     "content_format": "educational_cards",
-    "visual_style": "beauty_editorial_v1"
+    "visual_style": "beauty_editorial_v2"
   },
-  "frame_copy": {
-    "cover": {"headline": "五页走完合成顺序流程验证", "body": "从入口到保存逐项前进。", "items": ["入口", "执行", "完成"]},
-    "sequence": {"headline": "按编号依次执行", "body": "后一步只读取前一步的确定结果。", "items": ["建立计划", "解析素材", "执行渲染"]},
-    "routine": {"headline": "分开两条流程", "body": "分别验证两条并行语义路径。", "items": ["路径甲", "路径乙", "共同收口"]},
-    "decision": {"headline": "在条件点分支", "body": "根据确定条件选择唯一下一步。", "items": ["条件成立", "条件不成立", "记录选择"]},
-    "save": {"headline": "保存顺序核对表", "body": "用清单确认步骤没有跳过或重放。", "items": ["没有漏步", "没有重放", "只有一版"]}
+  "visible_copy": {
+    "cover": "五页走完合成顺序流程验证",
+    "save": "保存顺序核对表"
   }
 }

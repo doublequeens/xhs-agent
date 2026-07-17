@@ -3,13 +3,50 @@
   "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
   "fixture_id": "multi_option_decision",
   "synthetic_title": "合成回归丙多项决策",
-  "expected_primary_family": "comparison_decision",
-  "expected_frame_signature": [
-    ["cover", "editorial_cover"],
-    ["comparison", "left_right_comparison"],
-    ["feedback_diagnosis", "three_state_diagnostic"],
-    ["decision", "decision_tree"],
-    ["save", "saveable_reference"]
+  "narrative_form": "comparison",
+  "narrative_plan": {
+    "narrative_form": "comparison",
+    "beats": [
+      {
+        "beat_id": "hook",
+        "kind": "hook",
+        "purpose": "建立合成决策目标"
+      },
+      {
+        "beat_id": "scene",
+        "kind": "scene",
+        "purpose": "呈现决策场景"
+      },
+      {
+        "beat_id": "comparison",
+        "kind": "comparison",
+        "purpose": "对比多个选项"
+      },
+      {
+        "beat_id": "feedback",
+        "kind": "diagnostic",
+        "purpose": "提供反馈判断"
+      },
+      {
+        "beat_id": "action",
+        "kind": "action",
+        "purpose": "提供可保存决策参考卡"
+      }
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存决策参考卡"
+    },
+    "closing_mode": "boundary"
+  },
+  "expected_template_family": "green_catalog",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "comparison",
+    "diagnostic",
+    "save"
   ],
   "content_contract": {
     "audience": "合成测试人群丙",
@@ -22,7 +59,7 @@
     "content_job": "compare_and_choose",
     "primary_visual_family": "comparison_decision",
     "primary_visual_subject": "skin_macro",
-    "proof_mode": "comparison",
+    "proof_mode": "none",
     "recommended_frame_count": 5
   },
   "package": {
@@ -37,7 +74,10 @@
     "title": "合成回归丙多项决策",
     "cover_copy": "五页完成合成多项决策验证",
     "content": "仅用于验证比较布局与决策分支。",
-    "hashtags": ["#合成回归", "#决策验证"],
+    "hashtags": [
+      "#合成回归",
+      "#决策验证"
+    ],
     "domain": "beauty",
     "subdomain": "skincare",
     "profile_version": "beauty-v1",
@@ -45,13 +85,10 @@
     "risk_level": "low",
     "risk_flags": [],
     "content_format": "educational_cards",
-    "visual_style": "beauty_editorial_v1"
+    "visual_style": "beauty_editorial_v2"
   },
-  "frame_copy": {
-    "cover": {"headline": "五页完成合成多项决策验证", "body": "先明确比较轴与选择规则。", "items": ["固定输入", "明确选项", "绑定结果"]},
-    "comparison": {"headline": "左右对照两个选项", "body": "用同一组维度比较两侧。", "items": ["左侧事实", "右侧事实", "共同维度"]},
-    "feedback_diagnosis": {"headline": "归类三种状态", "body": "将观测结果放入三个确定状态。", "items": ["状态甲", "状态乙", "状态丙"]},
-    "decision": {"headline": "沿决策树选择", "body": "每个条件只指向一个结果。", "items": ["检查条件", "选择分支", "保存依据"]},
-    "save": {"headline": "保存决策参考卡", "body": "复核比较轴、分支与最终选择。", "items": ["比较一致", "分支唯一", "结果可追溯"]}
+  "visible_copy": {
+    "cover": "五页完成合成多项决策验证",
+    "save": "保存决策参考卡"
   }
 }

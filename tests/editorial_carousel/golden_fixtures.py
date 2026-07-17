@@ -18,11 +18,13 @@ _FIXTURE_ENVELOPE_KEYS = frozenset(
         "test_only",
         "intended_use",
         "synthetic_title",
-        "expected_primary_family",
-        "expected_frame_signature",
+        "narrative_form",
+        "narrative_plan",
+        "expected_template_family",
+        "expected_archetypes",
         "content_contract",
         "package",
-        "frame_copy",
+        "visible_copy",
     }
 )
 

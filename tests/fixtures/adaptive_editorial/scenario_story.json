@@ -1,0 +1,75 @@
+{
+  "test_only": true,
+  "intended_use": "synthetic regression input only; never a production topic, prompt example, memory seed, signal, or publish candidate",
+  "fixture_id": "scenario_story",
+  "synthetic_title": "合成回归场景叙事",
+  "narrative_form": "scenario_story",
+  "narrative_plan": {
+    "narrative_form": "scenario_story",
+    "beats": [
+      {"beat_id": "hook", "kind": "hook", "purpose": "用场景化句子引入叙事"},
+      {"beat_id": "scene", "kind": "scene", "purpose": "呈现典型合成场景"},
+      {"beat_id": "tension", "kind": "tension", "purpose": "突出场景中的冲突或张力"},
+      {"beat_id": "reveal", "kind": "reveal", "purpose": "揭示转折与解决方向"},
+      {"beat_id": "explain", "kind": "explanation", "purpose": "解释转折背后的原因"},
+      {"beat_id": "action", "kind": "action", "purpose": "提供可保存的行动卡"},
+      {"beat_id": "boundary", "kind": "boundary", "purpose": "说明叙事适用边界"}
+    ],
+    "saveable_beat": {
+      "beat_id": "action",
+      "kind": "action",
+      "purpose": "提供可保存的行动卡"
+    },
+    "closing_mode": "reflection"
+  },
+  "content_contract": {
+    "audience": "合成测试叙事读者",
+    "trigger_situation": "希望用场景故事理解护肤决策时",
+    "decision_problem": "如何在七页里完成场景、转折与行动的完整叙事",
+    "first_screen_promise": "七页完成合成场景叙事验证",
+    "screenshot_asset": "合成场景叙事卡",
+    "proof_asset": "合成叙事对照表",
+    "visual_mode": "text_card",
+    "content_job": "diagnose_and_adjust",
+    "primary_visual_family": "beauty_editorial",
+    "primary_visual_subject": "checklist",
+    "proof_mode": "none",
+    "recommended_frame_count": 7
+  },
+  "package": {
+    "focus_keyword": "合成场景叙事验证",
+    "focus_keyword_cli_present": true,
+    "topic_id": "synthetic-scenario-topic",
+    "topic": "合成护肤场景叙事",
+    "angle_id": "synthetic-scenario-angle",
+    "angle": "用具体场景代替抽象建议",
+    "target_group": "合成测试叙事读者",
+    "core_pain": "抽象建议难以落地到具体场景",
+    "title": "合成回归场景叙事",
+    "cover_copy": "把这个场景记下来再决定✨",
+    "content": "仅用于验证七页场景叙事、纯文字封面与可保存行动卡。本合成回归输入驱动标准密度下的 soft_pink 模板选择与多页叙事渲染，覆盖场景、张力、转折、解释、行动与边界六个段落，用以校验每页可见文字、emoji 与字体加载均通过 Render QA 校验，且不依赖任何外部素材 provider，仅使用仓库内置字体。",
+    "hashtags": ["#合成回归", "#场景叙事"],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "profile_version": "beauty-v1",
+    "content_intent": "how_to",
+    "risk_level": "low",
+    "risk_flags": [],
+    "content_format": "educational_cards",
+    "visual_style": "beauty_editorial_v2"
+  },
+  "expected_template_family": "soft_pink",
+  "expected_archetypes": [
+    "cover",
+    "scene",
+    "story_beat",
+    "explanation",
+    "save",
+    "steps",
+    "boundary"
+  ],
+  "visible_copy": {
+    "cover": "把这个场景记下来再决定✨",
+    "save": "场景叙事行动卡"
+  }
+}
