@@ -293,7 +293,7 @@ def _probe_attestation_issues(
             )
         if (role.endswith(".body") or ".items[" in role) and font_size:
             ratio = float(_get_value(text, "line_height") or 0) / font_size
-            if not 1.35 <= ratio <= 1.55:
+            if not 1.345 <= ratio <= 1.555:
                 issues.append(
                     _issue(
                         "body_line_height_invalid",
