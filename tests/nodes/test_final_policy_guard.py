@@ -2156,6 +2156,35 @@ def test_final_policy_guard_binds_role_archetype_visible_text_and_unique_slots(
     assert "asset_slot_binding_mismatch" in rules
 
 
+def test_final_policy_guard_binds_rendered_emphasis_phrases(monkeypatch, tmp_path):
+    # Emphasis phrases are rendered visible text: when the probe captures them
+    # the guard must bind them against the storyboard instead of flagging the
+    # extra probe text. Without the emphasis[*] clause in the expected-text
+    # filter, every page with rendered emphasis fails this check and the run
+    # loops human_review <-> final_policy_guard forever (regression).
+    module = __import__(
+        "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]
+    )
+    state, active_root = _editorial_guard_state(tmp_path)
+    monkeypatch.setattr(module, "ASSET_ACTIVE_ROOT", active_root)
+    monkeypatch.setattr(module, "RENDER_OUTPUT_ROOT", tmp_path)
+
+    state["publish_package"]["storyboards"][1]["emphasis"] = ["作息", "记录"]
+    page = state["render_manifest"].pages[1]
+    page.probe = SimpleNamespace(
+        text_results=[
+            *page.probe.text_results,
+            SimpleNamespace(role="emphasis[0]", text="作息"),
+            SimpleNamespace(role="emphasis[1]", text="记录"),
+        ]
+    )
+
+    result = final_policy_guard_node(state)
+    rules = {issue["rule_id"] for issue in result["final_policy_issues"]}
+
+    assert "rendered_visible_text_binding_mismatch" not in rules
+
+
 def test_final_policy_guard_binds_rendered_page_archetype(monkeypatch, tmp_path):
     module = __import__(
         "src.nodes.node_q_01_final_policy_guard", fromlist=["unused"]

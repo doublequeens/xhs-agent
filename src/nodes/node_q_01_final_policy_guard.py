@@ -840,6 +840,7 @@ def _editorial_artifact_issues(state: AgentState, package: dict) -> list[dict]:
                 and (
                     role in {"kicker", "headline", "footer"}
                     or role.startswith("content_blocks[")
+                    or role.startswith("emphasis[")
                 )
             }
             probe = _value(page, "probe")

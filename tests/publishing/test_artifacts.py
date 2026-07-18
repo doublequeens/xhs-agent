@@ -148,6 +148,13 @@ def _probe(frame: dict) -> dict:
                 ],
             ]
         )
+    # Emphasis phrases are rendered visible text (the editorial renderer draws
+    # them and the page probe captures them), so the probe must carry them for
+    # the Final Guard binding check to pass.
+    visible_text.extend(
+        (f"emphasis[{index}]", value)
+        for index, value in enumerate(frame.get("emphasis", []))
+    )
     return {
         "canvas_width": 1080,
         "canvas_height": 1440,
