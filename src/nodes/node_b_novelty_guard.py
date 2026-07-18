@@ -1,4 +1,6 @@
-from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
+import json
+
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 from typing import List, Mapping
 
@@ -12,6 +14,9 @@ from src.nodes.narrative_plan import (
     find_narrative_plan,
     require_same_narrative_plan,
 )
+
+
+_NOVELTY_GUARD_MAX_RETRIES = 3
 
 
 def _require_domain_scope(domain_context) -> tuple[str, str]:
@@ -133,14 +138,57 @@ def novelty_guard_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    novelty_result_json = get_model().execute(messages)
+    novelty_check_results: NoveltyCheckResults | None = None
+    last_error: Exception | None = None
+    for attempt in range(_NOVELTY_GUARD_MAX_RETRIES):
+        novelty_result_json = get_model().execute(messages)
 
-    try:
-        novelty_check_results = NoveltyCheckResults(**novelty_result_json)
-    except Exception as e:
-        print(f"Failed to transform to NoveltyCheckResult schema, please check the detail: {e}")
-        novelty_check_results = []
-        raise RuntimeError(f"Process terminated due to error: {e}")
+        try:
+            novelty_check_results = NoveltyCheckResults(**novelty_result_json)
+            break
+        except Exception as error:
+            last_error = error
+            print(
+                f"[Attempt {attempt + 1}/{_NOVELTY_GUARD_MAX_RETRIES}] "
+                f"格式校验失败，触发大模型自修复机制: {error}"
+            )
+            if attempt == _NOVELTY_GUARD_MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"Process terminated due to novelty guard error "
+                    f"after {_NOVELTY_GUARD_MAX_RETRIES} attempts: {error}"
+                ) from error
+            messages.append(
+                AIMessage(content=json.dumps(novelty_result_json, ensure_ascii=False, default=str))
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下数据校验错误:\n"
+                        f"{error}\n"
+                        "请务必严格按照要求的 JSON 结构重新输出，"
+                        "不要漏掉必填字段，也不要改变字段层级。注意："
+                        "narrative_plan.narrative_form 只能是 "
+                        "cognitive_correction / step_tutorial / checklist_collection / "
+                        "comparison / diagnostic_qa / scenario_story / story_reversal / "
+                        "reflective_editorial 之一；"
+                        "narrative_plan.closing_mode 只能是 "
+                        "none / boundary / reflection / focused_question / "
+                        "action_prompt 之一；"
+                        "narrative beats 的 kind 只能是 "
+                        "hook / scene / tension / misconception / reveal / principle / "
+                        "explanation / example / steps / checklist / comparison / "
+                        "diagnostic / qa / quote / boundary / summary / action 之一，"
+                        "不要把 closing_mode 的值写到 beat kind，也不要把其它字段的"
+                        "枚举值串到 narrative_plan；"
+                        "matched_history / memory_signals 等数组字段不能写成 null。"
+                    )
+                )
+            )
+
+    if novelty_check_results is None:
+        raise RuntimeError(
+            f"novelty guard produced no results: {last_error}"
+        )
 
     angle_candidates = [
         {

@@ -1,10 +1,14 @@
-from xml.parsers.expat import model
+import json
 
 from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, HashTagOutput
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+
+
+_HASHTAG_SEO_MAX_RETRIES = 3
+
 
 def hashtag_node(state: AgentState) -> AgentState:
     """
@@ -44,14 +48,41 @@ def hashtag_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)]
 
     llm = get_model()
-    hashtag_json = llm.execute(messages)
-    try:
-        hashtag_output = HashTagOutput(**hashtag_json)
-    except Exception as e:
-        print(f"Failed to transform to HashTagOutput schema, please check the detail: {e}") 
-        hashtag_output = None
-        raise RuntimeError(f"Process terminated due to error: {e}")
+    hashtag_output: HashTagOutput | None = None
+    last_error: Exception | None = None
+    for attempt in range(_HASHTAG_SEO_MAX_RETRIES):
+        hashtag_json = llm.execute(messages)
+        try:
+            hashtag_output = HashTagOutput(**hashtag_json)
+            return {
+                "hashtags": hashtag_output,
+                "final_content": hashtag_input}
+        except Exception as error:
+            last_error = error
+            print(
+                f"[Attempt {attempt + 1}/{_HASHTAG_SEO_MAX_RETRIES}] "
+                f"格式校验失败，触发大模型自修复机制: {error}"
+            )
+            if attempt == _HASHTAG_SEO_MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"Process terminated due to hashtag seo error "
+                    f"after {_HASHTAG_SEO_MAX_RETRIES} attempts: {error}"
+                ) from error
+            messages.append(
+                AIMessage(content=json.dumps(hashtag_json, ensure_ascii=False, default=str))
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下数据校验错误:\n"
+                        f"{error}\n"
+                        "请务必严格按照要求的 JSON 结构重新输出，"
+                        "不要漏掉必填字段，也不要改变字段层级；"
+                        "hashtags 必须是字符串数组，不要写成 null 或单个字符串。"
+                    )
+                )
+            )
 
-    return {
-        "hashtags": hashtag_output,
-        "final_content": hashtag_input}
+    raise RuntimeError(
+        f"hashtag seo produced no output: {last_error}"
+    )

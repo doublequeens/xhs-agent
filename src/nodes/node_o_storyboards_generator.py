@@ -1,6 +1,7 @@
+import json
 from typing import Any
 
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from src.models import get_model
 from src.nodes.publish_patch import (
@@ -13,6 +14,9 @@ from src.nodes.publish_patch import (
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas import AgentState, CarouselPayload, VisualPlan
 from src.schemas.content_contract import ContentContract
+
+
+_STORYBOARDS_GENERATOR_MAX_RETRIES = 3
 
 
 def _get_value(payload, key):
@@ -67,7 +71,10 @@ def _semantic_payload(
     visual_plan: VisualPlan,
     content_contract: ContentContract,
 ) -> CarouselPayload:
-    payload = CarouselPayload.model_validate(raw_payload)
+    if isinstance(raw_payload, CarouselPayload):
+        payload = raw_payload
+    else:
+        payload = CarouselPayload.model_validate(raw_payload)
     expected = [
         (item.frame_id, item.role, item.page_archetype)
         for item in visual_plan.frame_plan
@@ -149,12 +156,51 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
         ),
     ]
 
-    storyboard_json = get_model().execute(messages)
-    payload = _semantic_payload(
-        storyboard_json,
-        visual_plan,
-        validated_contract,
-    )
+    payload: CarouselPayload | None = None
+    last_error: Exception | None = None
+    for attempt in range(_STORYBOARDS_GENERATOR_MAX_RETRIES):
+        storyboard_json = get_model().execute(messages)
+        try:
+            payload = CarouselPayload.model_validate(storyboard_json)
+            break
+        except Exception as error:
+            last_error = error
+            print(
+                f"[Attempt {attempt + 1}/{_STORYBOARDS_GENERATOR_MAX_RETRIES}] "
+                f"格式校验失败，触发大模型自修复机制: {error}"
+            )
+            if attempt == _STORYBOARDS_GENERATOR_MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"Process terminated due to storyboards generator error "
+                    f"after {_STORYBOARDS_GENERATOR_MAX_RETRIES} attempts: {error}"
+                ) from error
+            messages.append(
+                AIMessage(content=json.dumps(storyboard_json, ensure_ascii=False, default=str))
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下数据校验错误:\n"
+                        f"{error}\n"
+                        "请务必严格按照要求的 JSON 结构重新输出，"
+                        "不要漏掉必填字段，也不要改变字段层级。注意："
+                        "storyboard 数组必须严格匹配 visual_plan 的 frame 顺序、"
+                        "role 与 page archetype；"
+                        "首帧 headline 必须逐字等于 content_contract.first_screen_promise；"
+                        "content_blocks / visual_slots / emphasis 等数组字段不能写成 null，"
+                        "缺失时输出空数组；"
+                        "block_type、role、layout 等 enum 字段必须使用各自允许的取值。"
+                    )
+                )
+            )
+
+    if payload is None:
+        raise RuntimeError(
+            f"storyboards generator produced no payload: {last_error}"
+        )
+
+    # Re-run the full semantic payload (structural checks raise ValueError unchanged).
+    payload = _semantic_payload(payload, visual_plan, validated_contract)
     generated_storyboards = payload.model_dump(mode="json")["storyboards"]
 
     merged_publish_package = dict(publish_package)

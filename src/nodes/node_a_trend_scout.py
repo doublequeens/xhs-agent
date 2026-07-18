@@ -1,9 +1,12 @@
 import json
 from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, TopicItem
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+
+
+_TREND_SCOUT_MAX_RETRIES = 3
 
 
 def _get_value(payload, key):
@@ -70,24 +73,58 @@ def trend_scout_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    trend_json = get_model().execute(messages)
+    trend_options: list[TopicItem] | None = None
+    last_error: Exception | None = None
+    for attempt in range(_TREND_SCOUT_MAX_RETRIES):
+        trend_json = get_model().execute(messages)
 
-    try:
-        trend_options = []
-        for trend in trend_json:
-            normalized_trend = dict(trend)
-            if domain_context:
-                normalized_trend["domain"] = _get_value(domain_context, "domain")
-                normalized_trend["subdomain"] = _get_value(domain_context, "subdomain")
-            normalized_trend["risk_level"] = _normalize_trend_risk_level(
-                normalized_trend,
-                domain_context,
-                content_policy,
+        try:
+            trend_options = []
+            for trend in trend_json:
+                normalized_trend = dict(trend)
+                if domain_context:
+                    normalized_trend["domain"] = _get_value(domain_context, "domain")
+                    normalized_trend["subdomain"] = _get_value(domain_context, "subdomain")
+                normalized_trend["risk_level"] = _normalize_trend_risk_level(
+                    normalized_trend,
+                    domain_context,
+                    content_policy,
+                )
+                trend_options.append(TopicItem(**normalized_trend))
+            return {"trends": trend_options}
+        except Exception as error:
+            last_error = error
+            print(
+                f"[Attempt {attempt + 1}/{_TREND_SCOUT_MAX_RETRIES}] "
+                f"格式校验失败，触发大模型自修复机制: {error}"
             )
-            trend_options.append(TopicItem(**normalized_trend))
-    except Exception as e:
-        print(f"Failed to tranform to TopicItem schema, please check the detail: {e}")
-        trend_options = []
-        raise RuntimeError(f"Process terminated due to error: {e}")
+            if attempt == _TREND_SCOUT_MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"Process terminated due to trend scout error "
+                    f"after {_TREND_SCOUT_MAX_RETRIES} attempts: {error}"
+                ) from error
+            messages.append(
+                AIMessage(content=json.dumps(trend_json, ensure_ascii=False, default=str))
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下数据校验错误:\n"
+                        f"{error}\n"
+                        "请务必严格按照要求的 JSON 数组结构重新输出，"
+                        "不要漏掉必填字段，也不要改变字段层级。注意："
+                        "content_contract.primary_visual_subject 只能是 "
+                        "face_map / serum_texture / product_cutout / skin_macro / "
+                        "checklist / process 之一；"
+                        "content_contract.proof_mode 只能是 "
+                        "diagram / real_photo / product_texture / comparison / none 之一；"
+                        "content_intent / risk_level / visual_mode 等 enum 字段必须"
+                        "使用各自允许的取值，不要把一个枚举的值写到另一个字段；"
+                        "risk_flags / creative_seed 等必填字段不能写成 null。"
+                    )
+                )
+            )
 
-    return {"trends": trend_options}
+    raise RuntimeError(
+        f"trend scout produced no trends: {last_error}"
+    )

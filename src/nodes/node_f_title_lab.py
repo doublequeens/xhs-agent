@@ -1,8 +1,14 @@
+import json
+
 from langchain_core.prompts import PromptTemplate
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, DraftTitles
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+
+
+_TITLE_LAB_MAX_RETRIES = 3
+
 
 def title_lab_node(state: AgentState) -> AgentState:
     """
@@ -39,12 +45,40 @@ def title_lab_node(state: AgentState) -> AgentState:
         HumanMessage(content=human_prompt)
     ]
 
-    titles_json = get_model().execute(messages)
-    try:
-        titles_options = [DraftTitles(**titles) for titles in titles_json]
-    except Exception as e:
-        print(f"Failed to transform to DraftTitles schema, please check the detail: {e}")
-        titles_options = []
-        raise RuntimeError(f"Process terminated due to error: {e}")
+    titles_options: list[DraftTitles] | None = None
+    last_error: Exception | None = None
+    for attempt in range(_TITLE_LAB_MAX_RETRIES):
+        titles_json = get_model().execute(messages)
+        try:
+            titles_options = [DraftTitles(**titles) for titles in titles_json]
+            return {"titles_options": titles_options}
+        except Exception as error:
+            last_error = error
+            print(
+                f"[Attempt {attempt + 1}/{_TITLE_LAB_MAX_RETRIES}] "
+                f"格式校验失败，触发大模型自修复机制: {error}"
+            )
+            if attempt == _TITLE_LAB_MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"Process terminated due to title lab error "
+                    f"after {_TITLE_LAB_MAX_RETRIES} attempts: {error}"
+                ) from error
+            messages.append(
+                AIMessage(content=json.dumps(titles_json, ensure_ascii=False, default=str))
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下数据校验错误:\n"
+                        f"{error}\n"
+                        "请务必严格按照要求的 JSON 数组结构重新输出，"
+                        "不要漏掉必填字段，也不要改变字段层级；"
+                        "每个 draft 的 titles 与 cover_copies 必须是数组，"
+                        "且数组元素结构必须符合 Title schema。"
+                    )
+                )
+            )
 
-    return {"titles_options": titles_options}
+    raise RuntimeError(
+        f"title lab produced no titles: {last_error}"
+    )
