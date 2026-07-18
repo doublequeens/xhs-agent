@@ -1,10 +1,15 @@
-from langchain_core.messages import HumanMessage, SystemMessage
+import json
+
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 
 from src.creator_profile import CreatorProfile
 from src.models import get_model
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas.topic import TopicItem
+
+
+_TOPIC_IDEATOR_MAX_RETRIES = 3
 
 
 def _bind_profile_controlled_fields(
@@ -93,21 +98,61 @@ def topic_ideator_node(state: dict) -> dict:
         content_policy=serialize_prompt_value(content_policy),
     )
 
-    topic_json = get_model().execute(
-        [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
-    )
+    messages = [SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)]
+    candidates: list[TopicItem] | None = None
+    last_error: Exception | None = None
+    for attempt in range(_TOPIC_IDEATOR_MAX_RETRIES):
+        topic_json = get_model().execute(messages)
+        try:
+            candidates = [
+                TopicItem(**_bind_profile_controlled_fields(item, creator_profile))
+                for item in topic_json
+            ]
+            _validate_candidates_bound_to_briefs(candidates, creative_briefs)
+            break
+        except Exception as error:
+            last_error = error
+            print(
+                f"[Attempt {attempt + 1}/{_TOPIC_IDEATOR_MAX_RETRIES}] "
+                f"格式校验失败，触发大模型自修复机制: {error}"
+            )
+            if attempt == _TOPIC_IDEATOR_MAX_RETRIES - 1:
+                raise RuntimeError(
+                    f"Process terminated due to topic ideator error "
+                    f"after {_TOPIC_IDEATOR_MAX_RETRIES} attempts: {error}"
+                ) from error
+            # 将错误的输出和报错信息喂给大模型，让它自己修正
+            messages.append(
+                AIMessage(
+                    content=json.dumps(topic_json, ensure_ascii=False, default=str)
+                )
+            )
+            messages.append(
+                HumanMessage(
+                    content=(
+                        "你的上一次输出触发了以下数据校验错误:\n"
+                        f"{error}\n"
+                        "请务必严格按照要求的 JSON 数组结构重新输出。注意："
+                        "每个主题的 creative_seed.signal_type / signal_name / "
+                        "why_now / domain_translation 必须逐字复制某个输入 brief 的 "
+                        "signal 字段，不得改写或合并；"
+                        "primary_visual_subject 只能是 face_map / serum_texture / "
+                        "product_cutout / skin_macro / checklist / process 之一；"
+                        "proof_mode 只能是 diagram / real_photo / product_texture / "
+                        "comparison / none；不要把 visual_mode 的值写到其它字段，"
+                        "不要漏掉必填字段，也不要改变字段层级。"
+                    )
+                )
+            )
 
-    try:
-        candidates = [
-            TopicItem(**_bind_profile_controlled_fields(item, creator_profile))
-            for item in topic_json
-        ]
-    except Exception as error:
-        raise RuntimeError(
-            f"Process terminated due to topic ideator schema error: {error}"
-        ) from error
+    if candidates is None:
+        raise RuntimeError(f"topic ideator produced no candidates: {last_error}")
 
-    _validate_candidates_bound_to_briefs(candidates, creative_briefs)
+    # Profile-controlled fields are a hard contract, not a model-formatting
+    # problem: the creator profile is fixed input, so a domain/visual_mode the
+    # profile forbids can never be fixed by re-prompting. Keep these guards
+    # outside the self-repair loop so they surface the original ValueError
+    # instead of being retried into a generic RuntimeError.
     _validate_candidates_bound_to_profile(candidates, creator_profile)
 
     return {"topic_candidates": candidates}

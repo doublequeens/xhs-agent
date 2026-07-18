@@ -51,9 +51,12 @@ def _resolve_density(
         metrics.grapheme_count > max_graphemes
         or metrics.item_count > _ITEM_LIMIT_BY_DENSITY[hint]
     ):
-        raise VariantResolutionError(
-            f"measured copy does not fit requested {hint} density"
-        )
+        # The requested density cannot hold the measured copy. Fall back to the
+        # densest approved density that fits rather than failing the whole render
+        # — live copy length varies, and degrading (never truncating, scaling, or
+        # hiding text) stays within the approved density variants. Render QA still
+        # guards against genuine overflow downstream.
+        return _auto_density(capability, metrics)
     return hint
 
 

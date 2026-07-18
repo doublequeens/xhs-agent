@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .editorial_templates import DensityHint, PageArchetype
 from .visual_plan import _validate_page_archetypes
@@ -23,6 +23,15 @@ class ContentBlock(StrictModel):
     heading: str | None = Field(default=None, max_length=80)
     body: str | None = Field(default=None, max_length=240)
     items: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("items", mode="before")
+    @classmethod
+    def _coerce_null_items_to_empty(cls, value):
+        # Live models sometimes emit `items: null` for blocks with no items;
+        # treat that as an empty list rather than failing CarouselPayload parsing.
+        if value is None:
+            return []
+        return value
 
 
 class VisualSlot(StrictModel):

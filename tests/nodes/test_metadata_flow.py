@@ -1431,7 +1431,10 @@ def test_storyboard_generator_rejects_invalid_payload_before_state_write(monkeyp
         "visual_plan": _visual_plan(),
     }
 
-    with pytest.raises(ValidationError):
+    # Self-repair retries the invalid model output, then raises (RuntimeError
+    # after exhausting retries, or the underlying ValidationError) BEFORE any
+    # state write — the guarantee this test protects.
+    with pytest.raises((ValidationError, RuntimeError)):
         module.storyboards_generator_node(state)
     assert "storyboards" not in state["publish_package"]
 

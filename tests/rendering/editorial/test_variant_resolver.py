@@ -92,11 +92,8 @@ def test_structural_archetypes_choose_split_or_stacked_variants(
     assert variant.composition_variant == expected
 
 
-def test_explicit_density_hint_is_allowed_only_when_measured_copy_fits():
-    from src.rendering.editorial.variant_resolver import (
-        VariantResolutionError,
-        resolve_variant,
-    )
+def test_explicit_density_hint_degrades_when_measured_copy_does_not_fit():
+    from src.rendering.editorial.variant_resolver import resolve_variant
 
     sparse = resolve_variant(
         "soft_pink",
@@ -106,13 +103,15 @@ def test_explicit_density_hint_is_allowed_only_when_measured_copy_fits():
     )
     assert sparse.density == "sparse"
 
-    with pytest.raises(VariantResolutionError, match="sparse"):
-        resolve_variant(
-            "soft_pink",
-            "explanation",
-            "sparse",
-            _metrics(grapheme_count=120, item_count=5),
-        )
+    # Copy too long for the requested sparse density degrades to a fitting
+    # density instead of failing the render.
+    degraded = resolve_variant(
+        "soft_pink",
+        "explanation",
+        "sparse",
+        _metrics(grapheme_count=120, item_count=5),
+    )
+    assert degraded.density == "dense"
 
 
 def test_resolved_variant_preserves_the_exact_metrics_object():

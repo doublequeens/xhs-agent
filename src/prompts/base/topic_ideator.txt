@@ -21,6 +21,7 @@ Topic Ideator
 - 每个主题必须包含 content_contract；其 audience 必须逐字复制 Creator Profile 的 audience，并与对应 brief.audience 完全一致。
 - content_contract 必须给出可执行的 trigger_situation、decision_problem、first_screen_promise、screenshot_asset、proof_asset、visual_mode、content_job、primary_visual_family、primary_visual_subject、proof_mode 和 recommended_frame_count；不得省略新增的视觉策略字段。
 - 如果无法提供具体可截图的 screenshot_asset，不得输出该主题。
+- beauty/skincare 账号无法拍摄真实皮肤或产品照片，全部以纯文字图文发布：content_contract.proof_mode 必须为 "none"。不得生成只有实拍照片才能成立的选题（例如半脸对比实拍、产品实拍、肤质微距实拍、前后对照实拍）；改以人设、成分、文献、方法论或结构化自查建立可信度。screenshot_asset 与 proof_asset 只能描述文字版卡片能呈现的内容（如清单、对照表、判断流程），不得承诺实拍画面。
 
 【输出格式】
 仅输出严格 JSON 数组：
