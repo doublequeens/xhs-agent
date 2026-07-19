@@ -53,6 +53,16 @@ class CarouselFrame(StrictModel):
     emphasis: list[str] = Field(default_factory=list, max_length=6)
     visual_slots: list[VisualSlot] = Field(default_factory=list, max_length=4)
     footer: str | None = Field(default=None, max_length=80)
+    # soft_pink editorial layouts render an account persona footer. It is a
+    # visible string, so it is locked content: set deterministically before the
+    # publish package is locked (see the storyboards generator node) and it
+    # enters ContentLock.canonical_sha256.
+    persona: str | None = Field(default=None, max_length=48)
+    # soft_pink cover hero numeral (the step-count digit), rendered as a big
+    # standalone numeral beside the title. Locked visible content; the digit is
+    # also removed from the title text (see primitives.cover_title_text) so it is
+    # not duplicated.
+    hero_numeral: str | None = Field(default=None, max_length=8)
 
 
 class CarouselPayload(StrictModel):

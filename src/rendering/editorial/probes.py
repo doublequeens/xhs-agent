@@ -159,9 +159,22 @@ LAYOUT_PROBE_SCRIPT = r"""
         issues.push({kind: "body_line_height", role, ratio});
       }
     }
-    const lineTops = new Set(
-      inkRects.map(rect => Math.round(rect.top * 2) / 2)
-    );
+    // Count visual text lines by clustering inkRect tops. A single visual line
+    // can yield several rects whose tops differ by a few px (mixed font sizes
+    // within one copy atom, sub-pixel alignment), so distinct-top counting
+    // over-counts. Merge tops within ~40% of the element's line height; genuine
+    // wrapped lines (a full line-height apart) stay distinct.
+    const _lineHeight =
+      lineHeight && Number.isFinite(lineHeight) ? lineHeight : fontSize * 1.2;
+    const _bucket = Math.max(8, _lineHeight * 0.4);
+    const lineTops = new Set();
+    let _lastTop = null;
+    for (const _t of inkRects.map(rect => rect.top).sort((a, b) => a - b)) {
+      if (_lastTop === null || _t - _lastTop > _bucket) {
+        lineTops.add(_t);
+        _lastTop = _t;
+      }
+    }
     if (element.matches(".template-headline")) {
       const density = card.dataset.density || "standard";
       const maximum = density === "sparse" ? 2 : density === "dense" ? 4 : 3;

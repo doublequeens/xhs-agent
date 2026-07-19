@@ -145,7 +145,9 @@ _FONTS: Mapping[TemplateFamily, Mapping[str, Path]] = MappingProxyType(
             body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Bold.ttf",
         ),
         "soft_pink": _fonts(
-            display=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Bold.ttf",
+            # display = HarmonyOS Sans Medium ("SansM" in the mockup/prototype),
+            # so headlines + hero numerals match the approved soft_pink design.
+            display=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Medium.ttf",
             body=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Regular.ttf",
             body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Medium.ttf",
         ),

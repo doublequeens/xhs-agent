@@ -26,6 +26,7 @@ from src.schemas.visual_plan import VisualPlan
 
 from .design_system import BEAUTY_EDITORIAL_V1
 from .copy_metrics import measure_frame_copy
+from .primitives import cover_title_text
 from .layouts import TEMPLATE_RENDERERS
 from .probes import (
     expected_font_families,
@@ -385,7 +386,9 @@ def _expected_copy(frame: CarouselFrame) -> list[tuple[str, str]]:
     expected: list[tuple[str, str]] = []
     if frame.kicker:
         expected.append(("kicker", frame.kicker))
-    expected.append(("headline", frame.headline))
+    if frame.hero_numeral:
+        expected.append(("hero_numeral", frame.hero_numeral))
+    expected.append(("headline", cover_title_text(frame.headline, frame.hero_numeral)))
     for block_index, block in enumerate(frame.content_blocks):
         if block.heading:
             expected.append(
@@ -401,6 +404,8 @@ def _expected_copy(frame: CarouselFrame) -> list[tuple[str, str]]:
         (f"emphasis[{index}]", value)
         for index, value in enumerate(frame.emphasis)
     )
+    if frame.persona:
+        expected.append(("persona", frame.persona))
     if frame.footer:
         expected.append(("footer", frame.footer))
     return expected
@@ -454,7 +459,9 @@ def _validate_layout_report(
         family
     )
     for item in attestation.text_results:
-        expected_family = display_family if item.role == "headline" else body_family
+        expected_family = (
+            display_family if item.role in ("headline", "hero_numeral") else body_family
+        )
         if item.font_family != expected_family:
             raise EditorialCarouselRenderError(
                 f"{frame.frame_id} layout probe used an unexpected font for {item.role}"

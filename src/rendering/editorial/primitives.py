@@ -94,6 +94,21 @@ def copy_atom(
     )
 
 
+def cover_title_text(headline: str, hero_numeral: str | None) -> str:
+    """The cover title with its hero-numeral digit (and any colon) removed, so
+    the big numeral is not duplicated in the title. Returns pre + suf joined
+    (the rendered <br> between them contributes no text, so the probe's
+    textContent == this). headline itself is left untouched."""
+    if not hero_numeral:
+        return headline
+    idx = headline.find(hero_numeral)
+    if idx < 0:
+        return headline.replace("：", "").replace(":", "")
+    pre = headline[:idx].replace("：", "").replace(":", "")
+    suf = headline[idx + len(hero_numeral):]
+    return pre + suf
+
+
 def render_header(frame: CarouselFrame) -> str:
     kicker = (
         copy_atom(
@@ -252,6 +267,9 @@ def render_card_shell(
     frame: CarouselFrame,
     variant: ResolvedVariant,
     body: str,
+    *,
+    header: str | None = None,
+    footer: str | None = None,
 ) -> str:
     definition = TEMPLATE_REGISTRY[family]
     family_class = f"template-{family.replace('_', '-')}"
@@ -287,7 +305,8 @@ def render_card_shell(
         '<span class="font-probe-body">字</span>'
         '<span class="font-probe-emoji">✨</span>'
         "</div>"
-        f"{render_header(frame)}{body}{render_footer(frame)}"
+        f"{header if header is not None else render_header(frame)}{body}"
+        f"{footer if footer is not None else render_footer(frame)}"
         "</main>"
     )
 

@@ -17,6 +17,7 @@ from src.editorial_carousel.selector import (
 )
 from src.nodes.node_p_carousel_qa import _get_value, _selected_content_contract
 from src.nodes.publish_patch import extract_storyboard_visible_text
+from src.rendering.editorial.primitives import cover_title_text
 from src.rendering.editorial.probes import (
     expected_font_families,
     extract_emoji_graphemes,
@@ -124,9 +125,12 @@ def _expected_probe_text(frame: Any) -> list[tuple[str, str]]:
     kicker = _get_value(frame, "kicker")
     if kicker:
         values.append(("kicker", str(kicker)))
+    hero_numeral = _get_value(frame, "hero_numeral")
+    if hero_numeral:
+        values.append(("hero_numeral", str(hero_numeral)))
     headline = _get_value(frame, "headline")
     if headline:
-        values.append(("headline", str(headline)))
+        values.append(("headline", cover_title_text(str(headline), str(hero_numeral) if hero_numeral else None)))
     for block_index, block in enumerate(_as_list(frame, "content_blocks")):
         heading = _get_value(block, "heading")
         body = _get_value(block, "body")
@@ -142,6 +146,9 @@ def _expected_probe_text(frame: Any) -> list[tuple[str, str]]:
         (f"emphasis[{index}]", str(value))
         for index, value in enumerate(_as_list(frame, "emphasis"))
     )
+    persona = _get_value(frame, "persona")
+    if persona:
+        values.append(("persona", str(persona)))
     footer = _get_value(frame, "footer")
     if footer:
         values.append(("footer", str(footer)))
@@ -267,7 +274,9 @@ def _probe_attestation_issues(
                     frame_id=frame_id,
                 )
             )
-        expected_family = display_family if role == "headline" else body_family
+        expected_family = (
+            display_family if role in ("headline", "hero_numeral") else body_family
+        )
         if _get_value(text, "font_family") != expected_family:
             issues.append(
                 _issue(

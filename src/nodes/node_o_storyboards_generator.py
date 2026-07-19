@@ -1,4 +1,5 @@
 import json
+import re
 from typing import Any
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -12,7 +13,7 @@ from src.nodes.publish_patch import (
     storyboard_patch_without_visible_text,
 )
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
-from src.schemas import AgentState, CarouselPayload, VisualPlan
+from src.schemas import AgentState, CarouselFrame, CarouselPayload, VisualPlan
 from src.schemas.content_contract import ContentContract
 
 
@@ -94,6 +95,50 @@ def _semantic_payload(
             "content_contract.first_screen_promise"
         )
     return payload
+
+
+# Account-level persona rendered on soft_pink editorial pages. Placeholder —
+# swap for the real account persona. Visible/locked content (see CarouselFrame).
+_ACCOUNT_PERSONA = "@补妆急救站 · 实操笔记"
+_HERO_DIGIT_RE = re.compile(r"(\d+)\s*步")
+
+
+def _curate_frames_for_publish(
+    payload: CarouselPayload, visual_plan: VisualPlan
+) -> CarouselPayload:
+    """Curate storyboard frames before the publish package is locked.
+
+    - Drop the compliance footer from EVERY frame (all families): disclaimer
+      text must never appear in the rendered images (hard product policy). The
+      footer stays absent from the frame, so renderer.render_footer and the
+      expected-copy helpers (both ``if frame.footer``) automatically skip it —
+      no contract mismatch.
+    - soft_pink only: add the account persona to every frame, and keep covers
+      clean by dropping their content body (covers show only the hero headline
+      + emphasis + persona, matching the approved editorial cover).
+    """
+    is_soft_pink = visual_plan.template_family == "soft_pink"
+    curated: list[CarouselFrame] = []
+    for frame in payload.storyboards:
+        update: dict[str, Any] = {"footer": None}
+        if is_soft_pink:
+            update["persona"] = _ACCOUNT_PERSONA
+            if frame.page_archetype == "cover":
+                update["content_blocks"] = []
+                # The cover hero already shows the step count; drop a leading
+                # emphasis that repeats it (e.g. "3步清爽补妆") so only the
+                # subtitle remains under the title.
+                if len(frame.emphasis) > 1:
+                    update["emphasis"] = list(frame.emphasis[1:])
+                # Extract the step-count digit as a standalone hero numeral
+                # (rendered big, beside the title). The digit (and any colon) is
+                # removed from the title at render time via
+                # primitives.cover_title_text, so the headline stays unchanged.
+                match = _HERO_DIGIT_RE.search(frame.headline)
+                if match:
+                    update["hero_numeral"] = match.group(1)
+        curated.append(frame.model_copy(update=update))
+    return payload.model_copy(update={"storyboards": curated})
 
 
 def _human_prompt(
@@ -242,6 +287,7 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
         visual_plan,
         validated_contract,
     )
+    final_payload = _curate_frames_for_publish(final_payload, visual_plan)
     merged_publish_package["storyboards"] = final_payload.model_dump(
         mode="json"
     )["storyboards"]
