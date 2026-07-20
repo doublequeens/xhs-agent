@@ -219,8 +219,17 @@ class FakePage:
 
             def handle_starttag(self, tag, attrs):
                 values = dict(attrs)
+                # void elements (br/img/...) have no end tag, so they must not
+                # increment the nesting depth — otherwise a <br> inside a copy
+                # atom would never let the atom close (mirrors the real probe,
+                # which reads textContent and is unaffected by <br>).
+                _VOID = frozenset({
+                    "area", "base", "br", "col", "embed", "hr", "img",
+                    "input", "link", "meta", "param", "source", "track", "wbr",
+                })
                 if self.active is not None:
-                    self.depth += 1
+                    if tag not in _VOID:
+                        self.depth += 1
                     emoji = values.get("data-emoji-grapheme")
                     if emoji is not None:
                         self.active["emoji_graphemes"].append(emoji)

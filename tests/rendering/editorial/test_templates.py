@@ -38,7 +38,11 @@ def test_every_family_renders_every_archetype(family, archetype):
         f'data-composition-variant="{variant.composition_variant}"'
         in html
     )
-    assert escape(frame.headline, quote=True) in html
+    # The headline text must render verbatim. Bespoke families may insert a
+    # ``<br>`` line break to mirror the mockup's two-line headline layout; that
+    # is a rendering concern only (it adds no textContent, so the probe's copy
+    # contract is unaffected), so strip <br> before the substring check.
+    assert escape(frame.headline, quote=True) in html.replace("<br>", "")
 
 
 def test_template_renderers_escape_copy_and_do_not_emit_asset_placeholder():

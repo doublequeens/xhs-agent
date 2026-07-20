@@ -126,11 +126,11 @@ def test_curate_frames_strips_footer_everywhere_and_soft_pink_persona_and_cover_
     assert curated.storyboards[0].content_blocks == []
     assert curated.storyboards[1].content_blocks != []
 
-    # other families: footer still stripped (global policy), but no persona
+    # coral_impact is also bespoke: persona added + cover cleared
     other = _curate_frames_for_publish(
-        payload, SimpleNamespace(template_family="deep_teal")
+        payload, SimpleNamespace(template_family="coral_impact")
     )
     assert all(frame.footer is None for frame in other.storyboards)
-    assert all(not frame.persona for frame in other.storyboards)
+    assert all(frame.persona == "@成分党·文献派" for frame in other.storyboards)
     # and the cover body is retained for non-soft_pink families
-    assert other.storyboards[0].content_blocks != []
+    assert other.storyboards[0].content_blocks == []

@@ -97,9 +97,20 @@ def _semantic_payload(
     return payload
 
 
-# Account-level persona rendered on soft_pink editorial pages. Placeholder —
-# swap for the real account persona. Visible/locked content (see CarouselFrame).
+# Account-level persona rendered on editorial pages. Placeholder — swap for the
+# real account persona. Visible/locked content (see CarouselFrame). Per-family so
+# each bespoke family can carry its own handle; a family only gets a persona when
+# its bespoke renderer renders the persona atom on every path (else the probe's
+# actual!=expected copy contract breaks).
 _ACCOUNT_PERSONA = "@补妆急救站 · 实操笔记"
+_PERSONA_BY_FAMILY: dict[str, str] = {
+    "soft_pink": _ACCOUNT_PERSONA,
+    "white_quote": "@成分党·文献派",
+    "pink_red": "@成分党·文献派",
+    "deep_teal": "@成分党·文献派",
+    "green_catalog": "@成分党·文献派",
+    "coral_impact": "@成分党·文献派",
+}
 _HERO_DIGIT_RE = re.compile(r"(\d+)\s*步")
 
 
@@ -113,16 +124,23 @@ def _curate_frames_for_publish(
       footer stays absent from the frame, so renderer.render_footer and the
       expected-copy helpers (both ``if frame.footer``) automatically skip it —
       no contract mismatch.
-    - soft_pink only: add the account persona to every frame, and keep covers
-      clean by dropping their content body (covers show only the hero headline
-      + emphasis + persona, matching the approved editorial cover).
+    - Families with a bespoke persona footer (see _PERSONA_BY_FAMILY): add the
+      account persona to every frame. Each such family's renderer must emit the
+      persona atom on every archetype path.
+    - soft_pink only: keep covers clean by dropping their content body (covers
+      show only the hero headline + emphasis + persona, matching the approved
+      editorial cover) and extract the ``N步`` digit as a hero numeral.
+    - white_quote only: keep covers clean (cover shows only the centered quote
+      + subtitle + persona, matching the mockup).
     """
-    is_soft_pink = visual_plan.template_family == "soft_pink"
+    family = visual_plan.template_family
+    persona = _PERSONA_BY_FAMILY.get(family)
     curated: list[CarouselFrame] = []
     for frame in payload.storyboards:
         update: dict[str, Any] = {"footer": None}
-        if is_soft_pink:
-            update["persona"] = _ACCOUNT_PERSONA
+        if persona:
+            update["persona"] = persona
+        if family == "soft_pink":
             if frame.page_archetype == "cover":
                 update["content_blocks"] = []
                 # The cover hero already shows the step count; drop a leading
@@ -137,6 +155,11 @@ def _curate_frames_for_publish(
                 match = _HERO_DIGIT_RE.search(frame.headline)
                 if match:
                     update["hero_numeral"] = match.group(1)
+        elif family in _PERSONA_BY_FAMILY:
+            # every bespoke family renders a clean cover (centered hero only);
+            # drop the cover body so it matches the mockup and fits the layout.
+            if frame.page_archetype == "cover":
+                update["content_blocks"] = []
         curated.append(frame.model_copy(update=update))
     return payload.model_copy(update={"storyboards": curated})
 

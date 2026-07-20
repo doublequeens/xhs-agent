@@ -140,9 +140,11 @@ _FONTS: Mapping[TemplateFamily, Mapping[str, Path]] = MappingProxyType(
             body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Bold.ttf",
         ),
         "deep_teal": _fonts(
-            display=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Black.ttf",
+            # display = HarmonyOS Sans Medium ("SansM" in the mockup) so headlines
+            # match the set2-teal design; Black was too heavy.
+            display=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Medium.ttf",
             body=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Regular.ttf",
-            body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Bold.ttf",
+            body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Medium.ttf",
         ),
         "soft_pink": _fonts(
             # display = HarmonyOS Sans Medium ("SansM" in the mockup/prototype),
@@ -157,9 +159,11 @@ _FONTS: Mapping[TemplateFamily, Mapping[str, Path]] = MappingProxyType(
             body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Bold.ttf",
         ),
         "green_catalog": _fonts(
-            display=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Black.ttf",
+            # display = HarmonyOS Sans Medium ("SansM" in the mockup) so headings
+            # match the set5-green-favorites design; Black was too heavy.
+            display=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Medium.ttf",
             body=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Regular.ttf",
-            body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Bold.ttf",
+            body_bold=TEMPLATE_FONT_ROOT / "HarmonyOS_Sans_SC_Medium.ttf",
         ),
         "white_quote": _fonts(
             display=EDITORIAL_V1_FONT_ROOT / "LXGWWenKai-Medium.ttf",

@@ -204,6 +204,160 @@ role 以 `.body` 结尾或含 `.items[` 的 atom，其 `line-height / font-size`
 
 ---
 
+## white_quote 复刻经验（2026-07-20）
+
+> 第二个被复刻的家族（霞鹜文楷语录风）。暴露了 soft_pink 没遇到的 **grid 布局** 和 **margin 重置** 两类新坑；也验证了 `<br>` 断行、font-weight 借 Medium 等技巧可跨家族复用。
+
+### 新增致命错误（white_quote 暴露，soft_pink 未遇到）
+
+#### 错误 6：`_BASE_TEMPLATE_CSS` 不 reset margin
+**发生了什么**：自定义的 col 标题用 `<h3 class="wq-col-h">`、正文用 `<p class="wq-col-p">`。`_BASE_TEMPLATE_CSS` 只写了 `*{box-sizing:border-box}`，**没有** `margin:0;padding:0`。于是 `<h3>`/`<p>` 带浏览器默认 margin-block（~38px），每个 col 被撑高近一倍，3 个 col 合计把页面撑到 ~1260px，超出可用区裁切（`ink_clip:emphasis`）。
+**后果**：内容溢出 `.template-card` 底部，emphasis 被 `overflow:hidden` 裁掉，probe 失败。
+**正解**：**任何用 `<h1>-<h6>`/`<p>` 等带默认 margin 标签的自定义 copy 类，必须显式 `margin:0`。** base 只有 `.block-heading{margin:0}`/`.block-body{margin:0}` 两处 preset，自定义类名都要自己加。
+**教训**：写自定义类前，先 grep `_BASE_TEMPLATE_CSS` 确认它 reset 了什么（只 reset box-sizing，**不** reset margin/padding）。
+
+#### 错误 7：grid auto-placement + 空 header 字符串导致 bespoke section 掉进 row1
+**发生了什么**：`render_card_shell` 的 `.template-card` 是 `display:grid;grid-template-rows:auto 1fr auto`。为了不重复 kicker+headline，bespoke 路径传 `header=''`（空**字符串**，非 None）。空串 → 不渲染 `<header>` 元素。font-probes 和 footer 又都是 `position:absolute`（脱流）。于是 bespoke `<section>` 成了**唯一的 in-flow grid item**，被 auto-placement 放到 **row1（auto）**，而不是预期的 row2（1fr）。section 高度只剩内容自身高度（~573px），`justify-content:center` 在这么矮的盒子里居中＝无效，内容堆在上半部。
+**后果**：cover/quote/boundary 文字偏上，没垂直居中。
+**正解**：**传一个空的 `<header>` 元素**（`'<header class="template-header"></header>'`）占住 row1，bespoke section 才会落到 row2（1fr）满高，居中才生效。或让 section `grid-row:1/-1` 跨满（但对 generic fallback 有重叠风险，不推荐）。
+**soft_pink 为何没遇到**：soft_pink 总传 kicker-only 的真实 `<header>`，天然占住 row1。
+
+#### 错误 8：`.template-footer{display:none}` 误伤 footer atom
+**发生了什么**：想让 white_quote 卡片底部干净（persona 走绝对定位的 wq-handle），写了 `.template-footer{display:none}`。但 **smoke 测试不跑 curation**，make_frame 的 `footer` 文本仍在 → `render_footer` 产出 footer-copy atom（role=footer）→ 被 display:none 隐藏成 0×0 → probe `width/height > 0` 校验失败。
+**后果**：`text_results.N.width Input should be greater than 0`。
+**正解**：**不要 display:none 掉可能含 atom 的容器。** 改为只隐藏 `page-number`（aria-hidden，安全）+ `.template-footer{border-top:none;padding-top:0}`。生产环境 curation 把 footer 设 None，footer 元素自然为空不可见；smoke 测试带 footer 文本时 atom 仍可见。
+
+#### 错误 9：centered cover 塞不下 content_blocks → 溢出裁切
+**发生了什么**：bespoke cover 是居中极简版式（headline + 副标题），但 make_frame 给 cover 3 个 content_blocks（带 items）。居中布局把它们全堆进来，总高 > 可用区，底部裁切（`ink_clip:kicker`）。
+**soft_pink 为何没遇到**：soft_pink cover 仅在 headline 含"N步"数字时才 bespoke，否则走 generic（generic 的 grid 能装下多 block）。
+**正解**：**cover 条件 bespoke**——仅当 `frame.content_blocks` 为空时 bespoke（生产 curation 已清空 cover 的 content_blocks），否则 generic 兜底。镜像 soft_pink 的条件 bespoke 模式。
+
+#### 错误 10：`<br>` 断行与通用测试 `escape(headline) in html` 冲突
+**发生了什么**：为了让短标题（"为什么慢即是快"，7 字）在宽卡片上分两行，在首个"，"处插 `<br>`。但 `tests/rendering/editorial/test_templates.py::test_every_family_renders_every_archetype` 断言 `escape(headline) in html`（headline 连续出现在 HTML）→ `<br>` 打断字符串 → 4 个 bespoke archetype 全挂。
+**关键认知**：`<br>` **不改变 textContent**，所以 probe 的 `actual_copy == _expected_copy` 契约照过；冲突的只是这个**字符串级**测试。
+**正解**：把断言改为 `escape(headline) in html.replace("<br>", "")`——`<br>` 是纯渲染换行（非内容），strip 后匹配，对所有家族安全（其他家族无 `<br>`，replace 是空操作）。
+
+### 做对的事情（white_quote 复刻要沿用）
+
+1. **先读契约助手的 DOM 顺序**：`renderer._expected_copy` / `render_qa._expected_probe_text` 的顺序（kicker → hero_numeral → headline → content_blocks[heading/body/items] → emphasis → persona → footer）是 atom 排列的唯一真理来源。写 builder 前先读，写完用 `re.findall(r'data-copy-role="([^"]+)"', html)` 对照 expected 打印 diff。
+2. **用 `page.evaluate()` 量实际坐标定位 bug**：垂直居中失效（section 只 573px）、h3 margin 撑高，都是量出实际 `y/h/display/justifyContent` 后才定位根因，而非盲调 CSS。
+3. **font-weight 借 Medium 视觉**：display family 仅注册 700 一个 face（任意 weight 都映射到它），body family 有 400/700。非 headline atom（kicker/小标题/persona）想要 Medium 观感时，**保持 body family + `font-weight:700`**（命中 body_bold=Medium），computed fontFamily 仍是 body family，过 font 检查。比"内层 span 换 display 字体"更简单。
+4. **`<br>` 在首个"，"处断行**：`idx = text.find("，")`，`line1=text[:idx+1]`（逗号留在行尾），无逗号则取 `(len-1)//2` 中点。textContent 不变，契约安全；断点符合 mockup 编辑习惯。
+5. **persona 在 bespoke + generic 两条路径都渲染**：white_quote 的 render_frame 把 `footer=_persona_atom(frame)` 穿进两条路径。soft_pink 因常见 archetype 全 bespoke 未暴露此问题；white_quote 任何走 generic 的 archetype（如 scene/diagnostic）也必须渲染 persona，否则 actual≠expected。
+6. **先验证再交签字**：每轮改动后跑 `render_carousel`（等价 `validate_render issues:0`）+ Pillow contact sheet + 图像分析自检，再交用户。避免把"测试过但视觉错"的产物交出去。
+
+### 与 mockup 冲突时：以用户最终意愿为准
+
+复刻中两处 mockup 有、用户明确不要的元素：
+- 顶部中间细分割线（mockup `.rule`，每页都有）→ 用户要求去掉。
+- 装饰引号 `"` mark（mockup `.mark`，quote/boundary 有）→ 一度因变形（120px/line-height:1 + 内容未居中导致裁切）被用户当成"暂停⏸"要求去掉；**居中修好后字形正常**，用户又要求恢复。
+
+**教训**：当 mockup 与用户明确意愿冲突，或某元素"渲染异常"时，**先查是不是布局 bug 导致的渲染异常**（如裁切），而非立刻删元素。删/留以用户最终确认为准，但要把"为什么异常"查清楚。
+
+### white_quote 错误时间线
+
+| 轮次 | 错误 | 根因归类 |
+|---|---|---|
+| 1 | cover/quote/boundary 没垂直居中 | grid auto-placement + 空 header（错误7） |
+| 2 | 装饰引号 `"` 变形成"暂停⏸" | 内容未居中→mark 被挤到顶部裁切（先误删后恢复） |
+| 3 | smoke 测试 `cover layout probe invalid evidence: width=0` | `.template-footer{display:none}` 误伤 footer atom（错误8） |
+| 4 | `cover visible text does not match storyboard` | cover/quote 把 emphasis 渲染在 content_blocks 之前（DOM 顺序） |
+| 5 | `cover visible text does not match` | quote/boundary 漏渲染 kicker（make_frame 带 kicker） |
+| 6 | `checklist layout probe invalid: line_height nan` | `wq-cell-copy` 缺显式 line-height（指南决策9，漏一个类） |
+| 7 | `baseline(cover) ink_clip:kicker` | centered cover 塞不下 3 个 content_blocks（错误9） |
+| 8 | `baseline(explanation) ink_clip:emphasis` | `<h3>`/`<p>` 默认 margin 撑高（错误6） |
+| 9 | `test_every_family_renders_every_archetype` 4 挂 | `<br>` 断行打断 headline 连续子串（错误10） |
+| 10 | 文案里出现字面 `<br>` | verify 脚本把 `<br>` 当文案塞进 headline（脚本 bug，非渲染器） |
+| 11 | explanation/checklist 标题居中、应左对齐 | section 多写了 `align-items:center` |
+| **总计** | | **~11 轮** |
+
+**结论**：第二个家族仍花了 ~11 轮，主要消耗在 **grid 居中机制**（错误7）和 **margin 重置**（错误6）这两个 soft_pink 未遇到的系统级坑上。把这两条加入"动手前检查清单"后，后续家族应回到 2-3 轮。
+
+### 动手前检查清单（white_quote 后新增）
+
+在写 bespoke CSS 前逐条确认：
+- [ ] `_BASE_TEMPLATE_CSS` **不 reset margin**——自定义 heading/p/li 类都要 `margin:0`。
+- [ ] bespoke section 要落到 grid row2（1fr）：传空 `<header>` 元素占 row1，**不要**传 `header=''`。
+- [ ] centered 页面（cover/quote/boundary）：section 必须 `display:flex;flex-direction:column;justify-content:center`，且确认 section 高度 = 可用区（用 `evaluate` 量 `h` 验证）。
+- [ ] 条件 bespoke：cover 在 content_blocks 非空时走 generic（镜像 soft_pink）。
+- [ ] 两行断行：`<br>` 不影响 textContent，但要让 `test_every_family_renders_every_archetype` 的断言 strip `<br>`。
+- [ ] 不要 `display:none` 含 `[data-card-copy]` atom 的容器；隐藏装饰用 `aria-hidden` + 针对性 class。
+
+---
+
+## pink_red 复刻经验（2026-07-20）
+
+> 第三个被复刻的家族（粉红粗体 motivational）。复用了 white_quote 的 checklist（grid/margin/条件 cover/`<br>` 断行），仍暴露了 **`<br>` 与 FakePage 解析器**、**ascender 裁切**、**家族招牌特征（交替底色）如何落地** 三类新问题。
+
+### 新增致命错误（pink_red 暴露，前两个家族未遇到）
+
+#### 错误 11：`<br>` 破坏 FakePage CopyParser 的 void 元素深度追踪
+**发生了什么**：`<br>` 断行后，`test_renderer.py` 11 个测试全挂（"save visible text does not match"），但真 Chromium `test_chromium_smoke` 全过。
+**根因**：测试用的 FakePage（`conftest.py::CopyParser`，基于 `HTMLParser`）在 `handle_starttag` 里对**任何**开始标签 `depth += 1`。`<br>` 是 void 元素，HTMLParser 只调 `handle_starttag`、**不**调 `handle_endtag` → depth 只增不减 → 当前 atom 永不闭合 → 吞掉后续所有 `[data-card-copy]`，actual 只剩第一个 atom。
+**关键认知**：**真 probe 读 `textContent`，`<br>` 不影响它**；冲突的只是 FakePage 这个**测试基础设施**。white_quote 也用 `<br>` 却没暴露，因为 `test_renderer` 的 conftest fixture 固定用 `pink_red`（不是 white_quote）。
+**正解**：`CopyParser.handle_starttag` 对 void 元素（br/img/hr/input/…）**不增 depth**（与真 probe 行为对齐）。
+
+#### 错误 12：headline 紧贴 section 顶 → Heavy 字体 ascender 被 `overflow:hidden` 裁
+**发生了什么**：comparison 页无 kicker，60px Heavy 标题紧贴 section 顶部（y=90），Heavy 字体 ascender 越过 section 的 `overflow:hidden` 边界 → `ink_clip:headline`。
+**根因**：base `.template-body{overflow:hidden}` 在 section 顶裁切；而卡片还有 90px padding 余量没被利用。
+**正解**：bespoke section 加 `overflow:visible`，让内容呼吸进卡片 padding 区——**卡片自身的 `overflow:hidden` 仍在卡边界裁切**（安全），probe 的 `layout_clip` 仍按 section 盒子判定（内容若真溢出仍被抓）。
+
+### 正确决策（pink_red 新增，复刻要沿用）
+
+#### 决策 11：家族招牌视觉特征（如"交替底色"）由页码决定，配以 CSS 变量两套 scheme
+pink_red 的招牌是 **pink/red 严格交替**（pink, red, pink, red…，不连续同色）。实现：
+- **底色按页码，不按 archetype**：从 `frame_id`（生产格式 `frame-NN-archetype`）正则解析 NN，**偶数页=red，奇数页=pink**。无数字时（测试 fixture）默认 pink。
+- 这才是"严格交替"的唯一保证——archetype 顺序不可控，按 archetype 写死无法避免连续同色。
+- **bespoke 配色全部用 CSS 变量**（`--pr-ink/--pr-sub/--pr-cell-*/--pr-panel-*`）：pink 为默认（写在 FAMILY_CSS 的 `.template-card.template-{family}` 上），red 页用 **per-frame `<style>`**（每页是独立 HTML 文档）覆盖同一组变量。这样**任何 archetype 落在 pink 或 red 底上都自适应**（红字/白字、白卡/半透明卡），不会出现"steps 落到 pink 页白字不可见"。
+- per-frame `<style>` 在 FAMILY_CSS **之后**（同 `<style>` 块内、源序在后），同特异性后者胜 → 变量覆盖生效。不改 `render_card_shell` 签名。
+
+#### 决策 12：无 mockup 的 archetype 用设计 skill 做 bespoke，2×N 卡片网格 1–N 递增
+pink_red 的 scene 在 mockup 里没有对应页。用户要求有设计感、内容多时也要好看。用 `high-end-visual-design` skill 的 **Double-Bezel 嵌套卡片 + eyebrow 标签 + Asymmetrical Bento + 字体层级** 落地：
+- 每个 content_block → 一张白卡（hairline ring + inset 高光 + 大圆角，非扁平文本）。
+- **2 列网格，卡片数 1–4 随内容递增，最多 4 张**；CSS `:last-child:nth-child(odd)` 让奇数张末卡跨满列（1→满宽 / 2→并排 / 3→2+1 / 4→2×2），自动平衡。
+- **超过 4 个 block 时，多出的并入第 4 张卡**（保所有 heading/body/items 的契约角色，不丢内容、不破 `actual≠expected`）。
+- **generic 兜底也要放大字号**：非 bespoke archetype（走 generic）用基础小字号，在粗体家族下显得空旷。给 generic 兜底的 `block-heading/block-body/item-copy/emphasis-chip` 覆盖放大字号（贴合家族气质），bespoke 页用自家 `pr-*` 类互不干扰。
+
+#### 决策 13：heading/body 角色取 Heavy 观感用"内层 span 套 display 字体"
+`content_blocks[*].heading` 角色要求 body 字体（font 检查），但 mockup 标题用 Heavy。直接给 heading atom 用 display 字体类 → `unexpected font`。正解：atom 用 body 字体（过探针），**内层 `<span>` 套 `font-family:var(--template-display)` 取 Heavy 观感**（textContent 不变）。比"整个 atom 换 display"安全。
+
+#### 决策 14：cover hero 用 `flex:1` 居中
+cover section 若用 `justify-content:space-between` 但只有 2 个 in-flow 子（topbar + hero，persona 绝对定位脱流）→ space-between 把 hero 推到底。hero 加 `flex:1;justify-content:center` 占满中间、内容垂直居中。
+
+### 做对的事情（pink_red 沿用）
+1. 每改一版用 `re.findall(r'data-copy-role="([^"]+)"', html)` 对照 `_expected_copy` 打印 diff，定位 DOM 顺序/缺字段问题（比盲调快）。
+2. mismatch 时用 FakePage 的 CopyParser 复现 + 量实际 `y/h`，定位到 `<br>` 吞 atom、margin 撑高等根因。
+3. 条件 bespoke cover（`content_blocks` 空才 bespoke），镜像 soft_pink/white_quote。
+4. 每轮 `render_carousel`（等价 `validate_render issues:0`）+ Pillow contact sheet + 图像分析自检后再交签字。
+
+### pink_red 错误时间线
+
+| 轮次 | 错误 | 根因归类 |
+|---|---|---|
+| 1 | steps/comparison 漏渲染 emphasis | make_frame 带 emphasis，契约要求渲染 |
+| 2 | `unexpected font for content_blocks[0].heading` | heading atom 误用 display 字体类（决策13） |
+| 3 | comparison `visible text does not match` | 漏 ｜ 分隔符 span（决策7） |
+| 4 | block heading/body 在有 items 时不渲染 | lead 条件写反（漏字段） |
+| 5 | `ink_clip:headline`（comparison） | headline 紧贴 section 顶被裁（错误12） |
+| 6 | save DOM 顺序写反（heading→items→body） | 契约顺序 |
+| 7 | test_renderer 11 挂 | `<br>` 破坏 FakePage CopyParser（错误11） |
+| 8 | cover 标题在底部 | hero 没 flex:1（决策14） |
+| 9 | scene（generic 兜底）排版乱/空 | 用设计 skill 做 bespoke scene（决策12） |
+| 10 | scene 4 块密集溢出 | 改 2×2 bento + 最多 4 卡 |
+| **总计** | | **~10 轮** |
+
+**结论**：第三个家族 ~10 轮。复用 white_quote checklist 后，grid/margin/条件 cover/`<br>` 断行类坑基本免了；新坑集中在 **`<br>` vs FakePage**（测试基建）和**家族招牌特征落地**（交替底色 + CSS 变量 scheme）。把这两类加入检查清单后，后续家族应进一步收敛。
+
+### 动手前检查清单（pink_red 后新增）
+- [ ] 用 `<br>` 断行的家族，确认 FakePage CopyParser 对 void 元素不增 depth（否则 test_renderer 全挂、真 probe 却过）。
+- [ ] headline 可能紧贴 section 顶的版式：bespoke section 加 `overflow:visible`，用 `evaluate` 量 headline 顶部是否越过 section 盒。
+- [ ] 家族有招牌视觉规律（交替/渐变等）：底色按 `frame_id` 页码决定，bespoke 配色全用 CSS 变量 + per-frame `<style>` 覆盖，保证任意 archetype 在任意底色自适应。
+- [ ] heading/body 角色想要比 body_bold 更重的字体：用内层 span 套 display 字体，atom 保 body 过探针。
+- [ ] 无 mockup 的 archetype：用设计 skill（Double-Bezel + bento）做 bespoke，2×N 卡片 1–N 递增、超出并入末卡保全契约。
+- [ ] generic 兜底字号别太小：给 `block-*` 类覆盖放大，贴合家族气质，避免稀疏页空旷。
+
+---
+
 ## Emoji 集成（soft_pink 专属）
 
 - 在 storyboard generator prompt（`src/prompts/base/storyboards_generator.txt`）中指示 LLM 在 emphasis/body 里加 1–2 个 emoji。

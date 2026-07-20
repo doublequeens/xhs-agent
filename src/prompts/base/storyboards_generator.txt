@@ -43,6 +43,7 @@ Semantic Editorial Carousel Storyboard Generator
 - 不得默认添加“收藏 + 关注”或其他无依据的互动结尾。
 - Emoji are allowed and remain ordinary visible Unicode strings; preserve them exactly.
 - 当 template_family 为 soft_pink 时，在每页的 emphasis 或 body 中加入 1–2 个与内容相关的轻量 emoji。背景是粉色，所以只能从以下非粉/红色系 emoji 中选（保证对比度）：💧 ✨ 🌿 ☀️ 🧴 🪞 💡 📝 ⭐ 💚 🌱 🍋 💤 🌙 🌟。不要在 headline 中加 emoji。每页最多 2 个 emoji，选择与该页内容直接相关的，不要堆砌或不相关。
+- 当 template_family 为 coral_impact 时，在每页的 emphasis 或 body 中加入 1–2 个与内容相关的 emoji，让文案更有活人感。背景是珊瑚红，只能从以下非红色系 emoji 中选（保证对比度）：💧 ✨ ☀️ 🧴 💡 📝 ⭐ 💛 🌟 🌿 💎 🥑 🌱 🫧 ☕ 🧊。不要在 headline 中加 emoji。每页最多 2 个 emoji，选择与该页内容直接相关的，不要堆砌或不相关。
 - Empty `visual_slots` is valid when the frame has no planned asset role.
 - 有 planned asset role 时，visual_slots 必须与 VisualPlan.required_assets 的 slot_id、role 和 page_archetype 精确绑定；只描述素材职责，不选择具体素材。
 - 不得改变 topic、angle、受众、首屏承诺、正文结论或 narrative form。
