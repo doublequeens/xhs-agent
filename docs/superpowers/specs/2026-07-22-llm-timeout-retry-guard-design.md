@@ -113,6 +113,14 @@ not closed during interpreter shutdown: closing it would wait again for the
 stuck task and could block shutdown forever. Healthy calls and cancellations
 that finish inside the grace continue to reuse the same event loop.
 
+The invocation keeps its current attempt in invocation-scoped mutable state.
+That state is updated and read while the runner lock is held, so a forced stop
+during a later retry reports the real current/maximum attempt without sharing
+progress between callers. Because the non-cooperative task is intentionally
+left attached to the poisoned loop, the guard suppresses only that task's
+destructor warning; it does not cancel, close, or resume the leaked task during
+shutdown.
+
 ## Provider configuration
 
 ### GLM
@@ -141,7 +149,9 @@ Guard diagnostics include:
 - configured total timeout in the final exception.
 
 Diagnostics never include messages, generated content, API keys, headers, or
-full provider exception bodies.
+full provider exception bodies. When budget exhaustion is converted into the
+guard's `TimeoutError`, provider exception cause/context chains are suppressed
+as well, including both post-failure deadline checks and backoff exhaustion.
 
 ## Testing strategy
 
@@ -153,6 +163,10 @@ Offline regression tests use small async fake models and real guard behavior:
 - transient failures retry sequentially and can eventually succeed;
 - non-transient failures are not retried;
 - backoff and retries cannot exceed the total budget;
+- backoff and post-failure budget exhaustion redact the complete provider
+  exception chain;
+- a forced stop during a later retry reports that retry's attempt number;
+- a poisoned-runner subprocess exits without pending-task destructor warnings;
 - invalid timing policy values fail before provider invocation;
 - timeout messages contain the total budget and attempt count;
 - GLM and DeepSeek clients disable SDK retries and use bounded timeouts;

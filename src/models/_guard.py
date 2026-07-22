@@ -83,16 +83,16 @@ async def _invoke_with_total_budget(
     started: float,
     deadline: float,
     model: str,
+    attempt_state: dict[str, int],
 ):
-    last_exc = None
-
     for attempt in range(1, attempts + 1):
+        attempt_state["current"] = attempt
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise _timeout_error(
                 model, hard_timeout, max(1, attempt - 1), attempts,
                 time.monotonic() - started,
-            ) from last_exc
+            ) from None
         timeout_scope = asyncio.timeout(remaining)
         try:
             async with timeout_scope:
@@ -105,8 +105,7 @@ async def _invoke_with_total_budget(
                     attempt,
                     attempts,
                     time.monotonic() - started,
-                ) from exc
-            last_exc = exc
+                ) from None
             if attempt >= attempts and isinstance(exc, TimeoutError):
                 raise _timeout_error(
                     model,
@@ -122,7 +121,7 @@ async def _invoke_with_total_budget(
                 raise _timeout_error(
                     model, hard_timeout, attempt, attempts,
                     time.monotonic() - started,
-                ) from exc
+                ) from None
             wait = min(30.0, float(2 ** (attempt - 1)), remaining)
             elapsed = time.monotonic() - started
             print(
@@ -143,6 +142,7 @@ def _run_on_guard_loop(
     model: str,
     hard_timeout: float,
     attempts: int,
+    attempt_state: dict[str, int],
 ):
     global _RUNNER_POISONED
     remaining = deadline - time.monotonic()
@@ -172,8 +172,17 @@ def _run_on_guard_loop(
             if not forced_stop.is_set():
                 raise
             _RUNNER_POISONED = True
+            # The non-cooperative task must stay attached to the poisoned loop;
+            # closing it would block. Suppress only its intentional teardown noise.
+            for pending_task in asyncio.all_tasks(_RUNNER.get_loop()):
+                if not pending_task.done():
+                    pending_task._log_destroy_pending = False
             raise _timeout_error(
-                model, hard_timeout, 1, attempts, time.monotonic() - started
+                model,
+                hard_timeout,
+                attempt_state["current"],
+                attempts,
+                time.monotonic() - started,
             ) from None
     finally:
         _RUNNER_LOCK.release()
@@ -198,6 +207,7 @@ def invoke_with_hard_timeout(
     started = time.monotonic()
     deadline = started + hard_timeout
     model = _model_identifier(chat_model)
+    attempt_state = {"current": 1}
     return _run_on_guard_loop(
         _invoke_with_total_budget(
             chat_model,
@@ -207,10 +217,12 @@ def invoke_with_hard_timeout(
             started=started,
             deadline=deadline,
             model=model,
+            attempt_state=attempt_state,
         ),
         deadline=deadline,
         started=started,
         model=model,
         hard_timeout=hard_timeout,
         attempts=attempts,
+        attempt_state=attempt_state,
     )

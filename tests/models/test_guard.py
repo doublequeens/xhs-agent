@@ -77,6 +77,8 @@ class StuckCancellationModel:
         self.calls += 1
         self.active += 1
         try:
+            if self.calls == 1:
+                raise ConnectionError("secret first retry body")
             await asyncio.Event().wait()
         except asyncio.CancelledError:
             self.cancelled = True
@@ -97,9 +99,16 @@ class FollowupModel:
 
 
 stuck = StuckCancellationModel()
+
+
+async def no_backoff(_seconds):
+    return None
+
+
+guard_module.asyncio.sleep = no_backoff
 started = time.monotonic()
 try:
-    invoke_with_hard_timeout(stuck, [], hard_timeout=0.03)
+    invoke_with_hard_timeout(stuck, [], attempts=4, hard_timeout=0.03)
 except Exception as exc:
     first_error = f"{exc.__class__.__name__}: {exc}"
 else:
@@ -138,13 +147,17 @@ print(json.dumps({
     assert result["first_error"].startswith("TimeoutError: ")
     assert "budget=0.03s" in result["first_error"]
     assert "model=stuck-cancellation" in result["first_error"]
-    assert result["stuck_calls"] == 1
+    assert result["stuck_calls"] == 2
     assert result["stuck_active"] == 1
     assert result["stuck_cancelled"] is True
+    assert "Task was destroyed but it is pending!" not in completed.stderr
+    assert "attempt=2/4" in result["first_error"]
     assert result["followup_calls"] == 0
     assert result["second_error"].startswith("RuntimeError: ")
     assert "runner is unavailable" in result["second_error"]
     assert "restart the process" in result["second_error"]
+    assert "secret first retry body" not in completed.stdout
+    assert "secret first retry body" not in completed.stderr
 
 
 class BlockingModel:
@@ -276,6 +289,32 @@ def test_exhausted_provider_timeouts_raise_redacted_guard_timeout(monkeypatch):
     assert "secret provider body" not in rendered
 
 
+def test_post_failure_deadline_timeout_redacts_provider_exception_chain():
+    class SlowFailureModel:
+        model_name = "slow-failure"
+
+        def __init__(self):
+            self.calls = 0
+
+        async def ainvoke(self, messages):
+            self.calls += 1
+            time.sleep(0.04)
+            raise ConnectionError("secret post-failure body")
+
+    model = SlowFailureModel()
+
+    with pytest.raises(TimeoutError) as caught:
+        invoke_with_hard_timeout(model, [], attempts=4, hard_timeout=0.03)
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert model.calls == 1
+    assert "budget=0.03s" in rendered
+    assert "elapsed=" in rendered
+    assert "attempt=1/4" in rendered
+    assert "model=slow-failure" in rendered
+    assert "secret post-failure body" not in rendered
+
+
 def test_non_transient_failure_is_not_retried():
     model = FlakyModel(4, lambda: ValueError("invalid request"))
     with pytest.raises(ValueError, match="invalid request"):
@@ -345,12 +384,21 @@ def test_cached_model_calls_reuse_the_same_event_loop():
     assert len(set(model.loop_ids)) == 1
 
 
-def test_backoff_cannot_extend_the_total_budget():
-    model = FlakyModel(failures=4)
+def test_backoff_budget_timeout_redacts_provider_exception_chain():
+    model = FlakyModel(
+        failures=4,
+        error_factory=lambda: ConnectionError("secret backoff body"),
+    )
     started = time.monotonic()
 
-    with pytest.raises(TimeoutError, match="budget=0.03s"):
+    with pytest.raises(TimeoutError) as caught:
         invoke_with_hard_timeout(model, [], attempts=4, hard_timeout=0.03)
 
+    rendered = "".join(traceback.format_exception(caught.value))
     assert time.monotonic() - started < 0.25
     assert model.calls == 1
+    assert "budget=0.03s" in rendered
+    assert "elapsed=" in rendered
+    assert "attempt=1/4" in rendered
+    assert "model=flaky-model" in rendered
+    assert "secret backoff body" not in rendered
