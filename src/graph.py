@@ -4,11 +4,14 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
+from pydantic import BaseModel
+
 from langgraph.graph import StateGraph, END
 try:
     from langgraph.checkpoint.sqlite import SqliteSaver
 except ModuleNotFoundError:  # pragma: no cover - exercised in tests via injection
     SqliteSaver = None
+from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from src.schemas import AgentState
 import src.nodes as nodes
@@ -38,6 +41,37 @@ def next_node(state:AgentState)-> Literal["R1_REFLECTOR", "R2_COMPLIANCE", "HASH
     return next_node_value
 
 
+def _trusted_schema_classes() -> list[type[BaseModel]]:
+    """Pydantic models defined in our own packages that we allow to round-trip
+    through the SQLite checkpoint.
+
+    LangGraph's checkpoint serializer encodes every custom pydantic class stored
+    in state as a typed ``(module, class, data)`` blob. On read-back it warns for
+    any type not on its built-in safe list — once per node, every run — because
+    the whole state is deserialized at the start of each node. Registering these
+    classes via ``allowed_msgpack_modules`` silences the warning while keeping the
+    objects intact (no business-code changes).
+
+    We enumerate ``BaseModel`` subclasses under ``src.`` / ``memory.`` rather than
+    hand-listing them, so new schema classes are covered automatically. ``AgentState``
+    imports every schema type it can store, so importing it (done by this module)
+    is enough to populate the subclass tree.
+    """
+    def _all_subclasses(cls: type):
+        for sub in cls.__subclasses__():
+            yield sub
+            yield from _all_subclasses(sub)
+
+    trusted: list[type[BaseModel]] = []
+    seen: set[type] = set()
+    for cls in _all_subclasses(BaseModel):
+        module = getattr(cls, "__module__", "") or ""
+        if module.startswith(("src.", "memory.")) and cls not in seen:
+            seen.add(cls)
+            trusted.append(cls)
+    return trusted
+
+
 def _create_checkpointer(checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     if SqliteSaver is None:
         raise ModuleNotFoundError(
@@ -49,8 +83,11 @@ def _create_checkpointer(checkpoint_path=DEFAULT_CHECKPOINT_PATH):
         if cached is not None:
             return cached[1]
 
+        # Allow our own pydantic schema classes to deserialize from checkpoint
+        # without LangGraph's per-node "unregistered type" warning.
+        serde = JsonPlusSerializer(allowed_msgpack_modules=_trusted_schema_classes())
         conn = sqlite3.connect(resolved_path, check_same_thread=False)
-        checkpointer = SqliteSaver(conn)
+        checkpointer = SqliteSaver(conn, serde=serde)
         checkpointer.setup()
         _CHECKPOINTERS[resolved_path] = (conn, checkpointer)
         return checkpointer
