@@ -33,6 +33,8 @@ class DeepSeekModel(BaseLLMModel):
                 model=self.model_name,
                 api_key=self.api_key,
                 temperature=self.temperature,
+                timeout=480,
+                max_retries=0,
                 reasoning_effort="high",
                 extra_body={"thinking": {"type": "enabled"}},
                 **self.extra_kwargs

@@ -47,10 +47,10 @@ class ZhipuModel(BaseLLMModel):
                 model=self.model_name,
                 api_key=self.api_key,
                 base_url="https://open.bigmodel.cn/api/coding/paas/v4/",
-                timeout=360,
+                timeout=240,
                 temperature=self.temperature,
-                max_retries=3,
-                streaming=True,
+                max_retries=0,
+                streaming=False,
                 **self.extra_kwargs
             )
             if self.tools:

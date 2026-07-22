@@ -3,6 +3,8 @@ from unittest.mock import MagicMock
 import pytest
 from unittest.mock import patch
 from src.models import get_model, _model_cache
+from src.models.deepseek_model import DeepSeekModel
+from src.models.zhipu_model import ZhipuModel
 
 @pytest.fixture(autouse=True)
 def clear_cache():
@@ -48,3 +50,24 @@ def test_get_model_with_tools_and_kwargs(mock_deepseek):
     get_model("deepseek", tools=tools, temperature=0.5)
 
     mock_deepseek.assert_called_once_with(tools=tools, temperature=0.5)
+
+
+@patch("src.models.zhipu_model.ChatOpenAI")
+def test_zhipu_client_has_one_bounded_retry_owner(mock_chat_openai, monkeypatch):
+    monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
+    ZhipuModel().get_chat_model()
+    kwargs = mock_chat_openai.call_args.kwargs
+    assert kwargs["timeout"] == 240
+    assert kwargs["max_retries"] == 0
+    assert kwargs["streaming"] is False
+
+
+@patch("src.models.deepseek_model.ChatDeepSeek")
+def test_deepseek_client_has_one_bounded_retry_owner(mock_chat_deepseek, monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    DeepSeekModel().get_chat_model()
+    kwargs = mock_chat_deepseek.call_args.kwargs
+    assert kwargs["timeout"] == 480
+    assert kwargs["max_retries"] == 0
+    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
