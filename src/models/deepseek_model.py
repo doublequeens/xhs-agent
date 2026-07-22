@@ -5,6 +5,7 @@ from langchain_deepseek import ChatDeepSeek
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
 from src.models.base import BaseLLMModel
+from src.models._guard import invoke_with_hard_timeout
 import os, getpass
 
 class DeepSeekModel(BaseLLMModel):
@@ -44,7 +45,11 @@ class DeepSeekModel(BaseLLMModel):
     
     def execute(self, messages: List[BaseMessage]) -> dict:
         chat_model = self.get_chat_model()
-        response = chat_model.invoke(messages)
+        # deepseek-v4-pro runs with reasoning_effort="high" + thinking, so a
+        # legitimate review call is slower than a plain chat call; give it a
+        # generous wall-clock cap (480s) but still bound true hangs via the
+        # shared guard so a stalled call retries instead of freezing the run.
+        response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=480)
 
         content = response.content
 

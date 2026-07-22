@@ -2,6 +2,7 @@ from langchain_openai import ChatOpenAI
 from langchain_core.messages import BaseMessage, ToolMessage
 from typing import List
 from .base import BaseLLMModel
+from ._guard import invoke_with_hard_timeout
 import os, getpass
 import warnings
 import json_repair
@@ -46,9 +47,10 @@ class ZhipuModel(BaseLLMModel):
                 model=self.model_name,
                 api_key=self.api_key,
                 base_url="https://open.bigmodel.cn/api/coding/paas/v4/",
-                timeout=360, 
+                timeout=360,
                 temperature=self.temperature,
                 max_retries=3,
+                streaming=True,
                 **self.extra_kwargs
             )
             if self.tools:
@@ -58,7 +60,7 @@ class ZhipuModel(BaseLLMModel):
     
     def execute(self, messages: List[BaseMessage]) -> List[dict]:
         chat_model = self.get_chat_model()
-        response = chat_model.invoke(messages)
+        response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=240)
 
         if self.tools and response.tool_calls:
             messages.append(response)
@@ -71,11 +73,11 @@ class ZhipuModel(BaseLLMModel):
                     print(f"Executing tool: {tool_name} ...")
                     tool_response = tool_instance.invoke(tool_args)
                     messages.append(ToolMessage(
-                        content=str(tool_response), 
+                        content=str(tool_response),
                         name=tool_name,
                         tool_call_id=tool_id
                     ))
-            response = chat_model.invoke(messages)
+            response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=240)
 
 
         content = response.content

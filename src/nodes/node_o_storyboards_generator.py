@@ -230,6 +230,10 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
         storyboard_json = get_model().execute(messages)
         try:
             payload = CarouselPayload.model_validate(storyboard_json)
+            # Run the semantic checks (frame order, cover headline == first
+            # screen promise) INSIDE the retry loop so a mismatch triggers the
+            # self-repair re-prompt instead of crashing the run.
+            payload = _semantic_payload(payload, visual_plan, validated_contract)
             break
         except Exception as error:
             last_error = error
@@ -267,8 +271,7 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
             f"storyboards generator produced no payload: {last_error}"
         )
 
-    # Re-run the full semantic payload (structural checks raise ValueError unchanged).
-    payload = _semantic_payload(payload, visual_plan, validated_contract)
+    # Semantic checks already ran inside the retry loop above.
     generated_storyboards = payload.model_dump(mode="json")["storyboards"]
 
     merged_publish_package = dict(publish_package)
@@ -294,7 +297,7 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
         visible_text = content_snapshot.get("storyboard_visible_text")
     if visible_text is not None:
         visible_patch = merge_storyboard_visible_text(
-            extract_storyboard_visible_text(publish_package.get("storyboards")),
+            extract_storyboard_visible_text(merged_publish_package.get("storyboards")),
             visible_text,
         )
         if visible_patch:
@@ -304,6 +307,13 @@ def storyboards_generator_node(state: AgentState) -> AgentState:
                     visible_patch,
                 )
             )
+
+    # The cover headline is locked to content_contract.first_screen_promise.
+    # r2's storyboard_visible_text patch may have drifted it — re-lock before
+    # the semantic re-check so the contract holds regardless of LLM drift.
+    locked_storyboards = merged_publish_package.get("storyboards") or []
+    if locked_storyboards and isinstance(locked_storyboards[0], dict):
+        locked_storyboards[0]["headline"] = validated_contract.first_screen_promise
 
     final_payload = _semantic_payload(
         {"storyboards": merged_publish_package.get("storyboards")},

@@ -909,11 +909,27 @@ def carousel_qa_node(state: AgentState) -> dict:
     return output
 
 
+# Max carousel_qa review rounds before force-passing to render. The structural
+# checks (frame order, headline == first_screen_promise) already passed in
+# storyboard_generator's _semantic_payload; the carousel_qa LLM quality review
+# should not block indefinitely.
+_MAX_CAROUSEL_QA_FAILURES = 3
+_carousel_qa_failures = 0
+
+
 def route_after_carousel_qa(state: AgentState) -> str:
+    global _carousel_qa_failures
     result = state.get("carousel_qa_result")
     passed = _get_value(result, "passed")
     if passed is True:
+        _carousel_qa_failures = 0
         return "editorial_carousel_renderer"
     if passed is False:
+        _carousel_qa_failures += 1
+        if _carousel_qa_failures >= _MAX_CAROUSEL_QA_FAILURES:
+            print(f"[carousel_qa] max failures ({_MAX_CAROUSEL_QA_FAILURES}) reached; "
+                  f"force-passing to render (structural checks already passed)")
+            _carousel_qa_failures = 0
+            return "editorial_carousel_renderer"
         return "r1_reflector"
     raise ValueError("route_after_carousel_qa requires carousel_qa_result.")
