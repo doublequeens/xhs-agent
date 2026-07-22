@@ -58,3 +58,76 @@ def test_graph_no_longer_routes_through_trend_scout():
     nodes = set(graph.get_graph().nodes)
 
     assert "trend_scout" not in nodes
+
+
+def _count(conn, table, thread_id):
+    return conn.execute(
+        f"SELECT COUNT(*) FROM {table} WHERE thread_id = ?", (thread_id,)
+    ).fetchone()[0]
+
+
+def _seed_checkpoint_rows(path, thread_id):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.execute(
+        "INSERT INTO checkpoints(thread_id, checkpoint_ns, checkpoint_id, checkpoint)"
+        " VALUES (?, '', 'c1', x'00')",
+        (thread_id,),
+    )
+    conn.execute(
+        "INSERT INTO writes(thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel)"
+        " VALUES (?, '', 'c1', 't1', 0, 'ch')",
+        (thread_id,),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_delete_checkpoint_thread_removes_only_named_thread(tmp_path):
+    from src.graph import close_checkpointers, delete_checkpoint_thread
+
+    path = tmp_path / "checkpoints.sqlite"
+    # ensure schema exists via the real checkpointer
+    from src.graph import _create_checkpointer
+
+    _create_checkpointer(path).setup()
+    _seed_checkpoint_rows(path, "t1")
+    _seed_checkpoint_rows(path, "t2")
+
+    delete_checkpoint_thread("t1", path)
+
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        assert _count(conn, "checkpoints", "t1") == 0
+        assert _count(conn, "writes", "t1") == 0
+        assert _count(conn, "checkpoints", "t2") == 1
+    finally:
+        conn.close()
+        close_checkpointers(path)
+
+
+def test_delete_all_checkpoints_wipes_every_thread(tmp_path):
+    from src.graph import close_checkpointers, delete_all_checkpoints
+
+    path = tmp_path / "checkpoints.sqlite"
+    from src.graph import _create_checkpointer
+
+    _create_checkpointer(path).setup()
+    _seed_checkpoint_rows(path, "t1")
+    _seed_checkpoint_rows(path, "t2")
+
+    deleted = delete_all_checkpoints(path)
+
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    try:
+        assert deleted == 2  # two checkpoint rows seeded
+        assert conn.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM writes").fetchone()[0] == 0
+    finally:
+        conn.close()
+        close_checkpointers(path)

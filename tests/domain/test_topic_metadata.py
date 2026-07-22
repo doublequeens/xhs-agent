@@ -1,5 +1,6 @@
 import importlib
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import pytest
@@ -45,6 +46,9 @@ def _load_main(monkeypatch):
     composer.compose_prompt = lambda *args, **kwargs: ""
     graph = ModuleType("src.graph")
     graph.create_graph = lambda: object()
+    graph.DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
+    graph.delete_checkpoint_thread = lambda _thread_id, _path=None: None
+    graph.delete_all_checkpoints = lambda _path=None: 0
     memory_memory_manager = ModuleType("memory.memory_manager")
 
     class FakeMemoryManager:
@@ -239,6 +243,9 @@ def test_main_initial_state_includes_metadata_briefs(monkeypatch, tmp_path):
             thread_id=None,
             runs=False,
             verbose=False,
+            clear=None,
+            clear_all=False,
+            yes=False,
             focus_keyword=None,
             topic_num=10,
             provider=None,

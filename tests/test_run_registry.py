@@ -119,3 +119,34 @@ def test_initialization_wraps_uncreatable_registry_parent(tmp_path):
 
     assert str(registry_path) in str(exc_info.value)
     assert isinstance(exc_info.value.__cause__, OSError)
+
+
+def test_delete_run_removes_only_named_thread(registry):
+    registry.create_run("thread-a", "A")
+    registry.create_run("thread-b", "B")
+
+    assert registry.delete_run("thread-a") is True
+    assert registry.get_by_thread_id("thread-a") is None
+    assert registry.get_by_thread_id("thread-b") is not None
+    # deleting a missing thread is a no-op, not an error
+    assert registry.delete_run("thread-a") is False
+
+
+def test_delete_all_removes_every_run(registry):
+    registry.create_run("thread-a", "A")
+    registry.create_run("thread-b", "B")
+    registry.update_run("thread-b", status="completed")
+
+    assert registry.delete_all() == 2
+    assert registry.list_recent() == []
+
+
+def test_delete_all_with_status_filter_keeps_others(registry):
+    registry.create_run("thread-a", "A")
+    registry.create_run("thread-b", "B")
+    registry.update_run("thread-a", status="completed")
+    registry.update_run("thread-b", status="interrupted")
+
+    assert registry.delete_all(statuses=("completed",)) == 1
+    remaining = [r.thread_id for r in registry.list_recent()]
+    assert remaining == ["thread-b"]

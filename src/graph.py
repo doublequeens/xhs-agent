@@ -93,6 +93,49 @@ def _create_checkpointer(checkpoint_path=DEFAULT_CHECKPOINT_PATH):
         return checkpointer
 
 
+# Tables SqliteSaver may create that are keyed by thread_id. Older versions also
+# keep a separate ``checkpoint_blobs`` table; we delete from whichever exist so a
+# clear works across checkpoint schema versions.
+_CHECKPOINT_TABLES = ("checkpoints", "writes", "checkpoint_blobs")
+
+
+def _existing_checkpoint_tables(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?, ?, ?)",
+        _CHECKPOINT_TABLES,
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
+def delete_checkpoint_thread(thread_id: str, checkpoint_path=DEFAULT_CHECKPOINT_PATH) -> None:
+    """Delete all checkpoints + writes for one thread_id."""
+    checkpointer = _create_checkpointer(checkpoint_path)
+    checkpointer.delete_thread(thread_id)
+
+
+def delete_all_checkpoints(checkpoint_path=DEFAULT_CHECKPOINT_PATH) -> int:
+    """Delete every checkpoint/write row. Returns the count of deleted checkpoint rows.
+
+    Opens a short-lived connection rather than mutating the cached checkpointer so
+    the wipe is a single transaction.
+    """
+    resolved_path = Path(checkpoint_path).expanduser().resolve()
+    conn = sqlite3.connect(resolved_path)
+    try:
+        tables = _existing_checkpoint_tables(conn)
+        deleted = 0
+        with conn:
+            for table in tables:
+                if table == "checkpoints":
+                    cur = conn.execute(f"DELETE FROM {table}")
+                    deleted = cur.rowcount
+                else:
+                    conn.execute(f"DELETE FROM {table}")
+        return deleted
+    finally:
+        conn.close()
+
+
 def close_checkpointers(checkpoint_path=None) -> None:
     with _CHECKPOINTER_LOCK:
         if checkpoint_path is None:

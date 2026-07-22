@@ -181,6 +181,39 @@ class RunRegistry:
             limit,
         )
 
+    def delete_run(self, thread_id: str) -> bool:
+        """Delete a single run by thread_id. Returns True if a row was removed."""
+        try:
+            with self._connection:
+                cursor = self._connection.execute(
+                    "DELETE FROM agent_runs WHERE thread_id = ?",
+                    (thread_id,),
+                )
+        except sqlite3.Error as exc:
+            raise RunRegistryError(str(exc)) from exc
+        return cursor.rowcount > 0
+
+    def delete_all(self, statuses: tuple[str, ...] | None = None) -> int:
+        """Delete runs from the registry.
+
+        With ``statuses`` only runs in those statuses are removed; otherwise every
+        run is removed. Returns the number of rows deleted.
+        """
+        if statuses:
+            placeholders = ", ".join("?" for _ in statuses)
+            query = f"DELETE FROM agent_runs WHERE status IN ({placeholders})"
+            params: tuple[object, ...] = tuple(statuses)
+        else:
+            query = "DELETE FROM agent_runs"
+            params = ()
+        try:
+            with self._connection:
+                cursor = self._connection.execute(query, params)
+        except sqlite3.Error as exc:
+            raise RunRegistryError(str(exc)) from exc
+        return cursor.rowcount
+
+
     def update_run(
         self,
         thread_id: str,

@@ -19,6 +19,9 @@ def _load_main(monkeypatch):
     models.set_default_provider = lambda _provider: None
     graph = ModuleType("src.graph")
     graph.create_graph = lambda: object()
+    graph.DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
+    graph.delete_checkpoint_thread = lambda _thread_id, _path=None: None
+    graph.delete_all_checkpoints = lambda _path=None: 0
     memory_memory_manager = ModuleType("memory.memory_manager")
 
     class FakeMemoryManager:
@@ -1594,3 +1597,101 @@ def test_terminal_legacy_checkpoint_awaits_review_when_safe_export_fails(monkeyp
     registry = RunRegistry(path)
     assert registry.get_by_thread_id("terminal-legacy").status == "awaiting_review"
     registry.close()
+
+
+def _args(**over):
+    base = dict(
+        domain=None, subdomain=None, new=False, resume=None, thread_id=None,
+        runs=False, verbose=False, clear=None, clear_all=False, yes=False,
+        focus_keyword=None, topic_num=10, provider=None,
+    )
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def test_clear_single_deletes_registry_row_and_checkpoint(monkeypatch):
+    main = _load_main(monkeypatch)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        registry = RunRegistry(Path(td) / "agent_runs.sqlite")
+        registry.create_run("thread-1", "kw")
+        registry.create_run("thread-2", "kw")
+        deleted = []
+        monkeypatch.setattr(main, "delete_checkpoint_thread", lambda tid, _p=None: deleted.append(tid))
+
+        n = main.clear_runs(registry, _args(clear="thread-1"), checkpoint_path=Path(td) / "cp.sqlite")
+
+        assert n == 1
+        assert deleted == ["thread-1"]
+        assert registry.get_by_thread_id("thread-1") is None
+        assert registry.get_by_thread_id("thread-2") is not None
+        registry.close()
+
+
+def test_clear_all_with_yes_wipes_everything(monkeypatch):
+    main = _load_main(monkeypatch)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        registry = RunRegistry(Path(td) / "agent_runs.sqlite")
+        registry.create_run("t1", "kw")
+        registry.create_run("t2", "kw")
+        deleted = []
+        monkeypatch.setattr(main, "delete_checkpoint_thread", lambda tid, _p=None: deleted.append(tid))
+        monkeypatch.setattr(main, "delete_all_checkpoints", lambda _p=None: 0)
+
+        n = main.clear_runs(registry, _args(clear_all=True, yes=True), checkpoint_path=Path(td) / "cp.sqlite")
+
+        assert n == 2
+        assert sorted(deleted) == ["t1", "t2"]
+        assert registry.list_recent() == []
+        registry.close()
+
+
+def test_clear_all_cancel_keeps_runs(monkeypatch):
+    main = _load_main(monkeypatch)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        registry = RunRegistry(Path(td) / "agent_runs.sqlite")
+        registry.create_run("t1", "kw")
+        deleted = []
+        monkeypatch.setattr(main, "delete_checkpoint_thread", lambda tid, _p=None: deleted.append(tid))
+        answers = iter(["n"])
+
+        n = main.clear_runs(
+            registry,
+            _args(clear_all=True),
+            checkpoint_path=Path(td) / "cp.sqlite",
+            input_fn=lambda _p="": next(answers),
+        )
+
+        assert n == 0
+        assert deleted == []
+        assert len(registry.list_recent()) == 1
+        registry.close()
+
+
+def test_clear_unknown_run_raises(monkeypatch):
+    main = _load_main(monkeypatch)
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        registry = RunRegistry(Path(td) / "agent_runs.sqlite")
+        with pytest.raises(main.RunRegistryError):
+            main.clear_runs(registry, _args(clear="nope"), checkpoint_path=Path(td) / "cp.sqlite")
+        registry.close()
+
+
+def test_parse_cli_args_clear_flags_are_mutually_exclusive(monkeypatch):
+    main = _load_main(monkeypatch)
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--clear", "1", "--new"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--clear-all", "--runs"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--clear-all", "--clear", "1"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--yes"])
+    # valid combinations parse cleanly
+    ns = main.parse_cli_args(["--clear", "3"])
+    assert ns.clear == "3" and ns.clear_all is False
+    ns = main.parse_cli_args(["--clear-all", "--yes"])
+    assert ns.clear_all is True and ns.yes is True

@@ -18,7 +18,12 @@ from src.editorial_carousel.legacy import (
     persisted_checkpoint_nodes,
 )
 from src.editorial_carousel.publish_profile import resolve_publish_package_profile
-from src.graph import create_graph
+from src.graph import (
+    DEFAULT_CHECKPOINT_PATH,
+    create_graph,
+    delete_all_checkpoints,
+    delete_checkpoint_thread,
+)
 from src.models import set_default_provider
 from src.nodes import node_p_editorial_carousel_renderer
 from src.publishing.artifacts import (
@@ -124,12 +129,22 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
     run_group.add_argument("--thread-id", type=str, help="Existing conversation thread ID to resume")
     parser.add_argument("--runs", action="store_true", help="List the latest 20 runs and exit")
     parser.add_argument("--verbose", action="store_true", help="Show full IDs in --runs output")
+    parser.add_argument("--clear", metavar="RUN", help="Delete a single run (run ID or thread ID) and its checkpoint, then exit")
+    parser.add_argument("--clear-all", action="store_true", help="Delete ALL runs and checkpoints, then exit")
+    parser.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt for --clear-all")
     parser.add_argument("--focus_keyword", type=str, help="Focus keyword for the post")
     parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
     parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
     args = parser.parse_args() if argv is None else parser.parse_args(argv)
     if args.runs and (args.new or args.resume is not None or args.thread_id):
         parser.error("--runs cannot be combined with --new, --resume, or --thread-id")
+    clear_flags_active = args.clear is not None or args.clear_all
+    if clear_flags_active and (args.new or args.resume is not None or args.thread_id or args.runs):
+        parser.error("--clear/--clear-all cannot be combined with --new, --resume, --thread-id, or --runs")
+    if args.clear_all and args.clear is not None:
+        parser.error("--clear-all cannot be combined with --clear")
+    if args.yes and not clear_flags_active:
+        parser.error("--yes only applies to --clear-all")
     if args.subdomain and not args.domain:
         parser.error("--subdomain requires --domain")
     if args.focus_keyword is not None and not args.focus_keyword.strip():
@@ -251,6 +266,64 @@ def select_run(registry: RunRegistry, args: argparse.Namespace, input_fn=input, 
                 registry.update_run(run.thread_id, status="running", error_summary=None)
                 return run.thread_id, False
         output_fn("无效选择，请输入列表中的任务编号、n 或 q。")
+
+
+def _resolve_run(registry: RunRegistry, ref: str) -> AgentRun | None:
+    run = registry.get_by_thread_id(ref)
+    if run is None and ref.isdigit():
+        run = registry.get_by_run_id(int(ref))
+    return run
+
+
+def clear_runs(
+    registry: RunRegistry,
+    args: argparse.Namespace,
+    *,
+    checkpoint_path: Path = DEFAULT_CHECKPOINT_PATH,
+    input_fn=input,
+    output_fn=print,
+) -> int:
+    """Delete runs + their LangGraph checkpoints, then exit.
+
+    ``--clear RUN`` deletes a single run (no confirmation: the run is named
+    explicitly). ``--clear-all`` wipes every run and asks for confirmation unless
+    ``--yes`` is set. Registry rows and checkpoint blobs are both cleared
+    best-effort. Returns the number of registry rows removed.
+    """
+    if args.clear_all:
+        runs = registry.list_recent()
+        if not runs:
+            output_fn("没有可清除的任务。")
+            return 0
+        output_fn(f"将清除全部 {len(runs)} 个任务及其 checkpoint：")
+        for run in runs:
+            output_fn(format_run(run, verbose=args.verbose))
+        if not args.yes:
+            answer = input_fn("确认清除全部？此操作不可撤销 [y/N]: ").strip().lower()
+            if answer not in ("y", "yes"):
+                output_fn("已取消。")
+                return 0
+        for run in runs:
+            try:
+                delete_checkpoint_thread(run.thread_id, checkpoint_path)
+            except Exception as exc:  # noqa: BLE001 - report and continue
+                output_fn(f"checkpoint 清除失败 ({run.thread_id}): {exc}")
+        deleted = registry.delete_all()
+        output_fn(f"已清除 {deleted} 个任务。")
+        return deleted
+
+    run = _resolve_run(registry, args.clear)
+    if run is None:
+        raise RunRegistryError(f"找不到要清除的任务：{args.clear}")
+    output_fn("将清除该任务及其 checkpoint：")
+    output_fn(format_run(run, verbose=args.verbose))
+    try:
+        delete_checkpoint_thread(run.thread_id, checkpoint_path)
+    except Exception as exc:  # noqa: BLE001 - report but still drop the registry row
+        output_fn(f"checkpoint 清除失败: {exc}")
+    deleted = registry.delete_run(run.thread_id)
+    output_fn("已清除。" if deleted else "注册表无此任务（仅清除了 checkpoint）。")
+    return 1 if deleted else 0
 
 
 def backfill_legacy_run(registry: RunRegistry, thread_id: str, current_state) -> None:
@@ -614,6 +687,10 @@ def main():
         if args.runs:
             for run in registry.list_recent(20):
                 print(format_run(run, verbose=args.verbose))
+            return
+
+        if args.clear_all or args.clear is not None:
+            clear_runs(registry, args)
             return
 
         selection = select_run(registry, args)
