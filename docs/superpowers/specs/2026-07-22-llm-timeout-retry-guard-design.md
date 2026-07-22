@@ -105,6 +105,14 @@ Cancellation is cooperative through the provider's async HTTP client. This
 removes the executor-orphan failure mode and lets HTTP resources close through
 normal async context cleanup.
 
+Cancellation cleanup receives a fixed 50-millisecond grace after the configured
+total budget. If cleanup has not completed by then, the guard stops and poisons
+the process-scoped runner, returns the descriptive timeout, and rejects every
+later invocation until the process restarts. A poisoned runner is deliberately
+not closed during interpreter shutdown: closing it would wait again for the
+stuck task and could block shutdown forever. Healthy calls and cancellations
+that finish inside the grace continue to reuse the same event loop.
+
 ## Provider configuration
 
 ### GLM

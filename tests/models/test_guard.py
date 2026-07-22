@@ -1,6 +1,10 @@
 import asyncio
+import json
+import subprocess
+import sys
 import threading
 import time
+import traceback
 
 import pytest
 
@@ -44,6 +48,103 @@ def test_hard_timeout_cancels_one_active_request_without_retrying():
     assert "budget=0.03s" in str(caught.value)
     assert "attempt=1/4" in str(caught.value)
     assert "model=never-completes" in str(caught.value)
+
+
+def test_stuck_cancellation_cleanup_is_bounded_and_poisons_runner():
+    script = r"""
+import asyncio
+import importlib.util
+import json
+import time
+
+guard_spec = importlib.util.spec_from_file_location(
+    "standalone_llm_guard", "src/models/_guard.py"
+)
+guard_module = importlib.util.module_from_spec(guard_spec)
+guard_spec.loader.exec_module(guard_module)
+invoke_with_hard_timeout = guard_module.invoke_with_hard_timeout
+
+
+class StuckCancellationModel:
+    model_name = "stuck-cancellation"
+
+    def __init__(self):
+        self.calls = 0
+        self.active = 0
+        self.cancelled = False
+
+    async def ainvoke(self, messages):
+        self.calls += 1
+        self.active += 1
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            await asyncio.Event().wait()
+        finally:
+            self.active -= 1
+
+
+class FollowupModel:
+    model_name = "must-not-run"
+
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, messages):
+        self.calls += 1
+        return {"ok": True}
+
+
+stuck = StuckCancellationModel()
+started = time.monotonic()
+try:
+    invoke_with_hard_timeout(stuck, [], hard_timeout=0.03)
+except Exception as exc:
+    first_error = f"{exc.__class__.__name__}: {exc}"
+else:
+    first_error = ""
+elapsed = time.monotonic() - started
+
+followup = FollowupModel()
+try:
+    invoke_with_hard_timeout(followup, [], hard_timeout=1)
+except Exception as exc:
+    second_error = f"{exc.__class__.__name__}: {exc}"
+else:
+    second_error = ""
+
+print(json.dumps({
+    "elapsed": elapsed,
+    "first_error": first_error,
+    "stuck_calls": stuck.calls,
+    "stuck_active": stuck.active,
+    "stuck_cancelled": stuck.cancelled,
+    "followup_calls": followup.calls,
+    "second_error": second_error,
+}))
+"""
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=2,
+    )
+    result = json.loads(completed.stdout.splitlines()[-1])
+
+    assert result["elapsed"] < 0.15
+    assert result["first_error"].startswith("TimeoutError: ")
+    assert "budget=0.03s" in result["first_error"]
+    assert "model=stuck-cancellation" in result["first_error"]
+    assert result["stuck_calls"] == 1
+    assert result["stuck_active"] == 1
+    assert result["stuck_cancelled"] is True
+    assert result["followup_calls"] == 0
+    assert result["second_error"].startswith("RuntimeError: ")
+    assert "runner is unavailable" in result["second_error"]
+    assert "restart the process" in result["second_error"]
 
 
 class BlockingModel:
@@ -153,6 +254,26 @@ def test_provider_timeout_retries_sequentially_within_total_budget(
     output = capsys.readouterr().out
     assert "transient=TimeoutError" in output
     assert "secret provider response" not in output
+
+
+def test_exhausted_provider_timeouts_raise_redacted_guard_timeout(monkeypatch):
+    async def no_backoff(_seconds):
+        return None
+
+    monkeypatch.setattr("src.models._guard.asyncio.sleep", no_backoff)
+    model = FlakyModel(4, lambda: TimeoutError("secret provider body"))
+
+    with pytest.raises(TimeoutError) as caught:
+        invoke_with_hard_timeout(model, [], attempts=3, hard_timeout=1)
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert model.calls == 3
+    assert model.max_active == 1
+    assert "budget=1s" in rendered
+    assert "elapsed=" in rendered
+    assert "attempt=3/3" in rendered
+    assert "model=flaky-model" in rendered
+    assert "secret provider body" not in rendered
 
 
 def test_non_transient_failure_is_not_retried():

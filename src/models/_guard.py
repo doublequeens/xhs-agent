@@ -14,13 +14,16 @@ _TRANSIENT_KEYWORDS = (
 _RUNNER = asyncio.Runner()
 _RUNNER_LOCK = threading.Lock()
 _RUNNER_CLOSED = False
+_RUNNER_POISONED = False
+_CANCELLATION_CLEANUP_GRACE = 0.05
 
 
 def _close_runner() -> None:
     global _RUNNER_CLOSED
     with _RUNNER_LOCK:
         if not _RUNNER_CLOSED:
-            _RUNNER.close()
+            if not _RUNNER_POISONED:
+                _RUNNER.close()
             _RUNNER_CLOSED = True
 
 
@@ -47,6 +50,28 @@ def _timeout_error(model, hard_timeout, attempt, attempts, elapsed):
         f"(budget={hard_timeout:g}s, elapsed={elapsed:.2f}s, "
         f"attempt={attempt}/{attempts}, model={model})"
     )
+
+
+def _runner_unavailable_error(model):
+    return RuntimeError(
+        "LLM async runner is unavailable after cancellation cleanup exceeded "
+        f"the {_CANCELLATION_CLEANUP_GRACE:g}s grace; restart the process "
+        f"before invoking model={model}"
+    )
+
+
+async def _run_with_cleanup_watchdog(coro, *, stop_after, forced_stop):
+    loop = asyncio.get_running_loop()
+
+    def stop_poisoned_loop():
+        forced_stop.set()
+        loop.stop()
+
+    watchdog = loop.call_later(max(0.0, stop_after), stop_poisoned_loop)
+    try:
+        return await coro
+    finally:
+        watchdog.cancel()
 
 
 async def _invoke_with_total_budget(
@@ -82,6 +107,14 @@ async def _invoke_with_total_budget(
                     time.monotonic() - started,
                 ) from exc
             last_exc = exc
+            if attempt >= attempts and isinstance(exc, TimeoutError):
+                raise _timeout_error(
+                    model,
+                    hard_timeout,
+                    attempt,
+                    attempts,
+                    time.monotonic() - started,
+                ) from None
             if attempt >= attempts or not _is_transient(exc):
                 raise
             remaining = deadline - time.monotonic()
@@ -111,6 +144,7 @@ def _run_on_guard_loop(
     hard_timeout: float,
     attempts: int,
 ):
+    global _RUNNER_POISONED
     remaining = deadline - time.monotonic()
     if remaining <= 0 or not _RUNNER_LOCK.acquire(timeout=remaining):
         coro.close()
@@ -121,7 +155,26 @@ def _run_on_guard_loop(
         if _RUNNER_CLOSED:
             coro.close()
             raise RuntimeError("LLM async runner is closed")
-        return _RUNNER.run(coro)
+        if _RUNNER_POISONED:
+            coro.close()
+            raise _runner_unavailable_error(model)
+        forced_stop = threading.Event()
+        try:
+            return _RUNNER.run(
+                _run_with_cleanup_watchdog(
+                    coro,
+                    stop_after=(deadline - time.monotonic())
+                    + _CANCELLATION_CLEANUP_GRACE,
+                    forced_stop=forced_stop,
+                )
+            )
+        except RuntimeError:
+            if not forced_stop.is_set():
+                raise
+            _RUNNER_POISONED = True
+            raise _timeout_error(
+                model, hard_timeout, 1, attempts, time.monotonic() - started
+            ) from None
     finally:
         _RUNNER_LOCK.release()
 
