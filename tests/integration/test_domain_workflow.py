@@ -491,6 +491,7 @@ def _install_graph_doubles(
         package = dict(state["publish_package"])
         image_root = artifact_root / "images"
         image_root.mkdir(parents=True, exist_ok=True)
+        template_family = state["visual_plan"].template_family
         pages = []
         for index, frame in enumerate(package["storyboards"], start=1):
             path = image_root / f"{index:02d}-page.png"
@@ -513,7 +514,7 @@ def _install_graph_doubles(
                     "frame_id": frame["frame_id"],
                     "role": frame["role"],
                     "page_archetype": frame["page_archetype"],
-                    "template_family": frame["page_archetype"],
+                    "template_family": template_family,
                     "density": "standard",
                     "composition_variant": "integration",
                     "width": 1080,
