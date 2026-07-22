@@ -10,7 +10,7 @@ from langgraph.types import Command
 
 import src.graph as graph_module
 import src.nodes.node_q_01_final_policy_guard as final_guard_module
-from src.editorial_carousel.strategy import ASSET_ADAPTER
+from src.editorial_carousel import build_visual_plan
 from src.nodes.node_a_00_domain_confirmation import domain_confirmation_node
 from src.nodes.node_a_00_domain_router import domain_router_node
 from src.nodes.node_c_01_evidence_brief import evidence_brief_node
@@ -25,6 +25,7 @@ from src.schemas import (
     R2ContentSnapShoot,
     R2Input,
 )
+from src.schemas.narrative import NarrativeBeat, NarrativePlan
 from src.schemas.r2_output import R2ComplianceAudit, R2Output
 from src.schemas.decision import RevisionMeta
 from src.schemas.topic import TopicItem
@@ -41,20 +42,50 @@ def _creative_seed():
     }
 
 
-def _structured_storyboards(contract, visual_plan):
-    requirements = {
-        (item.layout, item.role): item for item in visual_plan.required_assets
-    }
+def _domain_narrative_plan() -> NarrativePlan:
+    beats = [
+        NarrativeBeat(beat_id="hook", kind="hook", purpose="提出日常习惯问题"),
+        NarrativeBeat(beat_id="scene", kind="scene", purpose="定位通勤前场景"),
+        NarrativeBeat(beat_id="steps", kind="steps", purpose="拆解可执行步骤"),
+        NarrativeBeat(beat_id="check", kind="checklist", purpose="整理保存清单"),
+        NarrativeBeat(beat_id="boundary", kind="boundary", purpose="说明适用边界"),
+        NarrativeBeat(beat_id="close", kind="action", purpose="选择一个动作开始"),
+    ]
+    return NarrativePlan(
+        narrative_form="checklist_collection",
+        beats=beats,
+        saveable_beat=beats[3],
+        closing_mode="action_prompt",
+    )
+
+
+def _structured_storyboards(contract, narrative_plan, publish_package):
+    planned_plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package,
+        recent_signatures=[],
+    )
+    requirements = {item.slot_id: item for item in planned_plan.required_assets}
     frames = []
-    for index, planned in enumerate(visual_plan.frame_plan):
-        semantic_role = planned.asset_roles[0]
-        concrete_role = ASSET_ADAPTER[(planned.layout, semantic_role)][0]
-        requirement = requirements[(planned.layout, concrete_role)]
+    for index, planned in enumerate(planned_plan.frame_plan):
+        visual_slots = []
+        for role in planned.asset_roles:
+            slot_id = f"{planned.frame_id}-{role}"
+            if slot_id in requirements:
+                visual_slots.append(
+                    {
+                        "slot_id": slot_id,
+                        "role": role,
+                        "semantic_tags": ["daily-routine"],
+                    }
+                )
         frames.append(
             {
                 "frame_id": planned.frame_id,
                 "role": planned.role,
-                "layout": planned.layout,
+                "page_archetype": planned.page_archetype,
+                "content_density_hint": "auto",
                 "headline": (
                     contract.first_screen_promise
                     if index == 0
@@ -65,13 +96,7 @@ def _structured_storyboards(contract, visual_plan):
                     {"block_type": "text", "body": planned.purpose}
                 ],
                 "emphasis": ["按需调整"],
-                "visual_slots": [
-                    {
-                        "slot_id": requirement.slot_id,
-                        "role": semantic_role,
-                        "semantic_tags": ["daily-routine"],
-                    }
-                ],
+                "visual_slots": visual_slots,
                 "footer": "逐步记录",
             }
         )
@@ -113,6 +138,7 @@ def _snapshot(state, *, title=None):
         core_pain=trend.core_pain,
         best_cover_copy="一页看懂",
         storyboard_visible_text=[],
+        narrative_plan=_domain_narrative_plan(),
     )
 
 
@@ -277,6 +303,7 @@ def _install_graph_doubles(
                 target_group=trend.target_group,
                 core_pain=trend.core_pain,
                 best_cover_copy="一页看懂",
+                narrative_plan=_domain_narrative_plan(),
             ),
         }
 
@@ -329,6 +356,7 @@ def _install_graph_doubles(
                 target_group=trend.target_group,
                 core_pain=trend.core_pain,
                 best_cover_copy="一页看懂",
+                narrative_plan=_domain_narrative_plan(),
             )
         return {
             "final_content": final_content,
@@ -338,6 +366,7 @@ def _install_graph_doubles(
     def assembler_node(state):
         content = state["final_content"]
         contract = state["trends"][0].content_contract
+        narrative_plan = _domain_narrative_plan()
         return {
             "publish_package": {
                 "topic_id": content.topic_id,
@@ -358,12 +387,20 @@ def _install_graph_doubles(
                 "risk_flags": content.risk_flags,
                 "profile_version": state["domain_context"].profile_version,
                 "content_contract": contract.model_dump(mode="json"),
+                "narrative_plan": narrative_plan.model_dump(mode="json"),
+                "narrative_form": narrative_plan.narrative_form,
+                "closing_mode": narrative_plan.closing_mode,
             }
         }
 
     def storyboard_generator_node(state):
         contract = state["trends"][0].content_contract
-        storyboards = _structured_storyboards(contract, state["visual_plan"])
+        narrative_plan = _domain_narrative_plan()
+        storyboards = _structured_storyboards(
+            contract,
+            narrative_plan,
+            state["publish_package"],
+        )
         return {
             "publish_package": {
                 **state["publish_package"],
@@ -393,7 +430,7 @@ def _install_graph_doubles(
                 {
                     "slot_id": requirement.slot_id,
                     "role": requirement.role,
-                    "layout": requirement.layout,
+                    "page_archetype": requirement.page_archetype,
                     "status": "active",
                     "path": str(asset_path),
                     "sha256": asset_sha256,
@@ -431,7 +468,7 @@ def _install_graph_doubles(
                     "license": "project_internal",
                     "dimensions": {"width": width, "height": height},
                     "sha256": asset_sha256,
-                    "allowed_layouts": [requirement.layout],
+                    "allowed_layouts": [requirement.page_archetype],
                     "tags": ["integration"],
                     "disabled_contexts": [],
                     "fallback_roles": [requirement.role],
@@ -465,13 +502,22 @@ def _install_graph_doubles(
                     "role": "content_blocks[0].body",
                     "text": frame["content_blocks"][0]["body"],
                 },
-                {"role": "footer", "text": frame["footer"]},
             ]
+            for emphasis_index, emphasis_text in enumerate(frame.get("emphasis") or []):
+                text_results.append(
+                    {"role": f"emphasis[{emphasis_index}]", "text": emphasis_text}
+                )
+            text_results.append({"role": "footer", "text": frame["footer"]})
             pages.append(
                 {
                     "frame_id": frame["frame_id"],
                     "role": frame["role"],
-                    "layout": frame["layout"],
+                    "page_archetype": frame["page_archetype"],
+                    "template_family": frame["page_archetype"],
+                    "density": "standard",
+                    "composition_variant": "integration",
+                    "width": 1080,
+                    "height": 1440,
                     "path": str(path),
                     "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                     "probe": {"text_results": text_results},
