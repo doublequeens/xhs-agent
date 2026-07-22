@@ -30,6 +30,7 @@
 | Editorial carousel | `docs/superpowers/specs/2026-07-13-editorial-carousel-workflow-design.md` | `docs/superpowers/plans/2026-07-14-editorial-carousel-workflow.md` | 已实施 |
 | Adaptive six-template content workflow | `docs/superpowers/specs/2026-07-16-adaptive-six-template-content-workflow-design.md` | `docs/superpowers/plans/2026-07-16-adaptive-six-template-content-workflow.md` | 已实施 |
 | LLM timeout and retry guard | `docs/superpowers/specs/2026-07-22-llm-timeout-retry-guard-design.md` | `docs/superpowers/plans/2026-07-22-llm-timeout-retry-guard.md` | 已实施 |
+| Modern editorial integration tests | `docs/superpowers/specs/2026-07-22-modernize-stale-editorial-integration-tests-design.md` | — | 当前任务 |
 | Project documentation | `docs/superpowers/specs/2026-07-15-project-documentation-design.md` | `docs/superpowers/plans/2026-07-15-project-documentation.md` | 当前任务 |
 | Project documentation governance | — | `docs/superpowers/plans/2026-07-15-project-documentation-governance.md` | 历史实施记录 |
 
