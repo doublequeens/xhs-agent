@@ -46,6 +46,46 @@ def test_green_catalog_bespoke_renders_designed_composition(archetype, section_c
         assert 'data-copy-role="content_blocks[1].items[0]"' in html
 
 
+def test_green_catalog_save_emits_block0_body_before_items():
+    """Regression: green_catalog save bespoke must emit block 0 copy atoms in
+    the contract order heading -> body -> items (matching the canonical
+    ``_render_block`` and the layout probe's ``_expected_copy``). When block 0
+    has BOTH a body and items, emitting body after items made the probe read
+    ``heading, items, body`` while expecting ``heading, body, items`` and raise
+    "frame-05-save layout probe visible text does not match storyboard". The
+    shared ``make_frame`` block 0 has a body but no items, which masked this.
+    """
+    import re
+
+    from conftest import make_frame
+    from src.rendering.editorial.copy_metrics import measure_frame_copy
+    from src.rendering.editorial.layouts import TEMPLATE_RENDERERS
+    from src.rendering.editorial.variant_resolver import resolve_variant
+
+    base = make_frame("save", frame_id="f", role="save")
+    block0 = base.content_blocks[0].model_copy(
+        update={"items": ["出汗少：气垫补涂", "出汗多：粉饼按压"]}
+    )
+    frame = base.model_copy(
+        update={
+            "persona": "@测试人设",
+            "content_blocks": [block0, base.content_blocks[1]],
+            "visual_slots": [],
+        }
+    )
+    variant = resolve_variant("green_catalog", "save", "auto", measure_frame_copy(frame))
+    html = TEMPLATE_RENDERERS["green_catalog"](frame, [], variant)
+
+    roles = re.findall(r'data-copy-role="([^"]+)"', html)
+    block0_roles = [role for role in roles if role.startswith("content_blocks[0].")]
+    assert block0_roles == [
+        "content_blocks[0].heading",
+        "content_blocks[0].body",
+        "content_blocks[0].items[0]",
+        "content_blocks[0].items[1]",
+    ]
+
+
 def test_green_catalog_persona_renders_on_generic_fallback_path():
     from src.rendering.editorial.copy_metrics import measure_frame_copy
     from src.rendering.editorial.layouts import TEMPLATE_RENDERERS

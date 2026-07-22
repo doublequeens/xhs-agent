@@ -367,20 +367,24 @@ def _bespoke_body(
         inner = f"{topbar}{headline}{cards}{emph_html}{assets_html}"
     else:  # save
         block = frame.content_blocks[0] if frame.content_blocks else None
-        sub_body = (
-            copy_atom(block.body, role="content_blocks[0].body", class_name="gc-sub", tag="div")
-            if block and block.body else ""
-        )
         block0 = ""
         if block:
             block0 = (
                 copy_atom(block.heading, role="content_blocks[0].heading", class_name="gc-sub", tag="div")
                 if block.heading else ""
             )
+            # Body before items matches the probe's expected copy order
+            # (heading -> body -> items), same as the canonical _render_block;
+            # emitting body after items made the probe reject save pages whose
+            # block 0 has both a body and items.
+            if block.body:
+                block0 += copy_atom(
+                    block.body, role="content_blocks[0].body", class_name="gc-sub", tag="div"
+                )
             for i, item in enumerate(block.items or []):
                 block0 += copy_atom(item, role=f"content_blocks[0].items[{i}]", class_name="gc-sub", tag="div")
         extra = _extra_blocks(frame, 1)
-        inner = f"{topbar}{headline}{block0}{sub_body}{extra}{emph_html}{assets_html}"
+        inner = f"{topbar}{headline}{block0}{extra}{emph_html}{assets_html}"
     return f'<section class="template-body composition-{section_cls}">{inner}</section>'
 
 
