@@ -28,7 +28,7 @@ atexit.register(_close_runner)
 
 
 def _is_transient(exc: Exception) -> bool:
-    if isinstance(exc, ConnectionError):
+    if isinstance(exc, (ConnectionError, TimeoutError)):
         return True
     text = str(exc).lower()
     return any(keyword in text for keyword in _TRANSIENT_KEYWORDS)
@@ -50,11 +50,15 @@ def _timeout_error(model, hard_timeout, attempt, attempts, elapsed):
 
 
 async def _invoke_with_total_budget(
-    chat_model, messages, *, attempts: int, hard_timeout: float
+    chat_model,
+    messages,
+    *,
+    attempts: int,
+    hard_timeout: float,
+    started: float,
+    deadline: float,
+    model: str,
 ):
-    started = time.monotonic()
-    deadline = started + hard_timeout
-    model = _model_identifier(chat_model)
     last_exc = None
 
     for attempt in range(1, attempts + 1):
@@ -64,14 +68,19 @@ async def _invoke_with_total_budget(
                 model, hard_timeout, max(1, attempt - 1), attempts,
                 time.monotonic() - started,
             ) from last_exc
+        timeout_scope = asyncio.timeout(remaining)
         try:
-            async with asyncio.timeout(remaining):
+            async with timeout_scope:
                 return await chat_model.ainvoke(messages)
-        except TimeoutError as exc:
-            raise _timeout_error(
-                model, hard_timeout, attempt, attempts, time.monotonic() - started
-            ) from exc
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and timeout_scope.expired():
+                raise _timeout_error(
+                    model,
+                    hard_timeout,
+                    attempt,
+                    attempts,
+                    time.monotonic() - started,
+                ) from exc
             last_exc = exc
             if attempt >= attempts or not _is_transient(exc):
                 raise
@@ -93,12 +102,28 @@ async def _invoke_with_total_budget(
     raise AssertionError("unreachable")
 
 
-def _run_on_guard_loop(coro: Coroutine[Any, Any, Any]):
-    with _RUNNER_LOCK:
+def _run_on_guard_loop(
+    coro: Coroutine[Any, Any, Any],
+    *,
+    deadline: float,
+    started: float,
+    model: str,
+    hard_timeout: float,
+    attempts: int,
+):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0 or not _RUNNER_LOCK.acquire(timeout=remaining):
+        coro.close()
+        raise _timeout_error(
+            model, hard_timeout, 1, attempts, time.monotonic() - started
+        )
+    try:
         if _RUNNER_CLOSED:
             coro.close()
             raise RuntimeError("LLM async runner is closed")
         return _RUNNER.run(coro)
+    finally:
+        _RUNNER_LOCK.release()
 
 
 def invoke_with_hard_timeout(
@@ -117,8 +142,22 @@ def invoke_with_hard_timeout(
         raise RuntimeError(
             "invoke_with_hard_timeout cannot run inside a running asyncio event loop"
         )
+    started = time.monotonic()
+    deadline = started + hard_timeout
+    model = _model_identifier(chat_model)
     return _run_on_guard_loop(
         _invoke_with_total_budget(
-            chat_model, messages, attempts=attempts, hard_timeout=hard_timeout
-        )
+            chat_model,
+            messages,
+            attempts=attempts,
+            hard_timeout=hard_timeout,
+            started=started,
+            deadline=deadline,
+            model=model,
+        ),
+        deadline=deadline,
+        started=started,
+        model=model,
+        hard_timeout=hard_timeout,
+        attempts=attempts,
     )

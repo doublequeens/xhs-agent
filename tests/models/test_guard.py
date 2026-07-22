@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 
 import pytest
@@ -45,6 +46,62 @@ def test_hard_timeout_cancels_one_active_request_without_retrying():
     assert "model=never-completes" in str(caught.value)
 
 
+class BlockingModel:
+    model_name = "blocking-model"
+
+    def __init__(self):
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    async def ainvoke(self, messages):
+        self.started.set()
+        await asyncio.to_thread(self.release.wait)
+        return {"ok": True}
+
+
+def test_lock_queue_wait_counts_toward_budget_without_starting_request():
+    blocking_model = BlockingModel()
+    blocking_errors = []
+
+    def hold_guard_loop():
+        try:
+            invoke_with_hard_timeout(blocking_model, [], hard_timeout=1)
+        except Exception as exc:  # pragma: no cover - diagnostic capture
+            blocking_errors.append(exc)
+
+    holder = threading.Thread(target=hold_guard_loop)
+    holder.start()
+    assert blocking_model.started.wait(timeout=0.25)
+
+    queued_model = FlakyModel(0)
+    queued_result = {}
+    queued_done = threading.Event()
+
+    def invoke_queued_model():
+        started = time.monotonic()
+        try:
+            invoke_with_hard_timeout(queued_model, [], hard_timeout=0.03)
+        except Exception as exc:
+            queued_result["exception"] = exc
+        finally:
+            queued_result["elapsed"] = time.monotonic() - started
+            queued_done.set()
+
+    queued = threading.Thread(target=invoke_queued_model)
+    queued.start()
+    completed_within_budget_window = queued_done.wait(timeout=0.15)
+
+    blocking_model.release.set()
+    holder.join(timeout=0.5)
+    queued.join(timeout=0.5)
+
+    assert completed_within_budget_window is True
+    assert isinstance(queued_result.get("exception"), TimeoutError)
+    assert queued_result["elapsed"] < 0.15
+    assert queued_model.calls == 0
+    assert blocking_errors == []
+
+
 class FlakyModel:
     model_name = "flaky-model"
 
@@ -76,6 +133,26 @@ def test_transient_failures_retry_sequentially(monkeypatch):
     assert invoke_with_hard_timeout(model, [], attempts=4, hard_timeout=1) == {"ok": True}
     assert model.calls == 3
     assert model.max_active == 1
+
+
+def test_provider_timeout_retries_sequentially_within_total_budget(
+    monkeypatch, capsys
+):
+    async def no_backoff(_seconds):
+        return None
+
+    monkeypatch.setattr("src.models._guard.asyncio.sleep", no_backoff)
+    model = FlakyModel(1, lambda: TimeoutError("secret provider response"))
+
+    assert invoke_with_hard_timeout(
+        model, [], attempts=2, hard_timeout=1
+    ) == {"ok": True}
+    assert model.calls == 2
+    assert model.max_active == 1
+
+    output = capsys.readouterr().out
+    assert "transient=TimeoutError" in output
+    assert "secret provider response" not in output
 
 
 def test_non_transient_failure_is_not_retried():
