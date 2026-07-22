@@ -129,6 +129,11 @@ FAMILY_CSS = """
 .template-green-catalog .composition-gc-save .gc-q{font-size:96px;line-height:1.14;color:#F3E9D2}
 .template-green-catalog .composition-gc-save .gc-sub{
   font-size:36px;line-height:1.55;color:#E8C7A0;font-weight:700;margin-top:22px;max-width:760px}
+/* dense save: the bespoke centered layout otherwise ignores density-dense and
+   its fixed 96/36px fonts overflow dense multi-block save pages. Shrink to fit
+   (standard/sparse save keeps the designed sizes above). */
+.density-dense .composition-gc-save .gc-q{font-size:64px;line-height:1.12}
+.density-dense .composition-gc-save .gc-sub{font-size:29px;line-height:1.4;margin-top:14px;max-width:880px}
 /* ===== SCENE (cream bento cards filling the page, content centered) ===== */
 .template-green-catalog .composition-gc-scene .gc-q{font-size:60px;line-height:1.14;margin-top:18px}
 .template-green-catalog .gc-scene-cards{
