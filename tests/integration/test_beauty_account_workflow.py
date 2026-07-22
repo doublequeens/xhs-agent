@@ -6,14 +6,14 @@ from types import SimpleNamespace
 import pytest
 from langgraph.checkpoint.memory import InMemorySaver
 from PIL import Image
-from pydantic import ValidationError
 
 import src.graph as graph_module
 from src.creator_profile import COMMUTING_BEAUTY_WOMEN_V1
-from src.editorial_carousel.strategy import ASSET_ADAPTER, build_visual_plan
+from src.editorial_carousel import build_visual_plan
 from src.schemas.content_contract import ContentContract
 from src.schemas.decision import DecisionOutput, HashTagInput, NormalizedInput
 from src.schemas.hashtag import HashTagOutput
+from src.schemas.narrative import NarrativeBeat, NarrativePlan
 from src.schemas.topic import TopicItem
 from src.schemas.topic_signal import CreativeSeed, TopicSignal
 
@@ -24,41 +24,64 @@ def _png(width=1080, height=1440):
     return buffer.getvalue()
 
 
-def _schema_valid_storyboards(contract: ContentContract) -> list[dict]:
-    plan = build_visual_plan(contract, recent_signatures=[])
-    requirements = {
-        (item.layout, item.role): item for item in plan.required_assets
-    }
+def _beauty_narrative_plan() -> NarrativePlan:
+    beats = [
+        NarrativeBeat(beat_id="hook", kind="hook", purpose="指出通勤底妆搓泥问题"),
+        NarrativeBeat(beat_id="diagnose", kind="diagnostic", purpose="判断搓泥发生环节"),
+        NarrativeBeat(beat_id="explain", kind="explanation", purpose="解释成膜等待逻辑"),
+        NarrativeBeat(beat_id="steps", kind="steps", purpose="给出通勤前调整步骤"),
+        NarrativeBeat(beat_id="save", kind="checklist", purpose="整理可保存检查清单"),
+        NarrativeBeat(beat_id="close", kind="action", purpose="按当天肤感微调"),
+    ]
+    return NarrativePlan(
+        narrative_form="diagnostic_qa",
+        beats=beats,
+        saveable_beat=beats[4],
+        closing_mode="action_prompt",
+    )
+
+
+def _schema_valid_storyboards(
+    contract: ContentContract,
+    narrative_plan: NarrativePlan,
+    publish_package: dict,
+) -> list[dict]:
+    plan = build_visual_plan(
+        contract,
+        narrative_plan,
+        publish_package,
+        recent_signatures=[],
+    )
+    requirements = {item.slot_id: item for item in plan.required_assets}
     frames = []
-    for index, planned in enumerate(plan.frame_plan):
-        semantic_role = planned.asset_roles[0]
-        concrete_role = ASSET_ADAPTER[(planned.layout, semantic_role)][0]
-        requirement = requirements[(planned.layout, concrete_role)]
-        frames.append(
-            {
-                "frame_id": planned.frame_id,
-                "role": planned.role,
-                "layout": planned.layout,
-                "headline": (
-                    contract.first_screen_promise
-                    if index == 0
-                    else planned.purpose
-                ),
-                "kicker": "通勤护肤",
-                "content_blocks": [
-                    {"block_type": "text", "body": planned.purpose}
-                ],
-                "emphasis": ["按需微调"],
-                "visual_slots": [
+    for planned in plan.frame_plan:
+        visual_slots = []
+        for role in planned.asset_roles:
+            slot_id = f"{planned.frame_id}-{role}"
+            if slot_id in requirements:
+                visual_slots.append(
                     {
-                        "slot_id": requirement.slot_id,
-                        "role": semantic_role,
+                        "slot_id": slot_id,
+                        "role": role,
                         "semantic_tags": ["skincare"],
                     }
-                ],
-                "footer": "按肤感微调",
-            }
-        )
+                )
+        frame = {
+            "frame_id": planned.frame_id,
+            "role": planned.role,
+            "page_archetype": planned.page_archetype,
+            "headline": (
+                contract.first_screen_promise
+                if planned.page_archetype == "cover"
+                else planned.purpose
+            ),
+            "kicker": "通勤护肤",
+            "content_blocks": [{"block_type": "text", "body": planned.purpose}],
+            "emphasis": ["按需微调"],
+            "visual_slots": visual_slots,
+            "footer": "按肤感微调",
+        }
+        frames.append(frame)
     return frames
 
 
@@ -75,7 +98,7 @@ def beauty_account_workflow():
         content_job="diagnose_and_adjust",
         primary_visual_family="face_zone_map",
         primary_visual_subject="face_map",
-        proof_mode="product_texture",
+        proof_mode="none",
         recommended_frame_count=6,
     )
     signal = TopicSignal(
@@ -117,6 +140,7 @@ def beauty_account_workflow():
             timely_framing="早高峰前的一次性判断清单。",
         ),
     )
+    narrative_plan = _beauty_narrative_plan()
     final_content = HashTagInput(
         final_title="通勤防晒底妆不搓泥",
         final_md="先给防晒成膜时间，再上底妆。",
@@ -132,7 +156,16 @@ def beauty_account_workflow():
         target_group=topic.target_group,
         core_pain=topic.core_pain,
         best_cover_copy=contract.first_screen_promise,
+        narrative_plan=narrative_plan,
     )
+    publish_package = {
+        "topic_id": topic.topic_id,
+        "angle_id": "ag_sunscreen_order",
+        "title": final_content.final_title,
+        "content": final_content.final_md,
+        "narrative_plan": narrative_plan,
+        "content_contract": contract,
+    }
     return {
         "creator_profile": COMMUTING_BEAUTY_WOMEN_V1,
         "focus_keyword": "防晒搓泥",
@@ -144,6 +177,8 @@ def beauty_account_workflow():
             "profile_version": "beauty-v1",
         },
         "final_content": final_content,
+        "narrative_plan": narrative_plan,
+        "publish_package": publish_package,
         "hashtags": HashTagOutput(hashtags=["#通勤底妆"]),
     }
 
@@ -280,6 +315,15 @@ def _run_carousel_path(monkeypatch, state, storyboards, *, render_root):
     return reached_nodes, captured
 
 
+def _beauty_storyboards(state):
+    contract = state["trends"][0].content_contract
+    return _schema_valid_storyboards(
+        contract,
+        state["narrative_plan"],
+        state["publish_package"],
+    )
+
+
 def test_beauty_package_reaches_human_review_with_account_contract(
     beauty_account_workflow,
     monkeypatch,
@@ -291,12 +335,12 @@ def test_beauty_package_reaches_human_review_with_account_contract(
     assert state["creator_profile"].profile_id == "commuting_beauty_women_v1"
     assert state["topic_signals"][0].domain == "beauty"
     assert state["topic_signals"][0].subdomain == "skincare"
-    assert 5 <= len(_schema_valid_storyboards(contract)) <= 7
+    assert 5 <= len(_beauty_storyboards(state)) <= 7
 
     reached_nodes, captured = _run_carousel_path(
         monkeypatch,
         state,
-        _schema_valid_storyboards(contract),
+        _beauty_storyboards(state),
         render_root=tmp_path / "renderer-repository" / "outputs" / "publish",
     )
 
@@ -316,7 +360,7 @@ def test_beauty_workflow_reaches_review_with_all_locally_rendered_carousel_pages
     reached_nodes, captured = _run_carousel_path(
         monkeypatch,
         beauty_account_workflow,
-        _schema_valid_storyboards(beauty_account_workflow["trends"][0].content_contract),
+        _beauty_storyboards(beauty_account_workflow),
         render_root=tmp_path / "renderer-repository" / "outputs" / "publish",
     )
 
@@ -378,8 +422,14 @@ def test_invalid_beauty_carousel_reaches_r1_through_compiled_graph(
     tmp_path,
 ):
     state = beauty_account_workflow
-    storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
-    storyboards[0]["visual_slots"][0]["role"] = "background_token"
+    storyboards = _beauty_storyboards(state)
+    storyboards[0]["visual_slots"].append(
+        {
+            "slot_id": "undeclared-product-texture",
+            "role": "product_texture",
+            "semantic_tags": ["skincare"],
+        }
+    )
 
     reached_nodes, captured = _run_carousel_path(
         monkeypatch,
@@ -399,10 +449,13 @@ def test_semantic_storyboard_schema_error_stops_before_asset_resolution(
     tmp_path,
 ):
     state = beauty_account_workflow
-    storyboards = _schema_valid_storyboards(state["trends"][0].content_contract)
+    storyboards = _beauty_storyboards(state)
     storyboards[1]["wrong_items"] = ["只有一项"]
 
-    with pytest.raises(ValidationError, match="wrong_items|extra_forbidden"):
+    # The storyboard generator retries invalid output 3x, then re-raises as
+    # RuntimeError chaining the underlying ValidationError. The pipeline still
+    # stops before asset resolution; only the surfaced exception type changed.
+    with pytest.raises(RuntimeError, match="wrong_items|extra_forbidden"):
         _run_carousel_path(
             monkeypatch,
             state,
