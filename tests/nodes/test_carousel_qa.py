@@ -741,6 +741,34 @@ def test_semantic_state_missing_visual_plan_is_not_legacy_fixed_six():
     ]
 
 
+def test_carousel_qa_exempts_cover_archetype_from_frame_task_missing():
+    from src.nodes.node_p_carousel_qa import validate_carousel
+
+    package = _package()
+    # Cover legitimately drops content_blocks: bespoke covers render only the
+    # hero headline + emphasis (body is dropped by _curate_frames_for_publish).
+    package["storyboards"][0]["content_blocks"] = []
+
+    cover_issues = [
+        issue
+        for issue in validate_carousel(package, _contract(), _plan())
+        if issue.rule_id == "frame_task_missing"
+        and issue.frame_id == package["storyboards"][0]["frame_id"]
+    ]
+    assert cover_issues == []
+
+    # A non-cover frame with empty content_blocks must still fail.
+    package["storyboards"][2]["content_blocks"] = []
+    non_cover_issues = [
+        issue
+        for issue in validate_carousel(package, _contract(), _plan())
+        if issue.rule_id == "frame_task_missing"
+        and issue.frame_id == package["storyboards"][2]["frame_id"]
+    ]
+    assert len(non_cover_issues) == 1
+    assert non_cover_issues[0].location_hint == "storyboards[2].content_blocks"
+
+
 def test_authoritative_topic_contract_cannot_be_overridden_by_package_contract():
     from src.nodes.node_p_carousel_qa import carousel_qa_node
 

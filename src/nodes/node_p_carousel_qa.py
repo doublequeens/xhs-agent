@@ -449,7 +449,13 @@ def _plan_contract_issues(
                     ),
                 )
             )
-        if not _as_list(frame, "content_blocks"):
+        # Covers render only the hero headline + emphasis; their body is
+        # intentionally dropped by _curate_frames_for_publish, so exempt the
+        # cover archetype from the empty-content_blocks check.
+        if (
+            _get_value(frame, "page_archetype") != "cover"
+            and not _as_list(frame, "content_blocks")
+        ):
             issues.append(
                 _issue(
                     "frame_task_missing",
