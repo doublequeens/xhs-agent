@@ -38,7 +38,8 @@ the empty `concurrent.futures.TimeoutError`, so the run registry records only
 `invoke_with_hard_timeout` remains the synchronous interface used by the model
 wrappers, but it executes `chat_model.ainvoke(messages)` under an asyncio total
 deadline. The current workflow calls model wrappers from synchronous LangGraph
-nodes, so the guard owns a short-lived event loop for the guarded operation.
+nodes, so the guard owns one process-scoped `asyncio.Runner` and serializes
+guarded operations on that runner.
 
 The deadline is calculated once, before the first attempt. Each retry receives
 only the remaining budget. A timeout cancels the active coroutine and exits
@@ -93,6 +94,12 @@ called from a thread that already has a running asyncio event loop, it fails
 fast with a clear usage error rather than nesting `asyncio.run()` or creating an
 uncancellable worker thread. Async workflow callers should use a dedicated async
 guard in a future change; no current production node needs that interface.
+
+The runner is reused because the cached provider wrappers also reuse their async
+HTTP clients across workflow nodes; keeping one event loop avoids binding one
+cached client to a series of already-closed loops. A lock serializes access to
+the runner, which matches the workflow's existing sequential model-call
+semantics. The runner is closed during normal interpreter shutdown.
 
 Cancellation is cooperative through the provider's async HTTP client. This
 removes the executor-orphan failure mode and lets HTTP resources close through
@@ -151,6 +158,7 @@ change the acceptance result for this branch.
 ## Acceptance criteria
 
 - No `ThreadPoolExecutor` or orphan worker remains in the LLM guard.
+- Cached async provider clients always run on the same process-scoped event loop.
 - A hard timeout cannot create overlapping provider calls.
 - One guarded invocation cannot exceed its total budget except for small event
   loop scheduling and cleanup overhead.
