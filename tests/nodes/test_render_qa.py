@@ -1623,6 +1623,39 @@ def test_render_qa_rechecks_canvas_safe_margin_fonts_and_text_tokens(tmp_path):
         "body_line_height_invalid",
     } <= set(_rule_ids(issues))
 
+def test_render_qa_accepts_bespoke_safe_margin_at_or_above_token(tmp_path):
+    """Regression: bespoke families use larger horizontal card padding than the
+    84px base token (green_catalog/coral_impact/deep_teal=88, white_quote=104),
+    so the probe measures safe_margin of 88 or 104. render_qa must enforce a
+    MINIMUM 84px safe margin, not exact equality, or every bespoke carousel
+    fails probe_safe_margin_mismatch (-> R1 loop -> LLM timeout)."""
+    from src.nodes.node_p_render_qa import validate_render
+
+    package, assets, manifest = _fixtures(tmp_path)
+    package = deepcopy(package)
+    for frame in package["storyboards"]:
+        frame["visual_slots"] = []
+    plan = _plan().model_copy(deep=True)
+    plan.required_assets = []
+    for frame in plan.frame_plan:
+        frame.asset_roles = []
+    assets = assets.model_copy(update={"items": []})
+    pages = [
+        page.model_copy(update={"probe": _probe_for_frame(frame)})
+        for page, frame in zip(manifest.pages, package["storyboards"], strict=True)
+    ]
+    pages[0] = pages[0].model_copy(
+        update={"probe": {**pages[0].probe, "safe_margin": 88.0}}
+    )
+    pages[1] = pages[1].model_copy(
+        update={"probe": {**pages[1].probe, "safe_margin": 104.0}}
+    )
+    manifest = manifest.model_copy(
+        update={"pages": pages, "source_asset_sha256": {}}
+    )
+
+    assert validate_render(package, assets, manifest, plan) == []
+
 
 def test_duplicate_storyboard_slot_does_not_overwrite_or_hide_unrelated_asset_issue(
     tmp_path,

@@ -220,11 +220,11 @@ def _probe_attestation_issues(
                 frame_id=frame_id,
             )
         )
-    if float(_get_value(probe, "safe_margin") or 0) != 84.0:
+    if float(_get_value(probe, "safe_margin") or 0) < 84.0:
         issues.append(
             _issue(
                 "probe_safe_margin_mismatch",
-                "Persisted probe safe margin must equal the 84px design token.",
+                "Persisted probe safe margin must be at least the 84px design token.",
                 f"{base}.safe_margin",
                 frame_id=frame_id,
             )
