@@ -57,7 +57,7 @@ def test_zhipu_client_has_one_bounded_retry_owner(mock_chat_openai, monkeypatch)
     monkeypatch.setenv("ZHIPUAI_API_KEY", "test-key")
     ZhipuModel().get_chat_model()
     kwargs = mock_chat_openai.call_args.kwargs
-    assert kwargs["timeout"] == 240
+    assert kwargs["timeout"] == 480
     assert kwargs["max_retries"] == 0
     assert kwargs["streaming"] is False
 

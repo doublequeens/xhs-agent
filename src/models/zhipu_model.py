@@ -47,7 +47,7 @@ class ZhipuModel(BaseLLMModel):
                 model=self.model_name,
                 api_key=self.api_key,
                 base_url="https://open.bigmodel.cn/api/coding/paas/v4/",
-                timeout=240,
+                timeout=480,
                 temperature=self.temperature,
                 max_retries=0,
                 streaming=False,
@@ -60,7 +60,11 @@ class ZhipuModel(BaseLLMModel):
     
     def execute(self, messages: List[BaseMessage]) -> List[dict]:
         chat_model = self.get_chat_model()
-        response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=240)
+        # GLM-5.2 reflection/review calls (e.g. r1_reflector with the full
+        # carousel context) can run long; align with deepseek's generous 480s
+        # wall-clock cap so a slow-but-progressing call completes instead of
+        # hitting a 240s ceiling and freezing the run.
+        response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=480)
 
         if self.tools and response.tool_calls:
             messages.append(response)
@@ -77,7 +81,7 @@ class ZhipuModel(BaseLLMModel):
                         name=tool_name,
                         tool_call_id=tool_id
                     ))
-            response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=240)
+            response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=480)
 
 
         content = response.content
