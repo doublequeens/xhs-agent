@@ -25,7 +25,7 @@ def _content_contract():
         "primary_visual_family": "saveable_reference",
         "primary_visual_subject": "checklist",
         "proof_mode": "diagram",
-        "recommended_frame_count": 6,
+        "page_count_hint": 6,
     }
 
 

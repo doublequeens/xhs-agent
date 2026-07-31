@@ -52,7 +52,15 @@ from .storyboard import (
     ContentBlock,
     VisualSlot,
 )
-from .visual_plan import ContentJob, FramePlanItem, VisualFamily, VisualPlan
+from .content_atoms import (
+    ContentAtom,
+    ContentAtomSet,
+    ContentFragment,
+    canonical_sha256,
+    sha256_text,
+)
+from .content_contract import ContentJob, PrimaryVisualStructure
+from .visual_plan import FramePlanItem, VisualFamily, VisualPlan
 from .render_qa import RenderQAIssue, RenderQAResult
 
 
@@ -75,7 +83,8 @@ __all__ = [
     "RevisionMeta",
     "HashTagOutput",
     "CarouselFrame", "CarouselPayload", "ContentBlock", "VisualSlot",
-    "ContentJob", "VisualFamily", "LayoutName", "FramePlanItem", "VisualPlan",
+    "ContentAtom", "ContentAtomSet", "ContentFragment", "canonical_sha256", "sha256_text",
+    "ContentJob", "PrimaryVisualStructure", "VisualFamily", "LayoutName", "FramePlanItem", "VisualPlan",
     "TemplateFamily", "PageArchetype", "Density", "DensityHint",
     "TemplateSelection", "CopyMetrics", "ResolvedVariant",
     "AssetRequirement", "AssetManifestItem", "AssetManifest",
