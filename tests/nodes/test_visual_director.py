@@ -538,6 +538,81 @@ def test_director_still_retries_explicit_english_embedded_text_command():
 
 
 @pytest.mark.parametrize(
+    "query_or_prompt",
+    [
+        "include labels on the skin image",
+        "overlay captions on the image",
+    ],
+)
+def test_director_retries_plural_english_visible_copy_commands(
+    query_or_prompt,
+):
+    atom_set = _atom_set()
+    visible_copy = AssetDirective(
+        directive_id="english-visible-copy",
+        page_id="page-1",
+        role="skin_example",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt=query_or_prompt,
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    invalid = _valid_plan(atom_set, asset_directives=(visible_copy,))
+    valid = _valid_plan(atom_set)
+    model = ScriptedVisualModel([invalid, valid])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == valid
+    assert "forbidden visible image copy" in str(model.calls[1]["prompt"])
+
+
+@pytest.mark.parametrize(
+    "query_or_prompt",
+    [
+        "show skin with no text",
+        "show skin without text",
+        "show a label-free skin image",
+    ],
+)
+def test_director_allows_explicit_english_no_text_constraints(
+    query_or_prompt,
+):
+    atom_set = _atom_set()
+    no_visible_copy = AssetDirective(
+        directive_id="english-no-visible-copy",
+        page_id="page-1",
+        role="skin_example",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt=query_or_prompt,
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    plan = _valid_plan(atom_set, asset_directives=(no_visible_copy,))
+    model = ScriptedVisualModel([plan])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == plan
+
+
+@pytest.mark.parametrize(
     ("make_invalid", "feedback"),
     [
         (

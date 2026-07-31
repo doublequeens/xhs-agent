@@ -33,16 +33,11 @@ _PERSISTENT_PAIN_SIGNALS = (
     "明显泛红",
     "第二天仍然紧绷",
 )
-_FORBIDDEN_VISIBLE_ASSET_COPY = (
+_FORBIDDEN_DISCLOSURE_OR_CHINESE_ASSET_COPY = (
     re.compile(
         r"(?:AI|人工智能)\s*(?:技术\s*)?(?:辅助|参与)?\s*"
         r"(?:生成|绘制|创作|制作)\s*"
         r"(?:的)?(?:示意图|图片|图像|内容|素材)?",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:add|include|show|render|overlay|embed|write|display|with)\b"
-        r".{0,24}\b(?:text|caption|label|words)\b",
         re.IGNORECASE,
     ),
     re.compile(
@@ -55,6 +50,22 @@ _FORBIDDEN_VISIBLE_ASSET_COPY = (
         r"(?:不能|无法|不可)(?:替代|代替)(?:专业)?"
         r"(?:医生|医师|医疗|诊断|治疗)(?:的)?(?:建议|诊疗|诊断|治疗)"
     ),
+)
+_ENGLISH_NEGATIVE_VISIBLE_COPY_CONTEXTS = (
+    re.compile(
+        r"\b(?:no|without)\s+(?:any\s+)?"
+        r"(?:texts?|captions?|labels?|words?)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:text|caption|label|word)-free\b",
+        re.IGNORECASE,
+    ),
+)
+_ENGLISH_POSITIVE_VISIBLE_COPY_COMMAND = re.compile(
+    r"\b(?:add|include|show|render|overlay|embed|write|display|with)\b"
+    r".{0,24}\b(?:texts?|captions?|labels?|words?)\b",
+    re.IGNORECASE,
 )
 
 
@@ -146,6 +157,15 @@ def _validate_semantic_boundaries(
             )
 
 
+def _requests_english_visible_copy(query_or_prompt: str) -> bool:
+    positive_context = query_or_prompt
+    for negative_pattern in _ENGLISH_NEGATIVE_VISIBLE_COPY_CONTEXTS:
+        positive_context = negative_pattern.sub("", positive_context)
+    return _ENGLISH_POSITIVE_VISIBLE_COPY_COMMAND.search(
+        positive_context
+    ) is not None
+
+
 def _validate_asset_directive(directive: AssetDirective) -> None:
     query_or_prompt = directive.query_or_prompt
     if directive.preferred_source == "none":
@@ -159,9 +179,9 @@ def _validate_asset_directive(directive: AssetDirective) -> None:
 
     if not isinstance(query_or_prompt, str) or not query_or_prompt.strip():
         raise ValueError("asset directives require a non-empty query or prompt")
-    if any(
+    if _requests_english_visible_copy(query_or_prompt) or any(
         pattern.search(query_or_prompt)
-        for pattern in _FORBIDDEN_VISIBLE_ASSET_COPY
+        for pattern in _FORBIDDEN_DISCLOSURE_OR_CHINESE_ASSET_COPY
     ):
         raise ValueError(
             "asset directive query_or_prompt requests forbidden visible "
