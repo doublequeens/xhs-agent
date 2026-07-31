@@ -133,3 +133,71 @@ class CarouselDesignPlan(StrictModel):
         if self.asset_manifest_sha256 != canonical_sha256(asset_manifest):
             raise ValueError("design plan asset manifest hash does not match source")
 
+        content_atom_set.validate_complete_fragments(
+            direction_plan.content_fragments
+        )
+        direction_pages = tuple(
+            (page.page_id, page.sequence) for page in direction_plan.page_sequence
+        )
+        design_pages = tuple((page.page_id, page.sequence) for page in self.pages)
+        if design_pages != direction_pages:
+            raise ValueError(
+                "design plan pages must exactly match direction page IDs and sequences"
+            )
+
+        fragment_by_id = {
+            fragment.fragment_id: fragment
+            for fragment in direction_plan.content_fragments
+        }
+        direction_page_by_id = {
+            page.page_id: page for page in direction_plan.page_sequence
+        }
+        asset_by_id = {item.asset_id: item for item in asset_manifest.items}
+        directive_by_id = {
+            directive.directive_id: directive
+            for directive in direction_plan.asset_directives
+        }
+
+        for page in self.pages:
+            direction_page = direction_page_by_id[page.page_id]
+            owned_fragments = set(direction_page.fragment_ids)
+            owned_directives = set(direction_page.asset_directive_ids)
+            for element in page.elements:
+                if isinstance(element, TextElement):
+                    if element.content_ref not in fragment_by_id:
+                        raise ValueError(
+                            "text element content reference is unknown: "
+                            f"{element.content_ref}"
+                        )
+                    if element.content_ref not in owned_fragments:
+                        raise ValueError(
+                            "text element content reference belongs to a different "
+                            f"page: {element.content_ref}"
+                        )
+                elif isinstance(element, ImageElement):
+                    asset = asset_by_id.get(element.asset_ref)
+                    if asset is None:
+                        raise ValueError(
+                            "image element asset reference is unknown: "
+                            f"{element.asset_ref}"
+                        )
+                    if asset.security_status != "approved":
+                        raise ValueError(
+                            "image element asset is not security-approved: "
+                            f"{element.asset_ref}"
+                        )
+                    if asset.page_id != page.page_id:
+                        raise ValueError(
+                            "image element asset belongs to a different page: "
+                            f"{element.asset_ref}"
+                        )
+                    directive = directive_by_id.get(asset.directive_id)
+                    if (
+                        asset.directive_id not in owned_directives
+                        or directive is None
+                        or directive.page_id != page.page_id
+                    ):
+                        raise ValueError(
+                            "image element asset directive is not owned by page: "
+                            f"{asset.directive_id}"
+                        )

@@ -2,7 +2,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from .visual_style import StrictModel
+from .visual_style import Sha256, StrictModel
 
 
 Score = int
@@ -24,6 +24,10 @@ class VisualCritiqueIssue(StrictModel):
 
 
 class VisualCritique(StrictModel):
+    content_atom_set_sha256: Sha256
+    direction_plan_sha256: Sha256
+    design_plan_sha256: Sha256
+    render_manifest_sha256: Sha256
     passed: bool
     revision_round: int = Field(ge=0, le=2)
     contains_images: bool
@@ -67,4 +71,3 @@ class VisualCritique(StrictModel):
         if not self.passed and not self.revision_instructions:
             raise ValueError("failing visual critique requires revision instructions")
         return self
-

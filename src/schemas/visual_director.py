@@ -1,9 +1,16 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_serializer, model_validator
 
 from .content_atoms import ContentAtomSet, ContentFragment
-from .visual_style import FamilyStyleProfile, Sha256, StrictModel, TemplateFamily
+from .visual_style import (
+    FamilyStyleProfile,
+    Sha256,
+    StrictModel,
+    TemplateFamily,
+    deep_freeze,
+    deep_thaw,
+)
 
 
 class PageDirection(StrictModel):
@@ -100,7 +107,16 @@ class VisualDirectionPlan(StrictModel):
             for directive in self.asset_directives
         ):
             raise ValueError("asset directives must bind to their owning page")
+        object.__setattr__(
+            self,
+            "typography_direction",
+            deep_freeze(self.typography_direction),
+        )
         return self
+
+    @field_serializer("typography_direction")
+    def serialize_typography_direction(self, value):
+        return deep_thaw(value)
 
     def validate_against(
         self,

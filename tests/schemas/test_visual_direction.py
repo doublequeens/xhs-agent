@@ -152,3 +152,34 @@ def test_direction_rejects_family_values_outside_profile():
 
     with pytest.raises(ValueError, match="palette must be a subset of family profile"):
         plan.validate_against(make_atom_set(), make_family_profile())
+
+
+def test_visual_contracts_reject_scalar_coercion():
+    with pytest.raises(ValidationError) as exc_info:
+        make_direction_plan(page_count="5")
+
+    error = exc_info.value.errors()[0]
+    assert error["loc"] == ("page_count",)
+    assert error["type"] == "int_type"
+
+
+def test_direction_and_family_mappings_are_deeply_immutable_and_serializable():
+    profile = make_family_profile()
+    plan = make_direction_plan()
+
+    with pytest.raises(
+        TypeError,
+        match="'mappingproxy' object does not support item assignment",
+    ):
+        profile.font_roles["display"] = "Mutated Font"
+    with pytest.raises(
+        TypeError,
+        match="'mappingproxy' object does not support item assignment",
+    ):
+        plan.typography_direction["display"] = "mutated"
+
+    assert profile.model_dump(mode="json")["font_roles"]["display"] == "Display Font"
+    assert (
+        plan.model_dump(mode="json")["typography_direction"]["display"]
+        == "high contrast"
+    )

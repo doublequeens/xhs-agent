@@ -1,10 +1,36 @@
-from typing import Annotated, Literal
+from collections.abc import Mapping
+from types import MappingProxyType
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_serializer,
+    model_validator,
+)
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+def deep_freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return MappingProxyType(
+            {key: deep_freeze(item) for key, item in value.items()}
+        )
+    if isinstance(value, list | tuple):
+        return tuple(deep_freeze(item) for item in value)
+    return value
+
+
+def deep_thaw(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: deep_thaw(item) for key, item in value.items()}
+    if isinstance(value, tuple):
+        return [deep_thaw(item) for item in value]
+    return value
 
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
@@ -45,5 +71,9 @@ class FamilyStyleProfile(StrictModel):
             low, high = value_range
             if not 0 <= low <= high <= 1:
                 raise ValueError(f"family {label} range must be ordered within 0..1")
+        object.__setattr__(self, "font_roles", deep_freeze(self.font_roles))
         return self
 
+    @field_serializer("font_roles")
+    def serialize_font_roles(self, value):
+        return deep_thaw(value)

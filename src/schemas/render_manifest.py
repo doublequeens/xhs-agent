@@ -1,9 +1,9 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_serializer, model_validator
 
 from .scene_graph import Box
-from .visual_style import Sha256, StrictModel
+from .visual_style import Sha256, StrictModel, deep_freeze, deep_thaw
 
 
 class RenderedElementProbe(StrictModel):
@@ -88,4 +88,13 @@ class RenderManifest(StrictModel):
             range(1, len(self.pages) + 1)
         ):
             raise ValueError("render manifest page sequences must be contiguous from 1")
+        object.__setattr__(
+            self,
+            "source_asset_sha256",
+            deep_freeze(self.source_asset_sha256),
+        )
         return self
+
+    @field_serializer("source_asset_sha256")
+    def serialize_source_asset_sha256(self, value):
+        return deep_thaw(value)

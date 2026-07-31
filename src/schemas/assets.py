@@ -1,8 +1,8 @@
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_serializer, model_validator
 
-from .visual_style import Sha256, StrictModel
+from .visual_style import Sha256, StrictModel, deep_freeze, deep_thaw
 
 
 class AssetManifestItem(StrictModel):
@@ -28,7 +28,16 @@ class AssetManifestItem(StrictModel):
     def validate_focal_point(self):
         if any(value < 0 or value > 1 for value in self.subject_focal_point):
             raise ValueError("asset subject focal point must be within 0..1")
+        object.__setattr__(
+            self,
+            "internal_provenance",
+            deep_freeze(self.internal_provenance),
+        )
         return self
+
+    @field_serializer("internal_provenance")
+    def serialize_internal_provenance(self, value):
+        return deep_thaw(value)
 
 
 class AssetManifest(StrictModel):

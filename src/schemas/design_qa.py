@@ -38,4 +38,3 @@ class DesignPlanQAResult(StrictModel):
         if not self.passed and not self.issues:
             raise ValueError("failing design QA requires at least one issue")
         return self
-
