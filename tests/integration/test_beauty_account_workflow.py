@@ -324,6 +324,55 @@ def _beauty_storyboards(state):
     )
 
 
+def test_beauty_assembler_output_atomizes_only_canonical_visible_copy(
+    beauty_account_workflow,
+    monkeypatch,
+):
+    from src.nodes import node_o_assembler as assembler_module
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    class FakeAssemblerModel:
+        def execute(self, _messages):
+            return {
+                "images": [],
+                "hashtags": ["#model-output"],
+                "notes": ["仅供参考"],
+                "audit": {"label": "AI生成示意图"},
+            }
+
+    state = dict(beauty_account_workflow)
+    state["final_content"] = state["final_content"].model_copy(
+        update={
+            "final_md": (
+                "# 先看肤感\n"
+                "1. 出现持续刺痛、明显泛红或第二天仍然紧绷时\n"
+                "2. 暂停使用新加的产品"
+            )
+        }
+    )
+    monkeypatch.setattr(
+        assembler_module,
+        "get_model",
+        lambda: FakeAssemblerModel(),
+    )
+
+    package = assembler_module.assembler_node(state)["publish_package"]
+    result = content_atomizer_node({"publish_package": package})
+
+    assert result["content_atomization_route"] == "visual_director"
+    assert [atom.text for atom in result["content_atom_set"].atoms] == [
+        "通勤防晒底妆不搓泥",
+        "通勤前 3 步避开防晒搓泥",
+        "先看肤感",
+        "出现持续刺痛、明显泛红或第二天仍然紧绷时",
+        "暂停使用新加的产品",
+    ]
+    assert all(
+        "仅供参考" not in atom.text and "AI生成示意图" not in atom.text
+        for atom in result["content_atom_set"].atoms
+    )
+
+
 def test_beauty_package_reaches_human_review_with_account_contract(
     beauty_account_workflow,
     monkeypatch,

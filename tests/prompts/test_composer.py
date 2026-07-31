@@ -240,6 +240,20 @@ def test_selected_copy_prompts_require_exact_narrative_plan_preservation(task):
     assert "逐字段原样复制" in prompt
 
 
+def test_r2_prompt_blocks_visible_disclosure_and_disclaimer_copy_without_blocking_risk_guidance():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("r2_compliance", get_domain_profile("beauty"))
+
+    assert "AI 生成" in prompt
+    assert "示意图" in prompt
+    assert "仅供参考" in prompt
+    assert "不构成医疗建议" in prompt
+    assert "页面可见" in prompt
+    assert "普通事实风险条件" in prompt
+    assert "停用指导" in prompt
+
+
 def test_compose_prompt_rejects_unknown_task():
     from src.prompts.composer import compose_prompt
 

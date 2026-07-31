@@ -1037,6 +1037,52 @@ def test_assembler_injects_authoritative_narrative_metadata_and_ignores_model_st
     assert "image_final_choices" not in captured["human_prompt"]
 
 
+def test_beauty_assembler_preserves_selected_real_photo_proof_mode(monkeypatch):
+    from src.nodes import node_o_assembler as module
+
+    monkeypatch.setattr(
+        module,
+        "get_model",
+        lambda: SimpleNamespace(
+            execute=lambda _messages: {
+                "images": [],
+                "hashtags": ["#x"],
+                "notes": [],
+            }
+        ),
+    )
+    contract = {**_content_contract(), "proof_mode": "real_photo"}
+    beauty_domain_context = {
+        **_domain_context(),
+        "domain": "beauty",
+        "subdomain": "skincare",
+        "profile_version": "beauty-v1",
+    }
+
+    result = module.assembler_node(
+        {
+            "final_content": _hashtag_input(
+                domain="beauty",
+                subdomain="skincare",
+            ),
+            "hashtags": SimpleNamespace(hashtags=["#x"]),
+            "trends": [
+                SimpleNamespace(
+                    topic_id="tp_001",
+                    content_contract=contract,
+                )
+            ],
+            "domain_context": beauty_domain_context,
+            "content_policy": build_content_policy(
+                get_domain_profile("beauty"),
+                risk_level="medium",
+            ).model_dump(),
+        }
+    )
+
+    assert result["publish_package"]["content_contract"]["proof_mode"] == "real_photo"
+
+
 def test_assembler_rejects_explicit_cli_keyword_that_was_lost(monkeypatch):
     from src.nodes import node_o_assembler as module
 

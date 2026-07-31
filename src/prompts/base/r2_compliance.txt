@@ -24,6 +24,9 @@ r2_input，包含：
 - content_snapshot.narrative_plan 必须从输入 content_snapshot 逐字段原样复制；审计不得改变 narrative_form、beats、saveable_beat 或 closing_mode。
 - 如果首屏未说清谁、什么问题、得到什么，缺少可截图保存的步骤/清单/判断标准/对比表，或用卡通角色、IP、纯装饰性 AI 插图充当证明，必须输出 required_fixes 且 block_publish = true。
 - 将虚构第一人称经历，以及神技、急救、亲测有效、救命、无缝、隐形等夸大表达作为审计问题；未消除前不得 fully_compliant。
+- 页面可见文案不得新增“AI 生成”、AI 生成示意图、任何“示意图”标签或同类来源提示；命中时必须输出 required_fixes 且 block_publish = true。
+- 页面可见文案不得新增“仅供参考”等一般免责声明，也不得新增“不构成医疗建议”等医疗免责声明套话；命中时必须输出 required_fixes 且 block_publish = true。
+- 不得把正文已有的普通事实风险条件或具体停用指导误判为免责声明；例如对持续刺痛、明显泛红、次日仍紧绷等可观察情况的判断和处理指导应原样保留。
 
 【输出格式】
 仅输出严格 JSON：
