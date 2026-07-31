@@ -18,7 +18,7 @@ from dataclasses import dataclass
 
 from src.schemas.assets import AssetManifest
 from src.schemas.content_atoms import ContentAtomSet, canonical_sha256
-from src.schemas.design_qa import DesignIssue
+from src.schemas.design_qa import DesignIssue, DesignPlanQAResult
 from src.schemas.scene_graph import (
     Box,
     CarouselDesignPlan,
@@ -449,7 +449,7 @@ def validate_typography(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
                     _issue(
                         "typography.undersized_body_text",
                         (
-                            f"body/caption text size {style.font_size}g is below "
+                            f"body/caption text size {style.font_size}px is below "
                             f"{MIN_BODY_FONT_PX}px"
                         ),
                         f"raise font_size to at least {MIN_BODY_FONT_PX}px",
@@ -462,7 +462,7 @@ def validate_typography(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
                     _issue(
                         "typography.undersized_display_text",
                         (
-                            f"display/heading text size {style.font_size}g is below "
+                            f"display/heading text size {style.font_size}px is below "
                             f"{MIN_DISPLAY_FONT_PX}px"
                         ),
                         f"raise font_size to at least {MIN_DISPLAY_FONT_PX}px",
@@ -560,7 +560,7 @@ def validate_family_envelope(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
 
 # --- composition ----------------------------------------------------------
 
-def evaluate_design_plan(inputs: DesignPlanQAInputs) -> "DesignPlanQAResult":  # type: ignore[name-defined]
+def evaluate_design_plan(inputs: DesignPlanQAInputs) -> DesignPlanQAResult:
     """Run every deterministic rule and return a hard-gate QA result.
 
     Issue order is stable: hash -> content -> asset -> geometry -> typography ->
@@ -577,9 +577,6 @@ def evaluate_design_plan(inputs: DesignPlanQAInputs) -> "DesignPlanQAResult":  #
         + validate_family_envelope(inputs)
     )
     issue_tuple = tuple(issues)
-    # Local import keeps the module's dependency graph flat and avoids a cycle
-    # with the schemas package during partial imports.
-    from src.schemas.design_qa import DesignPlanQAResult
 
     return DesignPlanQAResult(
         passed=not issue_tuple,

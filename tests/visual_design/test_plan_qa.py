@@ -728,6 +728,7 @@ def test_intentional_overlap_does_not_fail():
     result = evaluate_design_plan(_inputs(design_plan=plan, **_base_from(base)))
 
     assert _find(result, "geometry.unintended_overlap") is None
+    assert result.passed is True
 
 
 # --- typography -----------------------------------------------------------
@@ -867,6 +868,21 @@ def test_script_like_atom_content_fails():
 
     assert result.passed is False
     issue = _find(result, "family.script_like_content", page_id="page-1", atom_id="atom-1")
+    assert issue is not None
+
+
+def test_page_count_below_minimum_fails():
+    base = _inputs()
+    # CarouselDesignPlan pins ``pages`` to min_length=5 at the schema layer, so
+    # forge a 4-page plan past the validator (model_copy does not re-validate)
+    # to confirm the QA gate does not rely on the schema alone.
+    forged_pages = base.design_plan.pages[:4]
+    plan = base.design_plan.model_copy(update={"pages": forged_pages})
+
+    result = evaluate_design_plan(_inputs(design_plan=plan, **_base_from(base)))
+
+    assert result.passed is False
+    issue = _find(result, "family.page_count_out_of_range")
     assert issue is not None
 
 
