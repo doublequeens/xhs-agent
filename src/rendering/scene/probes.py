@@ -72,6 +72,12 @@ PROBE_SCRIPT = r"""
     const style = getComputedStyle(node);
     const inner = node.querySelector('img.scene-image-inner');
     const innerRect = inner ? inner.getBoundingClientRect() : null;
+    // Per CSS line-box rectangles (text probes). For text nodes getClientRects
+    // yields one rect per wrapped line; for other nodes it yields the border
+    // box(es). Read geometry only.
+    const lineRects = Array.from(node.getClientRects()).map((r) => ({
+      x: r.x, y: r.y, width: r.width, height: r.height
+    }));
     return {
       element_id: node.dataset.elementId,
       content_ref: node.dataset.contentRef || null,
@@ -92,7 +98,8 @@ PROBE_SCRIPT = r"""
       natural_width: inner ? inner.naturalWidth : null,
       natural_height: inner ? inner.naturalHeight : null,
       rendered_image_width: innerRect ? innerRect.width : null,
-      rendered_image_height: innerRect ? innerRect.height : null
+      rendered_image_height: innerRect ? innerRect.height : null,
+      line_boxes: lineRects
     };
   });
 })();
@@ -220,6 +227,43 @@ def _clamp_box(
     return Box(x=safe_x, y=safe_y, width=safe_width, height=safe_height)
 
 
+def _optional_dim(raw: dict, key: str) -> float | None:
+    """Return a non-negative raw measurement, preserving a legitimate 0.0."""
+    value = raw.get(key)
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if numeric >= 0 else None
+
+
+def _line_boxes_from_raw(raw_boxes: object) -> tuple[Box, ...]:
+    """Map raw JS line-box rects to validated ``Box`` instances.
+
+    Degenerate rects (non-positive width/height) are dropped rather than
+    clamped up, so the attestation reflects real painted line boxes only.
+    """
+    if not isinstance(raw_boxes, (list, tuple)):
+        return ()
+    boxes: list[Box] = []
+    for item in raw_boxes:
+        if not isinstance(item, dict):
+            continue
+        try:
+            x = float(item.get("x"))
+            y = float(item.get("y"))
+            width = float(item.get("width"))
+            height = float(item.get("height"))
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+        boxes.append(_clamp_box(x, y, width, height))
+    return tuple(boxes)
+
+
 def _visible_crop_box(x: float, y: float, width: float, height: float) -> Box:
     """Intersect the rect with the canvas to get the visible (cropped) box."""
     x0 = max(float(x), 0.0)
@@ -297,6 +341,7 @@ def _normalize_raw(raw: dict) -> dict:
         "natural_height": raw.get("natural_height"),
         "rendered_image_width": raw.get("rendered_image_width"),
         "rendered_image_height": raw.get("rendered_image_height"),
+        "line_boxes": raw.get("line_boxes"),
     }
 
 
@@ -444,6 +489,7 @@ def _build_text_probe(
     # swallowed by ``or None`` and then failing the text-probe attestation.
     raw_font_size = raw.get("font_size")
     raw_line_height = raw.get("line_height")
+    line_boxes = _line_boxes_from_raw(raw.get("line_boxes"))
     return RenderedElementProbe(
         element_id=element.element_id,
         kind="text",
@@ -461,6 +507,11 @@ def _build_text_probe(
         rendered_asset_sha256=None,
         actual_focal_point=None,
         crop_box=None,
+        scroll_width=_optional_dim(raw, "scroll_width"),
+        scroll_height=_optional_dim(raw, "scroll_height"),
+        client_width=_optional_dim(raw, "client_width"),
+        client_height=_optional_dim(raw, "client_height"),
+        line_boxes=line_boxes,
     )
 
 
@@ -510,6 +561,8 @@ def _build_image_probe(
         rendered_asset_sha256=rendered_bytes,
         actual_focal_point=element.focal_point,
         crop_box=crop_box,
+        natural_width=_optional_dim(raw, "natural_width"),
+        natural_height=_optional_dim(raw, "natural_height"),
     )
 
 

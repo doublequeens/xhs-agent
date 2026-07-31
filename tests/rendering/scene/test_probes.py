@@ -114,6 +114,7 @@ def _raw_text_probe(
     line_height: float = 62.4,
     color: str = "rgb(26, 26, 26)",
     background_color: str = "rgb(255, 255, 255)",
+    line_boxes: list[dict] | None = None,
 ) -> dict:
     return {
         "element_id": element_id,
@@ -136,6 +137,7 @@ def _raw_text_probe(
         "natural_height": None,
         "rendered_image_width": None,
         "rendered_image_height": None,
+        "line_boxes": line_boxes,
     }
 
 
@@ -595,3 +597,105 @@ def test_text_probe_preserves_zero_font_size_and_line_height():
     assert probe.kind == "text"
     assert probe.computed_font_size == 0.0
     assert probe.computed_line_height == 0.0
+
+
+def test_text_probe_surfaces_scroll_client_and_line_boxes():
+    """I3: the measured scroll/client box and per-line rects are surfaced."""
+    fragment = _fragment("frag-1", "清晨第一步温和清洁")
+    element = _text_element("text-1", "frag-1")
+    page = PageScene(
+        page_id="page-1",
+        sequence=1,
+        background=PAGE_BACKGROUND,
+        elements=(element,),
+    )
+    raw = _raw_text_probe(
+        "text-1",
+        content_ref="frag-1",
+        scroll_width=1400,
+        scroll_height=320,
+        client_width=920,
+        client_height=160,
+        line_boxes=[
+            {"x": 80.0, "y": 120.0, "width": 920.0, "height": 80.0},
+            {"x": 80.0, "y": 208.0, "width": 900.0, "height": 80.0},
+            # Degenerate rects must be dropped, not clamped into phantom lines.
+            {"x": 0.0, "y": 0.0, "width": 0.0, "height": 80.0},
+            {"x": 0.0, "y": 0.0, "width": 10.0, "height": -5.0},
+            "not-a-dict",
+        ],
+    )
+
+    probes = build_element_probes(
+        raw_probes=[raw],
+        page=page,
+        fragments={"frag-1": fragment},
+        assets={},
+        page_background=PAGE_BACKGROUND,
+    )
+
+    probe = probes[0]
+    assert probe.scroll_width == 1400
+    assert probe.scroll_height == 320
+    assert probe.client_width == 920
+    assert probe.client_height == 160
+    assert probe.line_boxes == (
+        Box(x=80.0, y=120.0, width=920.0, height=80.0),
+        Box(x=80.0, y=208.0, width=900.0, height=80.0),
+    )
+
+
+def test_image_probe_surfaces_natural_dimensions(tmp_path):
+    """I3: the <img> intrinsic dimensions are surfaced on image probes."""
+    asset_payload_path = tmp_path / "asset.png"
+    asset_payload_path.write_bytes(b"\x89PNG\r\n\x1a\n")
+    payload_digest = hashlib.sha256(asset_payload_path.read_bytes()).hexdigest()
+    asset = AssetManifestItem(
+        asset_id="asset-1",
+        directive_id="directive-1",
+        page_id="page-1",
+        source_kind="catalog",
+        provider="catalog",
+        license="project-owned",
+        local_path=str(asset_payload_path),
+        width=2160,
+        height=2880,
+        sha256=payload_digest,
+        subject_focal_point=(0.5, 0.5),
+        crop_guidance="centered",
+        security_status="approved",
+        human_decision="pending",
+        run_id="run-1",
+        transaction_id="tx-1",
+        internal_provenance={"provider": "catalog"},
+    )
+    element = ImageElement(
+        element_id="image-1",
+        layer=1,
+        box=Box(x=80, y=400, width=920, height=720),
+        asset_ref="asset-1",
+        fit="cover",
+        focal_point=(0.5, 0.5),
+        corner_radius=0.0,
+    )
+    page = PageScene(
+        page_id="page-1",
+        sequence=1,
+        background=PAGE_BACKGROUND,
+        elements=(element,),
+    )
+    raw = _raw_image_probe(
+        "image-1", asset_ref="asset-1", natural_width=2160, natural_height=2880
+    )
+
+    probes = build_element_probes(
+        raw_probes=[raw],
+        page=page,
+        fragments={},
+        assets={"asset-1": asset},
+        page_background=PAGE_BACKGROUND,
+    )
+
+    probe = probes[0]
+    assert probe.natural_width == 2160
+    assert probe.natural_height == 2880

@@ -311,3 +311,15 @@ def test_real_chromium_renders_generic_carousel_with_probes_and_manifest(tmp_pat
     assert text_probe.rasterized_text_sha256 == sha256_text(
         fragments["fragment-1"].text
     )
+
+    # I3: real Chromium surfaces the measured layout attestations — the <img>
+    # intrinsic dimensions and the text element's scroll/client box and painted
+    # line boxes (one rect per wrapped line).
+    assert image_probe.natural_width == 1080
+    assert image_probe.natural_height == 1440
+    assert text_probe.scroll_width is not None and text_probe.scroll_width >= 0
+    assert text_probe.client_width is not None and text_probe.client_width > 0
+    assert text_probe.client_height is not None and text_probe.client_height > 0
+    assert text_probe.line_boxes is not None and len(text_probe.line_boxes) >= 1
+    for box in text_probe.line_boxes:
+        assert box.width > 0 and box.height > 0

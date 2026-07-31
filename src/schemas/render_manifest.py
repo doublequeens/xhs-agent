@@ -23,6 +23,18 @@ class RenderedElementProbe(StrictModel):
     rendered_asset_sha256: Sha256 | None = None
     actual_focal_point: tuple[float, float] | None = None
     crop_box: Box | None = None
+    # Raw layout attestations collected from the DOM (Task 11 brief Step 1).
+    # Optional and backward-compatible: text probes surface the measured
+    # scroll/client box and per-line rectangles; image probes surface the
+    # <img> intrinsic (natural) dimensions. Consumers that ignore them are
+    # unaffected.
+    scroll_width: float | None = Field(default=None, ge=0)
+    scroll_height: float | None = Field(default=None, ge=0)
+    client_width: float | None = Field(default=None, ge=0)
+    client_height: float | None = Field(default=None, ge=0)
+    line_boxes: tuple[Box, ...] | None = None
+    natural_width: float | None = Field(default=None, ge=0)
+    natural_height: float | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_kind_attestation(self):
