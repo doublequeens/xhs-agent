@@ -105,13 +105,38 @@ def test_atomizer_routes_system_disclosure_or_disclaimer_copy_back_to_r2(
 ):
     from src.nodes.node_p_content_atomizer import content_atomizer_node
 
-    result = content_atomizer_node(_state_with_copy(**{field: f"护肤判断方法\n{forbidden}"}))
+    result = content_atomizer_node(
+        _state_with_copy(**{field: f"护肤判断方法\n{forbidden}"})
+    )
 
     assert result["content_atomization_route"] == "r2_compliance"
     assert result["content_atom_set"] is None
     assert field in result["content_atomization_issues"][0]
     assert forbidden in result["content_atomization_issues"][0]
     assert "移除" in result["content_atomization_issues"][0]
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    [
+        "本图由AI绘制",
+        "本图由人工智能生成",
+        "本文不能代替医生建议",
+        "本文不作为诊疗依据",
+    ],
+)
+def test_atomizer_routes_equivalent_disclosure_and_disclaimer_boilerplate_to_r2(
+    forbidden,
+):
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    result = content_atomizer_node(
+        _state_with_copy(content=f"护肤判断方法\n{forbidden}")
+    )
+
+    assert result["content_atomization_route"] == "r2_compliance"
+    assert result["content_atom_set"] is None
+    assert forbidden in result["content_atomization_issues"][0]
 
 
 def test_atomizer_allows_factual_risk_conditions_and_stop_use_guidance():
@@ -126,6 +151,48 @@ def test_atomizer_allows_factual_risk_conditions_and_stop_use_guidance():
     assert [atom.text for atom in result["content_atom_set"].atoms][-2:] == [
         condition,
         "暂停使用新加的产品并观察",
+    ]
+
+
+def test_atomizer_allows_ai_as_an_ordinary_subject_without_source_disclosure():
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    ordinary_copy = "AI 可以辅助整理配方趋势，但不能只看一个指标"
+    result = content_atomizer_node(_state_with_copy(content=ordinary_copy))
+
+    assert result["content_atomization_route"] == "visual_director"
+    assert result["content_atom_set"].atoms[-1].text == ordinary_copy
+
+
+def test_atomizer_strips_nested_markdown_without_changing_visible_payload():
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    result = content_atomizer_node(
+        _state_with_copy(
+            title="**敏感状态**先看这 3 个信号✨",
+            cover_copy="__刺痛__、_泛红_、~~紧绷~~怎么判断？",
+            content=(
+                "    - **减少摩擦**，不反复触碰\n"
+                "        1. __记录__出现时间与区域\n"
+                "---\n"
+                "普通段落保留 _标点_，emoji：🧴✨"
+            ),
+        )
+    )
+
+    assert [atom.role for atom in result["content_atom_set"].atoms] == [
+        "title",
+        "cover",
+        "list_item",
+        "step",
+        "paragraph",
+    ]
+    assert [atom.text for atom in result["content_atom_set"].atoms] == [
+        "敏感状态先看这 3 个信号✨",
+        "刺痛、泛红、紧绷怎么判断？",
+        "减少摩擦，不反复触碰",
+        "记录出现时间与区域",
+        "普通段落保留 标点，emoji：🧴✨",
     ]
 
 

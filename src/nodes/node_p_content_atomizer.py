@@ -23,20 +23,48 @@ AtomRole = Literal[
 ]
 
 _BLOCK_MARKERS: tuple[tuple[AtomRole, re.Pattern[str]], ...] = (
-    ("heading", re.compile(r"^ {0,3}#{1,6}[ \t]+(.*)$")),
-    ("step", re.compile(r"^ {0,3}\d+[.)][ \t]+(.*)$")),
-    ("list_item", re.compile(r"^ {0,3}[-+*][ \t]+(.*)$")),
-    ("quote", re.compile(r"^ {0,3}>[ \t]?(.*)$")),
+    ("heading", re.compile(r"^[ \t]*#{1,6}[ \t]+(.*)$")),
+    ("step", re.compile(r"^[ \t]*\d+[.)][ \t]+(.*)$")),
+    ("list_item", re.compile(r"^[ \t]*[-+*][ \t]+(.*)$")),
+    ("quote", re.compile(r"^[ \t]*>[ \t]?(.*)$")),
+)
+
+_THEMATIC_BREAK = re.compile(
+    r"^[ \t]*(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
+)
+
+_INLINE_MARKERS = (
+    re.compile(r"(?<!\\)\*\*(?=\S)(.+?)(?<=\S)\*\*"),
+    re.compile(r"(?<!\\)__(?=\S)(.+?)(?<=\S)__"),
+    re.compile(r"(?<!\\)~~(?=\S)(.+?)(?<=\S)~~"),
+    re.compile(r"(?<![\\*])\*(?=\S)(.+?)(?<=\S)\*(?!\*)"),
+    re.compile(r"(?<![\\_\w])_(?=\S)(.+?)(?<=\S)_(?![_\w])"),
 )
 
 _FORBIDDEN_VISIBLE_COPY = (
-    re.compile(r"AI\s*生成(?:的)?(?:内容|图像|图片|示意图)?", re.IGNORECASE),
+    re.compile(
+        r"(?:AI|人工智能)(?:技术)?\s*(?:辅助|参与)?\s*"
+        r"(?:生成|绘制|创作|制作)(?:的)?(?:内容|图像|图片|示意图)?",
+        re.IGNORECASE,
+    ),
     re.compile(r"示意图"),
     re.compile(r"免责声明"),
     re.compile(r"仅供参考"),
-    re.compile(r"不构成(?:任何)?医疗建议"),
-    re.compile(r"(?:不能|无法|不可)替代(?:专业)?(?:医生|医疗|诊断|治疗)?建议"),
-    re.compile(r"内容仅(?:作|供|用于)(?:一般)?(?:科普|参考)"),
+    re.compile(
+        r"(?:本文|本内容|以上内容|相关内容)?\s*"
+        r"(?:不能|无法|不可)\s*(?:替代|代替)\s*"
+        r"(?:专业)?(?:医生|医师|医疗|诊断|治疗)?(?:的)?"
+        r"(?:建议|诊疗|诊断|治疗)"
+    ),
+    re.compile(
+        r"(?:本文|本内容|以上内容|相关内容)?\s*"
+        r"不(?:作为|构成)(?:任何)?\s*"
+        r"(?:医疗|医学|诊疗|诊断|治疗|用药)(?:建议|依据|指导)"
+    ),
+    re.compile(
+        r"(?:本文|本内容|以上内容|相关内容|内容)?仅"
+        r"(?:作|供|用于)(?:一般)?(?:科普|参考|信息分享)"
+    ),
 )
 
 
@@ -45,6 +73,16 @@ def _required_visible_field(package: Mapping[str, object], field: str) -> str:
     if not isinstance(value, str) or not value:
         raise ValueError(f"publish_package.{field} must be a non-empty string")
     return value
+
+
+def _strip_inline_markdown(text: str) -> str:
+    for pattern in _INLINE_MARKERS:
+        while True:
+            updated, replacements = pattern.subn(r"\1", text)
+            text = updated
+            if replacements == 0:
+                break
+    return text
 
 
 def find_forbidden_visible_system_copy(
@@ -60,7 +98,11 @@ def find_forbidden_visible_system_copy(
         ("content", content),
     ):
         for line in value.splitlines() or [value]:
-            if any(pattern.search(line) for pattern in _FORBIDDEN_VISIBLE_COPY):
+            visible_line = _strip_inline_markdown(line)
+            if any(
+                pattern.search(visible_line)
+                for pattern in _FORBIDDEN_VISIBLE_COPY
+            ):
                 issues.append(
                     f"{field} 包含禁止的页面可见系统说明或免责声明，"
                     f"请在 R2 移除：{line}"
@@ -98,13 +140,15 @@ def build_content_atoms(
             )
         )
 
-    append_atom("title", title)
-    append_atom("cover", cover_copy)
+    append_atom("title", _strip_inline_markdown(title))
+    append_atom("cover", _strip_inline_markdown(cover_copy))
     for line in content.splitlines():
         if not line.strip():
             continue
+        if _THEMATIC_BREAK.fullmatch(line):
+            continue
         role, text = _parse_content_line(line)
-        append_atom(role, text)
+        append_atom(role, _strip_inline_markdown(text))
     return tuple(atoms)
 
 
