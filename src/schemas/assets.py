@@ -55,6 +55,28 @@ class AssetManifest(StrictModel):
         return self
 
 
+class UnresolvedOptionalAsset(StrictModel):
+    directive_id: str = Field(min_length=1)
+    page_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class AssetTransactionEvidence(StrictModel):
+    run_id: str = Field(min_length=1)
+    transaction_id: str = Field(min_length=1)
+    transaction_root: str = Field(min_length=1)
+    journal_path: str = Field(min_length=1)
+    status: Literal["complete", "interrupted"]
+    resolved_directive_ids: tuple[str, ...] = ()
+    unresolved_optional_directive_ids: tuple[str, ...] = ()
+
+
+class AssetResolutionResult(StrictModel):
+    manifest: AssetManifest
+    unresolved_optional_assets: tuple[UnresolvedOptionalAsset, ...] = ()
+    transaction_evidence: AssetTransactionEvidence
+
+
 class LegacyAssetModel(BaseModel):
     """Temporary import compatibility for the v2 visual path pending removal."""
 

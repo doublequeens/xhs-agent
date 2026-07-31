@@ -10,6 +10,22 @@ from src.schemas.assets import AssetRequirement
 from src.schemas.visual_plan import FramePlanItem, VisualPlan
 
 
+# Obsolete slot-path lifecycle: these tests exercise `resolve_assets(visual_plan,
+# catalog)` and the slot/page_archetype/pending-external AssetManifestItem
+# contract that Task 2 of the LLM-directed visual production plan decommissioned
+# in favour of directive-based `AssetManifestItem` (directive_id/page_id/
+# source_kind/internal_provenance/...). Restoring the old contract at the
+# resolver boundary would re-introduce the deleted slot fields; the
+# directive-first resolver (`resolve_asset_directives`) and
+# `tests/asset_resolver/test_directive_resolution.py` cover the new behaviour.
+# The whole slot path is slated for deletion in Task 17; per the standing
+# obsolete-visual-path ruling these failures are tolerable, so the module is
+# skipped until the path is removed.
+pytestmark = pytest.mark.skip(
+    reason="Obsolete slot-based resolve_assets path; superseded by directive resolver (Task 7)."
+)
+
+
 class FakeProvider:
     def __init__(self) -> None:
         self.search_calls: list[object] = []

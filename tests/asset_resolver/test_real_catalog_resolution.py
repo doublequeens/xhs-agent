@@ -9,6 +9,19 @@ import pytest
 from src.schemas.assets import AssetRequirement
 
 
+# Obsolete slot-path tests: these exercise `resolve_assets(visual_plan, catalog)`
+# against the real beauty-editorial catalog using the slot/page_archetype
+# AssetRequirement contract that Task 2 decommissioned in favour of
+# directive-based `AssetManifestItem`. Reconciliation would require restoring
+# deleted slot fields; the directive-first resolver covers the new behaviour
+# via `tests/asset_resolver/test_directive_resolution.py`. Slated for deletion
+# in Task 17; per the standing obsolete-visual-path ruling these failures are
+# tolerable, so the module is skipped until the path is removed.
+pytestmark = pytest.mark.skip(
+    reason="Obsolete slot-based resolve_assets path; superseded by directive resolver (Task 7)."
+)
+
+
 CATALOG_PATH = (
     Path(__file__).resolve().parents[2]
     / "assets/visual/beauty-editorial-v1/manifest.json"

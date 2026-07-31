@@ -626,6 +626,9 @@ def test_cross_run_same_asset_approvals_have_one_catalog_winner(
     ]
 
 
+@pytest.mark.skip(
+    reason="Obsolete slot-based resolve_assets path; superseded by directive resolver (Task 7)."
+)
 def test_reloaded_approved_stock_keeps_provenance_in_local_manifest(
     tmp_path: Path,
 ) -> None:

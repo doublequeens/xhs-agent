@@ -814,6 +814,11 @@ def test_asset_rejection_reresolves_without_external_provider_calls(monkeypatch)
     ]
 
 
+@pytest.mark.skip(
+    reason="Obsolete slot-based resolve_assets adapter contract; superseded by "
+    "directive-first asset_resolver_node (Task 7). The new contract is covered "
+    "by tests/nodes/test_asset_resolver.py."
+)
 def test_asset_resolver_node_is_a_thin_validating_adapter(monkeypatch):
     module = importlib.import_module("src.nodes.node_p_asset_resolver")
     calls = []

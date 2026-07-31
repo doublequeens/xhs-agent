@@ -8,8 +8,10 @@ import re
 import stat
 import tempfile
 import time
+from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -21,10 +23,20 @@ from src.schemas.assets import (
     AssetManifest,
     AssetManifestItem,
     AssetRequirement,
+    AssetResolutionResult,
     AssetSearchReport,
+    AssetTransactionEvidence,
     ProviderSearchReport,
+    UnresolvedOptionalAsset,
 )
+from src.schemas.visual_director import AssetDirective
 from src.schemas.visual_plan import VisualPlan
+from src.visual_ai.protocols import (
+    GeneratedImage,
+    ImageGenerationProvider,
+    ImageGenerationRequest,
+)
+from src.visual_design.model_retry import VisualProductionInterrupted
 
 from .catalog import AssetCatalog, AssetEntry
 from .eligibility import entry_satisfies_requirement
@@ -970,4 +982,586 @@ def _resolve_assets_unlocked(
             provider_reports=provider_reports,
             selection_reasons=selection_reasons,
         ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Directive-first resolver (Task 7). The slot-based `resolve_assets` path
+# above is retained only for import compatibility; it is non-functional under
+# the directive-based `AssetManifestItem` contract and slated for deletion.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class AssetSafetyDecision:
+    """Deterministic safety outcome for one resolved image candidate."""
+
+    approved: bool
+    unwanted_text: bool = False
+    reason: str | None = None
+
+
+class DefaultAssetSafetyChecker:
+    """Deterministic raster/MIME/containment safety checks.
+
+    Unwanted-visible-text detection is delegated to the injected checker in
+    production; the default only fails closed on unreadable or non-regular
+    images so generated/searched bytes cannot be marked approved unless they
+    decode as a real raster.
+    """
+
+    def check(self, path: Path, directive: AssetDirective) -> AssetSafetyDecision:
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        descriptor: int | None = None
+        try:
+            before = path.lstat()
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+                return AssetSafetyDecision(
+                    approved=False,
+                    unwanted_text=False,
+                    reason="image is not a regular non-symlink file",
+                )
+            descriptor = os.open(path, os.O_RDONLY | nofollow)
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                return AssetSafetyDecision(
+                    approved=False,
+                    unwanted_text=False,
+                    reason="image identity changed during safety check",
+                )
+            try:
+                with Image.open(path) as image:
+                    image.verify()
+            except (OSError, ValueError) as error:
+                return AssetSafetyDecision(
+                    approved=False,
+                    unwanted_text=False,
+                    reason=f"image raster decode failed: {error}",
+                )
+        except OSError as error:
+            return AssetSafetyDecision(
+                approved=False,
+                unwanted_text=False,
+                reason=f"image safety check failed: {error}",
+            )
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+        return AssetSafetyDecision(approved=True, unwanted_text=False)
+
+
+def _directive_rejection_message(field_name: str) -> str:
+    return f"candidate rejected: {field_name}"
+
+
+def _candidate_meets_directive(
+    candidate: ExternalAssetCandidate, directive: AssetDirective
+) -> tuple[bool, str | None]:
+    """Deterministic eligibility gate mirroring the legacy external contract."""
+
+    if not candidate.provider or not candidate.provider_asset_id:
+        return False, _directive_rejection_message("provider identity missing")
+    if not isinstance(candidate.source_url, str) or not candidate.source_url.startswith("https://"):
+        return False, _directive_rejection_message("source_url must be https")
+    if not isinstance(candidate.source_file_url, str) or not candidate.source_file_url.startswith(
+        "https://"
+    ):
+        return False, _directive_rejection_message("source_file_url must be https")
+    if not candidate.license or not candidate.license.strip():
+        return False, _directive_rejection_message("license is empty")
+    if not candidate.license_snapshot or not candidate.license_snapshot.strip():
+        return False, _directive_rejection_message("license_snapshot is empty")
+    if not candidate.license_terms_url:
+        return False, _directive_rejection_message("license_terms_url is missing")
+    if candidate.width < directive.min_width or candidate.height < directive.min_height:
+        return False, _directive_rejection_message("dimensions below directive minimum")
+    if (
+        directive.orientation != "any"
+        and candidate.orientation != directive.orientation
+    ):
+        return False, _directive_rejection_message("orientation mismatch")
+    if candidate.has_watermark is True:
+        return False, _directive_rejection_message("watermark present")
+    if candidate.has_logo is True:
+        return False, _directive_rejection_message("logo present")
+    if candidate.has_text is True:
+        return False, _directive_rejection_message("text present")
+    if candidate.recognizable_face is True:
+        return False, _directive_rejection_message("recognizable face present")
+    if candidate.allowed_for_publishing is False:
+        return False, _directive_rejection_message("candidate disallowed for publishing")
+    if not candidate_urls_are_allowed(
+        candidate.provider,
+        source_url=candidate.source_url,
+        source_file_url=candidate.source_file_url,
+        license_terms_url=candidate.license_terms_url,
+    ):
+        return False, _directive_rejection_message("provider URLs are not allowlisted")
+    return True, None
+
+
+def _pixel_orientation_local(width: int, height: int) -> str:
+    if width == height:
+        return "square"
+    if width > height:
+        return "landscape"
+    return "portrait"
+
+
+def _decode_raster(raw: bytes) -> tuple[bytes, str, int, int]:
+    """Return (bytes, extension, width, height); raise on invalid rasters."""
+
+    try:
+        with Image.open(BytesIO(raw)) as source:
+            width, height = source.size
+            if width * height > MAX_IMAGE_PIXELS:
+                raise AssetResolutionError("provider image exceeds pixel limit")
+            source.load()
+            has_alpha = "A" in source.getbands() or "transparency" in source.info
+            normalized = source.convert("RGBA" if has_alpha else "RGB")
+    except (OSError, ValueError) as error:
+        raise AssetResolutionError("provider returned an invalid image") from error
+    output = BytesIO()
+    if has_alpha:
+        normalized.save(output, format="PNG", optimize=True)
+        extension = ".png"
+    else:
+        normalized.save(output, format="WEBP", lossless=True, method=6)
+        extension = ".webp"
+    return output.getvalue(), extension, width, height
+
+
+def _nofollow_read(path: Path) -> tuple[bytes, tuple[int, int]]:
+    """Read a regular non-symlink file via O_NOFOLLOW and return (bytes, identity)."""
+
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise AssetResolutionError("generated image is not a regular file")
+        descriptor = os.open(path, os.O_RDONLY | nofollow)
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise AssetResolutionError("generated image identity changed during read")
+        chunks: list[bytes] = []
+        while chunk := os.read(descriptor, 1024 * 1024):
+            chunks.append(chunk)
+        return b"".join(chunks), (opened.st_dev, opened.st_ino)
+    except OSError as error:
+        raise AssetResolutionError("generated image is unreadable") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _transaction_dir(transaction_root: Path, transaction_id: str) -> Path:
+    root = Path(transaction_root).resolve()
+    if not root.exists():
+        root.mkdir(parents=True, exist_ok=True)
+    directory = root / transaction_id
+    if directory.exists() or directory.is_symlink():
+        if not directory.is_dir() or directory.is_symlink():
+            raise AssetResolutionError("transaction id collides with a non-directory")
+    else:
+        directory.mkdir(parents=True, exist_ok=True)
+    return directory
+
+
+def _persist_recovery_journal(
+    transaction_dir: Path,
+    *,
+    transaction_id: str,
+    run_id: str,
+    errors: tuple[str, ...],
+) -> None:
+    payload = {
+        "status": "interrupted",
+        "transaction_id": transaction_id,
+        "run_id": run_id,
+        "stage": "asset_resolver",
+        "errors": list(errors),
+        "written_at": datetime.now(UTC).isoformat(),
+    }
+    journal_path = transaction_dir / "recovery.json"
+    content = (
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    ).encode("utf-8")
+    _atomic_write_bytes(journal_path, content)
+
+
+def _directive_search_query(directive: AssetDirective) -> str:
+    raw_terms: list[str] = []
+    if directive.query_or_prompt:
+        raw_terms.extend(directive.query_or_prompt.replace("_", " ").split())
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_terms:
+        for term in re.findall(r"[a-z0-9-]+", str(raw).lower()):
+            if term not in seen:
+                seen.add(term)
+                terms.append(term)
+    return " ".join(terms) or directive.role.replace("_", " ")
+
+
+def _generation_request(
+    directive: AssetDirective, *, width: int, height: int
+) -> ImageGenerationRequest:
+    prompt = directive.query_or_prompt or directive.role.replace("_", " ")
+    encoded = prompt.encode("utf-8")
+    return ImageGenerationRequest(
+        prompt=prompt,
+        negative_constraints=tuple(directive.negative_constraints),
+        width=width,
+        height=height,
+        prompt_sha256=hashlib.sha256(encoded).hexdigest(),
+    )
+
+
+def _resolve_via_search(
+    directive: AssetDirective,
+    *,
+    search_provider: object,
+    transaction_dir: Path,
+    safety_checker: object,
+    run_id: str,
+    transaction_id: str,
+) -> AssetManifestItem:
+    name = getattr(search_provider, "name", "search")
+    try:
+        results = search_provider.search(directive)
+    except Exception as error:
+        raise AssetResolutionError(str(error) or "search provider failed") from error
+
+    candidates = [result for result in results if isinstance(result, ExternalAssetCandidate)]
+    rejection_reasons: list[str] = []
+    selected: ExternalAssetCandidate | None = None
+    for candidate in candidates:
+        eligible, reason = _candidate_meets_directive(candidate, directive)
+        if not eligible:
+            if reason is not None:
+                rejection_reasons.append(reason)
+            continue
+        selected = candidate
+        break
+    if selected is None:
+        if rejection_reasons:
+            raise AssetResolutionError("; ".join(rejection_reasons))
+        raise AssetResolutionError("search provider returned no candidates")
+
+    try:
+        search_provider.record_download(selected)
+        raw = search_provider.download(selected)
+    except Exception as error:
+        raise AssetResolutionError(
+            f"search provider {name} download failed: {error}"
+        ) from error
+
+    normalized, extension, raster_width, raster_height = _decode_raster(raw)
+    if (
+        raster_width < directive.min_width
+        or raster_height < directive.min_height
+        or (
+            directive.orientation != "any"
+            and _pixel_orientation_local(raster_width, raster_height) != directive.orientation
+        )
+    ):
+        raise AssetResolutionError("downloaded raster fails directive dimensions/orientation")
+
+    sha256 = hashlib.sha256(normalized).hexdigest()
+    asset_id = f"{selected.provider}-{selected.provider_asset_id}"
+    relative_path = Path("search") / f"{_safe_component(directive.directive_id)}-{_safe_component(asset_id)}{extension}"
+    destination = transaction_dir / relative_path
+    if not destination.resolve().is_relative_to(transaction_dir.resolve()):
+        raise AssetResolutionError("search asset destination escapes the transaction dir")
+    _atomic_write_bytes(destination, normalized)
+
+    decision = safety_checker.check(destination, directive)
+    if not decision.approved:
+        message = (
+            "rejected: unwanted visible text"
+            if decision.unwanted_text
+            else f"rejected: {decision.reason or 'safety check failed'}"
+        )
+        raise AssetResolutionError(message)
+
+    return AssetManifestItem(
+        asset_id=asset_id,
+        directive_id=directive.directive_id,
+        page_id=directive.page_id,
+        source_kind="search",
+        provider=selected.provider,
+        license=selected.license,
+        local_path=str(destination),
+        width=raster_width,
+        height=raster_height,
+        sha256=sha256,
+        subject_focal_point=(0.5, 0.5),
+        crop_guidance=directive.orientation,
+        security_status="approved",
+        human_decision="pending",
+        run_id=run_id,
+        transaction_id=transaction_id,
+        internal_provenance={
+            "provider": selected.provider,
+            "source_url": selected.source_url,
+            "author": selected.author,
+        },
+    )
+
+
+def _resolve_via_generation(
+    directive: AssetDirective,
+    *,
+    generation_provider: ImageGenerationProvider,
+    transaction_dir: Path,
+    safety_checker: object,
+    run_id: str,
+    transaction_id: str,
+) -> AssetManifestItem:
+    generation_dir = transaction_dir / "generated"
+    generation_dir.mkdir(parents=True, exist_ok=True)
+    request = _generation_request(
+        directive,
+        width=directive.min_width,
+        height=directive.min_height,
+    )
+    try:
+        generated = generation_provider.generate(request, generation_dir)
+    except Exception as error:
+        raise AssetResolutionError(f"generation provider failed: {error}") from error
+
+    if not isinstance(generated, GeneratedImage):
+        raise AssetResolutionError("generation provider returned a non-GeneratedImage result")
+
+    generated_path = Path(generated.path)
+    # Containment + no-follow: read actual bytes from the regular file only.
+    raw, _identity = _nofollow_read(generated_path)
+    try:
+        resolved = generated_path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise AssetResolutionError("generated image path is unresolvable") from error
+    transaction_resolved = transaction_dir.resolve()
+    if not resolved.is_relative_to(transaction_resolved):
+        raise AssetResolutionError("generated image escapes the transaction directory")
+
+    # Re-decode to validate the raster and obtain authoritative dimensions.
+    # The manifest hash is computed from the actual on-disk bytes (raw), not
+    # from a re-encoded copy or the provider-reported digest, so the manifest
+    # matches the bytes a downstream renderer will read.
+    _validated, _extension, raster_width, raster_height = _decode_raster(raw)
+    if (
+        raster_width < directive.min_width
+        or raster_height < directive.min_height
+        or (
+            directive.orientation != "any"
+            and _pixel_orientation_local(raster_width, raster_height) != directive.orientation
+        )
+    ):
+        raise AssetResolutionError("generated raster fails directive dimensions/orientation")
+
+    sha256 = hashlib.sha256(raw).hexdigest()
+
+    decision = safety_checker.check(generated_path, directive)
+    if not decision.approved:
+        message = (
+            "rejected: unwanted visible text"
+            if decision.unwanted_text
+            else f"rejected: {decision.reason or 'safety check failed'}"
+        )
+        raise AssetResolutionError(message)
+
+    provenance = dict(generated.internal_provenance)
+    return AssetManifestItem(
+        asset_id=f"generated-{directive.directive_id}",
+        directive_id=directive.directive_id,
+        page_id=directive.page_id,
+        source_kind="generated",
+        provider=generated.provider,
+        license="internal-generated",
+        local_path=str(generated_path),
+        width=raster_width,
+        height=raster_height,
+        sha256=sha256,
+        subject_focal_point=(0.5, 0.5),
+        crop_guidance=directive.orientation,
+        security_status="approved",
+        human_decision="pending",
+        run_id=run_id,
+        transaction_id=transaction_id,
+        internal_provenance=provenance,
+    )
+
+
+def _attempt_source(
+    source: str,
+    directive: AssetDirective,
+    *,
+    search_provider: object | None,
+    generation_provider: object | None,
+    transaction_dir: Path,
+    safety_checker: object,
+    run_id: str,
+    transaction_id: str,
+) -> AssetManifestItem:
+    if source == "search":
+        if search_provider is None:
+            raise AssetResolutionError("search source requested without a search provider")
+        return _resolve_via_search(
+            directive,
+            search_provider=search_provider,
+            transaction_dir=transaction_dir,
+            safety_checker=safety_checker,
+            run_id=run_id,
+            transaction_id=transaction_id,
+        )
+    if source == "generate":
+        if generation_provider is None:
+            raise AssetResolutionError("generate source requested without a generation provider")
+        return _resolve_via_generation(
+            directive,
+            generation_provider=generation_provider,
+            transaction_dir=transaction_dir,
+            safety_checker=safety_checker,
+            run_id=run_id,
+            transaction_id=transaction_id,
+        )
+    raise AssetResolutionError(f"unsupported source kind: {source}")
+
+
+def _preferred_then_fallback(
+    directive: AssetDirective,
+    *,
+    search_provider: object | None,
+    generation_provider: object | None,
+    transaction_dir: Path,
+    safety_checker: object,
+    run_id: str,
+    transaction_id: str,
+) -> tuple[AssetManifestItem | None, tuple[str, ...]]:
+    """Resolve a directive; return (item-or-None, error-tuple)."""
+
+    primary = _select_primary_source(directive)
+    errors: list[str] = []
+    try:
+        item = _attempt_source(
+            primary,
+            directive,
+            search_provider=search_provider,
+            generation_provider=generation_provider,
+            transaction_dir=transaction_dir,
+            safety_checker=safety_checker,
+            run_id=run_id,
+            transaction_id=transaction_id,
+        )
+        return item, ()
+    except AssetResolutionError as error:
+        errors.append(str(error))
+
+    if directive.fallback_source != "none":
+        fallback = directive.fallback_source
+        try:
+            item = _attempt_source(
+                fallback,
+                directive,
+                search_provider=search_provider,
+                generation_provider=generation_provider,
+                transaction_dir=transaction_dir,
+                safety_checker=safety_checker,
+                run_id=run_id,
+                transaction_id=transaction_id,
+            )
+            return item, ()
+        except AssetResolutionError as fallback_error:
+            errors.append(str(fallback_error))
+
+    return None, tuple(errors)
+
+
+def _select_primary_source(directive: AssetDirective) -> str:
+    preferred = directive.preferred_source
+    if preferred == "either":
+        return "search"
+    if preferred == "none":
+        if directive.fallback_source != "none":
+            return directive.fallback_source
+        raise AssetResolutionError("directive has no usable source")
+    if preferred in {"search", "generate"}:
+        return preferred
+    raise AssetResolutionError(f"unsupported preferred_source: {preferred}")
+
+
+def resolve_asset_directives(
+    *,
+    directives: Iterable[AssetDirective],
+    transaction_root: Path,
+    run_id: str,
+    transaction_id: str,
+    search_provider: object | None = None,
+    generation_provider: object | None = None,
+    safety_checker: object | None = None,
+) -> AssetResolutionResult:
+    """Resolve visual asset directives into a hash-bound manifest.
+
+    Preferred source first; on primary failure, fall back only when the
+    directive allows it. Required unresolved directives raise
+    ``VisualProductionInterrupted`` with recovery evidence persisted under
+    ``transaction_root / transaction_id / recovery.json``; optional unresolved
+    directives become ``UnresolvedOptionalAsset`` entries.
+    """
+
+    checker = safety_checker if safety_checker is not None else DefaultAssetSafetyChecker()
+    transaction_dir = _transaction_dir(transaction_root, transaction_id)
+    items: list[AssetManifestItem] = []
+    unresolved: list[UnresolvedOptionalAsset] = []
+
+    for directive in directives:
+        item, errors = _preferred_then_fallback(
+            directive,
+            search_provider=search_provider,
+            generation_provider=generation_provider,
+            transaction_dir=transaction_dir,
+            safety_checker=checker,
+            run_id=run_id,
+            transaction_id=transaction_id,
+        )
+        if item is not None:
+            items.append(item)
+            continue
+        if directive.required:
+            _persist_recovery_journal(
+                transaction_dir,
+                transaction_id=transaction_id,
+                run_id=run_id,
+                errors=errors,
+            )
+            raise VisualProductionInterrupted(
+                stage="asset_resolver",
+                errors=errors,
+                raw_outputs=(),
+            )
+        reason = errors[0] if errors else "optional directive could not be resolved"
+        unresolved.append(
+            UnresolvedOptionalAsset(
+                directive_id=directive.directive_id,
+                page_id=directive.page_id,
+                reason=reason,
+            )
+        )
+
+    evidence = AssetTransactionEvidence(
+        run_id=run_id,
+        transaction_id=transaction_id,
+        transaction_root=str(transaction_dir.resolve()),
+        journal_path=str(transaction_dir / "recovery.json"),
+        status="complete",
+        resolved_directive_ids=tuple(item.directive_id for item in items),
+        unresolved_optional_directive_ids=tuple(
+            entry.directive_id for entry in unresolved
+        ),
+    )
+    return AssetResolutionResult(
+        manifest=AssetManifest(items=tuple(items)),
+        unresolved_optional_assets=tuple(unresolved),
+        transaction_evidence=evidence,
     )

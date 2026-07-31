@@ -18,7 +18,13 @@ from .providers import (
     PexelsProvider,
     UnsplashProvider,
 )
-from .resolver import AssetResolutionError, resolve_assets
+from .resolver import (
+    AssetResolutionError,
+    AssetSafetyDecision,
+    DefaultAssetSafetyChecker,
+    resolve_asset_directives,
+    resolve_assets,
+)
 
 __all__ = [
     "AssetCatalog",
@@ -26,7 +32,9 @@ __all__ = [
     "AssetLifecycleError",
     "AssetProvider",
     "AssetResolutionError",
+    "AssetSafetyDecision",
     "CatalogError",
+    "DefaultAssetSafetyChecker",
     "ExternalAssetCandidate",
     "PendingAsset",
     "BatchAssetReviewResult",
@@ -39,5 +47,6 @@ __all__ = [
     "reject_external_asset",
     "pending_asset_decision_binding",
     "review_pending_asset_batch",
+    "resolve_asset_directives",
     "resolve_assets",
 ]

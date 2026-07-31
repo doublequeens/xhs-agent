@@ -3,9 +3,12 @@ from .angle import AngleStrategy, ContentAngle
 from .assets import (
     AssetManifest,
     AssetManifestItem,
+    AssetResolutionResult,
+    AssetTransactionEvidence,
     AssetRequirement,
     AssetSearchReport,
     ProviderSearchReport,
+    UnresolvedOptionalAsset,
 )
 from .content_atoms import (
     ContentAtom,
@@ -99,6 +102,8 @@ __all__ = [
     "AssetDirective",
     "AssetManifest",
     "AssetManifestItem",
+    "AssetResolutionResult",
+    "AssetTransactionEvidence",
     "AssetProbeResult",
     "AssetRequirement",
     "AssetSearchReport",
@@ -151,6 +156,7 @@ __all__ = [
     "PageScene",
     "PrimaryVisualStructure",
     "ProviderSearchReport",
+    "UnresolvedOptionalAsset",
     "R1Input",
     "R1Output",
     "R1Scores",
