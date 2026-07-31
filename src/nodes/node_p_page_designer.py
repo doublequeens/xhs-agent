@@ -38,24 +38,16 @@ def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
 
 
 def _manifest(state: Mapping[str, Any]) -> AssetManifest:
-    raw_resolution = state.get("asset_resolution")
-    if isinstance(raw_resolution, Mapping):
-        raw_manifest = raw_resolution.get("manifest")
-    else:
-        raw_manifest = getattr(raw_resolution, "manifest", None)
+    raw_manifest = state.get("asset_manifest")
     if raw_manifest is None:
-        raise ValueError("page_designer requires asset_resolution.manifest")
+        raise ValueError("page_designer requires asset_manifest")
     if isinstance(raw_manifest, AssetManifest):
         return raw_manifest
     return AssetManifest.model_validate(raw_manifest)
 
 
 def _unresolved_optional_pages(state: Mapping[str, Any]) -> tuple[str, ...]:
-    raw_resolution = state.get("asset_resolution")
-    if isinstance(raw_resolution, Mapping):
-        raw_unresolved = raw_resolution.get("unresolved_optional_assets", ())
-    else:
-        raw_unresolved = getattr(raw_resolution, "unresolved_optional_assets", ())
+    raw_unresolved = state.get("unresolved_optional_assets", ())
     pages: list[str] = []
     for item in raw_unresolved:
         page_id = item.get("page_id") if isinstance(item, Mapping) else getattr(item, "page_id", None)

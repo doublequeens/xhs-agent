@@ -32,8 +32,25 @@ class RevisionRequest(StrictModel):
 
 # Sentinel phrases that indicate family/page-count replanning is required.
 # Matched case-insensitively against any free-text field of an issue.
+# Family patterns are scoped to intent-bearing phrases so a page-level note
+# that merely mentions "family" (e.g. "color drifts from the family palette",
+# "improve family consistency") does not burn a visual_director cycle. The
+# underscore rule name ``family_consistency`` never matches on its own.
+_FAMILY_VERB_BEFORE = re.compile(
+    r"\b(?:change|switch|swap|replace|replan|pick|choose|select)\s+"
+    r"(?:a\s+|the\s+)?(?:new\s+|different\s+)?family\b",
+    re.IGNORECASE,
+)
+_FAMILY_NEW_OR_DIFFERENT = re.compile(r"\b(?:new|different)\s+family\b", re.IGNORECASE)
+_FAMILY_CHANGE_AFTER = re.compile(
+    r"\bfamily\s+(?:no\s+longer\s+fits?|does\s+not\s+fit|doesn't\s+fit|"
+    r"must\s+change|needs?\s+to\s+change|should\s+change|to\s+change|is\s+wrong)\b",
+    re.IGNORECASE,
+)
 _REPLAN_PATTERNS = (
-    re.compile(r"\bfamily\b", re.IGNORECASE),
+    _FAMILY_VERB_BEFORE,
+    _FAMILY_NEW_OR_DIFFERENT,
+    _FAMILY_CHANGE_AFTER,
     re.compile(r"\bpage[\s-]?count\b", re.IGNORECASE),
     re.compile(r"\bpage_count\b", re.IGNORECASE),
     re.compile(r"\badd(?:\s+a)?\s+page\b", re.IGNORECASE),
@@ -161,13 +178,9 @@ def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
 
 
 def _manifest(state: Mapping[str, Any]) -> AssetManifest:
-    raw_resolution = state.get("asset_resolution")
-    if isinstance(raw_resolution, Mapping):
-        raw_manifest = raw_resolution.get("manifest")
-    else:
-        raw_manifest = getattr(raw_resolution, "manifest", None)
+    raw_manifest = state.get("asset_manifest")
     if raw_manifest is None:
-        raise ValueError("design_reviser requires asset_resolution.manifest")
+        raise ValueError("design_reviser requires asset_manifest")
     if isinstance(raw_manifest, AssetManifest):
         return raw_manifest
     return AssetManifest.model_validate(raw_manifest)

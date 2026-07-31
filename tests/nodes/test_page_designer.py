@@ -249,16 +249,14 @@ def _state(
     return {
         "visual_direction_plan": direction_plan,
         "content_atom_set": atom_set,
-        "asset_resolution": {
-            "manifest": manifest,
-            "unresolved_optional_assets": unresolved_optional_assets,
-            "transaction_evidence": {
-                "run_id": "run-1",
-                "transaction_id": "tx-1",
-                "transaction_root": "/tmp/tx-1",
-                "journal_path": "/tmp/tx-1/recovery.json",
-                "status": "complete",
-            },
+        "asset_manifest": manifest,
+        "unresolved_optional_assets": unresolved_optional_assets,
+        "asset_transaction_evidence": {
+            "run_id": "run-1",
+            "transaction_id": "tx-1",
+            "transaction_root": "/tmp/tx-1",
+            "journal_path": "/tmp/tx-1/recovery.json",
+            "status": "complete",
         },
         "domain_context": {
             "domain": "beauty",
@@ -299,14 +297,18 @@ def test_designer_returns_structured_plan_binding_text_and_approved_assets():
     # Every text element points at a real fragment id; every image points at an
     # approved asset id from the manifest.
     approved_asset_ids = {item.asset_id for item in manifest.items}
+    fragment_text_by_id = {
+        frag.fragment_id: frag.text for frag in direction_plan.content_fragments
+    }
     for page in plan.pages:
         for element in page.elements:
             if element.kind == "image":
                 assert element.asset_ref in approved_asset_ids
             elif element.kind == "text":
                 assert element.content_ref.startswith("fragment-")
-                # No stored copy lives on the element.
-                assert "text" not in element.model_dump()
+                # Copy isolation: the element stores only a reference, so the
+                # fragment's source text must not be duplicated onto it.
+                assert fragment_text_by_id[element.content_ref] not in element.model_dump_json()
 
 
 def test_designer_prompt_forbids_embedded_copy_html_css_scripts_and_urls():
@@ -456,3 +458,37 @@ def test_designer_three_failures_raise_resumable_interruption():
     assert interruption.stage == "page_designer"
     assert len(interruption.errors) == 3
     assert len(model.calls) == 3
+
+
+def test_designer_consumes_asset_resolver_top_level_state():
+    """C1 regression: the designer must read the top-level keys that
+    asset_resolver_node actually writes (asset_manifest,
+    unresolved_optional_assets), not a fabricated nested asset_resolution dict.
+    """
+    atom_set = _atom_set()
+    direction_plan = _direction_plan(atom_set)
+    manifest = _manifest()
+    design_plan = _design_plan(direction_plan, atom_set, manifest)
+    model = ScriptedVisualModel([design_plan])
+    # Mirror the exact top-level return shape of asset_resolver_node.
+    state = {
+        "visual_direction_plan": direction_plan,
+        "content_atom_set": atom_set,
+        "asset_manifest": manifest,
+        "unresolved_optional_assets": (),
+        "asset_transaction_evidence": {
+            "run_id": "run-1",
+            "transaction_id": "tx-1",
+            "transaction_root": "/tmp/tx-1",
+            "journal_path": "/tmp/tx-1/recovery.json",
+            "status": "complete",
+        },
+        "domain_context": {"domain": "beauty", "profile_version": "beauty-v1"},
+    }
+
+    result = page_designer_node(state, model=model)
+
+    plan = result["carousel_design_plan"]
+    assert result["current_node"] == "PAGE_DESIGNER"
+    assert isinstance(plan, CarouselDesignPlan)
+    plan.validate_bindings(direction_plan, atom_set, manifest)

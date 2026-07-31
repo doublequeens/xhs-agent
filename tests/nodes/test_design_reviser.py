@@ -233,16 +233,14 @@ def _state(
         "revision_request": revision_request,
         "visual_direction_plan": direction_plan,
         "content_atom_set": atom_set,
-        "asset_resolution": {
-            "manifest": manifest,
-            "unresolved_optional_assets": (),
-            "transaction_evidence": {
-                "run_id": "run-1",
-                "transaction_id": "tx-1",
-                "transaction_root": "/tmp/tx-1",
-                "journal_path": "/tmp/tx-1/recovery.json",
-                "status": "complete",
-            },
+        "asset_manifest": manifest,
+        "unresolved_optional_assets": (),
+        "asset_transaction_evidence": {
+            "run_id": "run-1",
+            "transaction_id": "tx-1",
+            "transaction_root": "/tmp/tx-1",
+            "journal_path": "/tmp/tx-1/recovery.json",
+            "status": "complete",
         },
         "domain_context": {
             "domain": "beauty",
@@ -410,9 +408,11 @@ def test_reviser_rejects_revision_referencing_unapproved_asset():
     )
 
     assert result["carousel_design_plan"] == valid
-    assert "not in" in str(model.calls[1]["prompt"]).lower() or "asset" in str(
-        model.calls[1]["prompt"]
-    ).lower()
+    # The repair feedback must surface the rejected/unapproved asset id so the
+    # model knows which reference to fix (not just any "asset" mention, which
+    # the base prompt always contains).
+    repair_prompt = str(model.calls[1]["prompt"])
+    assert "not-in-manifest" in repair_prompt
 
 
 def test_reviser_routes_to_visual_director_when_feedback_requires_replan():
@@ -504,6 +504,44 @@ def test_reviser_retries_invalid_output_at_most_three_times():
     assert "content binding" in str(model.calls[1]["prompt"])
 
 
+def test_reviser_rejects_candidate_with_wrong_revision_increment():
+    """M1: a candidate whose revision is unchanged or jumps by more than one is
+    rejected and retried; only the exactly-incremented candidate is accepted.
+    """
+    atom_set = _atom_set()
+    direction_plan = _direction_plan(atom_set)
+    manifest = AssetManifest(items=())
+    before = _design_plan(direction_plan, atom_set, manifest, revision=0)
+    unchanged_revision = before.model_copy(update={"revision": 0})  # not incremented
+    skipped_revision = before.model_copy(update={"revision": 2})  # jumps by 2
+    valid = before.model_copy(update={"revision": 1})
+    model = ScriptedVisualModel([unchanged_revision, skipped_revision, valid])
+    request = {
+        "source": "design_plan_qa",
+        "issues": (
+            DesignIssue(
+                rule="spacing",
+                message="tighten page-1 spacing",
+                repair_instruction="reduce page-1 padding",
+                page_id="page-1",
+                element_id="text-page-1",
+            ).model_dump(mode="json"),
+        ),
+        "current_revision": 0,
+    }
+
+    result = design_reviser_node(
+        _state(before, direction_plan, atom_set, manifest, revision_request=request),
+        model=model,
+    )
+
+    assert result["carousel_design_plan"] == valid
+    assert len(model.calls) == 3
+    # Each repair prompt surfaces the revision-increment rule.
+    assert "revision must increment" in str(model.calls[1]["prompt"]).lower()
+    assert "revision must increment" in str(model.calls[2]["prompt"]).lower()
+
+
 def test_reviser_three_failures_raise_resumable_interruption():
     atom_set = _atom_set()
     direction_plan = _direction_plan(atom_set)
@@ -531,4 +569,97 @@ def test_reviser_three_failures_raise_resumable_interruption():
         )
 
     assert exc_info.value.stage == "design_reviser"
+    assert len(exc_info.value.errors) == 3
     assert len(model.calls) == 3
+
+
+def test_reviser_consumes_asset_resolver_top_level_state():
+    """C1 regression: the reviser must read the top-level keys that
+    asset_resolver_node actually writes (asset_manifest), not a fabricated
+    nested asset_resolution dict.
+    """
+    atom_set = _atom_set()
+    direction_plan = _direction_plan(atom_set)
+    manifest = AssetManifest(items=())
+    before = _design_plan(direction_plan, atom_set, manifest, revision=0)
+    revised = before.model_copy(update={"revision": 1})
+    model = ScriptedVisualModel([revised])
+    request = {
+        "source": "design_plan_qa",
+        "issues": (
+            DesignIssue(
+                rule="spacing",
+                message="tighten page-1 spacing",
+                repair_instruction="reduce page-1 padding",
+                page_id="page-1",
+                element_id="text-page-1",
+            ).model_dump(mode="json"),
+        ),
+        "current_revision": 0,
+    }
+    # Mirror the exact top-level return shape of asset_resolver_node.
+    state = {
+        "carousel_design_plan": before,
+        "revision_request": request,
+        "visual_direction_plan": direction_plan,
+        "content_atom_set": atom_set,
+        "asset_manifest": manifest,
+        "unresolved_optional_assets": (),
+        "asset_transaction_evidence": {
+            "run_id": "run-1",
+            "transaction_id": "tx-1",
+            "transaction_root": "/tmp/tx-1",
+            "journal_path": "/tmp/tx-1/recovery.json",
+            "status": "complete",
+        },
+        "domain_context": {"domain": "beauty", "profile_version": "beauty-v1"},
+    }
+
+    result = design_reviser_node(state, model=model)
+
+    after = result["carousel_design_plan"]
+    assert result["current_node"] == "DESIGN_REVISER"
+    assert after.revision == 1
+    after.validate_bindings(direction_plan, atom_set, manifest)
+
+
+def test_reviser_does_not_replan_when_feedback_only_mentions_family():
+    """I1 regression: a page-level issue whose message merely mentions 'family'
+    (e.g. color drift across the family palette) must NOT route back to
+    visual_director; it should produce a revised plan.
+    """
+    atom_set = _atom_set()
+    direction_plan = _direction_plan(atom_set)
+    manifest = AssetManifest(items=())
+    before = _design_plan(direction_plan, atom_set, manifest, revision=0)
+    revised = _design_plan(
+        direction_plan,
+        atom_set,
+        manifest,
+        revision=1,
+        extra_shape_pages=frozenset({"page-2"}),
+    )
+    model = ScriptedVisualModel([revised])
+    request = {
+        "source": "design_plan_qa",
+        "issues": (
+            DesignIssue(
+                rule="color",
+                message="page-2 color drifts from the family palette",
+                repair_instruction="adjust page-2 accent to match the family palette",
+                page_id="page-2",
+                element_id="shape-page-2",
+            ).model_dump(mode="json"),
+        ),
+        "current_revision": 0,
+    }
+
+    result = design_reviser_node(
+        _state(before, direction_plan, atom_set, manifest, revision_request=request),
+        model=model,
+    )
+
+    assert result["current_node"] == "DESIGN_REVISER"
+    assert "route" not in result
+    assert result["carousel_design_plan"].revision == 1
+    assert len(model.calls) == 1
