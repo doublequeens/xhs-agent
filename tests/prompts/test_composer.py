@@ -269,6 +269,50 @@ def test_visual_director_prompt_bans_visible_labels_and_disclaimer_copy():
     assert "不构成医疗建议" in prompt
 
 
+def test_composer_registry_includes_page_designer_and_design_reviser_tasks():
+    from src.prompts.composer import TASK_FILES
+
+    assert TASK_FILES["page_designer"] == "page_designer.txt"
+    assert TASK_FILES["design_reviser"] == "design_reviser.txt"
+
+
+def test_page_designer_prompt_lays_out_canvas_and_structured_element_contract():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("page_designer", get_domain_profile("beauty"))
+
+    assert "1080" in prompt
+    assert "1440" in prompt
+    assert "content_ref" in prompt
+    assert "asset_ref" in prompt
+    assert "font_role" in prompt
+    assert "display" in prompt
+    assert "heading" in prompt
+    assert "HTML" in prompt
+    assert "CSS" in prompt
+    assert "script" in prompt
+    assert "external URL" in prompt
+    assert "AI 生成示意图" in prompt
+    assert "仅供参考" in prompt
+    assert "不构成医疗建议" in prompt
+
+
+def test_design_reviser_prompt_constrains_patches_and_routes_replan_feedback():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("design_reviser", get_domain_profile("beauty"))
+
+    assert "revision" in prompt
+    assert "content_ref" in prompt
+    assert "asset_ref" in prompt
+    assert "approved" in prompt
+    assert "HTML" in prompt
+    assert "CSS" in prompt
+    assert "visual_director" in prompt
+    assert "AI 生成示意图" in prompt
+    assert "不构成医疗建议" in prompt
+
+
 def test_compose_prompt_rejects_unknown_task():
     from src.prompts.composer import compose_prompt
 

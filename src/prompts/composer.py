@@ -27,6 +27,8 @@ TASK_FILES = {
     "storyboards_generator": "storyboards_generator.txt",
     "topic_ideator": "topic_ideator.txt",
     "visual_director": "visual_director.txt",
+    "page_designer": "page_designer.txt",
+    "design_reviser": "design_reviser.txt",
 }
 
 

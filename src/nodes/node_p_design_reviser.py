@@ -1,0 +1,309 @@
+"""Constrained reviser for an approved CarouselDesignPlan."""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Mapping
+from pathlib import Path
+from typing import Any, Literal, Union
+
+from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.schemas.assets import AssetManifest
+from src.schemas.content_atoms import ContentAtomSet, canonical_sha256
+from src.schemas.design_qa import DesignIssue
+from src.schemas.render_qa import RenderIssue
+from src.schemas.scene_graph import CarouselDesignPlan
+from src.schemas.visual_critique import VisualCritiqueIssue
+from src.schemas.visual_director import VisualDirectionPlan
+from src.schemas.visual_style import FamilyStyleProfile, StrictModel, TemplateFamily
+from src.visual_ai import StructuredVisualModel
+from src.visual_design.model_retry import VisualProductionInterrupted, generate_validated
+from src.visual_design.style_registry import load_style_registry
+
+
+RevisionIssue = Union[DesignIssue, RenderIssue, VisualCritiqueIssue]
+
+
+class RevisionRequest(StrictModel):
+    source: Literal["design_plan_qa", "render_qa", "visual_critic", "human_review"]
+    issues: tuple[RevisionIssue, ...]
+    current_revision: int
+
+
+# Sentinel phrases that indicate family/page-count replanning is required.
+# Matched case-insensitively against any free-text field of an issue.
+_REPLAN_PATTERNS = (
+    re.compile(r"\bfamily\b", re.IGNORECASE),
+    re.compile(r"\bpage[\s-]?count\b", re.IGNORECASE),
+    re.compile(r"\bpage_count\b", re.IGNORECASE),
+    re.compile(r"\badd(?:\s+a)?\s+page\b", re.IGNORECASE),
+    re.compile(r"\bremove(?:\s+a)?\s+page\b", re.IGNORECASE),
+    re.compile(r"\b(?:drop|insert)\s+(?:a\s+)?page\b", re.IGNORECASE),
+    re.compile(r"\breplan\b", re.IGNORECASE),
+    re.compile(r"\bcarousel\s+length\b", re.IGNORECASE),
+)
+
+
+def _issue_text(issue: RevisionIssue) -> str:
+    parts = [issue.rule, issue.message]
+    repair = getattr(issue, "repair_instruction", None)
+    if repair:
+        parts.append(repair)
+    revision = getattr(issue, "revision_instruction", None)
+    if revision:
+        parts.append(revision)
+    return "\n".join(parts)
+
+
+def _requires_replan(
+    issues: tuple[RevisionIssue, ...],
+    before: CarouselDesignPlan,
+) -> bool:
+    known_page_ids = {page.page_id for page in before.pages}
+    for issue in issues:
+        if issue.page_id is not None and issue.page_id not in known_page_ids:
+            return True
+        text = _issue_text(issue)
+        if any(pattern.search(text) for pattern in _REPLAN_PATTERNS):
+            return True
+    return False
+
+
+def _named_page_ids(issues: tuple[RevisionIssue, ...]) -> frozenset[str]:
+    return frozenset(
+        issue.page_id for issue in issues if issue.page_id is not None
+    )
+
+
+def validate_revision(
+    before: CarouselDesignPlan,
+    after: CarouselDesignPlan,
+) -> None:
+    if after.content_atom_set_sha256 != before.content_atom_set_sha256:
+        raise ValueError("revision changed content binding")
+    if after.asset_manifest_sha256 != before.asset_manifest_sha256:
+        raise ValueError("revision changed asset binding")
+    if tuple(page.page_id for page in after.pages) != tuple(
+        page.page_id for page in before.pages
+    ):
+        raise ValueError("family or page-sequence changes require visual_director")
+
+
+def _validate_candidate(
+    candidate: CarouselDesignPlan,
+    *,
+    before: CarouselDesignPlan,
+    direction_plan: VisualDirectionPlan,
+    atom_set: ContentAtomSet,
+    manifest: AssetManifest,
+    named_pages: frozenset[str],
+    current_revision: int,
+) -> None:
+    # Revalidate the complete dump so scripted/future adapters cannot bypass
+    # Pydantic invariants by constructing a model without validation.
+    validated = CarouselDesignPlan.model_validate(candidate.model_dump(mode="python"))
+    validate_revision(before, validated)
+    # Re-run binding checks so an unapproved asset or stale fragment reference
+    # cannot slip through the revision.
+    validated.validate_bindings(direction_plan, atom_set, manifest)
+    if validated.revision != current_revision + 1:
+        raise ValueError(
+            f"revision must increment from {current_revision} to "
+            f"{current_revision + 1}; got {validated.revision}"
+        )
+    # Patches may only touch named pages; every other page must stay verbatim.
+    before_pages = {page.page_id: page for page in before.pages}
+    for after_page in validated.pages:
+        if after_page.page_id in named_pages:
+            continue
+        before_page = before_pages[after_page.page_id]
+        if after_page != before_page:
+            raise ValueError(
+                "revision must not modify pages that the issues do not name: "
+                f"{after_page.page_id}"
+            )
+
+
+def _design_plan(state: Mapping[str, Any]) -> CarouselDesignPlan:
+    raw = state.get("carousel_design_plan")
+    if raw is None:
+        raise ValueError("design_reviser requires carousel_design_plan")
+    if isinstance(raw, CarouselDesignPlan):
+        return raw
+    return CarouselDesignPlan.model_validate(raw)
+
+
+def _revision_request(state: Mapping[str, Any]) -> RevisionRequest:
+    raw = state.get("revision_request")
+    if raw is None:
+        raise ValueError("design_reviser requires revision_request")
+    if isinstance(raw, RevisionRequest):
+        return raw
+    return RevisionRequest.model_validate(raw)
+
+
+def _direction_plan(state: Mapping[str, Any]) -> VisualDirectionPlan:
+    raw = state.get("visual_direction_plan")
+    if raw is None:
+        raise ValueError("design_reviser requires visual_direction_plan")
+    if isinstance(raw, VisualDirectionPlan):
+        return raw
+    return VisualDirectionPlan.model_validate(raw)
+
+
+def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
+    raw = state.get("content_atom_set")
+    if raw is None:
+        raise ValueError("design_reviser requires content_atom_set")
+    if isinstance(raw, ContentAtomSet):
+        return raw
+    return ContentAtomSet.model_validate(raw)
+
+
+def _manifest(state: Mapping[str, Any]) -> AssetManifest:
+    raw_resolution = state.get("asset_resolution")
+    if isinstance(raw_resolution, Mapping):
+        raw_manifest = raw_resolution.get("manifest")
+    else:
+        raw_manifest = getattr(raw_resolution, "manifest", None)
+    if raw_manifest is None:
+        raise ValueError("design_reviser requires asset_resolution.manifest")
+    if isinstance(raw_manifest, AssetManifest):
+        return raw_manifest
+    return AssetManifest.model_validate(raw_manifest)
+
+
+def _family_profile(
+    family: TemplateFamily,
+    style_profiles: Mapping[TemplateFamily, FamilyStyleProfile] | None,
+) -> FamilyStyleProfile:
+    registry = load_style_registry() if style_profiles is None else style_profiles
+    profile = registry.get(family)
+    if profile is None:
+        raise ValueError(f"design_reviser requires style profile for family {family}")
+    return profile
+
+
+def _reference_image_paths(profile: FamilyStyleProfile) -> tuple[Path, ...]:
+    paths = tuple(Path(path) for path in profile.reference_image_paths)
+    missing = [str(path) for path in paths if not path.is_file()]
+    if missing:
+        raise ValueError(
+            "design_reviser reference images do not exist: " + ", ".join(missing)
+        )
+    return paths
+
+
+def _reviser_prompt(
+    state: Mapping[str, Any],
+    *,
+    before: CarouselDesignPlan,
+    request: RevisionRequest,
+    direction_plan: VisualDirectionPlan,
+    atom_set: ContentAtomSet,
+    manifest: AssetManifest,
+    family_profile: FamilyStyleProfile,
+    named_pages: frozenset[str],
+) -> str:
+    base_prompt = compose_prompt_for_state(
+        "design_reviser",
+        state,
+        allow_legacy_beauty_fallback=False,
+    )
+    context = {
+        "before_plan": before.model_dump(mode="json"),
+        "named_pages": sorted(named_pages),
+        "revision_request": {
+            "source": request.source,
+            "current_revision": request.current_revision,
+            "issues": [issue.model_dump(mode="json") for issue in request.issues],
+        },
+        "family_profile": family_profile.model_dump(mode="json"),
+        "direction_plan": {
+            "template_family": direction_plan.template_family,
+            "page_count": direction_plan.page_count,
+            "page_ids": [page.page_id for page in direction_plan.page_sequence],
+        },
+        "approved_asset_ids": [item.asset_id for item in manifest.items],
+        "immutable_hashes": {
+            "direction_plan_sha256": canonical_sha256(direction_plan),
+            "content_atom_set_sha256": atom_set.canonical_sha256,
+            "asset_manifest_sha256": canonical_sha256(manifest),
+        },
+        "next_revision": request.current_revision + 1,
+    }
+    return (
+        f"{base_prompt}\n\n"
+        "【Design Reviser Inputs】\n"
+        f"{serialize_prompt_value(context)}"
+    )
+
+
+def design_reviser_node(
+    state: Mapping[str, Any],
+    *,
+    model: StructuredVisualModel,
+    style_profiles: Mapping[TemplateFamily, FamilyStyleProfile] | None = None,
+) -> dict[str, object]:
+    """Constrainedly revise a CarouselDesignPlan or signal visual_director."""
+    before = _design_plan(state)
+    request = _revision_request(state)
+    direction_plan = _direction_plan(state)
+    atom_set = _atom_set(state)
+    manifest = _manifest(state)
+
+    if _requires_replan(request.issues, before):
+        return {
+            "route": "visual_director",
+            "current_node": "DESIGN_REVISER",
+        }
+
+    family_profile = _family_profile(direction_plan.template_family, style_profiles)
+    image_paths = _reference_image_paths(family_profile)
+    named_pages = _named_page_ids(request.issues)
+    prompt = _reviser_prompt(
+        state,
+        before=before,
+        request=request,
+        direction_plan=direction_plan,
+        atom_set=atom_set,
+        manifest=manifest,
+        family_profile=family_profile,
+        named_pages=named_pages,
+    )
+
+    try:
+        revised = generate_validated(
+            model,
+            prompt=prompt,
+            response_model=CarouselDesignPlan,
+            image_paths=image_paths,
+            validate=lambda candidate: _validate_candidate(
+                candidate,
+                before=before,
+                direction_plan=direction_plan,
+                atom_set=atom_set,
+                manifest=manifest,
+                named_pages=named_pages,
+                current_revision=request.current_revision,
+            ),
+            max_attempts=3,
+        )
+    except VisualProductionInterrupted as exc:
+        raise VisualProductionInterrupted(
+            stage="design_reviser",
+            errors=exc.errors,
+            raw_outputs=exc.raw_outputs,
+        ) from exc
+
+    return {
+        "carousel_design_plan": revised,
+        "current_node": "DESIGN_REVISER",
+    }
+
+
+__all__ = [
+    "RevisionRequest",
+    "design_reviser_node",
+    "validate_revision",
+]
