@@ -508,6 +508,179 @@ class _TagInspector(HTMLParser):
         self.attrs_by_tag.append((tag, attrs))
 
 
+def _text_element_attrs(html: str) -> list[tuple[str, str | None]]:
+    """Return the attribute list of the ``scene-text`` div.
+
+    Uses a real HTML parser so the result mirrors exactly what a browser
+    (or offline Chromium) would decode -- including any silent truncation
+    caused by an unescaped quote inside the ``style`` attribute.
+    """
+    inspector = _TagInspector()
+    inspector.feed(html)
+    for tag, attrs in inspector.attrs_by_tag:
+        if tag != "div":
+            continue
+        class_value = next(
+            (v for name, v in attrs if name == "class" and v is not None), ""
+        )
+        if "scene-text" in class_value:
+            return attrs
+    raise AssertionError("no scene-text div found in compiled html")
+
+
+def _attr(attrs, name: str) -> str | None:
+    return next((v for n, v in attrs if n == name), None)
+
+
+# ---------------------------------------------------------------------------
+# C1 regression: the text element's style attribute must be HTML-escaped
+# (font-family quotes must not truncate style nor allow attribute injection)
+# ---------------------------------------------------------------------------
+
+
+def test_text_style_survives_quoted_multi_word_font_family():
+    """C1 functional: a quoted multi-word font name must not truncate style.
+
+    With font_roles={'body': 'Source Han Sans SC'}, format_font_family emits
+    ``font-family:"Source Han Sans SC"``. If that raw value is interpolated
+    into ``style="{declarations}"`` without HTML-attribute escaping, the
+    inner quote terminates the style attribute early and every subsequent
+    declaration (font-size/color/text-align/font-weight) is dropped -- the
+    text element would render completely unstyled in Chromium (Task 11
+    blocker).
+    """
+    style = FamilyStyleProfile(
+        family="soft_pink",
+        reference_image_paths=("assets/visual-families/dummy.png",),
+        palette=("#F4A7BF", "#DC2333", "#FFF7F8"),
+        font_roles={
+            "display": "Display Serif",
+            "heading": "Heading Serif",
+            "body": "Source Han Sans SC",
+            "caption": "Caption Sans",
+        },
+        composition_principles=("hierarchy", "rhythm"),
+        whitespace_range=(0.18, 0.42),
+        density_range=(0.45, 0.82),
+        allowed_motifs=("oversized type",),
+        prohibited_patterns=("thin low-contrast copy",),
+    )
+    page = _page([_text("text-1", "frag-1", font_role="body")])
+    html = compile_page_scene(
+        page,
+        fragments={"frag-1": _fragment("frag-1", "Body copy")},
+        assets={},
+        style=style,
+    ).html
+
+    attrs = _text_element_attrs(html)
+    style_value = _attr(attrs, "style") or ""
+
+    # The whole declarations block survived -- nothing was truncated by an
+    # unescaped quote inside font-family:"Source Han Sans SC".
+    assert "font-family:" in style_value
+    assert "font-size:" in style_value
+    assert "color:" in style_value
+    assert "text-align:" in style_value
+    assert "font-weight:" in style_value
+
+    # No spurious attributes leaked out of a truncated style value. If the
+    # quote had truncated style, the HTML parser would have seen the words
+    # Source / Han / Sans / SC as bareword (value-less) attributes.
+    attr_names = {name for name, _ in attrs}
+    for leaked in ("Source", "Han", "Sans", "SC"):
+        assert leaked not in attr_names, (leaked, attrs)
+
+
+def test_text_style_escapes_xss_font_role_payload():
+    """C1 security: an attacker-controlled font role cannot inject handlers.
+
+    A font role value like ``x" onmouseover="alert(1)`` must stay trapped
+    inside the escaped style attribute and never become a live event
+    handler. Built via model_construct so the adversarial value reaches the
+    compiler even if a future schema validator forbids quotes in font names
+    -- the compiler must be XSS-safe by construction (defense in depth).
+    """
+    adversarial = 'x" onmouseover="alert(1)'
+    base = _style()
+    style = FamilyStyleProfile.model_construct(
+        family=base.family,
+        reference_image_paths=base.reference_image_paths,
+        palette=base.palette,
+        font_roles={
+            "display": "Display Serif",
+            "heading": "Heading Serif",
+            "body": adversarial,
+            "caption": "Caption Sans",
+        },
+        composition_principles=base.composition_principles,
+        whitespace_range=base.whitespace_range,
+        density_range=base.density_range,
+        allowed_motifs=base.allowed_motifs,
+        prohibited_patterns=base.prohibited_patterns,
+    )
+    page = _page([_text("text-1", "frag-1", font_role="body")])
+    html = compile_page_scene(
+        page,
+        fragments={"frag-1": _fragment("frag-1", "Body copy")},
+        assets={},
+        style=style,
+    ).html
+
+    # No live script anywhere in the document.
+    assert "<script" not in html
+
+    # No element may carry an event-handler attribute (on*).
+    inspector = _TagInspector()
+    inspector.feed(html)
+    for tag, attrs in inspector.attrs_by_tag:
+        for name, _value in attrs:
+            assert not name.startswith("on"), (tag, name)
+
+    # The payload stayed INSIDE the text element's style value as inert CSS
+    # content -- it never spawned a real onmouseover attribute on the div.
+    text_attrs = _text_element_attrs(html)
+    assert "onmouseover" not in {name for name, _ in text_attrs}
+    # And the style attribute is still present (the element still rendered).
+    assert _attr(text_attrs, "style") is not None
+
+
+def test_text_style_attribute_is_well_formed_under_default_profile():
+    """M1: the parsed style value is internally complete (no quote truncation).
+
+    This is the gap that let the original unsafe-constructs suite miss C1:
+    the default profile maps every role to a multi-word quoted family name,
+    so an unescaped quote silently truncated every text element's style.
+    The parsed attribute value must run end-to-end through font-weight.
+    """
+    page = _page([_text("text-1", "frag-1", font_role="body")])
+    html = compile_page_scene(
+        page,
+        fragments={"frag-1": _fragment("frag-1", "copy")},
+        assets={},
+        style=_style(),
+    ).html
+
+    attrs = _text_element_attrs(html)
+    style_value = _attr(attrs, "style") or ""
+
+    # The full declarations chain survived -- font-family through font-weight.
+    assert "font-family:" in style_value
+    assert "font-size:" in style_value
+    assert "font-weight:" in style_value
+    # font-weight is the last declaration; an unescaped quote earlier would
+    # have cut the value off before it.
+    assert style_value.rstrip().endswith("font-weight:400;")
+    # Only the expected attributes exist on the text div -- no truncation
+    # spillage (class/data-element-id/data-content-ref/style).
+    assert {name for name, _ in attrs} == {
+        "class",
+        "data-element-id",
+        "data-content-ref",
+        "style",
+    }
+
+
 @pytest.mark.parametrize("family", SIX_FAMILIES)
 def test_no_family_specific_template_names_leak(family: str):
     fragment = _fragment("frag-1", "plain copy")

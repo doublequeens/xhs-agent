@@ -279,11 +279,19 @@ def _render_text(
         + f"font-weight:{_num(text_style.weight)};"
     )
     inner = _render_text_with_emphasis(fragment.text, text_style.emphasis_ranges)
+    # HTML-escape the declarations at the attribute boundary so the literal
+    # double quotes ``format_font_family`` emits around multi-word family
+    # names (e.g. ``"Source Han Sans SC"``) cannot terminate the style
+    # attribute early nor carry an attacker-controlled ``on*`` handler
+    # through. The browser decodes ``&quot;`` back to ``"`` for the CSS
+    # parser, so ``font-family:"Source Han Sans SC"`` round-trips intact
+    # AND the attribute stays XSS-safe by construction (defense in depth:
+    # this must hold even if a future schema validator loosens font names).
     return (
         f'<div class="scene-element scene-text"'
         f' data-element-id="{_escape_text(element.element_id)}"'
         f' data-content-ref="{_escape_text(element.content_ref)}"'
-        f' style="{declarations}">{inner}</div>'
+        f' style="{_html.escape(declarations, quote=True)}">{inner}</div>'
     )
 
 
