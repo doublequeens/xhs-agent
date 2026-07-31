@@ -3,7 +3,7 @@ from pydantic import Field, model_validator
 from .visual_style import Sha256, StrictModel
 
 
-class RenderIssue(StrictModel):
+class DesignIssue(StrictModel):
     rule: str = Field(min_length=1)
     message: str = Field(min_length=1)
     repair_instruction: str = Field(min_length=1)
@@ -14,27 +14,28 @@ class RenderIssue(StrictModel):
     @model_validator(mode="after")
     def require_issue_location(self):
         if self.page_id is None and self.element_id is None and self.atom_id is None:
-            raise ValueError("render issue must identify page, element, or atom")
+            raise ValueError("design issue must identify page, element, or atom")
         return self
 
 
-class RenderQAResult(StrictModel):
+class DesignPlanQAResult(StrictModel):
     passed: bool
-    issues: tuple[RenderIssue, ...] = ()
-    render_manifest_sha256: Sha256
-    content_attestation: bool
-    geometry_attestation: bool
-    asset_attestation: bool
+    issues: tuple[DesignIssue, ...] = ()
+    design_plan_sha256: Sha256
+    content_coverage_attestation: bool
+    family_attestation: bool
+    asset_binding_attestation: bool
 
     @model_validator(mode="after")
     def validate_passed_state(self):
         attestations = (
-            self.content_attestation,
-            self.geometry_attestation,
-            self.asset_attestation,
+            self.content_coverage_attestation,
+            self.family_attestation,
+            self.asset_binding_attestation,
         )
         if self.passed and (self.issues or not all(attestations)):
-            raise ValueError("passing render QA requires no issues and all attestations")
+            raise ValueError("passing design QA requires no issues and all attestations")
         if not self.passed and not self.issues:
-            raise ValueError("failing render QA requires at least one issue")
+            raise ValueError("failing design QA requires at least one issue")
         return self
+
