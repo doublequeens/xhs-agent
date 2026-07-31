@@ -1,12 +1,13 @@
 import hashlib
 import json
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 def sha256_text(text: str) -> str:
@@ -53,9 +54,55 @@ class ContentAtomSet(StrictModel):
 
     @model_validator(mode="after")
     def verify_canonical_hash(self):
+        atom_ids = [atom.atom_id for atom in self.atoms]
+        if len(atom_ids) != len(set(atom_ids)):
+            raise ValueError("content atom set atom IDs must be unique")
         expected = canonical_sha256(
             [atom.model_dump(mode="json") for atom in self.atoms]
         )
         if self.canonical_sha256 != expected:
             raise ValueError("content atom set canonical sha256 does not match atoms")
         return self
+
+    def validate_complete_fragments(
+        self,
+        fragments: Sequence[ContentFragment],
+    ) -> None:
+        """Validate an exact, complete visual fragmentation of every content atom."""
+        atom_by_id = {atom.atom_id: atom for atom in self.atoms}
+        if len(atom_by_id) != len(self.atoms):
+            raise ValueError("content atom set atom IDs must be unique")
+
+        fragment_ids = [fragment.fragment_id for fragment in fragments]
+        if len(fragment_ids) != len(set(fragment_ids)):
+            raise ValueError("content fragment IDs must be unique")
+
+        fragments_by_atom: dict[str, list[ContentFragment]] = {
+            atom_id: [] for atom_id in atom_by_id
+        }
+        for fragment in fragments:
+            atom = atom_by_id.get(fragment.source_atom_id)
+            if atom is None:
+                raise ValueError(
+                    f"content fragment has unknown source atom: {fragment.source_atom_id}"
+                )
+            if fragment.end > len(atom.text) or fragment.start >= fragment.end:
+                raise ValueError("content fragment bounds are outside source atom text")
+            if fragment.text != atom.text[fragment.start:fragment.end]:
+                raise ValueError("content fragment text must exactly match source atom slice")
+            fragments_by_atom[atom.atom_id].append(fragment)
+
+        for atom in self.atoms:
+            cursor = 0
+            reconstructed: list[str] = []
+            for fragment in fragments_by_atom[atom.atom_id]:
+                if fragment.start != cursor:
+                    raise ValueError(
+                        "content fragments must be ordered and non-overlapping"
+                    )
+                cursor = fragment.end
+                reconstructed.append(fragment.text)
+            if cursor != len(atom.text) or "".join(reconstructed) != atom.text:
+                raise ValueError(
+                    "content fragments must completely reconstruct each source atom"
+                )
