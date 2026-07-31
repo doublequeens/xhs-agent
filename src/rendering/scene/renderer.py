@@ -33,6 +33,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import sys
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -50,7 +51,7 @@ from src.rendering.scene.probes import (
     ProbeBuildError,
     build_element_probes,
 )
-from src.schemas.assets import AssetManifestItem
+from src.schemas.assets import AssetManifest, AssetManifestItem
 from src.schemas.content_atoms import ContentFragment, canonical_sha256
 from src.schemas.design_qa import DesignPlanQAResult
 from src.schemas.render_manifest import (
@@ -217,6 +218,10 @@ class _ChromiumPageRenderer:
         self._playwright = None
         self._browser = None
         self._page = None
+        # Records a teardown failure observed on an otherwise-clean exit (e.g.
+        # a successful render whose cleanup raised) so it is observable without
+        # masking a primary error or losing a returned manifest.
+        self._last_teardown_error: SceneRenderError | None = None
 
     def __enter__(self) -> "_ChromiumPageRenderer":
         self._tmpdir = Path(tempfile.mkdtemp(prefix="scene-render-"))
@@ -251,9 +256,13 @@ class _ChromiumPageRenderer:
         )
 
     def __exit__(self, exc_type, exc, tb) -> None:
-        self._teardown(quiet=False)
+        # ``exc`` is the true in-flight exception (or None on a clean exit) so
+        # teardown can decide whether to mask, note, or record a cleanup failure.
+        self._teardown(quiet=False, in_flight_exc=exc)
 
-    def _teardown(self, *, quiet: bool) -> None:
+    def _teardown(
+        self, *, quiet: bool, in_flight_exc: BaseException | None = None
+    ) -> None:
         close_errors: list[Exception] = []
         if self._browser is not None:
             try:
@@ -272,10 +281,29 @@ class _ChromiumPageRenderer:
                 shutil.rmtree(self._tmpdir)
             except OSError as exc:
                 close_errors.append(exc)
-        if close_errors and not quiet:
-            raise SceneRenderError(
-                "chromium renderer teardown failed: " + "; ".join(map(str, close_errors))
+        if not close_errors:
+            return
+        teardown_error = SceneRenderError(
+            "chromium renderer teardown failed: " + "; ".join(map(str, close_errors))
+        )
+        if quiet:
+            # ``__enter__`` itself failed: the enter failure is primary, so the
+            # teardown noise is suppressed here.
+            return
+        if in_flight_exc is not None:
+            # A primary exception is already in flight. AGENTS.md: never let a
+            # cleanup exception mask the original failure reason. Record the
+            # teardown failure as a note on the primary exception so the
+            # evidence is preserved and the PRIMARY error keeps propagating.
+            in_flight_exc.add_note(
+                f"chromium renderer teardown also failed: {teardown_error}"
             )
+            return
+        # Clean exit (e.g. a successful render returning its manifest). Raising
+        # here would abort the in-progress ``return manifest`` and lose a
+        # successfully-built, hash-bound manifest (AGENTS.md: protect validated
+        # output). Record the teardown failure for observability instead.
+        self._last_teardown_error = teardown_error
 
 
 # ---------------------------------------------------------------------------
@@ -434,6 +462,18 @@ def render_carousel_scenes(
         source_assets = _used_source_assets(design_plan, assets)
         fonts = _font_report(all_probes)
 
+        # I2: defense-in-depth. ``design_plan_sha256`` is recomputed and
+        # cross-checked above; make ``asset_manifest_sha256`` symmetric by
+        # recomputing it from the supplied assets and rejecting a plan whose
+        # declared hash disagrees. Do not trust the plan's declared hash alone.
+        expected_asset_manifest_sha = canonical_sha256(
+            AssetManifest(items=tuple(assets.values()))
+        )
+        if design_plan.asset_manifest_sha256 != expected_asset_manifest_sha:
+            raise SceneRenderError(
+                "design plan asset_manifest_sha256 does not match the supplied assets"
+            )
+
         manifest = RenderManifest(
             design_plan_sha256=canonical_sha256(design_plan),
             content_atom_set_sha256=design_plan.content_atom_set_sha256,
@@ -448,7 +488,11 @@ def render_carousel_scenes(
         return manifest
     finally:
         if owned_renderer is not None:
-            owned_renderer.__exit__(None, None, None)
+            # I1: pass the TRUE exc_info (not (None, None, None)) so __exit__
+            # knows whether a primary exception is in flight. A cleanup failure
+            # is then attached as a note on the primary (never masking it) or,
+            # on a clean exit, recorded without aborting the manifest return.
+            owned_renderer.__exit__(*sys.exc_info())
 
 
 def _page_file_name(sequence: int, page: PageScene) -> str:

@@ -14,7 +14,7 @@ import pytest
 
 from src.nodes.node_p_generic_scene_renderer import generic_scene_renderer_node
 from src.rendering.scene.renderer import RenderedPageDraft
-from src.schemas.assets import AssetManifestItem
+from src.schemas.assets import AssetManifest, AssetManifestItem
 from src.schemas.content_atoms import (
     ContentAtom,
     ContentAtomSet,
@@ -125,7 +125,11 @@ def _design_plan(direction: VisualDirectionPlan, atom_set: ContentAtomSet) -> Ca
     return CarouselDesignPlan(
         direction_plan_sha256=canonical_sha256(direction),
         content_atom_set_sha256=atom_set.canonical_sha256,
-        asset_manifest_sha256=canonical_sha256([]),
+        # Build the hash from the same AssetManifest the renderer will recompute
+        # (canonical_sha256(AssetManifest(items=...))), not a bare list, so the
+        # I2 asset-hash cross-check passes: the plan's declared hash must match
+        # the supplied assets.
+        asset_manifest_sha256=canonical_sha256(AssetManifest(items=())),
         revision=0,
         pages=pages,
     )

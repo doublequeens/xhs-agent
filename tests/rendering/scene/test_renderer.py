@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import re
 import struct
+import tempfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +24,7 @@ from src.rendering.scene.compiler import CompiledPage
 from src.rendering.scene.renderer import (
     RenderedPageDraft,
     SceneRenderError,
+    _ChromiumPageRenderer,
     render_carousel_scenes,
 )
 from src.schemas.assets import AssetManifest, AssetManifestItem
@@ -638,3 +640,137 @@ def test_custom_contact_sheet_fn_is_used(tmp_path):
 
     assert Path(manifest.contact_sheet_path).read_bytes() == sentinel
     assert manifest.contact_sheet_sha256 == hashlib.sha256(sentinel).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# I1: a cleanup/teardown failure must never mask a PRIMARY render error or
+# lose a successfully-built manifest. These tests drive the REAL
+# _ChromiumPageRenderer context-manager protocol (no real Chromium) with a
+# browser whose close() raises, so the inherited _teardown/__exit__ path is
+# exercised deterministically.
+# ---------------------------------------------------------------------------
+
+
+class _CloseFailingBrowser:
+    """Stand-in browser whose close() always fails, to force a teardown error."""
+
+    def close(self) -> None:
+        raise RuntimeError("browser.close exploded")
+
+
+class _OwnedRendererNoChromium(_ChromiumPageRenderer):
+    """Owned renderer that skips real Chromium but keeps the real teardown path.
+
+    ``__enter__`` stands up a private temp dir (so rmtree succeeds) and a
+    browser whose close() raises; ``_playwright`` stays None so the inherited
+    ``_teardown`` collects exactly one close error. ``__call__`` delegates to a
+    class-level scripted renderer so each test can drive the failed-render and
+    successful-render paths. The inherited ``__exit__``/``_teardown`` (the fix
+    under test) decide whether to mask, note, or record the close error.
+    """
+
+    created: list["_OwnedRendererNoChromium"] = []
+    scripted: _ScriptedRenderer  # set per-test before rendering
+
+    def __init__(self, *, playwright_factory) -> None:  # noqa: ANN001
+        super().__init__(playwright_factory=playwright_factory)
+        type(self).created.append(self)
+
+    def __enter__(self) -> "_OwnedRendererNoChromium":
+        self._tmpdir = Path(tempfile.mkdtemp(prefix="test-scene-cleanup-"))
+        self._browser = _CloseFailingBrowser()
+        return self
+
+    def __call__(self, compiled_page: CompiledPage) -> RenderedPageDraft:
+        return type(self).scripted(compiled_page)
+
+
+def _render_with_owned_renderer(monkeypatch, tmp_path, *, scripted: _ScriptedRenderer):
+    _OwnedRendererNoChromium.created = []
+    _OwnedRendererNoChromium.scripted = scripted
+    monkeypatch.setattr(
+        "src.rendering.scene.renderer._ChromiumPageRenderer",
+        _OwnedRendererNoChromium,
+    )
+    atom_set, direction, design_plan, fragments, assets = _build_plan(
+        5, image=False, tmp_path=tmp_path
+    )
+    qa = _passing_qa(design_plan)
+    return render_carousel_scenes(
+        design_plan,
+        fragments=fragments,
+        assets=assets,
+        style=_style_profile(),
+        design_plan_qa_result=qa,
+        output_dir=tmp_path,
+        # render_page_fn omitted -> render_carousel_scenes owns a renderer and
+        # drives its context-manager protocol (the path the I1 fix hardens).
+    )
+
+
+def test_cleanup_failure_during_failed_render_surfaces_primary_error(monkeypatch, tmp_path):
+    # The render itself fails (transient chromium failure that does not recover
+    # within the single retry). The teardown path ALSO fails (browser.close).
+    # The PRIMARY render error must be what surfaces; the teardown failure must
+    # be attached as a note rather than masking the primary (AGENTS.md).
+    with pytest.raises(SceneRenderError) as exc_info:
+        _render_with_owned_renderer(
+            monkeypatch, tmp_path, scripted=_ScriptedRenderer(always_fail=True)
+        )
+
+    primary = exc_info.value
+    # The surfaced exception is the PRIMARY render failure, not the teardown.
+    assert "transient chromium failure" in str(primary)
+    assert "render failed" in str(primary)
+    assert "teardown failed" not in str(primary)
+    # The teardown failure is preserved as a note on the primary exception
+    # (recorded, not masking).
+    notes = getattr(primary, "__notes__", [])
+    assert any("teardown" in note.lower() and "browser.close" in note for note in notes)
+
+
+def test_cleanup_failure_during_successful_render_returns_manifest(monkeypatch, tmp_path):
+    # The render succeeds. The teardown path then fails (browser.close). The
+    # successfully-built manifest must still be RETURNED (not lost), and the
+    # cleanup failure must be recorded rather than aborting the return.
+    manifest = _render_with_owned_renderer(
+        monkeypatch, tmp_path, scripted=_ScriptedRenderer()
+    )
+
+    # The manifest is returned intact even though cleanup raised.
+    assert [page.sequence for page in manifest.pages] == [1, 2, 3, 4, 5]
+    for rendered in manifest.pages:
+        assert Path(rendered.path).is_file()
+    # The cleanup failure was recorded (not silently swallowed, not masking).
+    owned = _OwnedRendererNoChromium.created[0]
+    recorded = getattr(owned, "_last_teardown_error", None)
+    assert recorded is not None
+    assert "browser.close" in str(recorded)
+
+
+# ---------------------------------------------------------------------------
+# I2: asset_manifest_sha256 must be recomputed from the supplied assets and
+# cross-checked against the design plan, symmetric with design_plan_sha256.
+# ---------------------------------------------------------------------------
+
+
+def test_renderer_rejects_plan_whose_asset_manifest_hash_disagrees_with_assets(tmp_path):
+    atom_set, direction, design_plan, fragments, assets = _build_plan(
+        5, image=True, tmp_path=tmp_path
+    )
+    # Poison the plan's asset_manifest_sha256 so it disagrees with the supplied
+    # assets, then rebuild a passing QA against the tampered plan so the QA gate
+    # does not fire first (we want the renderer's own asset-hash check to fire).
+    poisoned_plan = design_plan.model_copy(update={"asset_manifest_sha256": "0" * 64})
+    qa = _passing_qa(poisoned_plan)
+
+    with pytest.raises(SceneRenderError, match="asset_manifest_sha256"):
+        render_carousel_scenes(
+            poisoned_plan,
+            fragments=fragments,
+            assets=assets,
+            style=_style_profile(),
+            design_plan_qa_result=qa,
+            output_dir=tmp_path,
+            render_page_fn=_ScriptedRenderer(),
+        )

@@ -561,3 +561,37 @@ def test_probe_builder_rejects_text_element_missing_from_raw_probes():
             assets={},
             page_background=PAGE_BACKGROUND,
         )
+
+
+def test_text_probe_preserves_zero_font_size_and_line_height():
+    # M3: a latent falsy-zero bug. `raw.get("font_size") or None` would turn a
+    # legitimate 0.0 into None, which then fails the text-probe kind attestation
+    # (font_size is required). Real Chromium never returns 0 for text, but the
+    # numeric fields must be guarded with an explicit `is not None` check.
+    fragment = _fragment("frag-1", "短文本")
+    element = _text_element("text-1", "frag-1")
+    page = PageScene(
+        page_id="page-1",
+        sequence=1,
+        background=PAGE_BACKGROUND,
+        elements=(element,),
+    )
+    raw = _raw_text_probe(
+        "text-1",
+        content_ref="frag-1",
+        font_size=0.0,
+        line_height=0.0,
+    )
+
+    probes = build_element_probes(
+        raw_probes=[raw],
+        page=page,
+        fragments={"frag-1": fragment},
+        assets={},
+        page_background=PAGE_BACKGROUND,
+    )
+
+    probe = probes[0]
+    assert probe.kind == "text"
+    assert probe.computed_font_size == 0.0
+    assert probe.computed_line_height == 0.0

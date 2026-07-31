@@ -439,13 +439,18 @@ def _build_text_probe(
     # the compiler rendered (the fragment text). For a faithful scene this
     # equals the text the browser painted.
     rasterized_sha = sha256_text(fragment.text)
+    # M3: guard the numeric fields with an explicit ``is not None`` check so a
+    # legitimate ``0.0`` (e.g. a defensive default) is preserved instead of being
+    # swallowed by ``or None`` and then failing the text-probe attestation.
+    raw_font_size = raw.get("font_size")
+    raw_line_height = raw.get("line_height")
     return RenderedElementProbe(
         element_id=element.element_id,
         kind="text",
         actual_box=actual_box,
         computed_font_family=font_family,
-        computed_font_size=raw.get("font_size") or None,
-        computed_line_height=raw.get("line_height") or None,
+        computed_font_size=raw_font_size if raw_font_size is not None else None,
+        computed_line_height=raw_line_height if raw_line_height is not None else None,
         overflow=overflow,
         ink_clipped=ink_clipped,
         layout_clipped=layout_clipped,
