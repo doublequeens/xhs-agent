@@ -1,4 +1,4 @@
-from pydantic import Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from .visual_style import Sha256, StrictModel
 
@@ -38,3 +38,12 @@ class RenderQAResult(StrictModel):
         if not self.passed and not self.issues:
             raise ValueError("failing render QA requires at least one issue")
         return self
+
+
+class RenderQAIssue(BaseModel):
+    """Temporary import compatibility for the v2 render-QA node."""
+
+    rule_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    message: str
+    location_hint: str
+    frame_id: str | None = None
