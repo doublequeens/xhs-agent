@@ -164,6 +164,26 @@ def test_atomizer_allows_ai_as_an_ordinary_subject_without_source_disclosure():
     assert result["content_atom_set"].atoms[-1].text == ordinary_copy
 
 
+@pytest.mark.parametrize(
+    "ordinary_copy",
+    [
+        "如何识别AI生成图片的常见瑕疵",
+        "AI绘制皮肤纹理为什么容易失真",
+        "AI创作和真人摄影有什么差别",
+        "我用AI制作内容时会先核对事实",
+    ],
+)
+def test_atomizer_allows_ai_generation_as_the_topic_of_ordinary_discussion(
+    ordinary_copy,
+):
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    result = content_atomizer_node(_state_with_copy(content=ordinary_copy))
+
+    assert result["content_atomization_route"] == "visual_director"
+    assert result["content_atom_set"].atoms[-1].text == ordinary_copy
+
+
 def test_atomizer_strips_nested_markdown_without_changing_visible_payload():
     from src.nodes.node_p_content_atomizer import content_atomizer_node
 
