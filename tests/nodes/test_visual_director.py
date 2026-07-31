@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
+from pydantic import ValidationError
 
 from src.schemas.content_atoms import (
     ContentAtom,
@@ -18,13 +19,17 @@ from src.schemas.visual_director import (
     PageDirection,
     VisualDirectionPlan,
 )
+from src.nodes.node_p_visual_director import visual_director_node
+from src.visual_ai import StructuredVisualResponseError
 from src.visual_design.model_retry import VisualProductionInterrupted
 from src.visual_design.style_registry import load_style_registry
-from src.nodes.node_p_visual_director import visual_director_node
 
 
 class ScriptedVisualModel:
-    def __init__(self, responses: Sequence[VisualDirectionPlan]) -> None:
+    def __init__(
+        self,
+        responses: Sequence[VisualDirectionPlan | Exception],
+    ) -> None:
         self.responses = list(responses)
         self.calls: list[dict[str, object]] = []
 
@@ -41,7 +46,10 @@ class ScriptedVisualModel:
                 "image_paths": tuple(image_paths),
             }
         )
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
 def _atom_set(page_count: int = 5, *, persistent_pain: bool = False) -> ContentAtomSet:
@@ -337,6 +345,172 @@ def test_director_prompt_defines_licensed_generated_diagram_and_no_asset_choices
     assert "embedded text" in prompt
     assert "AI disclosure" in prompt
     assert "disclaimer" in prompt
+
+
+def test_director_retries_adapter_json_and_schema_failures_then_recovers():
+    atom_set = _atom_set()
+    valid = _valid_plan(atom_set)
+    with pytest.raises(ValidationError) as exc_info:
+        VisualDirectionPlan.model_validate({"page_count": "invalid"})
+    model = ScriptedVisualModel(
+        [
+            StructuredVisualResponseError(
+                "response did not contain valid JSON",
+                raw_response="not-json",
+            ),
+            exc_info.value,
+            valid,
+        ]
+    )
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == valid
+    assert len(model.calls) == 3
+    assert "response did not contain valid JSON" in str(model.calls[1]["prompt"])
+    assert "page_count" in str(model.calls[2]["prompt"])
+
+
+def test_three_adapter_failures_interrupt_and_retain_only_available_raw_outputs():
+    atom_set = _atom_set()
+    model = ScriptedVisualModel(
+        [
+            StructuredVisualResponseError(
+                "invalid JSON",
+                raw_response="not-json-1",
+            ),
+            ValueError("schema mismatch without raw response"),
+            StructuredVisualResponseError(
+                "invalid JSON again",
+                raw_response='{"broken": true',
+            ),
+        ]
+    )
+
+    with pytest.raises(VisualProductionInterrupted) as exc_info:
+        visual_director_node(_state(atom_set), model=model)
+
+    interruption = exc_info.value
+    assert len(interruption.errors) == 3
+    assert interruption.raw_outputs == (
+        "not-json-1",
+        '{"broken": true',
+    )
+    assert len(model.calls) == 3
+    assert "invalid JSON" in str(model.calls[1]["prompt"])
+    assert "schema mismatch without raw response" in str(
+        model.calls[2]["prompt"]
+    )
+
+
+def test_unexpected_model_runtime_error_is_not_hidden_as_repairable_output():
+    atom_set = _atom_set()
+    model = ScriptedVisualModel([RuntimeError("provider transport crashed")])
+
+    with pytest.raises(RuntimeError, match="provider transport crashed"):
+        visual_director_node(_state(atom_set), model=model)
+
+    assert len(model.calls) == 1
+
+
+def test_director_retries_asset_prompt_requesting_forbidden_visible_copy():
+    atom_set = _atom_set()
+    malicious = AssetDirective(
+        directive_id="malicious-image",
+        page_id="page-1",
+        role="skin_example",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt=(
+            "生成真实皮肤图片，并在图片中嵌入文字“AI 生成示意图，"
+            "仅供参考，不构成医疗建议”"
+        ),
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    invalid = _valid_plan(atom_set, asset_directives=(malicious,))
+    valid = _valid_plan(atom_set)
+    model = ScriptedVisualModel([invalid, valid])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == valid
+    assert "forbidden visible image copy" in str(model.calls[1]["prompt"])
+
+
+def test_director_keeps_factual_skin_subject_matter_without_visible_boilerplate():
+    atom_set = _atom_set()
+    factual = AssetDirective(
+        directive_id="factual-skin",
+        page_id="page-1",
+        role="skin_example",
+        required=True,
+        preferred_source="search",
+        fallback_source="none",
+        query_or_prompt="真实皮肤摄影，呈现可观察的面部泛红和干燥紧绷状态",
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    plan = _valid_plan(atom_set, asset_directives=(factual,))
+    model = ScriptedVisualModel([plan])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == plan
+
+
+@pytest.mark.parametrize(
+    ("make_invalid", "feedback"),
+    [
+        (
+            lambda plan: plan.model_copy(update={"art_direction": ""}),
+            "art_direction",
+        ),
+        (
+            lambda plan: plan.model_copy(update={"palette": ()}),
+            "palette",
+        ),
+        (
+            lambda plan: plan.model_copy(update={"typography_direction": {}}),
+            "typography_direction",
+        ),
+        (
+            lambda plan: plan.model_copy(
+                update={
+                    "page_sequence": (
+                        plan.page_sequence[0].model_copy(
+                            update={"purpose": "   "}
+                        ),
+                        *plan.page_sequence[1:],
+                    )
+                }
+            ),
+            "purpose",
+        ),
+    ],
+)
+def test_director_retries_empty_shell_direction_fields(make_invalid, feedback):
+    atom_set = _atom_set()
+    valid = _valid_plan(atom_set)
+    model = ScriptedVisualModel([make_invalid(valid), valid])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == valid
+    assert feedback in str(model.calls[1]["prompt"])
 
 
 def test_third_validation_failure_raises_resumable_interruption_with_evidence():

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, get_args
@@ -31,6 +32,29 @@ _PERSISTENT_PAIN_SIGNALS = (
     "持续刺痛",
     "明显泛红",
     "第二天仍然紧绷",
+)
+_FORBIDDEN_VISIBLE_ASSET_COPY = (
+    re.compile(
+        r"(?:AI|人工智能)\s*(?:技术\s*)?(?:辅助|参与)?\s*"
+        r"(?:生成|绘制|创作|制作)\s*"
+        r"(?:的)?(?:示意图|图片|图像|内容|素材)?",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:add|include|show|render|overlay|embed|write|display|with)"
+        r".{0,24}(?:text|caption|label|words)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?:嵌入|添加|加入|写上|显示|叠加|覆盖|带有|包含)"
+        r".{0,12}(?:文字|文本|字样|标签|标注)"
+    ),
+    re.compile(r"(?:示意图)(?:标签|标注|字样)"),
+    re.compile(r"(?:免责声明|仅供参考|不构成(?:任何)?(?:医疗|医学|诊疗)建议)"),
+    re.compile(
+        r"(?:不能|无法|不可)(?:替代|代替)(?:专业)?"
+        r"(?:医生|医师|医疗|诊断|治疗)(?:的)?(?:建议|诊疗|诊断|治疗)"
+    ),
 )
 
 
@@ -135,6 +159,14 @@ def _validate_asset_directive(directive: AssetDirective) -> None:
 
     if not isinstance(query_or_prompt, str) or not query_or_prompt.strip():
         raise ValueError("asset directives require a non-empty query or prompt")
+    if any(
+        pattern.search(query_or_prompt)
+        for pattern in _FORBIDDEN_VISIBLE_ASSET_COPY
+    ):
+        raise ValueError(
+            "asset directive query_or_prompt requests forbidden visible "
+            "image copy"
+        )
     combined_constraints = " ".join(directive.negative_constraints).casefold()
     for label, accepted_phrases in _REQUIRED_ASSET_NEGATIVE_CONSTRAINTS:
         if not any(
@@ -166,6 +198,31 @@ def _validate_content_asset_fit(
         )
 
 
+def _validate_executable_direction(
+    plan: VisualDirectionPlan,
+    family_profile: FamilyStyleProfile,
+) -> None:
+    if not plan.art_direction.strip():
+        raise ValueError("art_direction must be non-blank")
+    if not plan.palette:
+        raise ValueError("palette must contain at least one family color")
+    if not plan.typography_direction:
+        raise ValueError(
+            "typography_direction must contain meaningful font-role direction"
+        )
+    for role, direction in plan.typography_direction.items():
+        if role not in family_profile.font_roles:
+            raise ValueError(
+                "typography_direction roles must exist in the family profile"
+            )
+        if not role.strip() or not direction.strip():
+            raise ValueError(
+                "typography_direction keys and values must be non-blank"
+            )
+    if any(not page.purpose.strip() for page in plan.page_sequence):
+        raise ValueError("each page purpose must be non-blank")
+
+
 def _validate_candidate(
     candidate: VisualDirectionPlan,
     *,
@@ -179,6 +236,7 @@ def _validate_candidate(
     )
     family_profile = profiles[validated.template_family]
     validated.validate_against(atom_set, family_profile)
+    _validate_executable_direction(validated, family_profile)
     _validate_semantic_boundaries(atom_set, validated.content_fragments)
     for directive in validated.asset_directives:
         _validate_asset_directive(directive)

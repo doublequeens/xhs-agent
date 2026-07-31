@@ -59,6 +59,28 @@ def repair_prompt(prompt: str, errors: Sequence[str]) -> str:
     )
 
 
+def _repairable_error_message(exc: ValueError) -> str:
+    message = str(exc)
+    cause = exc.__cause__
+    if isinstance(cause, (ValidationError, ValueError)):
+        cause_message = str(cause)
+        if cause_message and cause_message != message:
+            return f"{message}\nCaused by: {cause_message}"
+    return message
+
+
+def _record_repairable_failure(
+    exc: ValueError,
+    *,
+    errors: list[str],
+    raw_outputs: list[str],
+) -> None:
+    errors.append(_repairable_error_message(exc))
+    raw_response = getattr(exc, "raw_response", None)
+    if isinstance(raw_response, str):
+        raw_outputs.append(raw_response)
+
+
 def generate_validated(
     model: StructuredVisualModel,
     *,
@@ -75,17 +97,30 @@ def generate_validated(
     errors: list[str] = []
     raw_outputs: list[str] = []
     for _attempt in range(1, max_attempts + 1):
-        candidate = model.generate_json(
-            prompt=repair_prompt(prompt, errors),
-            response_model=response_model,
-            image_paths=image_paths,
-        )
+        try:
+            candidate = model.generate_json(
+                prompt=repair_prompt(prompt, errors),
+                response_model=response_model,
+                image_paths=image_paths,
+            )
+        except (ValidationError, ValueError) as exc:
+            _record_repairable_failure(
+                exc,
+                errors=errors,
+                raw_outputs=raw_outputs,
+            )
+            continue
+
         raw_outputs.append(candidate.model_dump_json())
         try:
             validate(candidate)
             return candidate
         except (ValidationError, ValueError) as exc:
-            errors.append(str(exc))
+            _record_repairable_failure(
+                exc,
+                errors=errors,
+                raw_outputs=raw_outputs,
+            )
     raise VisualProductionInterrupted(
         stage="visual_director",
         errors=errors,
