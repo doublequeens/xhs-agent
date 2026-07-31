@@ -53,9 +53,14 @@ _FORBIDDEN_DISCLOSURE_OR_CHINESE_ASSET_COPY = (
 )
 _ENGLISH_VISIBLE_COPY_VERBS = (
     r"add|include|show|render|overlay|embed|write|display|with|"
-    r"put|insert|place|superimpose"
+    r"put|insert|place|superimpose|draw|print"
 )
 _ENGLISH_VISIBLE_COPY_TOKENS = r"texts?|captions?|labels?|words?"
+_ENGLISH_NEGATIVE_COMMAND_PREFIX = (
+    r"do\s+not|don['’]t|never|"
+    r"(?:must|should|can)\s+not|"
+    r"(?:mustn|shouldn|can)['’]t"
+)
 _ENGLISH_NEGATIVE_VISIBLE_COPY_CONTEXTS = (
     re.compile(
         r"\b(?:no|without)\s+(?:any\s+)?"
@@ -67,7 +72,7 @@ _ENGLISH_NEGATIVE_VISIBLE_COPY_CONTEXTS = (
         re.IGNORECASE,
     ),
     re.compile(
-        rf"\b(?:do\s+not|don['’]t)\s+"
+        rf"\b(?:{_ENGLISH_NEGATIVE_COMMAND_PREFIX})\s+"
         rf"(?:{_ENGLISH_VISIBLE_COPY_VERBS})\b"
         rf".{{0,24}}\b(?:{_ENGLISH_VISIBLE_COPY_TOKENS})\b",
         re.IGNORECASE,

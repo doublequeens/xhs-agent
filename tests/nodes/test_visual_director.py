@@ -546,6 +546,8 @@ def test_director_still_retries_explicit_english_embedded_text_command():
         "insert captions on the image",
         "place labels on the image",
         "superimpose words on the image",
+        "draw text on the image",
+        "print captions on the image",
     ],
 )
 def test_director_retries_plural_english_visible_copy_commands(
@@ -586,6 +588,15 @@ def test_director_retries_plural_english_visible_copy_commands(
         "show skin without text",
         "show a label-free skin image",
         "do not include text",
+        "never include text",
+        "must not add labels",
+        "DON'T overlay labels",
+        "don’t   insert captions",
+        "SHOULD   NOT place words",
+        "mustn't add labels",
+        "shouldn’t place words",
+        "CAN'T print captions",
+        "can   not   print text",
     ],
 )
 def test_director_allows_explicit_english_no_text_constraints(
