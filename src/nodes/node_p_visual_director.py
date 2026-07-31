@@ -51,20 +51,31 @@ _FORBIDDEN_DISCLOSURE_OR_CHINESE_ASSET_COPY = (
         r"(?:医生|医师|医疗|诊断|治疗)(?:的)?(?:建议|诊疗|诊断|治疗)"
     ),
 )
+_ENGLISH_VISIBLE_COPY_VERBS = (
+    r"add|include|show|render|overlay|embed|write|display|with|"
+    r"put|insert|place|superimpose"
+)
+_ENGLISH_VISIBLE_COPY_TOKENS = r"texts?|captions?|labels?|words?"
 _ENGLISH_NEGATIVE_VISIBLE_COPY_CONTEXTS = (
     re.compile(
         r"\b(?:no|without)\s+(?:any\s+)?"
-        r"(?:texts?|captions?|labels?|words?)\b",
+        rf"(?:{_ENGLISH_VISIBLE_COPY_TOKENS})\b",
         re.IGNORECASE,
     ),
     re.compile(
         r"\b(?:text|caption|label|word)-free\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        rf"\b(?:do\s+not|don['’]t)\s+"
+        rf"(?:{_ENGLISH_VISIBLE_COPY_VERBS})\b"
+        rf".{{0,24}}\b(?:{_ENGLISH_VISIBLE_COPY_TOKENS})\b",
+        re.IGNORECASE,
+    ),
 )
 _ENGLISH_POSITIVE_VISIBLE_COPY_COMMAND = re.compile(
-    r"\b(?:add|include|show|render|overlay|embed|write|display|with)\b"
-    r".{0,24}\b(?:texts?|captions?|labels?|words?)\b",
+    rf"\b(?:{_ENGLISH_VISIBLE_COPY_VERBS})\b"
+    rf".{{0,24}}\b(?:{_ENGLISH_VISIBLE_COPY_TOKENS})\b",
     re.IGNORECASE,
 )
 

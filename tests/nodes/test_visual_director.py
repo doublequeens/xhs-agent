@@ -542,6 +542,10 @@ def test_director_still_retries_explicit_english_embedded_text_command():
     [
         "include labels on the skin image",
         "overlay captions on the image",
+        "put text on the image",
+        "insert captions on the image",
+        "place labels on the image",
+        "superimpose words on the image",
     ],
 )
 def test_director_retries_plural_english_visible_copy_commands(
@@ -581,6 +585,7 @@ def test_director_retries_plural_english_visible_copy_commands(
         "show skin with no text",
         "show skin without text",
         "show a label-free skin image",
+        "do not include text",
     ],
 )
 def test_director_allows_explicit_english_no_text_constraints(
