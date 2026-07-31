@@ -254,6 +254,21 @@ def test_r2_prompt_blocks_visible_disclosure_and_disclaimer_copy_without_blockin
     assert "停用指导" in prompt
 
 
+def test_visual_director_prompt_bans_visible_labels_and_disclaimer_copy():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("visual_director", get_domain_profile("beauty"))
+
+    assert "5–18" in prompt
+    assert "one family" in prompt
+    assert "embedded text" in prompt
+    assert "AI disclosure" in prompt
+    assert "disclaimer" in prompt
+    assert "AI 生成示意图" in prompt
+    assert "仅供参考" in prompt
+    assert "不构成医疗建议" in prompt
+
+
 def test_compose_prompt_rejects_unknown_task():
     from src.prompts.composer import compose_prompt
 
