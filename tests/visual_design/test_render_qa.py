@@ -287,6 +287,43 @@ def _image_probe(page_id: str, asset: AssetManifestItem) -> RenderedElementProbe
     )
 
 
+def _hero_element(asset_ref: str, focal: tuple[float, float]) -> ImageElement:
+    """Image element with id 'hero' — element IDs only need to be unique per
+    page, so two pages can legitimately each declare a 'hero' element."""
+    return ImageElement(
+        element_id="hero",
+        layer=0,
+        box=Box(x=88, y=320, width=904, height=720),
+        asset_ref=asset_ref,
+        fit="cover",
+        focal_point=focal,
+        corner_radius=0,
+    )
+
+
+def _hero_probe(asset: AssetManifestItem, focal: tuple[float, float]) -> RenderedElementProbe:
+    return RenderedElementProbe(
+        element_id="hero",
+        kind="image",
+        actual_box=Box(x=88, y=320, width=904, height=720),
+        computed_font_family=None,
+        computed_font_size=None,
+        computed_line_height=None,
+        overflow=False,
+        ink_clipped=False,
+        layout_clipped=False,
+        contrast_ratio=0.0,
+        content_ref=None,
+        asset_ref=asset.asset_id,
+        rasterized_text_sha256=None,
+        rendered_asset_sha256=asset.sha256,
+        actual_focal_point=focal,
+        crop_box=Box(x=0, y=0, width=1080, height=1440),
+        natural_width=asset.width,
+        natural_height=asset.height,
+    )
+
+
 def _first_fragment(plan_page: PageScene) -> str:
     for el in plan_page.elements:
         if isinstance(el, TextElement):
@@ -354,6 +391,131 @@ def _passing_design_qa(design_plan: CarouselDesignPlan) -> DesignPlanQAResult:
         content_coverage_attestation=True,
         family_attestation=True,
         asset_binding_attestation=True,
+    )
+
+
+def _direction_two_image_directives(
+    atom_set: ContentAtomSet,
+    directive_1: AssetDirective,
+    directive_2: AssetDirective,
+) -> VisualDirectionPlan:
+    """Like ``_direction`` but with two image directives: directive_1 on page-1
+    and directive_2 on page-2 (used to forge two pages sharing element_id)."""
+    fragments = _fragments(atom_set)
+    return VisualDirectionPlan(
+        template_family="pink_red",
+        page_count=len(atom_set.atoms),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        art_direction="护肤编辑方向",
+        palette=("#F4A7BF", "#1A1A1A", "#FFFFFF"),
+        typography_direction={"display": "醒目", "body": "清晰"},
+        motifs=("oversized type",),
+        content_fragments=fragments,
+        page_sequence=tuple(
+            PageDirection(
+                page_id=f"page-{index}",
+                sequence=index,
+                purpose=f"解释第{index}个重点",
+                visual_job=f"job-{index}",
+                fragment_ids=(f"fragment-{index}",),
+                asset_directive_ids=(
+                    (f"directive-image-{index}",) if index in (1, 2) else ()
+                ),
+            )
+            for index in range(1, len(atom_set.atoms) + 1)
+        ),
+        asset_directives=(directive_1, directive_2),
+    )
+
+
+def _design_plan_shared_hero(
+    direction: VisualDirectionPlan,
+    atom_set: ContentAtomSet,
+    manifest: AssetManifest,
+    *,
+    hero_1_focal: tuple[float, float],
+    hero_2_focal: tuple[float, float],
+) -> CarouselDesignPlan:
+    """Design plan where page-1 and page-2 each carry an image element with the
+    SHARED id 'hero' but different focal points / asset refs. Pages 3..N have
+    only a text element."""
+    pages: list[PageScene] = []
+    for direction_page in direction.page_sequence:
+        elements: list = [_text_element(direction_page.page_id, direction_page.fragment_ids[0])]
+        if direction_page.page_id == "page-1":
+            elements.append(_hero_element("asset-image-1", hero_1_focal))
+        elif direction_page.page_id == "page-2":
+            elements.append(_hero_element("asset-image-2", hero_2_focal))
+        pages.append(
+            PageScene(
+                page_id=direction_page.page_id,
+                sequence=direction_page.sequence,
+                background=_BG,
+                elements=tuple(elements),
+            )
+        )
+    return CarouselDesignPlan(
+        direction_plan_sha256=canonical_sha256(direction),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        asset_manifest_sha256=canonical_sha256(manifest),
+        revision=0,
+        pages=tuple(pages),
+    )
+
+
+def _render_manifest_shared_hero(
+    design_plan: CarouselDesignPlan,
+    atom_set: ContentAtomSet,
+    manifest: AssetManifest,
+    direction: VisualDirectionPlan,
+    *,
+    render_dir: Path,
+    hero_1_focal: tuple[float, float],
+    hero_2_focal: tuple[float, float],
+    asset_1: AssetManifestItem,
+    asset_2: AssetManifestItem,
+) -> RenderManifest:
+    """Render manifest where each 'hero' probe carries its OWN page's focal
+    point (so per-page resolution passes; a global element_id dict would
+    collide and flag a phantom mismatch on page-1)."""
+    fragment_by_id = {f.fragment_id: f for f in direction.content_fragments}
+    pages: list[RenderedPage] = []
+    for index, plan_page in enumerate(design_plan.pages, start=1):
+        page_path = render_dir / f"page-{index:02d}.png"
+        page_sha = _write_png(page_path)
+        first_frag = _first_fragment(plan_page)
+        probes: list[RenderedElementProbe] = [
+            _text_probe(plan_page.page_id, first_frag, fragment_by_id[first_frag].text)
+        ]
+        if plan_page.page_id == "page-1":
+            probes.append(_hero_probe(asset_1, hero_1_focal))
+        elif plan_page.page_id == "page-2":
+            probes.append(_hero_probe(asset_2, hero_2_focal))
+        pages.append(
+            RenderedPage(
+                page_id=plan_page.page_id,
+                sequence=plan_page.sequence,
+                path=str(page_path),
+                width=1080,
+                height=1440,
+                sha256=page_sha,
+                element_probes=tuple(probes),
+            )
+        )
+    contact_path = render_dir / "contact-sheet.png"
+    contact_sha = _write_png(contact_path, width=1320, height=1145)
+    return RenderManifest(
+        design_plan_sha256=canonical_sha256(design_plan),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        asset_manifest_sha256=canonical_sha256(manifest),
+        revision=0,
+        pages=tuple(pages),
+        fonts=FontLoadReport(
+            all_loaded=True, computed_families=("Test Display", "Test Heading", "Test Body")
+        ),
+        contact_sheet_path=str(contact_path),
+        contact_sheet_sha256=contact_sha,
+        source_asset_sha256={item.asset_id: item.sha256 for item in manifest.items},
     )
 
 
@@ -432,6 +594,27 @@ def _replace_probe(manifest: RenderManifest, page_id: str, element_id: str, **up
         )
         new_pages.append(page.model_copy(update={"element_probes": probes}))
     return manifest.model_copy(update={"pages": tuple(new_pages)})
+
+
+def _replace_plan_element(
+    plan: CarouselDesignPlan, page_id: str, new_element: TextElement
+) -> CarouselDesignPlan:
+    """Swap one text element on a page (matched by element_id); leaves any other
+    elements (e.g. image elements) untouched. Used to vary typography for the
+    large-text contrast boundary tests."""
+    new_pages = []
+    for page in plan.pages:
+        if page.page_id != page_id:
+            new_pages.append(page)
+            continue
+        new_elements = tuple(
+            new_element
+            if isinstance(el, TextElement) and el.element_id == new_element.element_id
+            else el
+            for el in page.elements
+        )
+        new_pages.append(page.model_copy(update={"elements": new_elements}))
+    return plan.model_copy(update={"pages": tuple(new_pages)})
 
 
 # --- passing base ---------------------------------------------------------
@@ -535,10 +718,28 @@ def test_design_plan_qa_hash_stale_fails(tmp_path):
 
 def test_page_order_mismatch_fails(tmp_path):
     base = _inputs(tmp_path)
-    # Swap two page_ids-in-sequence so the manifest order disagrees with the plan.
+    # Swap the page_ids of slots 1 and 2 while leaving the sequences 1..N. The
+    # resulting manifest is schema-VALID (page_ids still unique, sequences still
+    # contiguous from 1 — `require_contiguous_unique_pages` accepts it) but its
+    # page_id order disagrees with the design plan, which is exactly the case
+    # the rule must catch against renderer input the schema would accept. (The
+    # previous swap-whole-pages construction bypassed the schema via model_copy
+    # because it produced non-contiguous sequences [2,1,3,4,5].)
     pages = list(base.render_manifest.pages)
-    pages[0], pages[1] = pages[1], pages[0]
+    first_id, second_id = pages[0].page_id, pages[1].page_id
+    pages[0] = pages[0].model_copy(update={"page_id": second_id})
+    pages[1] = pages[1].model_copy(update={"page_id": first_id})
     manifest = base.render_manifest.model_copy(update={"pages": tuple(pages)})
+
+    # Sanity: the forged manifest satisfies the same invariants the schema's
+    # ``require_contiguous_unique_pages`` enforces (unique page_ids, contiguous
+    # sequences 1..N). This proves the rule is exercised against renderer input
+    # the schema would accept — not a model_copy bypass like the previous
+    # non-contiguous [2,1,3,4,5] construction.
+    page_ids = [page.page_id for page in manifest.pages]
+    sequences = [page.sequence for page in manifest.pages]
+    assert len(set(page_ids)) == len(page_ids), "page_ids must be unique"
+    assert sequences == list(range(1, len(manifest.pages) + 1)), "sequences must be 1..N"
 
     result = evaluate_render(_copy_inputs(base, render_manifest=manifest))
 
@@ -824,6 +1025,97 @@ def test_low_contrast_fails(tmp_path):
     assert "4.5" in issue.message
 
 
+def test_large_text_contrast_passes_between_3_and_4_5(tmp_path):
+    """Large text (display role, font_size >= 32) is held to the WCAG 3.0:1
+    large-text threshold, not the 4.5:1 normal-text threshold. A probe with
+    contrast between 3.0 and 4.5 must PASS the contrast rule. Pins render_qa's
+    local large-text classification at the 3.0 boundary (mirroring plan_qa)."""
+    base = _inputs(tmp_path)
+    display_element = TextElement(
+        element_id="text-page-1",
+        layer=1,
+        box=Box(x=88, y=120, width=904, height=160),
+        content_ref=base.direction.content_fragments[0].fragment_id,
+        style=TextStyle(
+            font_role="display",
+            font_size=32,  # boundary: >= MIN_DISPLAY_FONT_PX (32) ⇒ large
+            line_height=1.2,
+            color=_INK,
+            align="left",
+            weight=700,
+        ),
+    )
+    plan = _replace_plan_element(base.design_plan, "page-1", display_element)
+    inputs = _inputs(
+        tmp_path,
+        atom_set=base.atoms,
+        direction=base.direction,
+        manifest=base.assets,
+        design_plan=plan,
+    )
+    # Probe's measured computed_font_size at 32 (boundary) and contrast 3.5
+    # (between 3.0 large threshold and 4.5 normal threshold).
+    manifest = _replace_probe(
+        inputs.render_manifest,
+        "page-1",
+        "text-page-1",
+        computed_font_size=32.0,
+        contrast_ratio=3.5,
+    )
+
+    result = evaluate_render(_copy_inputs(inputs, render_manifest=manifest))
+
+    assert result.passed is True, (
+        "expected large-text contrast 3.5 to pass at the 3.0 boundary; got issues: "
+        f"{[(i.rule, i.page_id, i.element_id) for i in result.issues]}"
+    )
+    assert _find(result, "geometry.low_contrast") is None
+
+
+def test_large_text_contrast_fails_below_3(tmp_path):
+    """Large text below 3.0:1 contrast must FAIL with the large-text threshold
+    cited in the message. Pins render_qa's local large-text classification at
+    the 3.0 boundary (mirroring plan_qa)."""
+    base = _inputs(tmp_path)
+    display_element = TextElement(
+        element_id="text-page-1",
+        layer=1,
+        box=Box(x=88, y=120, width=904, height=160),
+        content_ref=base.direction.content_fragments[0].fragment_id,
+        style=TextStyle(
+            font_role="display",
+            font_size=32,  # boundary: >= MIN_DISPLAY_FONT_PX (32) ⇒ large
+            line_height=1.2,
+            color=_INK,
+            align="left",
+            weight=700,
+        ),
+    )
+    plan = _replace_plan_element(base.design_plan, "page-1", display_element)
+    inputs = _inputs(
+        tmp_path,
+        atom_set=base.atoms,
+        direction=base.direction,
+        manifest=base.assets,
+        design_plan=plan,
+    )
+    manifest = _replace_probe(
+        inputs.render_manifest,
+        "page-1",
+        "text-page-1",
+        computed_font_size=32.0,
+        contrast_ratio=2.5,  # below the 3.0 large-text threshold
+    )
+
+    result = evaluate_render(_copy_inputs(inputs, render_manifest=manifest))
+
+    assert result.passed is False
+    issue = _find(result, "geometry.low_contrast", page_id="page-1", element_id="text-page-1")
+    assert issue is not None
+    assert "3.0" in issue.message
+    assert "large" in issue.message
+
+
 # --- text attestation -----------------------------------------------------
 
 def test_rasterized_text_hash_mismatch_fails(tmp_path):
@@ -928,6 +1220,81 @@ def test_image_focal_point_mismatch_fails(tmp_path):
     assert result.passed is False
     issue = _find(result, "asset.focal_point_mismatch", page_id="page-1", element_id="image-page-1")
     assert issue is not None
+
+
+def test_image_attestation_resolves_focal_point_per_page_not_globally(tmp_path):
+    """Regression: ``verify_image_crops`` previously built plan_element_by_id
+    across ALL design-plan pages keyed only by element_id. Element IDs are only
+    guaranteed unique *per page*, so two pages legitimately reusing an id (e.g.
+    both have an image element named 'hero') with DIFFERENT focal points would
+    collide in the global dict; the focal-point lookup would pick the wrong
+    page's element and falsely flag a mismatch on one of the pages.
+
+    The fix scopes the lookup per rendered page: each image probe must resolve
+    against ITS OWN page's design-plan element. With the global dict this test
+    fails (RED) — page-1's 'hero' is checked against page-2's focal point.
+    """
+    atom_set = _atom_set()
+    directive_1 = _asset_directive(page_id="page-1").model_copy(
+        update={"directive_id": "directive-image-1"}
+    )
+    directive_2 = _asset_directive(page_id="page-2").model_copy(
+        update={"directive_id": "directive-image-2"}
+    )
+    direction = _direction_two_image_directives(atom_set, directive_1, directive_2)
+    asset_1 = _asset_item(tmp_path / "asset-1.png").model_copy(
+        update={
+            "asset_id": "asset-image-1",
+            "directive_id": "directive-image-1",
+            "page_id": "page-1",
+        }
+    )
+    asset_2 = _asset_item(
+        tmp_path / "asset-2.png", payload=_png_bytes(1080, 1440, color="#224466")
+    ).model_copy(
+        update={
+            "asset_id": "asset-image-2",
+            "directive_id": "directive-image-2",
+            "page_id": "page-2",
+        }
+    )
+    manifest = AssetManifest(items=(asset_1, asset_2))
+    # Both pages reuse element_id 'hero' with DIFFERENT focal points.
+    design_plan = _design_plan_shared_hero(
+        direction,
+        atom_set,
+        manifest,
+        hero_1_focal=(0.1, 0.1),
+        hero_2_focal=(0.9, 0.9),
+    )
+    render_manifest = _render_manifest_shared_hero(
+        design_plan,
+        atom_set,
+        manifest,
+        direction,
+        render_dir=tmp_path,
+        hero_1_focal=(0.1, 0.1),
+        hero_2_focal=(0.9, 0.9),
+        asset_1=asset_1,
+        asset_2=asset_2,
+    )
+    inputs = RenderQAInputs(
+        atoms=atom_set,
+        direction=direction,
+        assets=manifest,
+        design_plan=design_plan,
+        design_plan_qa=_passing_design_qa(design_plan),
+        render_manifest=render_manifest,
+    )
+
+    result = evaluate_render(inputs)
+
+    assert result.passed is True, (
+        "expected each page's image probe to resolve to its own page's focal "
+        "point; got issues: "
+        f"{[(i.rule, i.page_id, i.element_id) for i in result.issues]}"
+    )
+    assert _find(result, "asset.focal_point_mismatch") is None
 
 
 def test_image_unknown_asset_ref_fails(tmp_path):

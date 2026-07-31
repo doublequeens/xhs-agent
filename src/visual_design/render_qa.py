@@ -40,9 +40,9 @@ from src.schemas.scene_graph import (
 )
 from src.schemas.visual_director import VisualDirectionPlan
 from src.visual_design.plan_qa import (
-    _FORBIDDEN_LABEL_PATTERNS,
     CANVAS_HEIGHT,
     CANVAS_WIDTH,
+    FORBIDDEN_LABEL_PATTERNS,
     LARGE_TEXT_CONTRAST,
     MIN_BODY_FONT_PX,
     MIN_DISPLAY_FONT_PX,
@@ -600,7 +600,7 @@ def verify_text_attestation(inputs: RenderQAInputs) -> list[RenderIssue]:
             atom = atom_by_id.get(fragment.source_atom_id)
             if atom is not None:
                 lowered = atom.text.lower()
-                if any(pattern in lowered for pattern in _FORBIDDEN_LABEL_PATTERNS):
+                if any(pattern in lowered for pattern in FORBIDDEN_LABEL_PATTERNS):
                     issues.append(
                         _issue(
                             "content.forbidden_visible_label",
@@ -623,14 +623,24 @@ def verify_text_attestation(inputs: RenderQAInputs) -> list[RenderIssue]:
 def verify_image_crops(inputs: RenderQAInputs) -> list[RenderIssue]:
     issues: list[RenderIssue] = []
     asset_by_id = {item.asset_id: item for item in inputs.assets.items}
-    plan_element_by_id = {
-        element.element_id: element
-        for page in inputs.design_plan.pages
-        for element in page.elements
-    }
+    # Element IDs are only guaranteed unique *per page* (``PageScene`` enforces
+    # per-page uniqueness, not global), so a globally-keyed element_id dict
+    # would collide if two plan pages legitimately reuse an id (e.g. both pages
+    # carry an image element named 'hero'). Pair each rendered page with its
+    # matching design-plan ``PageScene`` by ``page_id`` — mirroring
+    # ``verify_element_probes`` — and resolve image elements within that page
+    # only. If the matching plan page is absent, ``verify_page_files`` already
+    # attested the count/order mismatch, so we skip the focal-point lookup.
+    plan_page_by_id = {page.page_id: page for page in inputs.design_plan.pages}
     rendered_asset_refs: set[str] = set()
 
     for rendered in inputs.render_manifest.pages:
+        plan_page = plan_page_by_id.get(rendered.page_id)
+        plan_element_by_id = (
+            {element.element_id: element for element in plan_page.elements}
+            if plan_page is not None
+            else {}
+        )
         for probe in rendered.element_probes:
             if probe.kind != "image":
                 continue

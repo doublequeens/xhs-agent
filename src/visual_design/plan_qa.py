@@ -49,8 +49,10 @@ _PLAN_LEVEL = "__plan__"
 
 # Forbidden visible label / AI-source-disclosure / disclaimer phrases. Matched
 # case-insensitively as substrings against the rendered atom text. This enforces
-# the global "NEVER render compliance/disclaimer/AI-source text" rule.
-_FORBIDDEN_LABEL_PATTERNS = (
+# the global "NEVER render compliance/disclaimer/AI-source text" rule. Public so
+# ``render_qa`` (and any future defense-in-depth consumer) can re-use the same
+# patterns without coupling to a private symbol.
+FORBIDDEN_LABEL_PATTERNS = (
     "免责声明",
     "disclaimer",
     "ai生成",
@@ -533,7 +535,7 @@ def validate_family_envelope(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
             if atom is None:
                 continue
             lowered = atom.text.lower()
-            if any(pattern in lowered for pattern in _FORBIDDEN_LABEL_PATTERNS):
+            if any(pattern in lowered for pattern in FORBIDDEN_LABEL_PATTERNS):
                 issues.append(
                     _issue(
                         "family.forbidden_visible_label",
@@ -598,6 +600,7 @@ __all__ = [
     "CANVAS_HEIGHT",
     "CANVAS_WIDTH",
     "DesignPlanQAInputs",
+    "FORBIDDEN_LABEL_PATTERNS",
     "LARGE_TEXT_CONTRAST",
     "MIN_BODY_FONT_PX",
     "MIN_DISPLAY_FONT_PX",
