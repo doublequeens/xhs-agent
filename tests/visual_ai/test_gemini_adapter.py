@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import io
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from google.genai import types
+from PIL import Image
 from pydantic import BaseModel, ValidationError
 
 from src.visual_ai.gemini import (
@@ -76,6 +78,29 @@ def make_request(prompt: str = "Create a clean serum texture photograph.") -> Im
         height=1440,
         prompt_sha256=hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
     )
+
+
+def raster_bytes(image_format: str) -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (32, 32), color=(214, 205, 196)).save(
+        buffer,
+        format=image_format,
+    )
+    return buffer.getvalue()
+
+
+@pytest.mark.parametrize(
+    "adapter_type",
+    [GeminiStructuredVisualModel, GeminiImageGenerationProvider],
+)
+def test_direct_adapter_constructors_reject_model_drift(
+    adapter_type: type,
+) -> None:
+    with pytest.raises(
+        ValueError,
+        match="model must be gemini-3.1-flash-image",
+    ):
+        adapter_type(client=FakeClient(), model="different-image-model")
 
 
 def test_structured_model_sends_local_images_as_typed_byte_parts(
@@ -213,6 +238,36 @@ def test_generation_rejects_invalid_image_output_before_writing(
     transaction_dir = tmp_path / "transaction"
     adapter = GeminiImageGenerationProvider(
         client=FakeClient(image_response(data, mime_type)),
+        model=MODEL,
+    )
+
+    with pytest.raises(ImageGenerationResponseError):
+        adapter.generate(make_request(), transaction_dir)
+
+    assert not transaction_dir.exists() or list(transaction_dir.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    ("image_format", "mime_type", "removed_bytes"),
+    [
+        pytest.param("JPEG", "image/jpeg", 1, id="jpeg-minus-1"),
+        pytest.param("JPEG", "image/jpeg", 10, id="jpeg-minus-10"),
+        pytest.param("JPEG", "image/jpeg", 21, id="jpeg-minus-21"),
+        pytest.param("PNG", "image/png", 1, id="png-minus-1"),
+        pytest.param("WEBP", "image/webp", 1, id="webp-minus-1"),
+    ],
+)
+def test_generation_rejects_truncated_raster_before_writing(
+    tmp_path: Path,
+    image_format: str,
+    mime_type: str,
+    removed_bytes: int,
+) -> None:
+    complete = raster_bytes(image_format)
+    truncated = complete[:-removed_bytes]
+    transaction_dir = tmp_path / "transaction"
+    adapter = GeminiImageGenerationProvider(
+        client=FakeClient(image_response(truncated, mime_type)),
         model=MODEL,
     )
 

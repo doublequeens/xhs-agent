@@ -35,6 +35,7 @@ _PIL_FORMATS = {
 _SUPPORTED_ASPECT_RATIOS = frozenset(
     {"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"}
 )
+GEMINI_VISUAL_MODEL = "gemini-3.1-flash-image"
 
 
 class StructuredVisualResponseError(ValueError):
@@ -45,6 +46,12 @@ class StructuredVisualResponseError(ValueError):
 
 class ImageGenerationResponseError(ValueError):
     pass
+
+
+def _validated_model(model: str) -> str:
+    if model != GEMINI_VISUAL_MODEL:
+        raise ValueError(f"model must be {GEMINI_VISUAL_MODEL}")
+    return model
 
 
 def _top_level_json_objects(raw_response: str) -> list[str]:
@@ -132,7 +139,7 @@ def _response_text(response: Any) -> str:
 class GeminiStructuredVisualModel:
     def __init__(self, *, client: Any, model: str) -> None:
         self.client = client
-        self.model = model
+        self.model = _validated_model(model)
 
     def generate_json(
         self,
@@ -210,8 +217,21 @@ def _valid_image_bytes(data: bytes, mime_type: str) -> bool:
             if image.format != expected_format:
                 return False
             image.verify()
+        with Image.open(io.BytesIO(data)) as image:
+            if image.format != expected_format:
+                return False
+            image.load()
     except (OSError, SyntaxError, ValueError, Image.DecompressionBombError):
         return False
+    if mime_type == "image/jpeg" and not data.endswith(b"\xff\xd9"):
+        return False
+    if mime_type == "image/png" and not data.endswith(
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"
+    ):
+        return False
+    if mime_type == "image/webp":
+        if len(data) < 12 or int.from_bytes(data[4:8], "little") + 8 != len(data):
+            return False
     return True
 
 
@@ -261,7 +281,7 @@ def _write_generated_image(
 class GeminiImageGenerationProvider:
     def __init__(self, *, client: Any, model: str) -> None:
         self.client = client
-        self.model = model
+        self.model = _validated_model(model)
 
     def generate(
         self,

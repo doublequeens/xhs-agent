@@ -6,6 +6,7 @@ from typing import Any
 from google import genai
 
 from src.visual_ai.gemini import (
+    GEMINI_VISUAL_MODEL,
     GeminiImageGenerationProvider,
     GeminiStructuredVisualModel,
 )
@@ -15,7 +16,7 @@ from src.visual_ai.protocols import (
 )
 
 
-DEFAULT_VISUAL_MODEL = "gemini-3.1-flash-image"
+DEFAULT_VISUAL_MODEL = GEMINI_VISUAL_MODEL
 
 
 def configured_visual_model() -> str:
