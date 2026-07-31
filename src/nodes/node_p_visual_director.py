@@ -41,8 +41,8 @@ _FORBIDDEN_VISIBLE_ASSET_COPY = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?:add|include|show|render|overlay|embed|write|display|with)"
-        r".{0,24}(?:text|caption|label|words)",
+        r"\b(?:add|include|show|render|overlay|embed|write|display|with)\b"
+        r".{0,24}\b(?:text|caption|label|words)\b",
         re.IGNORECASE,
     ),
     re.compile(

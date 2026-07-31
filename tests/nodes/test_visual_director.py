@@ -473,6 +473,71 @@ def test_director_keeps_factual_skin_subject_matter_without_visible_boilerplate(
 
 
 @pytest.mark.parametrize(
+    "query_or_prompt",
+    [
+        "show textural skin detail with observable redness",
+        "show a textured skin surface with observable dryness",
+    ],
+)
+def test_director_allows_english_texture_descriptions(query_or_prompt):
+    atom_set = _atom_set()
+    factual = AssetDirective(
+        directive_id="english-texture",
+        page_id="page-1",
+        role="skin_example",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt=query_or_prompt,
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    plan = _valid_plan(atom_set, asset_directives=(factual,))
+    model = ScriptedVisualModel([plan])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == plan
+
+
+def test_director_still_retries_explicit_english_embedded_text_command():
+    atom_set = _atom_set()
+    embedded_text = AssetDirective(
+        directive_id="english-embedded-text",
+        page_id="page-1",
+        role="skin_example",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt=(
+            "show realistic skin and overlay text reading 'skin check'"
+        ),
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    invalid = _valid_plan(atom_set, asset_directives=(embedded_text,))
+    valid = _valid_plan(atom_set)
+    model = ScriptedVisualModel([invalid, valid])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    assert result["visual_direction_plan"] == valid
+    assert "forbidden visible image copy" in str(model.calls[1]["prompt"])
+
+
+@pytest.mark.parametrize(
     ("make_invalid", "feedback"),
     [
         (
