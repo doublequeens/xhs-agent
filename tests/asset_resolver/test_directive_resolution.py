@@ -294,3 +294,28 @@ def test_unwanted_image_text_is_rejected(tmp_path: Path) -> None:
 
     assert any("unwanted visible text" in error for error in exc_info.value.errors)
 
+
+def test_required_failure_preserves_primary_error_when_journal_write_fails(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """M4 regression: a journal-write failure must not mask the primary errors."""
+    from src.asset_resolver import resolver as resolver_module
+
+    def boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(resolver_module, "_persist_recovery_journal", boom)
+
+    directive = make_asset_directive()
+    with pytest.raises(VisualProductionInterrupted) as exc_info:
+        resolve(
+            tmp_path,
+            directive,
+            search_provider=AlwaysFailingSearchProvider("offline"),
+            generation_provider=None,
+        )
+
+    assert exc_info.value.stage == "asset_resolver"
+    assert exc_info.value.errors == ("offline",)
+    assert isinstance(exc_info.value.__cause__, OSError)

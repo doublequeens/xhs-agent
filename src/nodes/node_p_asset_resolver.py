@@ -10,10 +10,9 @@ from src.asset_resolver import (
     UnsplashProvider,
     load_catalog,
     resolve_asset_directives,
-    resolve_assets,
 )
 from src.rendering.editorial.design_system import ASSET_ROOT
-from src.schemas import AgentState, VisualDirectionPlan, VisualPlan
+from src.schemas import AgentState, VisualDirectionPlan
 
 
 CATALOG_PATH = ASSET_ROOT / "manifest.json"

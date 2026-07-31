@@ -62,6 +62,15 @@ class UnresolvedOptionalAsset(StrictModel):
 
 
 class AssetTransactionEvidence(StrictModel):
+    """Evidence about one asset-resolution transaction.
+
+    Note: ``transaction_root`` here is the per-transaction subdirectory
+    (``transaction_root / transaction_id``), not the top-level transactions
+    root. ``journal_path`` is the would-be recovery journal path; the file is
+    only materialized on the interruption path (``status == "interrupted"``)
+    and does not exist on the success path.
+    """
+
     run_id: str = Field(min_length=1)
     transaction_id: str = Field(min_length=1)
     transaction_root: str = Field(min_length=1)

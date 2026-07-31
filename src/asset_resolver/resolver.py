@@ -1529,12 +1529,22 @@ def resolve_asset_directives(
             items.append(item)
             continue
         if directive.required:
-            _persist_recovery_journal(
-                transaction_dir,
-                transaction_id=transaction_id,
-                run_id=run_id,
-                errors=errors,
-            )
+            try:
+                _persist_recovery_journal(
+                    transaction_dir,
+                    transaction_id=transaction_id,
+                    run_id=run_id,
+                    errors=errors,
+                )
+            except Exception as journal_error:
+                # The persistence-and-assets contract requires recovery
+                # failures to preserve the primary resolution error rather
+                # than masking it; chain the journal error as the cause.
+                raise VisualProductionInterrupted(
+                    stage="asset_resolver",
+                    errors=errors,
+                    raw_outputs=(),
+                ) from journal_error
             raise VisualProductionInterrupted(
                 stage="asset_resolver",
                 errors=errors,
