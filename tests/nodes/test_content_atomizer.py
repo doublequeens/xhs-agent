@@ -121,6 +121,10 @@ def test_atomizer_routes_system_disclosure_or_disclaimer_copy_back_to_r2(
     [
         "本图由AI绘制",
         "本图由人工智能生成",
+        "AI 生成",
+        "人工智能生成",
+        "（AI生成）",
+        "本图片由 AI 技术辅助生成",
         "本文不能代替医生建议",
         "本文不作为诊疗依据",
     ],
