@@ -4,6 +4,7 @@ langchain
 langchain-deepseek
 langchain-google-genai
 langchain-openai
+google-genai>=2.10.0
 json-repair
 chromadb
 sentence-transformers
