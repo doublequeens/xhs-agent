@@ -143,3 +143,9 @@ def test_render_mockups_script_defines_expected_sets_map() -> None:
             assert f'"{selector}"' in script, (
                 f"selector {selector!r} for {set_name} missing from render_mockups.py"
             )
+
+
+def test_style_registry_uses_only_rendered_mockup_references() -> None:
+    """Style DNA may cite samples, but never a mockup layout implementation."""
+    manifest = Path("assets/visual-families/manifest.json").read_text(encoding="utf-8")
+    assert "template.html" not in manifest
