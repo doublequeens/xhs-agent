@@ -276,6 +276,44 @@ def test_composer_registry_includes_page_designer_and_design_reviser_tasks():
     assert TASK_FILES["design_reviser"] == "design_reviser.txt"
 
 
+def test_composer_registry_includes_visual_critic_task():
+    from src.prompts.composer import TASK_FILES
+
+    assert TASK_FILES["visual_critic"] == "visual_critic.txt"
+
+
+def test_visual_critic_prompt_lays_out_scoring_dimensions_and_read_only_contract():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("visual_critic", get_domain_profile("beauty"))
+
+    # The eight aesthetic dimensions the multimodal critic must score.
+    for dimension in (
+        "hierarchy",
+        "legibility",
+        "composition",
+        "family",
+        "variation",
+        "rhythm",
+        "color",
+        "spacing",
+    ):
+        assert dimension in prompt.lower()
+    assert "image relevance" in prompt.lower() or "image_relevance" in prompt
+    assert "not_applicable" in prompt
+    # The critic scores and instructs only; it must not mutate immutable sources.
+    assert "read-only" in prompt.lower() or "read only" in prompt.lower()
+    assert "content_atom_set_sha256" in prompt
+    assert "direction_plan_sha256" in prompt
+    assert "design_plan_sha256" in prompt
+    assert "render_manifest_sha256" in prompt
+    # Every issue must locate a page/element and give concrete revision advice.
+    assert "revision_instruction" in prompt
+    # Global rule: never instruct the critic to add compliance/disclaimer copy.
+    assert "disclaimer" in prompt.lower()
+    assert "AI disclosure" in prompt or "AI 生成" in prompt
+
+
 def test_page_designer_prompt_lays_out_canvas_and_structured_element_contract():
     from src.prompts.composer import compose_prompt
 

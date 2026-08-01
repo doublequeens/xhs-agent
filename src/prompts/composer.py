@@ -29,6 +29,7 @@ TASK_FILES = {
     "visual_director": "visual_director.txt",
     "page_designer": "page_designer.txt",
     "design_reviser": "design_reviser.txt",
+    "visual_critic": "visual_critic.txt",
 }
 
 
