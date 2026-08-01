@@ -338,7 +338,7 @@ def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_
 
 def route_after_human_review(state: AgentState) -> str:
     review_route = state.get("review_route")
-    if review_route in {"editorial_carousel_renderer", "render_qa"}:
+    if review_route in {"design_reviser", "render_qa"}:
         return review_route
     review_status = state.get("review_status")
     if review_status == "needs_r2_recheck":

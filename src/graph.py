@@ -2,7 +2,7 @@ import atexit
 import sqlite3
 from pathlib import Path
 from threading import Lock
-from typing import Literal
+from typing import Any, Literal, Mapping
 
 from pydantic import BaseModel
 
@@ -17,12 +17,164 @@ from src.schemas import AgentState
 import src.nodes as nodes
 from src.nodes.node_q_01_final_policy_guard import route_after_final_guard
 from src.nodes.node_q_human_review import route_after_human_review
-from src.nodes.node_p_carousel_qa import route_after_carousel_qa
+from src.nodes.node_p_design_plan_qa import route_after_design_plan_qa
 from src.nodes.node_p_render_qa import route_after_render_qa
+from src.nodes.node_p_visual_critic import route_after_visual_critic
 
 DEFAULT_CHECKPOINT_PATH = Path("checkpoints.sqlite")
 _CHECKPOINTERS: dict[Path, tuple[sqlite3.Connection, object]] = {}
 _CHECKPOINTER_LOCK = Lock()
+
+# ---------------------------------------------------------------------------
+# llm_scene_v3 dynamic visual production wiring helpers
+# ---------------------------------------------------------------------------
+#
+# The structured-model visual nodes (visual_director, page_designer,
+# design_reviser, visual_critic) require an injected ``StructuredVisualModel``.
+# It is constructed lazily on first invocation so ``create_graph`` stays
+# usable offline (topology/migration tests, no Gemini credentials required at
+# build time). ``visual_route_override`` is the dedicated, always-cleared
+# channel that carries the transient ``"route"`` override returned by
+# ``design_reviser`` (family/page-sequence replan) and ``visual_critic``
+# (render-QA hard-fail guard) so the downstream conditional edges never
+# misroute on a stale value.
+
+_VISUAL_MODEL: Any = None
+
+
+def _get_visual_model() -> Any:
+    """Return a process-wide structured visual model, built on first use."""
+
+    global _VISUAL_MODEL
+    if _VISUAL_MODEL is None:
+        # Local import keeps the Gemini SDK out of the topology-test import
+        # graph; the model is only built when a node actually runs.
+        from src.visual_ai import get_structured_visual_model
+
+        _VISUAL_MODEL = get_structured_visual_model()
+    return _VISUAL_MODEL
+
+
+def _structured_visual_node(node_fn):
+    """Bind a structured-model visual node with lazy model construction."""
+
+    def _action(state):
+        return node_fn(state, model=_get_visual_model())
+
+    return _action
+
+
+def _structured_visual_node_with_route_override(node_fn):
+    """Like ``_structured_visual_node`` but also normalizes a route override.
+
+    ``design_reviser`` returns ``{"route": "visual_director"}`` ONLY on a
+    family/page-sequence replan; otherwise it returns a revised
+    ``CarouselDesignPlan``. ``visual_critic`` returns ``{"route":
+    "design_reviser"}`` ONLY when render QA already failed (no critique is
+    produced). LangGraph conditional edges read state, not the returned dict,
+    so the override is surfaced through the dedicated
+    ``visual_route_override`` channel. It is always written (``None`` clears
+    any stale value) so a leftover override from a previous round can never
+    misroute a later, normal revision.
+    """
+
+    def _action(state):
+        result = node_fn(state, model=_get_visual_model())
+        override = result.pop("route", None)
+        result["visual_route_override"] = override
+        return result
+
+    return _action
+
+
+def _asset_resolver_run_id(state: Mapping[str, Any]) -> str:
+    trace = state.get("topic_generation_trace")
+    run_id = getattr(trace, "run_id", None)
+    if isinstance(run_id, str) and run_id:
+        return run_id
+    package = state.get("publish_package") or {}
+    identity = "|".join(
+        str(package.get(name) or "")
+        for name in ("topic_id", "draft_id", "angle_id")
+    )
+    import hashlib
+
+    return "editorial-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()[:20]
+
+
+def _asset_resolver_node(node_fn):
+    """Bind asset resolver providers/transaction identity lazily.
+
+    Pure-text carousels (the current production strategy) carry no external
+    asset directives, so ``None`` providers resolve cleanly. When a directive
+    requires an external asset the resolver fails loudly unless the matching
+    provider key is configured; that is a runtime/provider concern, not a
+    graph-topology one. ``transaction_root`` is derived per-run so the
+    resolver's evidence directory is reproducible.
+    """
+
+    def _action(state):
+        run_id = _asset_resolver_run_id(state)
+        transaction_root = Path("data") / "asset_transactions" / run_id
+        transaction_root.mkdir(parents=True, exist_ok=True)
+        return node_fn(
+            state,
+            search_provider=None,
+            generation_provider=None,
+            transaction_root=transaction_root,
+            transaction_id=run_id,
+        )
+
+    return _action
+
+
+def route_after_content_atomizer(
+    state: AgentState,
+) -> Literal["visual_director", "r2_compliance"]:
+    """Route on the atomizer's forbidden-system-copy verdict.
+
+    A forbidden-copy finding (disclaimer/AI-disclosure in visible text) routes
+    to R2 compliance for removal; the normal path proceeds to the visual
+    director. The atomizer writes its verdict into ``content_atomization_route``.
+    """
+
+    route = state.get("content_atomization_route", "visual_director")
+    if route not in ("visual_director", "r2_compliance"):
+        route = "visual_director"
+    return route
+
+
+def route_after_design_reviser(
+    state: AgentState,
+) -> Literal["design_plan_qa", "visual_director"]:
+    """Route a normal revision back to QA, or a replan to the visual director.
+
+    The replan signal is carried by ``visual_route_override`` (written by the
+    design_reviser wrapper); any other outcome loops back to design_plan_qa so
+    the revised plan is re-validated before rendering.
+    """
+
+    override = state.get("visual_route_override")
+    if override == "visual_director":
+        return "visual_director"
+    return "design_plan_qa"
+
+
+def _route_after_visual_critic(
+    state: AgentState,
+) -> Literal["human_review", "design_reviser"]:
+    """Route after the critic, honoring a render-QA hard-fail override.
+
+    ``visual_critic`` short-circuits with ``visual_route_override=
+    "design_reviser"`` when render QA already failed (no critique is
+    produced). Otherwise the critic's own ``route_after_visual_critic`` reads
+    the ``visual_critique`` and drives the two-round aesthetic loop.
+    """
+
+    override = state.get("visual_route_override")
+    if override == "design_reviser":
+        return "design_reviser"
+    return route_after_visual_critic(state)
 
 
 def next_node(state:AgentState)-> Literal["R1_REFLECTOR", "R2_COMPLIANCE", "HASHTAG_SEO"]:
@@ -155,7 +307,8 @@ atexit.register(close_checkpointers)
 
 def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     """
-    Builds the LangGraph workflow.
+    Builds the LangGraph workflow with the llm_scene_v3 dynamic visual
+    production path.
     """
     builder = StateGraph(AgentState)
     builder.add_node("domain_router", nodes.domain_router_node)
@@ -177,16 +330,29 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_node("r1_reflector", nodes.r1_reflector_node)
     builder.add_node("r2_compliance", nodes.r2_compliance_node)
     builder.add_node("hashtag", nodes.hashtag_node)
-    builder.add_node("visual_strategy_planner", nodes.visual_strategy_planner_node)
-    builder.add_node("storyboard_generator", nodes.storyboards_generator_node)
-    builder.add_node("asset_resolver", nodes.asset_resolver_node)
-    builder.add_node("carousel_qa", nodes.carousel_qa_node)
-    builder.add_node(
-        "editorial_carousel_renderer",
-        nodes.editorial_carousel_renderer_node,
-    )
-    builder.add_node("render_qa", nodes.render_qa_node)
     builder.add_node("assembler", nodes.assembler_node)
+    # --- llm_scene_v3 dynamic visual production nodes ---
+    builder.add_node("content_atomizer", nodes.content_atomizer_node)
+    builder.add_node(
+        "visual_director",
+        _structured_visual_node(nodes.visual_director_node),
+    )
+    builder.add_node("asset_resolver", _asset_resolver_node(nodes.asset_resolver_node))
+    builder.add_node(
+        "page_designer",
+        _structured_visual_node(nodes.page_designer_node),
+    )
+    builder.add_node("design_plan_qa", nodes.design_plan_qa_node)
+    builder.add_node(
+        "design_reviser",
+        _structured_visual_node_with_route_override(nodes.design_reviser_node),
+    )
+    builder.add_node("generic_scene_renderer", nodes.generic_scene_renderer_node)
+    builder.add_node("render_qa", nodes.render_qa_node)
+    builder.add_node(
+        "visual_critic",
+        _structured_visual_node_with_route_override(nodes.visual_critic_node),
+    )
     builder.add_node("human_review", nodes.human_review_node)
     builder.add_node("final_policy_guard", nodes.final_policy_guard_node)
     builder.add_node("content_writer", nodes.content_writer_node)
@@ -209,27 +375,49 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
     builder.add_edge("r2_compliance", "decision_engine")
     builder.add_conditional_edges("decision_engine",
                                 next_node,
-                                {"R1_REFLECTOR": "r1_reflector", 
-                                "R2_COMPLIANCE": "r2_compliance", 
+                                {"R1_REFLECTOR": "r1_reflector",
+                                "R2_COMPLIANCE": "r2_compliance",
                                 "HASHTAG_SEO": "hashtag"})
     builder.add_edge("hashtag", "assembler")
-    builder.add_edge("assembler", "visual_strategy_planner")
-    builder.add_edge("visual_strategy_planner", "storyboard_generator")
-    builder.add_edge("storyboard_generator", "asset_resolver")
-    builder.add_edge("asset_resolver", "carousel_qa")
+    # --- dynamic visual production chain ---
+    builder.add_edge("assembler", "content_atomizer")
     builder.add_conditional_edges(
-        "carousel_qa",
-        route_after_carousel_qa,
+        "content_atomizer",
+        route_after_content_atomizer,
         {
-            "r1_reflector": "r1_reflector",
-            "editorial_carousel_renderer": "editorial_carousel_renderer",
+            "visual_director": "visual_director",
+            "r2_compliance": "r2_compliance",
         },
     )
-    builder.add_edge("editorial_carousel_renderer", "render_qa")
+    builder.add_edge("visual_director", "asset_resolver")
+    builder.add_edge("asset_resolver", "page_designer")
+    builder.add_edge("page_designer", "design_plan_qa")
+    builder.add_conditional_edges(
+        "design_plan_qa",
+        route_after_design_plan_qa,
+        {
+            "generic_scene_renderer": "generic_scene_renderer",
+            "design_reviser": "design_reviser",
+        },
+    )
+    builder.add_edge("generic_scene_renderer", "render_qa")
     builder.add_conditional_edges(
         "render_qa",
         route_after_render_qa,
-        {"r1_reflector": "r1_reflector", "human_review": "human_review"},
+        {"visual_critic": "visual_critic", "design_reviser": "design_reviser"},
+    )
+    builder.add_conditional_edges(
+        "visual_critic",
+        _route_after_visual_critic,
+        {"human_review": "human_review", "design_reviser": "design_reviser"},
+    )
+    builder.add_conditional_edges(
+        "design_reviser",
+        route_after_design_reviser,
+        {
+            "design_plan_qa": "design_plan_qa",
+            "visual_director": "visual_director",
+        },
     )
     builder.add_conditional_edges(
         "human_review",
@@ -237,7 +425,7 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
         {
             "r2_compliance": "r2_compliance",
             "final_policy_guard": "final_policy_guard",
-            "editorial_carousel_renderer": "editorial_carousel_renderer",
+            "design_reviser": "design_reviser",
             "render_qa": "render_qa",
         },
     )

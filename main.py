@@ -101,6 +101,17 @@ def load_run_state(graph, config: dict, initial_state: dict):
             **hydrate_legacy_domain_state(current_state.values),
             **editorial_updates,
         }
+        # The generic scene renderer writes carousel PNGs into run_output_dir.
+        # Fresh v3 runs carry it from initial_state; migrated checkpoints that
+        # predate the slot get it backfilled alongside the editorial hydration
+        # so rendering always has a concrete, per-run directory. Clean v3
+        # checkpoints are left untouched.
+        if hydration_updates and not current_state.values.get("run_output_dir"):
+            thread_id = config.get("configurable", {}).get("thread_id")
+            if isinstance(thread_id, str) and thread_id:
+                hydration_updates.setdefault(
+                    "run_output_dir", _resolve_run_output_dir(thread_id)
+                )
         if hydration_updates:
             predecessor = migration_reentry_predecessor(
                 editorial_updates,
@@ -193,16 +204,34 @@ def create_initial_state(args: argparse.Namespace) -> dict:
         "r2_output": None,
         "final_content": None,
         "hashtags": None,
-        "visual_plan": None,
+        # llm_scene_v3 dynamic visual production slots are seeded empty; the
+        # pipeline populates them as content_atomizer -> visual_director ->
+        # ... -> visual_critic runs.
+        "content_atom_set": None,
+        "visual_direction_plan": None,
         "asset_manifest": None,
+        "carousel_design_plan": None,
         "render_manifest": None,
+        "render_qa_result": None,
+        "visual_critique": None,
         "publish_package": None,
         "review_status": None,
         "review_feedback": None,
         "review_round": 0,
         "review_route": None,
+        "editorial_workflow_version": "llm_scene_v3",
+        "legacy_editorial_checkpoint": False,
         "data_writed": None,
     }
+
+
+def _resolve_run_output_dir(thread_id: str) -> str:
+    """Per-run directory where the generic scene renderer writes carousel PNGs."""
+
+    import hashlib
+
+    digest = hashlib.sha256(thread_id.encode("utf-8")).hexdigest()[:16]
+    return str(Path("outputs") / "render_runs" / f"{thread_id}-{digest}")
 
 
 def _value(item, name: str):
@@ -718,6 +747,7 @@ def main():
         database.init_db("memory/schema.sql")
         graph = create_graph()
         initial_state = create_initial_state(args)
+        initial_state["run_output_dir"] = _resolve_run_output_dir(thread_id)
         config = build_run_config(thread_id)
         current_state, run_input = load_run_state(graph, config, initial_state)
 

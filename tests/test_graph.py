@@ -3,6 +3,95 @@ from langgraph.checkpoint.memory import InMemorySaver
 from src.graph import create_graph
 
 
+def _edges_by_source(graph) -> dict[str, set[str]]:
+    adjacency: dict[str, set[str]] = {}
+    for edge in graph.get_graph().edges:
+        adjacency.setdefault(edge.source, set()).add(edge.target)
+    return adjacency
+
+
+def test_graph_dynamic_visual_production_chain_is_exact_topology():
+    graph = create_graph(checkpointer=InMemorySaver())
+    graph_view = graph.get_graph()
+    nodes = set(graph_view.nodes)
+    edges = _edges_by_source(graph)
+
+    # The four retired visual nodes must be absent by name.
+    assert "visual_strategy_planner" not in nodes
+    assert "storyboard_generator" not in nodes
+    assert "carousel_qa" not in nodes
+    assert "editorial_carousel_renderer" not in nodes
+    assert "text_card_renderer" not in nodes
+
+    # The new dynamic-visual nodes are registered.
+    for required in (
+        "content_atomizer",
+        "visual_director",
+        "asset_resolver",
+        "page_designer",
+        "design_plan_qa",
+        "design_reviser",
+        "generic_scene_renderer",
+        "render_qa",
+        "visual_critic",
+    ):
+        assert required in nodes, f"missing new visual node: {required}"
+
+    # Retained downstream gates/writers are still present.
+    for retained in (
+        "assembler",
+        "human_review",
+        "final_policy_guard",
+        "content_writer",
+    ):
+        assert retained in nodes
+
+    # The exact linear chain assembler -> ... -> content_writer.
+    assert edges["assembler"] == {"content_atomizer"}
+    assert edges["content_atomizer"] == {"visual_director", "r2_compliance"}
+    assert edges["visual_director"] == {"asset_resolver"}
+    assert edges["asset_resolver"] == {"page_designer"}
+    assert edges["page_designer"] == {"design_plan_qa"}
+    assert edges["design_plan_qa"] == {"generic_scene_renderer", "design_reviser"}
+    assert edges["generic_scene_renderer"] == {"render_qa"}
+    assert edges["render_qa"] == {"visual_critic", "design_reviser"}
+    assert edges["visual_critic"] == {"human_review", "design_reviser"}
+    assert edges["human_review"] == {
+        "design_reviser",
+        "render_qa",
+        "r2_compliance",
+        "final_policy_guard",
+    }
+    assert edges["final_policy_guard"] == {"human_review", "content_writer"}
+    assert "content_writer" in edges and edges["content_writer"]  # -> END
+
+
+def test_graph_design_reviser_routes_to_design_plan_qa_or_visual_director():
+    graph = create_graph(checkpointer=InMemorySaver())
+    edges = _edges_by_source(graph)
+
+    # design_reviser loops back to design_plan_qa on a normal revision, or
+    # escalates to visual_director only for family/page-sequence replanning.
+    assert edges["design_reviser"] == {"design_plan_qa", "visual_director"}
+
+
+def test_graph_hashtag_routes_to_assembler_and_assembler_enters_atomizer():
+    graph = create_graph(checkpointer=InMemorySaver())
+    edges = _edges_by_source(graph)
+
+    assert edges["hashtag"] == {"assembler"}
+    # No edge may bypass the atomizer back into a retired visual node.
+    assert "visual_strategy_planner" not in edges.get("assembler", set())
+    assert "storyboard_generator" not in edges.get("assembler", set())
+
+
+def test_graph_no_longer_routes_through_trend_scout():
+    graph = create_graph(checkpointer=InMemorySaver())
+    nodes = set(graph.get_graph().nodes)
+
+    assert "trend_scout" not in nodes
+
+
 def test_graph_contains_signal_driven_topic_nodes():
     graph = create_graph(checkpointer=InMemorySaver())
     nodes = set(graph.get_graph().nodes)
@@ -11,53 +100,6 @@ def test_graph_contains_signal_driven_topic_nodes():
     assert "creative_brief_builder" in nodes
     assert "topic_ideator" in nodes
     assert "topic_diversity_filter" in nodes
-
-
-def test_graph_routes_storyboards_through_render_qa_before_human_review():
-    graph = create_graph(checkpointer=InMemorySaver())
-    graph_view = graph.get_graph()
-
-    assert "carousel_qa" in graph_view.nodes
-    assert "visual_strategy_planner" in graph_view.nodes
-    assert "asset_resolver" in graph_view.nodes
-    assert "editorial_carousel_renderer" in graph_view.nodes
-    assert "render_qa" in graph_view.nodes
-    assert "text_card_renderer" not in graph_view.nodes
-    assert any(
-        edge.source == "assembler" and edge.target == "visual_strategy_planner"
-        for edge in graph_view.edges
-    )
-    assert any(
-        edge.source == "editorial_carousel_renderer" and edge.target == "render_qa"
-        for edge in graph_view.edges
-    )
-    assert not any(
-        edge.source == "carousel_qa" and edge.target == "human_review"
-        for edge in graph_view.edges
-    )
-
-
-def test_graph_places_asset_resolution_before_carousel_render():
-    graph = create_graph(checkpointer=InMemorySaver())
-    edges: dict[str, set[str]] = {}
-    for edge in graph.get_graph().edges:
-        edges.setdefault(edge.source, set()).add(edge.target)
-
-    assert edges["assembler"] == {"visual_strategy_planner"}
-    assert edges["visual_strategy_planner"] == {"storyboard_generator"}
-    assert edges["storyboard_generator"] == {"asset_resolver"}
-    assert edges["asset_resolver"] == {"carousel_qa"}
-    assert edges["carousel_qa"] == {
-        "editorial_carousel_renderer",
-        "r1_reflector",
-    }
-
-
-def test_graph_no_longer_routes_through_trend_scout():
-    graph = create_graph(checkpointer=InMemorySaver())
-    nodes = set(graph.get_graph().nodes)
-
-    assert "trend_scout" not in nodes
 
 
 def _count(conn, table, thread_id):

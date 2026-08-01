@@ -422,6 +422,7 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
         "domain_context": {"domain": "beauty"},
         "publish_package": {
             "content_contract": old_contract,
+            "title": "旧版卡片",
             "storyboards": [
                 {"frame_id": "frame-1", "template": "cover_statement"}
             ],
@@ -436,42 +437,51 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
                 return old_state
             return SimpleNamespace(
                 values={**old_values, **calls[-1]},
-                next=("storyboard_generator",),
+                next=("content_atomizer",),
             )
 
         def update_state(self, _config, updates, *, as_node=None):
-            assert as_node == "visual_strategy_planner"
+            assert as_node == "assembler"
             calls.append(updates)
 
     current_state, run_input = main.load_run_state(
-        FakeGraph(), config, {"visual_plan": None}
+        FakeGraph(), config, {"content_atom_set": None}
     )
 
     assert run_input is None
-    assert current_state.next == ("storyboard_generator",)
+    # Migration re-enters after assembler so content_atomizer runs first.
+    assert current_state.next == ("content_atomizer",)
     assert calls[0]["legacy_editorial_checkpoint"] is False
-    assert calls[0]["editorial_workflow_version"] == "modern_v2"
-    assert calls[0]["visual_plan"] is not None
+    assert calls[0]["editorial_workflow_version"] == "llm_scene_v3"
+    # Old visual slots are wiped so the dynamic pipeline re-derives them.
+    assert calls[0]["content_atom_set"] is None
+    assert calls[0]["visual_direction_plan"] is None
     assert calls[0]["asset_manifest"] is None
     assert calls[0]["render_manifest"] is None
-    assert calls[0]["publish_package"]["content_contract"]["content_job"] == "save_and_check"
+    assert calls[0]["render_qa_result"] is None
+    # Content contract / title survive; storyboards are stripped.
+    assert calls[0]["publish_package"]["title"] == "旧版卡片"
+    assert calls[0]["publish_package"]["content_contract"] is old_contract
     assert "storyboards" not in calls[0]["publish_package"]
 
 
-def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
+def test_load_run_state_preserves_modern_v3_checkpoint_without_resolving_again(
     monkeypatch,
 ):
     main = _load_main(monkeypatch)
     state = SimpleNamespace(
         values={
             "domain_context": {"domain": "beauty"},
-            "visual_plan": {"frame_plan": []},
-            "asset_manifest": {"items": [{"status": "pending_external"}]},
+            "editorial_workflow_version": "llm_scene_v3",
+            "content_atom_set": {"atoms": [{"atom_id": "title-001"}]},
+            "visual_direction_plan": {"page_sequence": [{"page_id": "p-1"}]},
+            "asset_manifest": {"items": [{"status": "active"}]},
             "render_manifest": None,
+            "run_output_dir": "outputs/render_runs/v3-run",
         },
-        next=("carousel_qa",),
+        next=("visual_director",),
     )
-    config = main.build_run_config("modern")
+    config = main.build_run_config("modern-v3")
 
     class FakeGraph:
         def get_state(self, received_config):
@@ -479,10 +489,10 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
             return state
 
         def update_state(self, _config, _updates):
-            raise AssertionError("modern checkpoint must not be rewritten")
+            raise AssertionError("v3 checkpoint must not be rewritten")
 
     monkeypatch.setattr(
-        "src.asset_resolver.resolver.resolve_assets",
+        "src.asset_resolver.resolver.resolve_asset_directives",
         lambda *_args: pytest.fail("resume must not repeat external resolution"),
     )
 
@@ -491,26 +501,23 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
     )
 
     assert current_state is state
-    assert current_state.next == ("carousel_qa",)
-    assert current_state.values["asset_manifest"] == {
-        "items": [{"status": "pending_external"}]
+    assert current_state.next == ("visual_director",)
+    assert current_state.values["content_atom_set"] == {
+        "atoms": [{"atom_id": "title-001"}]
     }
     assert current_state.values["render_manifest"] is None
     assert run_input is None
 
 
-@pytest.mark.parametrize("storyboards", [[], [{}], [{"frame_id": "frame-1"}]])
-def test_partial_or_corrupt_modern_checkpoint_is_not_hydrated_as_legacy(
-    monkeypatch,
-    storyboards,
-):
+def test_clean_v3_checkpoint_with_empty_storyboards_is_not_migrated(monkeypatch):
     main = _load_main(monkeypatch)
     state = SimpleNamespace(
         values={
             "domain_context": {},
-            "publish_package": {"storyboards": storyboards},
+            "editorial_workflow_version": "llm_scene_v3",
+            "publish_package": {"storyboards": []},
         },
-        next=("carousel_qa",),
+        next=("content_atomizer",),
     )
 
     class FakeGraph:
@@ -518,17 +525,17 @@ def test_partial_or_corrupt_modern_checkpoint_is_not_hydrated_as_legacy(
             return state
 
         def update_state(self, _config, _updates):
-            raise AssertionError("modern partial state must not be legacy hydrated")
+            raise AssertionError("clean v3 state must not be migrated")
 
     current_state, run_input = main.load_run_state(
-        FakeGraph(), {"configurable": {"thread_id": "partial"}}, {}
+        FakeGraph(), {"configurable": {"thread_id": "clean-v3"}}, {}
     )
 
     assert current_state is state
     assert run_input is None
 
 
-def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
+def test_legacy_marker_with_storyboards_migrates_to_v3(monkeypatch):
     main = _load_main(monkeypatch)
     values = {
         "domain_context": {},
@@ -542,7 +549,8 @@ def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
                     "content_blocks": [],
                     "visual_slots": [],
                 }
-            ]
+            ],
+            "title": "旧版",
         },
     }
     calls = []
@@ -551,28 +559,26 @@ def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
         def get_state(self, _config):
             return SimpleNamespace(
                 values={**values, **(calls[-1] if calls else {})},
-                next=("carousel_qa",),
+                next=("content_atomizer",),
             )
 
-        def update_state(self, _config, updates):
+        def update_state(self, _config, updates, *, as_node=None):
+            assert as_node == "assembler"
             calls.append(updates)
 
     current_state, _ = main.load_run_state(
-        FakeGraph(), {"configurable": {"thread_id": "modern"}}, {}
+        FakeGraph(), {"configurable": {"thread_id": "legacy-marker"}}, {}
     )
 
-    assert calls == [
-        {
-            "legacy_editorial_checkpoint": False,
-            "editorial_workflow_version": "modern_v2",
-        }
-    ]
+    # The stale legacy marker plus storyboards triggers a full v3 migration.
+    assert calls[0]["legacy_editorial_checkpoint"] is False
+    assert calls[0]["editorial_workflow_version"] == "llm_scene_v3"
+    assert calls[0]["publish_package"]["title"] == "旧版"
+    assert "storyboards" not in calls[0]["publish_package"]
     assert current_state.values["legacy_editorial_checkpoint"] is False
 
 
-def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
-    monkeypatch,
-):
+def test_explicit_modern_v2_old_shape_upgrades_to_v3(monkeypatch):
     main = _load_main(monkeypatch)
     values = {
         "domain_context": {},
@@ -581,7 +587,8 @@ def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
         "publish_package": {
             "storyboards": [
                 {"frame_id": "frame-1", "template": "cover_statement"}
-            ]
+            ],
+            "title": "v2 卡片",
         },
     }
     calls = []
@@ -590,20 +597,25 @@ def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
         def get_state(self, _config):
             return SimpleNamespace(
                 values={**values, **(calls[-1] if calls else {})},
-                next=("carousel_qa",),
+                next=("content_atomizer",),
             )
 
-        def update_state(self, _config, updates, **_kwargs):
+        def update_state(self, _config, updates, *, as_node=None):
+            assert as_node == "assembler"
             calls.append(updates)
 
     current_state, _ = main.load_run_state(
-        FakeGraph(), {"configurable": {"thread_id": "modern-old-shape"}}, {}
+        FakeGraph(), {"configurable": {"thread_id": "v2-old-shape"}}, {}
     )
 
-    assert calls == [{"legacy_editorial_checkpoint": False}]
-    assert current_state.values["editorial_workflow_version"] == "modern_v2"
+    # A v2 checkpoint carrying retired storyboards upgrades to v3 (never
+    # downgrades), discards the frames, and re-enters at the assembler seam.
+    assert calls[0]["editorial_workflow_version"] == "llm_scene_v3"
+    assert calls[0]["legacy_editorial_checkpoint"] is False
+    assert "storyboards" not in calls[0]["publish_package"]
+    assert current_state.values["editorial_workflow_version"] == "llm_scene_v3"
     assert current_state.values["legacy_editorial_checkpoint"] is False
-    assert "visual_plan" not in current_state.values
+
 
 
 def test_unknown_editorial_version_with_legacy_marker_fails_closed(monkeypatch):
@@ -1304,9 +1316,11 @@ def test_main_initial_state_defaults_to_interactive(monkeypatch, tmp_path):
     main.main()
 
     assert captured["initial_state"]["interactive"] is True
-    assert captured["initial_state"]["visual_plan"] is None
+    assert captured["initial_state"]["content_atom_set"] is None
+    assert captured["initial_state"]["visual_direction_plan"] is None
     assert captured["initial_state"]["asset_manifest"] is None
     assert captured["initial_state"]["render_manifest"] is None
+    assert captured["initial_state"]["editorial_workflow_version"] == "llm_scene_v3"
     assert (
         captured["initial_state"]["creator_profile"].profile_id
         == "commuting_beauty_women_v1"
