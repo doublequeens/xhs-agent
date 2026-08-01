@@ -90,6 +90,20 @@ class AgentState(TypedDict):
     # design_reviser / visual_critic. Nodes always set this (None clears any
     # stale override) so the graph never misroutes on a leftover value.
     visual_route_override: NotRequired[Optional[str]]
+    # Human-review -> Final Guard channel: written by human_review on the
+    # approval-with-aesthetic-override path (the explicit human override for a
+    # critic round-2 ``visual_needs_attention`` failure), read by
+    # final_policy_guard as the ONLY attestation a failed critique can satisfy.
+    # MUST be declared on AgentState: LangGraph drops any key absent from the
+    # TypedDict from a node's return dict before it reaches state, which would
+    # make Final Guard always read None, emit ``visual_critique_not_overridden``
+    # and route back to human_review in a non-terminating loop.
+    visual_aesthetic_override: NotRequired[Optional[bool]]
+    # Human-review -> asset_resolver channel: the human's rejection rationale
+    # written on the image-rejection route. MUST be declared on AgentState or
+    # LangGraph drops the write and no downstream asset-resolver consumer can
+    # read it (the rejection rationale is silently lost).
+    rejected_asset_decisions: NotRequired[Optional[dict]]
     # Per-run directory where the generic scene renderer writes carousel PNGs.
     run_output_dir: NotRequired[Optional[str]]
     publish_package: dict
