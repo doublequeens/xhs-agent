@@ -424,9 +424,9 @@ def create_graph(checkpointer=None, checkpoint_path=DEFAULT_CHECKPOINT_PATH):
         route_after_human_review,
         {
             "r2_compliance": "r2_compliance",
-            "final_policy_guard": "final_policy_guard",
+            "asset_resolver": "asset_resolver",
             "design_reviser": "design_reviser",
-            "render_qa": "render_qa",
+            "final_policy_guard": "final_policy_guard",
         },
     )
     builder.add_conditional_edges(

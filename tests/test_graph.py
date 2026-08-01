@@ -58,7 +58,7 @@ def test_graph_dynamic_visual_production_chain_is_exact_topology():
     assert edges["visual_critic"] == {"human_review", "design_reviser"}
     assert edges["human_review"] == {
         "design_reviser",
-        "render_qa",
+        "asset_resolver",
         "r2_compliance",
         "final_policy_guard",
     }
