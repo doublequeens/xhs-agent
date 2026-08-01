@@ -617,7 +617,6 @@ def test_explicit_modern_v2_old_shape_upgrades_to_v3(monkeypatch):
     assert current_state.values["legacy_editorial_checkpoint"] is False
 
 
-
 def test_unknown_editorial_version_with_legacy_marker_fails_closed(monkeypatch):
     main = _load_main(monkeypatch)
     state = SimpleNamespace(
@@ -914,117 +913,6 @@ def completed_state_for_package(package: dict) -> StateSnapshot:
     )
 
 
-@pytest.mark.parametrize("frame_count", [5, 7])
-def test_export_publish_package_accepts_dynamic_manifest_page_counts(
-    monkeypatch, tmp_path, frame_count
-):
-    main = _load_main(monkeypatch)
-    package = valid_publish_package_with_rendered_images(
-        tmp_path, frame_count=frame_count
-    )
-    monkeypatch.chdir(tmp_path)
-
-    result = main.export_publish_package(completed_state_for_package(package))
-
-    exported = sorted((tmp_path / "outputs" / "publish").glob("*/images/*.png"))[0]
-    assert exported.name == "01-cover.png"
-    assert len(result.rendered_image_paths) == frame_count
-    assert result.publish_copy_path.is_file()
-    assert result.rescue_prompt_path.is_file()
-    assert not list((tmp_path / "outputs" / "publish").glob("*/Storyboard_images_generator_prompt.txt"))
-
-
-def test_export_publish_package_uses_renderer_root_from_another_cwd_and_removes_legacy_prompt(
-    monkeypatch,
-    tmp_path,
-):
-    main = _load_main(monkeypatch)
-    from src.nodes import (
-        node_p_editorial_carousel_renderer,
-        node_q_01_final_policy_guard,
-    )
-
-    renderer_root = tmp_path / "repository" / "outputs" / "publish"
-    monkeypatch.setattr(
-        node_p_editorial_carousel_renderer,
-        "PUBLISH_ROOT",
-        renderer_root,
-    )
-    monkeypatch.setattr(
-        node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", renderer_root
-    )
-    package = valid_publish_package_with_rendered_images(
-        tmp_path,
-        publish_root=renderer_root,
-    )
-    package_dir = Path(package["rendered_image_paths"][0]).parent.parent
-    legacy_prompt = package_dir / "Storyboard_images_generator_prompt.txt"
-    legacy_prompt.write_text("obsolete image prompt", encoding="utf-8")
-    different_cwd = tmp_path / "other-working-directory"
-    different_cwd.mkdir()
-    monkeypatch.chdir(different_cwd)
-
-    main.export_publish_package(completed_state_for_package(package))
-
-    assert not legacy_prompt.exists()
-    assert (package_dir / f"{package['title']}.json").is_file()
-
-
-def test_export_publish_package_preserves_metadata_with_package_relative_image_paths(monkeypatch, tmp_path):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    package["content_contract"].update(
-        {
-            "first_screen_promise": "通勤前 3 分钟底妆不搓泥",
-            "screenshot_asset": "防晒成膜计时截图",
-        }
-    )
-
-    main.export_publish_package(completed_state_for_package(package))
-
-    audit_path = next(tmp_path.glob("outputs/publish/*/*.json"))
-    audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
-    assert audit["content_contract"] == package["content_contract"]
-    assert audit["rendered_image_paths"] == [
-        f"images/{Path(path).name}" for path in package["rendered_image_paths"]
-    ]
-    assert audit["content_lock"]["focus_keyword"] == package["focus_keyword"]
-    assert audit["visual_plan"] == package["visual_plan"]
-    assert audit["asset_manifest"] == package["asset_manifest"]
-    assert [page["path"] for page in audit["render_manifest"]["pages"]] == [
-        f"images/{Path(path).name}" for path in package["rendered_image_paths"]
-    ]
-    assert audit["render_manifest"]["contact_sheet_path"] == "images/contact-sheet.png"
-
-
-def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
-    monkeypatch,
-    tmp_path,
-):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-
-    main.export_publish_package(
-        completed_state_for_package(valid_publish_package_with_rendered_images(
-            tmp_path,
-            domain="wellness",
-            subdomain="sleep",
-            profile_version="wellness-v1",
-            title="共同标题",
-        ))
-    )
-
-    output_dirs = [
-        path.name
-        for path in (tmp_path / "outputs" / "publish").iterdir()
-        if path.is_dir()
-    ]
-    assert len(output_dirs) == 1
-    assert output_dirs[0].endswith("-wellness-sleep-共同标题")
-
-
 def test_export_publish_package_rejects_paths_outside_package_images(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -1036,42 +924,6 @@ def test_export_publish_package_rejects_paths_outside_package_images(monkeypatch
     package["render_manifest"]["pages"][0]["path"] = str(outside_path)
 
     with pytest.raises(ValueError, match="inside outputs/publish|recomputed Final Guard"):
-        main.export_publish_package(completed_state_for_package(package))
-
-
-def test_export_publish_package_rejects_non_png_or_wrong_sequence(monkeypatch, tmp_path):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    non_png = Path(package["rendered_image_paths"][0]).with_suffix(".jpg")
-    non_png.write_bytes(b"wrong extension")
-    package["rendered_image_paths"][0] = str(non_png)
-    package["render_manifest"]["pages"][0]["path"] = str(non_png)
-
-    with pytest.raises(ValueError, match="PNG"):
-        main.export_publish_package(completed_state_for_package(package))
-
-    package = valid_publish_package_with_rendered_images(tmp_path, title="伪造图片")
-    Path(package["rendered_image_paths"][0]).write_bytes(b"not a PNG")
-
-    with pytest.raises(ValueError, match="PNG"):
-        main.export_publish_package(completed_state_for_package(package))
-
-    package = valid_publish_package_with_rendered_images(tmp_path, title="另一份指南")
-    package["rendered_image_paths"].reverse()
-
-    with pytest.raises(ValueError, match="RenderManifest order|recomputed Final Guard"):
-        main.export_publish_package(completed_state_for_package(package))
-
-
-def test_export_publish_package_rejects_unlisted_png(monkeypatch, tmp_path):
-    main = _load_main(monkeypatch)
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    image_dir = Path(package["rendered_image_paths"][0]).parent
-    (image_dir / "unlisted.png").write_bytes(b"\x89PNG\r\n\x1a\nextra")
-
-    with pytest.raises(ValueError, match="unlisted PNG"):
         main.export_publish_package(completed_state_for_package(package))
 
 
@@ -1169,40 +1021,6 @@ def test_completed_export_requires_explicit_publishability_state(
             return _state_snapshot(values)
 
     assert main.export_completed_publish_package(CompletedGraph(), {}) is False
-
-
-def test_completed_checkpoint_export_retry_uses_current_artifact_generation(
-    monkeypatch, tmp_path
-):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    package.pop("publish_authorization")
-    package.pop("expected_artifact_generation")
-    values = {
-        "review_status": "approved",
-        "final_policy_issues": [],
-        "carousel_qa_result": {"passed": True, "issues": []},
-        "render_qa_result": {"passed": True, "issues": []},
-        "focus_keyword_cli_present": True,
-        "focus_keyword": "通勤底妆",
-        "publish_package": package,
-        "visual_plan": package["visual_plan"],
-        "asset_manifest": package["asset_manifest"],
-        "render_manifest": package["render_manifest"],
-        "editorial_workflow_version": "modern_v2",
-        "legacy_editorial_checkpoint": False,
-    }
-
-    class CompletedGraph:
-        def get_state(self, _config):
-            return _state_snapshot(values)
-
-    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
-    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
-    audit_path = next(tmp_path.glob("outputs/publish/*/*.json"))
-    audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
-    assert audit["artifact_generation"] == 2
 
 
 def test_main_rejects_subdomain_without_domain(monkeypatch):

@@ -7,10 +7,19 @@ import pytest
 
 from memory.migrations import (
     migrate_contents_domain_fields,
+    migrate_contents_dynamic_visual_fields,
     migrate_contents_visual_signature_fields,
     migrate_metrics_collection_schema,
     migrate_topic_generation_schema,
 )
+
+DYNAMIC_VISUAL_COLUMNS = {
+    "page_count",
+    "direction_signature",
+    "design_signature",
+    "density_summary",
+    "color_summary",
+}
 from memory.memory_manager import XHSMemoryManager
 
 
@@ -888,3 +897,141 @@ def test_migrate_contents_visual_signature_fields_rolls_back_on_failure(tmp_path
     # migration atomic.
     assert "narrative_form" not in columns
     assert "narrative_signature" not in columns
+
+
+# ---------------------------------------------------------------------------
+# Task 16: llm_scene_v3 dynamic-visual memory columns (additive, non-destructive)
+# ---------------------------------------------------------------------------
+
+
+def test_migrate_contents_dynamic_visual_fields_is_idempotent_and_adds_all_columns(
+    tmp_path,
+):
+    db_path = tmp_path / "legacy-dynamic-visual.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            template_family TEXT
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO contents(content_id, topic, created_at, template_family) "
+        "VALUES ('c1', 'topic', '2026-07-31T10:00:00+08:00', 'soft_pink')"
+    )
+    connection.commit()
+
+    migrate_contents_dynamic_visual_fields(connection)
+    migrate_contents_dynamic_visual_fields(connection)
+
+    columns = set(_table_columns(connection))
+    assert DYNAMIC_VISUAL_COLUMNS <= columns
+    # template_family is the pre-existing v2 column; it must remain untouched.
+    assert "template_family" in columns
+
+
+def test_migrate_contents_dynamic_visual_fields_preserves_existing_rows(tmp_path):
+    db_path = tmp_path / "prefilled-dynamic-visual.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            template_family TEXT,
+            page_count INTEGER
+        )
+        """
+    )
+    connection.execute(
+        "INSERT INTO contents(content_id, topic, created_at, template_family, page_count) "
+        "VALUES ('c2', 'topic', '2026-07-31T10:00:00+08:00', 'deep_teal', 6)"
+    )
+    connection.commit()
+
+    migrate_contents_dynamic_visual_fields(connection)
+
+    row = connection.execute(
+        "SELECT topic, template_family, page_count FROM contents WHERE content_id = ?",
+        ("c2",),
+    ).fetchone()
+    assert tuple(row) == ("topic", "deep_teal", 6)
+
+
+def test_fresh_schema_includes_dynamic_visual_columns(tmp_path):
+    db_path = tmp_path / "fresh-dynamic-visual.db"
+    connection = sqlite3.connect(db_path)
+    connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+
+    columns = set(_table_columns(connection))
+    assert DYNAMIC_VISUAL_COLUMNS <= columns
+
+
+def test_init_db_adds_dynamic_visual_columns_to_legacy_database(tmp_path):
+    db_path = tmp_path / "manager-dynamic-visual.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.execute(
+        "CREATE TABLE metrics (content_id TEXT PRIMARY KEY, updated_at TEXT NOT NULL)"
+    )
+    connection.commit()
+    connection.close()
+
+    manager = XHSMemoryManager(db_path)
+    manager.init_db(SCHEMA_PATH)
+
+    columns = set(_table_columns(manager.connect()))
+    assert DYNAMIC_VISUAL_COLUMNS <= columns
+
+
+def test_migrate_contents_dynamic_visual_fields_rolls_back_on_failure(tmp_path):
+    db_path = tmp_path / "rollback-dynamic-visual.db"
+    connection = sqlite3.connect(db_path)
+    connection.execute(
+        """
+        CREATE TABLE contents (
+            content_id TEXT PRIMARY KEY,
+            topic TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    connection.commit()
+
+    class FailingConnection:
+        def __init__(self, inner: sqlite3.Connection):
+            self.inner = inner
+            self.alter_calls = 0
+
+        def execute(self, sql, params=()):
+            normalized_sql = " ".join(sql.split()).upper()
+            if normalized_sql.startswith("ALTER TABLE CONTENTS ADD COLUMN DIRECTION_SIGNATURE"):
+                self.alter_calls += 1
+                if self.alter_calls == 1:
+                    raise RuntimeError("boom")
+            return self.inner.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self.inner, name)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        migrate_contents_dynamic_visual_fields(FailingConnection(connection))
+
+    columns = set(_table_columns(connection))
+    # page_count is added before the failure on direction_signature, so it must
+    # have been rolled back to keep the migration atomic.
+    assert "page_count" not in columns
+    assert "direction_signature" not in columns

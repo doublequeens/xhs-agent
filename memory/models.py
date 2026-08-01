@@ -61,6 +61,19 @@ class ContentRecord:
     frame_plan_signature: list[str] = field(default_factory=list)
     density_profile: list[str] = field(default_factory=list)
 
+    # Task 16 (llm_scene_v3): dynamic-visual diversity metadata populated by
+    # content_writer_node from the dynamic visual contracts (no storyboard
+    # payload). ``direction_signature``/``design_signature`` are the sha256 of
+    # the persisted ``VisualDirectionPlan``/``CarouselDesignPlan``;
+    # ``density_summary``/``color_summary`` are JSON-encoded summaries derived
+    # from the design plan / family profile. ``template_family`` above is
+    # reused as the family identity. These are additive over the v2 columns.
+    page_count: Optional[int] = None
+    direction_signature: Optional[str] = None
+    design_signature: Optional[str] = None
+    density_summary: list[Any] = field(default_factory=list)
+    color_summary: dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class MetricsRecord:

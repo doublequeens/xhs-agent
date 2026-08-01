@@ -52,7 +52,13 @@ CREATE TABLE IF NOT EXISTS contents (
     narrative_signature TEXT,
     template_family TEXT,
     frame_plan_signature TEXT,
-    density_profile TEXT
+    density_profile TEXT,
+
+    page_count INTEGER,
+    direction_signature TEXT,
+    design_signature TEXT,
+    density_summary TEXT,
+    color_summary TEXT
 );
 
 CREATE TABLE IF NOT EXISTS metrics (
