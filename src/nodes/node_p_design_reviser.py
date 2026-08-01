@@ -10,10 +10,10 @@ from typing import Any, Literal, Union
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas.assets import AssetManifest
 from src.schemas.content_atoms import ContentAtomSet, canonical_sha256
-from src.schemas.design_qa import DesignIssue
-from src.schemas.render_qa import RenderIssue
+from src.schemas.design_qa import DesignIssue, DesignPlanQAResult
+from src.schemas.render_qa import RenderIssue, RenderQAResult
 from src.schemas.scene_graph import CarouselDesignPlan
-from src.schemas.visual_critique import VisualCritiqueIssue
+from src.schemas.visual_critique import VisualCritique, VisualCritiqueIssue
 from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import FamilyStyleProfile, StrictModel, TemplateFamily
 from src.visual_ai import StructuredVisualModel
@@ -150,10 +150,81 @@ def _design_plan(state: Mapping[str, Any]) -> CarouselDesignPlan:
     return CarouselDesignPlan.model_validate(raw)
 
 
-def _revision_request(state: Mapping[str, Any]) -> RevisionRequest:
+def _revision_request_from_state(
+    state: Mapping[str, Any],
+    design_plan: CarouselDesignPlan,
+) -> RevisionRequest:
+    """Build a RevisionRequest from the failing QA/critic result in state.
+
+    Production routing never injects ``revision_request`` explicitly: the
+    graph routes into ``design_reviser`` from ``design_plan_qa``,
+    ``render_qa``, or ``visual_critic``, and the triggering result is already
+    in state. Exactly one of those results is the active failure; prefer the
+    most downstream failing one (visual_critic > render_qa > design_plan_qa)
+    so a stale upstream result is never mistaken for the trigger. In the
+    normal loop only one is failing at a time because each gate overwrites
+    its own result on every pass.
+    """
+    visual_critique_raw = state.get("visual_critique")
+    if visual_critique_raw is not None:
+        critique = (
+            visual_critique_raw
+            if isinstance(visual_critique_raw, VisualCritique)
+            else VisualCritique.model_validate(visual_critique_raw)
+        )
+        if not critique.passed:
+            return RevisionRequest(
+                source="visual_critic",
+                issues=critique.issues,
+                current_revision=design_plan.revision,
+            )
+    render_qa_raw = state.get("render_qa_result")
+    if render_qa_raw is not None:
+        render_qa = (
+            render_qa_raw
+            if isinstance(render_qa_raw, RenderQAResult)
+            else RenderQAResult.model_validate(render_qa_raw)
+        )
+        if not render_qa.passed:
+            return RevisionRequest(
+                source="render_qa",
+                issues=render_qa.issues,
+                current_revision=design_plan.revision,
+            )
+    design_qa_raw = state.get("design_plan_qa_result")
+    if design_qa_raw is not None:
+        design_qa = (
+            design_qa_raw
+            if isinstance(design_qa_raw, DesignPlanQAResult)
+            else DesignPlanQAResult.model_validate(design_qa_raw)
+        )
+        if not design_qa.passed:
+            return RevisionRequest(
+                source="design_plan_qa",
+                issues=design_qa.issues,
+                current_revision=design_plan.revision,
+            )
+    raise ValueError(
+        "design_reviser cannot build a revision request: no failing "
+        "design_plan_qa_result, render_qa_result, or visual_critique in state "
+        "and no explicit revision_request was injected"
+    )
+
+
+def _revision_request(
+    state: Mapping[str, Any],
+    design_plan: CarouselDesignPlan,
+) -> RevisionRequest:
+    """Resolve the RevisionRequest, falling back to state when unset.
+
+    Unit tests inject ``revision_request`` directly; the production graph does
+    not (no node writes it), so when it is absent we assemble one from the
+    failing QA/critic result already in state. Without this fallback every
+    failure route into the reviser crashes with ValueError.
+    """
     raw = state.get("revision_request")
     if raw is None:
-        raise ValueError("design_reviser requires revision_request")
+        return _revision_request_from_state(state, design_plan)
     if isinstance(raw, RevisionRequest):
         return raw
     return RevisionRequest.model_validate(raw)
@@ -260,7 +331,7 @@ def design_reviser_node(
 ) -> dict[str, object]:
     """Constrainedly revise a CarouselDesignPlan or signal visual_director."""
     before = _design_plan(state)
-    request = _revision_request(state)
+    request = _revision_request(state, before)
     direction_plan = _direction_plan(state)
     atom_set = _atom_set(state)
     manifest = _manifest(state)

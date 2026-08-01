@@ -72,8 +72,19 @@ class AgentState(TypedDict):
     render_manifest: NotRequired[Optional[RenderManifest]]
     render_qa_result: NotRequired[Optional[RenderQAResult]]
     visual_critique: NotRequired[Optional[VisualCritique]]
-    design_revision_round: NotRequired[int]
-    visual_revision_round: NotRequired[int]
+    # Retry / round counters written by the visual-production nodes. These
+    # MUST be declared on AgentState: LangGraph drops any key absent from the
+    # TypedDict from a node's return dict before it reaches state, which would
+    # freeze the counter at 0 and turn the 3-strike / 2-round budgets into
+    # non-terminating loops that only end on GraphRecursionError.
+    design_plan_qa_failures: NotRequired[int]
+    render_qa_failures: NotRequired[int]
+    visual_critic_round: NotRequired[int]
+    # Constructed by design_reviser from the failing QA/critic result already
+    # in state when no explicit request is injected (the production path; unit
+    # tests may still inject one directly). Round-trips through state so the
+    # reviser can read what it produced on a prior pass.
+    revision_request: NotRequired[Optional[Any]]
     unresolved_optional_assets: NotRequired[list[dict]]
     # Transient route-override channel consumed by conditional edges after
     # design_reviser / visual_critic. Nodes always set this (None clears any
