@@ -525,6 +525,76 @@ def test_attestation_rejects_tampered_page_bytes(tmp_path):
         export_publish_package(_completed_state(contracts, package, render_dir=tmp_path / "run-output"))
 
 
+def test_attestation_hashes_final_policy_attestation(tmp_path):
+    # The 10th canonical package member (final_policy_attestation.json) must be
+    # hash-bound into PublishAttestation, the same canonical-sha256 way as the
+    # other 9 contracts. Mirrors test_attestation_hashes_every_contract_and_png.
+    result, contracts, package = _export(tmp_path)
+    package_dir = _package_dir()
+    attestation = result.publish_attestation
+
+    # Field is present and well-formed.
+    assert isinstance(attestation.final_policy_attestation_sha256, str)
+    assert len(attestation.final_policy_attestation_sha256) == 64
+
+    # Matches the recomputed canonical_sha256 of the final-policy attestation
+    # value the builder emits (review_status is "approved" in _completed_state).
+    expected_fpa = {
+        "workflow_version": "llm_scene_v3",
+        "passed": True,
+        "final_policy_issues": [],
+        "review_status": "approved",
+    }
+    assert attestation.final_policy_attestation_sha256 == canonical_sha256(expected_fpa)
+
+    # And matches the canonical_sha256 of the on-disk contract file (re-parsed,
+    # so the binding covers the actual written file, not just the in-memory dict).
+    written = json.loads(
+        (package_dir / "final_policy_attestation.json").read_text(encoding="utf-8")
+    )
+    assert canonical_sha256(written) == attestation.final_policy_attestation_sha256
+
+    # The written attestation also carries the field.
+    attestation_on_disk = json.loads(
+        (package_dir / "publish-attestation.json").read_text(encoding="utf-8")
+    )
+    assert (
+        attestation_on_disk["final_policy_attestation_sha256"]
+        == attestation.final_policy_attestation_sha256
+    )
+
+
+def test_final_policy_attestation_tamper_breaks_attestation_binding(tmp_path):
+    # After the bundle is promoted, mutating final_policy_attestation.json on
+    # disk must break the hash binding: the recomputed canonical_sha256 of the
+    # file no longer matches PublishAttestation.final_policy_attestation_sha256.
+    # (Mirrors test_attestation_rejects_tampered_page_bytes; contract files are
+    # hash-bound rather than byte-re-read mid-export, so the binding is what a
+    # re-verifier checks.)
+    result, _, _ = _export(tmp_path)
+    package_dir = _package_dir()
+    attestation = result.publish_attestation
+    fpa_path = package_dir / "final_policy_attestation.json"
+
+    # Baseline: the on-disk file hashes to the attestation field.
+    original = json.loads(fpa_path.read_text(encoding="utf-8"))
+    assert canonical_sha256(original) == attestation.final_policy_attestation_sha256
+
+    # Tamper: flip the attestation verdict and rewrite the file.
+    tampered = dict(original)
+    tampered["passed"] = False
+    tampered["final_policy_issues"] = [{"rule": "tamper", "message": "mutated"}]
+    fpa_path.write_text(
+        json.dumps(tampered, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+    # The recomputed canonical_sha256 now diverges from the attestation binding,
+    # i.e. tampering is detectable through the hash bound in publish-attestation.
+    mutated = json.loads(fpa_path.read_text(encoding="utf-8"))
+    assert canonical_sha256(mutated) != attestation.final_policy_attestation_sha256
+
+
 # ---------------------------------------------------------------------------
 # No legacy / fixed-template fields + AI-provenance internal-only
 # ---------------------------------------------------------------------------

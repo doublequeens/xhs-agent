@@ -119,6 +119,7 @@ class PublishAttestation(StrictModel):
     render_qa_sha256: Sha256
     visual_critique_sha256: Sha256
     content_lock_sha256: Sha256
+    final_policy_attestation_sha256: Sha256
     page_sha256: dict[str, Sha256]
 
 
@@ -518,6 +519,7 @@ def _export_verified_state_snapshot(completed_state: StateSnapshot) -> PublishAr
         render_qa_sha256=canonical_sha256(contracts["render_qa_result"]),
         visual_critique_sha256=canonical_sha256(contracts["visual_critique"]),
         content_lock_sha256=content_lock.canonical_sha256,
+        final_policy_attestation_sha256=canonical_sha256(final_policy_attestation),
         page_sha256=page_sha256,
     )
 
