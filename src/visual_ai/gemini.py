@@ -6,11 +6,13 @@ import json
 import mimetypes
 import os
 import tempfile
+import time
 from datetime import datetime, timezone
 from math import gcd
 from pathlib import Path
 from typing import Any, Sequence
 
+from google.genai import errors as genai_errors
 from google.genai import types
 from PIL import Image
 from pydantic import ValidationError
@@ -36,6 +38,26 @@ _SUPPORTED_ASPECT_RATIOS = frozenset(
     {"1:1", "2:3", "3:2", "3:4", "4:3", "9:16", "16:9", "21:9"}
 )
 GEMINI_VISUAL_MODEL = "gemini-3.1-flash-image"
+
+# Transient API failures (overload, rate-limit, gateway) that are safe to
+# retry with backoff. ``genai_errors.APIError`` (and its ``ServerError``
+# subclass) carry a ``.code``; we also accept built-in network/timeout errors.
+_TRANSIENT_ERROR_CODES = frozenset({429, 500, 502, 503, 504})
+_MAX_API_ATTEMPTS = 3
+_RETRY_BASE_DELAY_SECONDS = 1.5
+# Indirection so tests can disable real sleeping.
+_retry_sleep = time.sleep
+
+
+def _is_transient_error(exc: BaseException) -> bool:
+    code = getattr(exc, "code", None)
+    if isinstance(code, int) and code in _TRANSIENT_ERROR_CODES:
+        return True
+    return isinstance(exc, (TimeoutError, ConnectionError))
+
+
+def _backoff_delay_seconds(attempt: int) -> float:
+    return min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), 8.0)
 
 
 class StructuredVisualResponseError(ValueError):
@@ -149,10 +171,16 @@ class GeminiStructuredVisualModel:
     ) -> T:
         contents: list[str | types.Part] = [prompt]
         contents.extend(_image_part(Path(path)) for path in image_paths)
-        response = self.client.models.generate_content(
+        # NOTE: the Gemini Developer API rejects response_schema for models
+        # whose JSON schema carries additionalProperties (StrictModel uses
+        # extra="forbid"), so we do not pass response_schema here. The prompt
+        # carries the exact output shape, and the response is re-validated
+        # against response_model below.
+        config = types.GenerateContentConfig(response_modalities=["TEXT"])
+        response = self._generate_content_with_retry(
             model=self.model,
             contents=contents,
-            config=types.GenerateContentConfig(response_modalities=["TEXT"]),
+            config=config,
         )
         raw_response = _response_text(response)
         payload = _extract_one_json_object(raw_response)
@@ -163,6 +191,25 @@ class GeminiStructuredVisualModel:
                 "Gemini response failed schema validation",
                 raw_response=raw_response,
             ) from error
+
+    def _generate_content_with_retry(
+        self, *, model: str, contents: Any, config: Any
+    ) -> Any:
+        """Call generate_content, retrying transient overload/rate-limit errors."""
+        for attempt in range(1, _MAX_API_ATTEMPTS + 1):
+            try:
+                return self.client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                if attempt < _MAX_API_ATTEMPTS and _is_transient_error(exc):
+                    _retry_sleep(_backoff_delay_seconds(attempt))
+                    continue
+                raise
+        # Unreachable: the loop either returns or re-raises on the last attempt.
+        raise RuntimeError("generate_content retry loop exited unexpectedly")
 
 
 def _request_aspect_ratio(request: ImageGenerationRequest) -> str:

@@ -32,7 +32,7 @@ code, or prose outside that object.
 Choose independently for each page:
 - searched/licensed photography when real-world evidence is most useful;
 - generated photoreal imagery when a safe, specific visual example is needed;
-- diagrammatic imagery when spatial or procedural explanation is clearest;
+- diagrammatic/explanatory imagery (use the role "object" or "texture") when spatial or procedural explanation is clearest;
 - no asset when typography and structure communicate the content best.
 
 For content such as “出现持续刺痛、明显泛红或第二天仍然紧绷时”, a realistic
@@ -56,6 +56,63 @@ photoreal and must not fabricate product efficacy.
   embedded text, AI disclosure labels, and disclaimer copy.
 
 【Output】
-Return exactly one JSON object matching VisualDirectionPlan. Use only content
-fragments as visible copy. Asset provenance belongs to internal metadata and
-must never become visible content.
+Return exactly one JSON object matching VisualDirectionPlan — no markdown
+fences, no prose, no wrapper keys. Use only content fragments as visible copy.
+Asset provenance belongs to internal metadata and must never become visible
+content.
+
+Return EXACTLY this shape (all sequences are JSON arrays):
+{
+  "template_family": "<one family name from the six approved families>",
+  "page_count": <integer between 5 and 18>,
+  "content_atom_set_sha256": "<echo the provided content_atom_set_sha256 verbatim>",
+  "art_direction": "<short art-direction string>",
+  "palette": ["#RRGGBB", "..."],
+  "typography_direction": {
+    "display": "<font name>", "heading": "<font name>",
+    "body": "<font name>", "caption": "<font name>"
+  },
+  "motifs": ["...", "..."],
+  "content_fragments": [
+    {
+      "fragment_id": "fragment-1",
+      "source_atom_id": "<an atom_id from ContentAtomSet>",
+      "text": "<exact characters copied from that atom>",
+      "start": <integer offset>, "end": <integer offset>
+    }
+  ],
+  "page_sequence": [
+    {
+      "page_id": "page-1", "sequence": 1,
+      "purpose": "<non-empty>", "visual_job": "<unique non-empty>",
+      "fragment_ids": ["fragment-1"],
+      "asset_directive_ids": ["asset-1"]
+    }
+  ],
+  "asset_directives": [
+    {
+      "directive_id": "asset-1", "page_id": "page-1",
+      "role": "skin_example", "required": true,
+      "preferred_source": "search", "fallback_source": "none",
+      "query_or_prompt": "<subject, crop, lighting/explanatory role>",
+      "negative_constraints": ["embedded text", "AI disclosure label", "disclaimer"],
+      "orientation": "portrait", "min_width": 1080, "min_height": 1440
+    }
+  ]
+}
+
+Shape rules (these are the most common mistakes — do not make them):
+- `typography_direction` is a FLAT mapping of font role -> font name
+  ({"display": "...", "heading": "...", "body": "...", "caption": "..."}).
+  Do NOT nest it under a "font_roles" key and do NOT invent other keys.
+- `palette` and `motifs` must be subsets of the chosen family profile.
+- Every `page.fragment_ids` references a fragment in `content_fragments`;
+  every `page.asset_directive_ids` references a directive in `asset_directives`.
+- `page_sequence` covers exactly `page_count` pages with contiguous
+  `sequence` starting at 1; `content_fragments` reconstruct every atom
+  completely in source order.
+- `asset_directives` may be an empty array for a text-only carousel.
+- `role` is one of: evidence_example, skin_example, texture, object, decorative.
+- `preferred_source` is one of: search, generate, either, none.
+- `fallback_source` is one of: search, generate, none.
+- `orientation` is one of: portrait, landscape, square, any.

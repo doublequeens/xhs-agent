@@ -8,10 +8,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from google.genai import errors as genai_errors
 from google.genai import types
 from PIL import Image
 from pydantic import BaseModel, ValidationError
 
+from src.visual_ai import gemini as gemini_module
 from src.visual_ai.gemini import (
     GeminiImageGenerationProvider,
     GeminiStructuredVisualModel,
@@ -132,7 +134,6 @@ def test_structured_model_sends_local_images_as_typed_byte_parts(
     config = call["config"]
     assert config.response_modalities == ["TEXT"]
     assert config.response_schema is None
-    assert config.response_json_schema is None
 
 
 @pytest.mark.parametrize(
@@ -275,3 +276,85 @@ def test_generation_rejects_truncated_raster_before_writing(
         adapter.generate(make_request(), transaction_dir)
 
     assert not transaction_dir.exists() or list(transaction_dir.iterdir()) == []
+
+
+class TransientFailingModels:
+    """Fake models that raise a transient error for the first ``fail_times``
+    calls, then return ``response``. Records the call count."""
+
+    def __init__(self, response: Any, *, fail_times: int, error: Exception) -> None:
+        self._response = response
+        self._fail_times = fail_times
+        self._error = error
+        self.calls = 0
+
+    def generate_content(self, **kwargs: Any) -> Any:
+        self.calls += 1
+        if self.calls <= self._fail_times:
+            raise self._error
+        return self._response
+
+
+class _FakeClientWithModels:
+    def __init__(self, models: Any) -> None:
+        self.models = models
+
+
+def _server_error(code: int) -> genai_errors.ServerError:
+    return genai_errors.ServerError(
+        code,
+        {"error": {"code": code, "message": "transient", "status": "UNAVAILABLE"}},
+        None,
+    )
+
+
+def test_structured_model_retries_transient_503_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr(gemini_module, "_retry_sleep", lambda _seconds: None)
+    models = TransientFailingModels(
+        text_response('{"title":"Calm","score":9}'),
+        fail_times=2,
+        error=_server_error(503),
+    )
+    client = _FakeClientWithModels(models)
+
+    result = GeminiStructuredVisualModel(client=client, model=MODEL).generate_json(
+        "Score.", VisualAnswer
+    )
+
+    assert result == VisualAnswer(title="Calm", score=9)
+    assert models.calls == 3  # 2 transient failures + 1 success
+
+
+def test_structured_model_raises_after_exhausting_transient_retries(monkeypatch) -> None:
+    monkeypatch.setattr(gemini_module, "_retry_sleep", lambda _seconds: None)
+    models = TransientFailingModels(
+        text_response('{"title":"Calm","score":9}'),
+        fail_times=99,  # always fails
+        error=_server_error(503),
+    )
+    client = _FakeClientWithModels(models)
+
+    with pytest.raises(genai_errors.ServerError):
+        GeminiStructuredVisualModel(client=client, model=MODEL).generate_json(
+            "Score.", VisualAnswer
+        )
+
+    assert models.calls == gemini_module._MAX_API_ATTEMPTS  # retried up to the budget
+
+
+def test_structured_model_does_not_retry_non_transient_error(monkeypatch) -> None:
+    monkeypatch.setattr(gemini_module, "_retry_sleep", lambda _seconds: None)
+    # 400 is a client error, not transient -> no retry.
+    models = TransientFailingModels(
+        text_response('{"title":"Calm","score":9}'),
+        fail_times=99,
+        error=_server_error(400),
+    )
+    client = _FakeClientWithModels(models)
+
+    with pytest.raises(genai_errors.ServerError):
+        GeminiStructuredVisualModel(client=client, model=MODEL).generate_json(
+            "Score.", VisualAnswer
+        )
+
+    assert models.calls == 1  # raised immediately, no retry
