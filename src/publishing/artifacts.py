@@ -42,9 +42,6 @@ from typing import Any, Literal
 from PIL import Image, UnidentifiedImageError
 from langgraph.types import StateSnapshot
 
-from src.nodes.node_p_editorial_carousel_renderer import (
-    PUBLISH_ROOT as _RENDERER_PUBLISH_ROOT,
-)
 from src.nodes.node_q_01_final_policy_guard import validate_final_policy
 from src.schemas.assets import AssetManifest
 from src.schemas.content_atoms import ContentAtomSet, canonical_sha256
@@ -58,8 +55,10 @@ from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import Sha256, StrictModel
 
 
-# Tests monkeypatch this module global; production reads the renderer default.
-PUBLISH_ROOT = _RENDERER_PUBLISH_ROOT
+# Root directory for exported publish packages. Formerly imported from the
+# deleted editorial-carousel renderer; it is owned here now that the
+# publish-artifacts module is the sole writer. Tests monkeypatch this global.
+PUBLISH_ROOT = Path(__file__).resolve().parents[2] / "outputs" / "publish"
 
 WORKFLOW_VERSION: Literal["llm_scene_v3"] = "llm_scene_v3"
 

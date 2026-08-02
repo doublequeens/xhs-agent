@@ -41,19 +41,11 @@ def _load_main(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def renderer_publish_root(monkeypatch, tmp_path):
-    from src.nodes import (
-        node_p_editorial_carousel_renderer,
-        node_q_01_final_policy_guard,
-    )
+def publish_artifacts_root(monkeypatch, tmp_path):
+    from src.publishing import artifacts as publish_artifacts
 
     root = tmp_path / "outputs" / "publish"
-    monkeypatch.setattr(
-        node_p_editorial_carousel_renderer,
-        "PUBLISH_ROOT",
-        root,
-    )
-    monkeypatch.setattr(node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", root)
+    monkeypatch.setattr(publish_artifacts, "PUBLISH_ROOT", root)
 
 
 def test_build_thread_id_preserves_explicit_resume_id(monkeypatch):
@@ -189,71 +181,6 @@ def test_cli_review_without_pending_assets_routes_directly_to_final_guard(
     assert "asset_decisions" not in resume_payload
     assert result["review_status"] == "approved"
     assert review_module.route_after_human_review(result) == "final_policy_guard"
-
-
-def test_cli_review_routes_after_pending_then_allows_second_final_approval(
-    monkeypatch,
-):
-    main = _load_main(monkeypatch)
-    review_module = importlib.import_module("src.nodes.node_q_human_review")
-    first_answers = iter(["approved", "yes"])
-    monkeypatch.setattr(
-        "builtins.input", lambda _prompt="": next(first_answers)
-    )
-    first_resume = main.collect_human_review(
-        {
-            "message": "review",
-            "publish_package": {"title": "carousel"},
-            "pending_assets": [
-                {"decision_id": "pending-1", "provider": "pexels"}
-            ],
-        }
-    )
-    active_manifest = {"items": [{"slot_id": "slot-1", "status": "active"}]}
-    monkeypatch.setattr(review_module, "interrupt", lambda _payload: first_resume)
-    monkeypatch.setattr(
-        review_module,
-        "_apply_asset_decisions",
-        lambda *_args: (active_manifest, "render_qa"),
-    )
-    first_result = review_module.human_review_node(
-        {
-            "publish_package": {"title": "carousel"},
-            "asset_manifest": {
-                "items": [
-                    {
-                        "status": "pending_external",
-                        "pending_id": "pending-1",
-                    }
-                ]
-            },
-            "review_round": 0,
-            "final_policy_issues": [],
-        }
-    )
-
-    assert review_module.route_after_human_review(first_result) == "render_qa"
-
-    monkeypatch.setattr("builtins.input", lambda _prompt="": "yes")
-    second_resume = main.collect_human_review(
-        {
-            "message": "review",
-            "publish_package": {"title": "carousel"},
-            "pending_assets": [],
-        }
-    )
-    monkeypatch.setattr(review_module, "interrupt", lambda _payload: second_resume)
-    second_result = review_module.human_review_node(
-        {
-            **first_result,
-            "asset_manifest": active_manifest,
-            "review_round": first_result["review_round"],
-        }
-    )
-
-    assert "asset_decisions" not in second_resume
-    assert second_result["review_status"] == "approved"
-    assert review_module.route_after_human_review(second_result) == "final_policy_guard"
 
 
 def test_fresh_thread_keeps_new_routing_initial_state(monkeypatch):

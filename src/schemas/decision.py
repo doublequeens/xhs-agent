@@ -1,11 +1,34 @@
-from typing import Any, List, Optional
+from typing import Any, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from src.domain.models import ContentIntent, DomainName, RiskLevel
-from src.schemas.editorial_templates import DensityHint, PageArchetype
 
 from .narrative import NarrativePlan
+
+
+# Page-structure vocabulary carried by the R1/R2 visible-text snapshot. These
+# literals formerly lived in the deleted ``editorial_templates`` module; they
+# survive here because ``StoryboardVisibleText`` (the locked visible-copy
+# snapshot threaded through R1/R2 and the decision engine) still uses them.
+PageArchetype = Literal[
+    "cover",
+    "thesis",
+    "scene",
+    "story_beat",
+    "explanation",
+    "steps",
+    "checklist",
+    "comparison",
+    "diagnostic",
+    "qa",
+    "item_collection",
+    "quote",
+    "boundary",
+    "save",
+    "closing",
+]
+DensityHint = Literal["auto", "sparse", "standard", "dense"]
 
 
 class SingleTask(BaseModel):

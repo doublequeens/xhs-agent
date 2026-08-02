@@ -5,9 +5,6 @@ from .assets import (
     AssetManifestItem,
     AssetResolutionResult,
     AssetTransactionEvidence,
-    AssetRequirement,
-    AssetSearchReport,
-    ProviderSearchReport,
     UnresolvedOptionalAsset,
 )
 from .content_atoms import (
@@ -22,21 +19,15 @@ from .content_lock import ContentLock
 from .decision import (
     DecisionOutput,
     DecisionTrace,
+    DensityHint,
     HashTagInput,
     NormalizedInput,
+    PageArchetype,
     R2Input,
     RevisionMeta,
 )
 from .design_qa import DesignIssue, DesignPlanQAResult
 from .draft import DraftItem
-from .editorial_templates import (
-    CopyMetrics,
-    Density,
-    DensityHint,
-    PageArchetype,
-    ResolvedVariant,
-    TemplateSelection,
-)
 from .hashtag import HashTagOutput
 from .id_images import IdImageItems
 from .image import ImageItem
@@ -85,14 +76,12 @@ from .scene_graph import (
     TextElement,
     TextStyle,
 )
-from .storyboard import CarouselFrame, CarouselPayload, ContentBlock, VisualSlot
 from .title import DraftTitles
 from .title_ranker import R1Input, TitleRankResult, TitleWinner
 from .topic import TopicItem
 from .virality_score import ScoreBreakdown, ScoreResult
 from .visual_critique import VisualCritique, VisualCritiqueIssue
 from .visual_director import AssetDirective, PageDirection, VisualDirectionPlan
-from .visual_plan import FramePlanItem, VisualFamily, VisualPlan
 from .visual_style import FamilyStyleProfile, HexColor, Sha256, TemplateFamily
 
 
@@ -105,31 +94,23 @@ __all__ = [
     "AssetResolutionResult",
     "AssetTransactionEvidence",
     "AssetProbeResult",
-    "AssetRequirement",
-    "AssetSearchReport",
     "Box",
     "CarouselDesignPlan",
-    "CarouselFrame",
-    "CarouselPayload",
     "ClosingMode",
     "ContentAngle",
     "ContentAtom",
     "ContentAtomSet",
     "ContentFragment",
     "ContentJob",
-    "ContentBlock",
     "ContentLock",
-    "CopyMetrics",
     "DecisionOutput",
     "DecisionTrace",
-    "Density",
     "DensityHint",
     "DesignIssue",
     "DesignPlanQAResult",
     "DraftItem",
     "DraftTitles",
     "FamilyStyleProfile",
-    "FramePlanItem",
     "FontLoadReport",
     "HashTagInput",
     "HashTagOutput",
@@ -155,7 +136,6 @@ __all__ = [
     "PageProbeAttestation",
     "PageScene",
     "PrimaryVisualStructure",
-    "ProviderSearchReport",
     "UnresolvedOptionalAsset",
     "R1Input",
     "R1Output",
@@ -172,7 +152,6 @@ __all__ = [
     "RenderIssue",
     "RenderManifest",
     "RenderQAResult",
-    "ResolvedVariant",
     "RevisionMeta",
     "ScoreBreakdown",
     "ScoreResult",
@@ -181,7 +160,6 @@ __all__ = [
     "ShapeElement",
     "TaskReport",
     "TemplateFamily",
-    "TemplateSelection",
     "TextElement",
     "TextProbeResult",
     "TextStyle",
@@ -191,9 +169,6 @@ __all__ = [
     "VisualCritique",
     "VisualCritiqueIssue",
     "VisualDirectionPlan",
-    "VisualFamily",
-    "VisualPlan",
-    "VisualSlot",
     "canonical_sha256",
     "sha256_text",
 ]

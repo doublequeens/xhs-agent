@@ -18,11 +18,7 @@ _EXPORTS = {
     "r2_compliance_node": "src.nodes.node_i_r2_compliance",
     "hashtag_node": "src.nodes.node_k_hashtag_seo",
     "assembler_node": "src.nodes.node_o_assembler",
-    "storyboards_generator_node": "src.nodes.node_o_storyboards_generator",
-    "visual_strategy_planner_node": "src.nodes.node_p_visual_strategy_planner",
     "asset_resolver_node": "src.nodes.node_p_asset_resolver",
-    "carousel_qa_node": "src.nodes.node_p_carousel_qa",
-    "editorial_carousel_renderer_node": "src.nodes.node_p_editorial_carousel_renderer",
     "render_qa_node": "src.nodes.node_p_render_qa",
     "content_writer_node": "src.nodes.node_p_content_writer",
     # --- llm_scene_v3 dynamic visual production nodes ---

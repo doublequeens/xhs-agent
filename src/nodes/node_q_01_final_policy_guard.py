@@ -18,21 +18,10 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.domain import find_policy_violations
-from src.nodes.node_p_editorial_carousel_renderer import PUBLISH_ROOT
-from src.rendering.editorial.design_system import ASSET_ROOT
 from src.schemas import AgentState
 from src.schemas.content_atoms import canonical_sha256
 from src.schemas.content_lock import ContentLock
 
-
-# Legacy file-root constants. The v3 Final Guard does NOT perform file I/O --
-# render_qa owns file/hash attestation and asset security is checked via
-# ``AssetManifestItem.security_status``. These constants are retained solely so
-# existing publish/main test fixtures that monkeypatch them (the Task 16
-# publish-artifacts cutover) keep working; they will be removed once Task 16
-# rebuilds the publish layer around the atom-based ContentLock.
-ASSET_ACTIVE_ROOT = ASSET_ROOT / "active"
-RENDER_OUTPUT_ROOT = PUBLISH_ROOT
 
 _URL_PATTERN = re.compile(r"https?://[^\s，。！？、；：)\]}>\"']+")
 

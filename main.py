@@ -25,18 +25,15 @@ from src.graph import (
     delete_checkpoint_thread,
 )
 from src.models import set_default_provider
-from src.nodes import node_p_editorial_carousel_renderer
 from src.publishing.artifacts import (
     PublishArtifacts,
     _export_verified_state_snapshot,
 )
-from src.schemas import RenderManifest
 from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 RUN_REGISTRY_PATH = Path("data/agent_runs.sqlite")
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
-PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -360,89 +357,6 @@ def backfill_legacy_run(registry: RunRegistry, thread_id: str, current_state) ->
     if not values or registry.get_by_thread_id(thread_id) is not None:
         return
     registry.upsert_run(thread_id, status="running", **extract_run_updates(values))
-
-
-def _rendered_image_package_directory(publish_package: dict) -> tuple[Path, list[Path]]:
-    """Validate the ordered RenderManifest output before publishing artifacts."""
-    manifest = RenderManifest.model_validate(publish_package.get("render_manifest"))
-    manifest_paths = [page.path for page in manifest.pages]
-    raw_paths = publish_package.get("rendered_image_paths")
-    if not isinstance(raw_paths, list) or len(raw_paths) != len(manifest_paths):
-        raise ValueError(
-            "publish_package rendered_image_paths must match the 5-7 RenderManifest pages"
-        )
-
-    publish_root = node_p_editorial_carousel_renderer.PUBLISH_ROOT.resolve()
-    package_dir: Path | None = None
-    resolved_paths: list[Path] = []
-    for index, (raw_path, manifest_path) in enumerate(
-        zip(raw_paths, manifest_paths, strict=True), start=1
-    ):
-        try:
-            image_path = Path(raw_path).resolve()
-            expected_path = Path(manifest_path).resolve()
-        except (OSError, TypeError, ValueError) as exc:
-            raise ValueError(f"rendered image path {index} cannot be resolved: {exc}") from exc
-
-        if image_path != expected_path:
-            raise ValueError(
-                "rendered_image_paths must preserve RenderManifest order"
-            )
-        if not image_path.is_relative_to(publish_root):
-            raise ValueError("rendered image paths must remain inside outputs/publish")
-        if image_path.suffix.lower() != ".png":
-            raise ValueError("rendered image paths must be PNG files")
-        if index == 1 and image_path.name != "01-cover.png":
-            raise ValueError("RenderManifest page paths must start with 01-cover.png")
-        if index > 1 and not image_path.name.startswith(f"{index:02d}-"):
-            raise ValueError("RenderManifest page paths must use ordered NN-role names")
-        if not image_path.is_file():
-            raise ValueError(f"rendered image path is missing: {image_path.name}")
-        try:
-            png_signature = image_path.read_bytes()[: len(PNG_SIGNATURE)]
-        except OSError as exc:
-            raise ValueError(f"rendered image path cannot be read: {image_path.name}") from exc
-        if png_signature != PNG_SIGNATURE:
-            raise ValueError("rendered image paths must contain PNG files")
-        if image_path.parent.name != "images":
-            raise ValueError("rendered image paths must be inside the package images directory")
-
-        current_package_dir = image_path.parent.parent
-        if package_dir is None:
-            package_dir = current_package_dir
-        elif current_package_dir != package_dir:
-            raise ValueError("rendered image paths must belong to one publish package")
-        resolved_paths.append(image_path)
-
-    assert package_dir is not None
-    try:
-        contact_sheet_path = Path(manifest.contact_sheet_path).resolve()
-    except (OSError, TypeError, ValueError) as exc:
-        raise ValueError(f"contact sheet path cannot be resolved: {exc}") from exc
-    image_dir = package_dir / "images"
-    if (
-        contact_sheet_path.parent != image_dir
-        or contact_sheet_path.suffix.lower() != ".png"
-        or not contact_sheet_path.is_file()
-    ):
-        raise ValueError(
-            "RenderManifest contact sheet must be a PNG in the package images directory"
-        )
-    try:
-        contact_signature = contact_sheet_path.read_bytes()[: len(PNG_SIGNATURE)]
-    except OSError as exc:
-        raise ValueError("RenderManifest contact sheet cannot be read") from exc
-    if contact_signature != PNG_SIGNATURE:
-        raise ValueError("RenderManifest contact sheet must contain a PNG file")
-
-    listed_pngs = {contact_sheet_path, *resolved_paths}
-    actual_pngs = {path.resolve() for path in image_dir.glob("*.png")}
-    if actual_pngs != listed_pngs:
-        raise ValueError(
-            "package images directory contains an unlisted PNG or is missing a manifest PNG"
-        )
-    return package_dir, resolved_paths
-
 
 def export_publish_package(completed_state: StateSnapshot) -> PublishArtifacts:
     """Validate and export one immutable terminal graph checkpoint."""

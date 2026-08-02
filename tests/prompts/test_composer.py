@@ -5,10 +5,6 @@ import pytest
 from src.domain import get_domain_profile
 from src.evidence import EvidenceBrief, EvidenceItem
 from src.prompts.composer import TASK_FILES
-from tests.editorial_carousel.golden_fixtures import (
-    GOLDEN_FIXTURE_NAMES,
-    load_golden_fixture,
-)
 
 
 def _profile_bound_state():
@@ -77,33 +73,13 @@ def test_healthy_lifestyle_prompt_omits_skincare_identity():
     assert "只讨论日常护肤" not in prompt
 
 
-def test_storyboard_prompt_requires_semantic_carousel_contract():
+def test_storyboard_prompt_task_is_retired():
     from src.prompts.composer import compose_prompt
 
-    prompt = compose_prompt(
-        "storyboards_generator",
-        get_domain_profile("beauty"),
-    )
-
-    assert "CarouselPayload" in prompt
-    assert "VisualPlan.frame_plan" in prompt
-    assert "first_screen_promise" in prompt
-    assert '"page_archetype"' in prompt
-    assert '"content_density_hint"' in prompt
-    assert "publish_package.narrative_plan" in prompt
-    assert "Empty `visual_slots` is valid" in prompt
-    assert "exactly three" in prompt
-    assert "收藏 + 关注" in prompt
-    assert "Emoji" in prompt
-    assert "HTML" in prompt
-    assert "CSS" in prompt
-    assert "坐标" in prompt
-    assert "URL" in prompt
-    assert "image-generation prompt" in prompt
-    assert "不得改变 topic" in prompt
-    assert "不得增加额外 frame" in prompt
-    assert '"layout"' not in prompt
-    assert "固定六张" not in prompt
+    # The storyboards_generator node and its prompt task were removed with the
+    # obsolete fixed-template visual path (Task 17); composing it must fail.
+    with pytest.raises(ValueError, match="Unknown prompt task: storyboards_generator"):
+        compose_prompt("storyboards_generator", get_domain_profile("beauty"))
 
 
 @pytest.mark.parametrize("task", ["r1_reflector", "decision_engine"])
@@ -116,42 +92,6 @@ def test_visible_text_revision_prompts_preserve_v2_structural_metadata(task):
     assert '"content_density_hint"' in prompt
     assert "page_archetype 与 content_density_hint" in prompt
     assert '"layout"' not in prompt
-
-
-@pytest.mark.parametrize("fixture_name", GOLDEN_FIXTURE_NAMES)
-def test_task10_golden_fixture_names_and_copy_never_enter_production_prompts(
-    fixture_name,
-):
-    from src.prompts.composer import compose_prompt_for_state
-
-    fixture = load_golden_fixture(fixture_name)
-    production_prompt = "\n".join(
-        compose_prompt_for_state(task, _profile_bound_state())
-        for task in TASK_FILES
-    )
-
-    # Collect every fixture-owned copy string so the isolation check covers
-    # the v2 envelope's ``visible_copy`` (cover/save anchors plus any dense
-    # archetype item lists) instead of the retired per-frame ``frame_copy``.
-    def _visible_copy_values(node):
-        if isinstance(node, str):
-            yield node
-        elif isinstance(node, dict):
-            for value in node.values():
-                yield from _visible_copy_values(value)
-        elif isinstance(node, list):
-            for value in node:
-                yield from _visible_copy_values(value)
-
-    isolated_copy = {
-        fixture_name,
-        fixture["synthetic_title"],
-        fixture["package"]["focus_keyword"],
-        fixture["package"]["topic"],
-        fixture["package"]["cover_copy"],
-        *_visible_copy_values(fixture.get("visible_copy", {})),
-    }
-    assert all(value not in production_prompt for value in isolated_copy)
 
 
 def test_legacy_storyboard_prompt_task_is_retired():
@@ -534,7 +474,6 @@ def test_lazy_prompt_mapping_defers_file_reads_and_preserves_legacy_keys(monkeyp
         ("src/nodes/node_j_decision_engine.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
         ("src/nodes/node_k_hashtag_seo.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
         ("src/nodes/node_o_assembler.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
-        ("src/nodes/node_o_storyboards_generator.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
     ],
 )
 def test_migrated_active_nodes_use_direct_composer_imports(node_path, import_line):

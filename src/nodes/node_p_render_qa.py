@@ -13,11 +13,6 @@ force-pass). Graph wiring (the cutover so the route feeds the visual critic /
 design reviser loop) is Task 14; this module MUST keep exporting
 ``render_qa_node`` and ``route_after_render_qa`` because ``src/graph.py``
 imports both.
-
-A single legacy helper (``_expected_probe_text``) is retained at the bottom for
-the old editorial bespoke probe-attestation tests; it travels with the
-obsolete editorial path and will be removed in the later obsolete-path
-deletion task.
 """
 
 from __future__ import annotations
@@ -25,8 +20,6 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal
 
-from src.nodes.node_p_carousel_qa import _get_value
-from src.rendering.editorial.primitives import cover_title_text
 from src.schemas.assets import AssetManifest
 from src.schemas.content_atoms import ContentAtomSet
 from src.schemas.design_qa import DesignPlanQAResult
@@ -147,60 +140,3 @@ __all__ = [
     "render_qa_node",
     "route_after_render_qa",
 ]
-
-
-# ---------------------------------------------------------------------------
-# Legacy compatibility — remove with the obsolete editorial render path.
-# The old editorial bespoke probe-attestation tests
-# (tests/rendering/editorial/test_*_bespoke.py) import ``_expected_probe_text``
-# to assert the renderer's expected-copy sequence matches the QA's probe
-# sequence. It has no role in the new visual-production path and is retained
-# only until the obsolete editorial path is deleted in a later task.
-# ---------------------------------------------------------------------------
-
-
-def _as_list(payload: Any, key: str) -> list[Any]:
-    value = _get_value(payload, key, [])
-    return list(value) if isinstance(value, (list, tuple)) else []
-
-
-def _expected_probe_text(frame: Any) -> list[tuple[str, str]]:
-    values: list[tuple[str, str]] = []
-    kicker = _get_value(frame, "kicker")
-    if kicker:
-        values.append(("kicker", str(kicker)))
-    hero_numeral = _get_value(frame, "hero_numeral")
-    if hero_numeral:
-        values.append(("hero_numeral", str(hero_numeral)))
-    headline = _get_value(frame, "headline")
-    if headline:
-        values.append(
-            (
-                "headline",
-                cover_title_text(
-                    str(headline), str(hero_numeral) if hero_numeral else None
-                ),
-            )
-        )
-    for block_index, block in enumerate(_as_list(frame, "content_blocks")):
-        heading = _get_value(block, "heading")
-        body = _get_value(block, "body")
-        if heading:
-            values.append((f"content_blocks[{block_index}].heading", str(heading)))
-        if body:
-            values.append((f"content_blocks[{block_index}].body", str(body)))
-        values.extend(
-            (f"content_blocks[{block_index}].items[{item_index}]", str(item))
-            for item_index, item in enumerate(_as_list(block, "items"))
-        )
-    values.extend(
-        (f"emphasis[{index}]", str(value))
-        for index, value in enumerate(_as_list(frame, "emphasis"))
-    )
-    persona = _get_value(frame, "persona")
-    if persona:
-        values.append(("persona", str(persona)))
-    footer = _get_value(frame, "footer")
-    if footer:
-        values.append(("footer", str(footer)))
-    return values
