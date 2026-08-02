@@ -49,7 +49,7 @@ domain_router -> domain_confirmation -> memory_retriever
 
 - **六个 family 是参考视觉 DNA，不是固定页面模板**：`pink_red`、`deep_teal`、`soft_pink`、`coral_impact`、`green_catalog`、`white_quote`。一套 carousel 只选一个 family；每页可在该 family 内自由改变构图、颜色比例、留白、装饰和信息密度。`FamilyStyleProfile` 只描述视觉情绪、色相/明度/饱和度范围、字体角色、装饰语言和参考图，不包含固定 DOM、坐标、archetype layout 或可执行模板代码。
 - **Visual Director 主导分页**：一次性输出 `VisualDirectionPlan`，包含唯一 family、5–18 页 `page_count`、整套 art direction、每页目的/密度/视觉任务、页面节奏和每页 `AssetDirective`。页数由内容决定，**不是固定 5–7 页**；六套参考样张的页数不构成生产约束。
-- **通用 scene→HTML 编译器**：`generic_scene_renderer` 把合法 scene graph（`text`/`image`/`shape`/`line`/`icon`/`group`/`stack`/`grid` 原语）编译成受控 HTML/CSS，再用 Chromium 生成 1080×1440 PNG 和 contact sheet。只有一个编译器，**没有 family-specific 布局分支**，也不会根据内容类型私自选择固定版式。
+- **通用 scene→HTML 编译器**：`generic_scene_renderer` 把合法 scene graph（`text`/`image`/`shape`/`line`/`icon` 原语）编译成受控 HTML/CSS，再用 Chromium 生成 1080×1440 PNG 和 contact sheet。只有一个编译器，**没有 family-specific 布局分支**，也不会根据内容类型私自选择固定版式。
 - **素材搜索 + 生成**：`asset_resolver` 按 `AssetDirective` 执行 `licensed_search`/`llm_generation`/`search_then_generate`/`generate_then_search`/`none` 策略；图片生成走 Gemini `gemini-3.1-flash-image`（Developer API `GEMINI_API_KEY`、`GEMINI_VISUAL_MODEL`）。
 - **AI 来源仅内部**：生成模型、prompt 和 AI provenance 只写入 `AssetManifestItem.internal_provenance`，**绝不进入页面可见文字或 PNG**；用户在上传平台时统一完成 AI 内容标注。
 - **图片不携带免责声明**：图片中不得自动加入“AI 生成”“示意图”“仅供参考”或任何合规/免责声明文字。
