@@ -66,6 +66,7 @@ _GRID_BG = (245, 245, 245)
 def _run_case(case_id: str, review_dir: Path) -> dict:
     """Render one case through the real Chromium path; return a result record."""
     mp = pytest.MonkeyPatch()
+    tmp_path: Path | None = None
     try:
         tmp_path = Path(tempfile.mkdtemp(prefix=f"golden-review-{case_id}-"))
         spec = load_case(case_id)
@@ -138,6 +139,13 @@ def _run_case(case_id: str, review_dir: Path) -> dict:
         }
     finally:
         mp.undo()
+        # Clean up the per-case scratch dir the harness used for its asset /
+        # render outputs. The intended review artifacts (contact sheets + per-
+        # case PNGs) have already been copied under ``review_dir`` (the
+        # Git-excluded ``outputs/review/...`` tree), so this only reclaims the
+        # transient ``golden-review-<case_id>-*`` temp dirs.
+        if tmp_path is not None:
+            shutil.rmtree(tmp_path, ignore_errors=True)
 
 
 def _build_family_contact_sheets(records: list[dict], family_dir: Path) -> dict:

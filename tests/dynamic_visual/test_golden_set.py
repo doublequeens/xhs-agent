@@ -22,6 +22,7 @@ brief.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -38,6 +39,63 @@ from tests.dynamic_visual.golden_fixtures import (
 )
 
 CASE_IDS = all_case_ids()
+
+
+# ---------------------------------------------------------------------------
+# Copy-specialty matchers -- content-coupled, not note-coupled.
+#
+# The matrix-coverage test must prove each required copy specialty is carried
+# by a fixture's ACTUAL produced copy (title + cover_copy + content), not
+# merely declared in the fixture's ``note`` documentation. Asserting against
+# the copy proves the real content_atomizer -> visual_director path exhibits
+# the specialty; the ``note`` field stays as human-readable documentation only.
+# ---------------------------------------------------------------------------
+
+# A Latin ingredient / filter name (>=4 letters): Niacinamide, Retinol,
+# Hyaluronic, Avobenzone, ... Catches the real carrier cases and rejects
+# 3-letter tokens like "UVA"/"UVB" which are not ingredient names.
+_LATIN_INGREDIENT_RE = re.compile(r"[A-Za-z]{4,}")
+
+# Emoji range: Dingbats + miscellaneous symbols (covers U+2728 SPARKLES, the
+# token used by every emoji carrier) plus the main pictograph blocks.
+_EMOJI_RE = re.compile(
+    "[☀-➿\U0001f000-\U0001f0ff\U0001f300-\U0001faff]"
+)
+
+# A numbered step line: "1. ..." / "1、 ..." / "1) ..." at line start.
+_NUMBERED_STEP_RE = re.compile(r"(?m)^[ \t]*\d+[.)、]\s+\S")
+
+
+def _has_long_chinese_line(text: str) -> bool:
+    """True when at least one rendered line carries >=15 CJK characters.
+
+    The "long Chinese lines" specialty is about the long-form rendered
+    sentence shape, so commas / punctuation do NOT reset the per-line count
+    (a contiguous >=15 CJK *token* run would not match the real fixtures,
+    whose lines are long sentences punctuated by Chinese commas).
+    """
+    for line in text.splitlines():
+        if sum(1 for ch in line if "一" <= ch <= "鿿") >= 15:
+            return True
+    return False
+
+
+_SPECIALTY_MATCHERS = {
+    "Latin ingredient": lambda copy: bool(_LATIN_INGREDIENT_RE.search(copy)),
+    "persistent pain/redness/tightness": lambda copy: all(
+        term in copy for term in ("刺痛", "泛红", "紧绷")
+    ),
+    "ordered steps": lambda copy: bool(_NUMBERED_STEP_RE.search(copy)),
+    "emoji": lambda copy: bool(_EMOJI_RE.search(copy)),
+    "long Chinese lines": _has_long_chinese_line,
+}
+
+
+def _entry_copy_text(case_id: str) -> str:
+    """The combined visible source copy a fixture drives through the graph."""
+    spec = load_case(case_id)
+    pkg = spec.publish_package
+    return f"{pkg['title']}\n{pkg['cover_copy']}\n{pkg['content']}"
 
 
 def _run_case(case_id: str, tmp_path: Path, monkeypatch):
@@ -194,16 +252,18 @@ def test_golden_matrix_covers_every_required_axis():
     assert required_densities <= {e["density"] for e in entries}
     assert required_asset_modes <= {e["asset_mode"] for e in entries}
 
-    # The brief's required copy specialties must each appear somewhere.
-    all_notes = " ".join(e.get("note", "") for e in entries)
-    for specialty in (
-        "Latin ingredient",
-        "persistent pain",
-        "ordered steps",
-        "emoji",
-        "long Chinese",
-    ):
-        assert specialty in all_notes, f"missing copy specialty: {specialty}"
+    # The brief's required copy specialties must each be EXHIBITED by at least
+    # one fixture's actual produced copy (title + cover_copy + content), not
+    # merely declared in the fixture's ``note`` documentation. Asserting against
+    # the copy proves the real content_atomizer -> visual_director path carries
+    # the specialty; the ``note`` field is documentation only.
+    for specialty, matches in _SPECIALTY_MATCHERS.items():
+        carriers = [
+            e["case_id"] for e in entries if matches(_entry_copy_text(e["case_id"]))
+        ]
+        assert carriers, (
+            f"missing copy specialty in produced copy content: {specialty}"
+        )
 
 
 # ---------------------------------------------------------------------------
