@@ -1,0 +1,33 @@
+{
+  "case_id": "case-13",
+  "family": "green_catalog",
+  "page_count": 15,
+  "density": "dense",
+  "copy_shape": "comparison",
+  "asset_mode": "searched photo",
+  "note": "Latin ingredient names",
+  "publish_package": {
+    "topic_id": "case-13-tp",
+    "angle_id": "case-13-ag",
+    "topic": "物理与化学防晒对比",
+    "angle": "按肤质选择防晒",
+    "target_group": "护肤入门人群",
+    "core_pain": "不知道选哪种防晒",
+    "focus_keyword": "防晒选择",
+    "title": "护肤成分收藏夹",
+    "cover_copy": "两类防晒怎么选",
+    "content": "物理防晒更像一层反射盾，适合敏感肌\n化学防晒质地更轻薄，肤感更自然\n纯物理防晒容易泛白，需要更久推匀\n化学防晒成膜更快，通勤更省时间\n敏感肌更建议物理或物化结合\n油皮偏好化学防晒的清爽肤感\n干皮可以选择滋润型化学防晒\n户外高强度日照选高倍物化结合\n日常通勤低倍化学防晒就够\n儿童和孕期更推荐纯物理防晒\n化学防晒需要足量涂抹才有效\n物理防晒补涂频率和化学相同\n两者都需要每两小时补涂一次",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "一张图看懂两类防晒"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

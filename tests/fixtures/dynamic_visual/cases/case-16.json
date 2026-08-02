@@ -1,0 +1,33 @@
+{
+  "case_id": "case-16",
+  "family": "white_quote",
+  "page_count": 5,
+  "density": "sparse",
+  "copy_shape": "narrative",
+  "asset_mode": "text-only",
+  "note": "long Chinese lines",
+  "publish_package": {
+    "topic_id": "case-16-tp",
+    "angle_id": "case-16-ag",
+    "topic": "通勤护肤的节奏",
+    "angle": "慢半拍的早晨更稳",
+    "target_group": "通勤上班族",
+    "core_pain": "通勤早晨护肤仓促",
+    "focus_keyword": "通勤护肤",
+    "title": "护肤的一句话",
+    "cover_copy": "慢半拍的早晨",
+    "content": "通勤早高峰前那十分钟，是护肤最容易被压缩的环节，\n可正是这几分钟决定了底妆能不能撑过一整个工作日。\n我曾经也贪多，把精华防晒隔离底妆一股脑堆上去，",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "十分钟通勤护肤的底层逻辑"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

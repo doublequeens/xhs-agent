@@ -1,0 +1,33 @@
+{
+  "case_id": "case-11",
+  "family": "coral_impact",
+  "page_count": 12,
+  "density": "dense",
+  "copy_shape": "saveable-reference",
+  "asset_mode": "mixed optional asset loss",
+  "note": "Latin ingredient names",
+  "publish_package": {
+    "topic_id": "case-11-tp",
+    "angle_id": "case-11-ag",
+    "topic": "常见护肤成分速查",
+    "angle": "拉丁名与作用对照",
+    "target_group": "成分党入门",
+    "core_pain": "成分表看不懂",
+    "focus_keyword": "护肤成分",
+    "title": "护肤重点一次说清",
+    "cover_copy": "成分速查可保存",
+    "content": "Niacinamide 烟酰胺：辅助控油与提亮\nRetinol 视黄醇：促进更新需建立耐受\nHyaluronic Acid 透明质酸：补水锁水\nCeramide 神经酰胺：修护屏障\nVitamin C 维生素 C：抗氧化提亮\nSalicylic Acid 水杨酸：疏通毛孔\nGlycolic Acid 果酸：温和代谢角质\nPanthenol 泛醇：舒缓保湿\nAllantoin 尿囊素：舒缓降红\nSqualane 角鲨烷：滋润封闭",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "一份可保存的成分速查表"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

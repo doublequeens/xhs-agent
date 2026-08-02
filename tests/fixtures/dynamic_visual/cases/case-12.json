@@ -1,0 +1,33 @@
+{
+  "case_id": "case-12",
+  "family": "coral_impact",
+  "page_count": 8,
+  "density": "standard",
+  "copy_shape": "Q&A",
+  "asset_mode": "texture",
+  "note": "persistent pain/redness/tightness",
+  "publish_package": {
+    "topic_id": "case-12-tp",
+    "angle_id": "case-12-ag",
+    "topic": "防晒常见问题答疑",
+    "angle": "高频疑问逐条回答",
+    "target_group": "护肤入门人群",
+    "core_pain": "防晒认知含糊",
+    "focus_keyword": "防晒问答",
+    "title": "护肤重点一次说清",
+    "cover_copy": "高频问题一次说清",
+    "content": "防晒到底需不需要补涂？\n答案是需要的，每两小时一次\n阴天紫外线会弱一些吗？\nUVA 仍然能穿透云层，仍需防晒\n隔离能代替防晒吗？\n不能，隔离量达不到防晒标准",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "九个防晒高频问题一次说清"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

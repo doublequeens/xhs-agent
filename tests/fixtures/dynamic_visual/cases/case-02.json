@@ -1,0 +1,33 @@
+{
+  "case_id": "case-02",
+  "family": "pink_red",
+  "page_count": 10,
+  "density": "dense",
+  "copy_shape": "checklist",
+  "asset_mode": "searched photo",
+  "note": "emoji",
+  "publish_package": {
+    "topic_id": "case-02-tp",
+    "angle_id": "case-02-ag",
+    "topic": "通勤底妆自检清单",
+    "angle": "出门前可保存检查项",
+    "target_group": "通勤上班族",
+    "core_pain": "底妆细节容易遗漏",
+    "focus_keyword": "底妆清单",
+    "title": "防晒不搓泥红榜",
+    "cover_copy": "出门前自检七件事",
+    "content": "- 确认防晒已经成膜再上底妆 ✨\n- 检查底妆是否均匀推开\n- T 区是否泛油需要压粉\n- 鼻翼有没有卡粉堆积\n- 发际线边缘是否自然过渡\n- 下颌线是否均匀衔接\n- 眉毛有没有沾到粉底\n- 嘴角是否干净无残妆",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "一份可保存的底妆自检表"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}
