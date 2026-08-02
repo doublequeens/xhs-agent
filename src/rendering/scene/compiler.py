@@ -23,8 +23,10 @@ Design contract (do not violate):
   leaking into output. Stable attribute order and stable ``(layer, source
   order)`` element order make the output byte-identical for identical inputs.
 
-This package is self-contained: it does not import from the family-template
-code under ``src/rendering/editorial`` (that code is slated for deletion).
+This package is self-contained: the v3 production path has a single generic
+compiler. The retired ``src/rendering/editorial`` family-template tree was
+removed in the llm_scene_v3 cutover, so there is no family-template code to
+import from and no per-family branch in this module.
 """
 
 from __future__ import annotations

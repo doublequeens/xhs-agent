@@ -18,15 +18,17 @@
 
 ## Current architecture
 
-生产图由 `src/graph.py` 构建，路径从 domain routing、选题和写作经过 R1/R2、视觉计划、storyboard、asset resolver、Carousel QA、确定性 editorial renderer、Render QA、Human Review、Final Guard，最后到 `content_writer`。运行时只有这一条现代生产路径；`src/editorial_carousel/legacy.py` 是旧 checkpoint 到现代合同的唯一兼容迁移边界。
+生产图由 `src/graph.py` 构建，采用 `llm_scene_v3` 动态视觉生产路径。内容主链从 domain routing、选题、写作经过 R1/R2、标题、hashtag 到 assembler；assembler 之后进入动态视觉链：`content_atomizer → visual_director → asset_resolver → page_designer → design_plan_qa → generic_scene_renderer → render_qa → visual_critic → human_review → final_policy_guard → content_writer`。修订回路：`design_plan_qa`/`render_qa` 失败回 `design_reviser`；`visual_critic` 失败且修订轮 < 2 回 `design_reviser`，第 2 轮仍失败带 `visual_needs_attention` 进 Human Review；`design_reviser` 在 family/页序重排时经 `visual_route_override` 回 `visual_director`，否则回 `design_plan_qa`。`design_plan_qa` 和 `render_qa` 各有 3-strike 中断（`VisualProductionInterrupted`）。运行时只有这一条现代生产路径；`src/editorial_carousel/legacy.py` 是旧 v1/v2 checkpoint 到 v3 合同的唯一兼容迁移边界（丢弃旧视觉状态、标记 `llm_scene_v3`、在 assembler 后重新进入）。
+
+视觉阶段的关键约束：一套 carousel 只用一个 `template_family`（六个 family 是参考视觉 DNA，不是固定页面模板）；页数 5–18 由 Visual Director 根据文案决定；图片内可见文字只能来自 `ContentAtomSet`，视觉阶段不得增删改写；图片不得自动加入 AI 标识、示意图标签或免责声明；AI 来源仅写入内部 manifest。Human Review 统一在所有硬 QA 之后进行一次；Final Guard 在其后执行，硬 QA 永远不允许强制放行，审美覆盖可由人工显式记录。
 
 ## Non-negotiable contracts
 
-- 保持 `VisualPlan`、`CarouselPayload`、`AssetManifest`、`RenderManifest`、`ContentLock` 的 producer/consumer 和哈希、顺序、尺寸、slot 绑定等不变量。
-- 不恢复已删除的旧渲染/提示词合同，不让业务节点绕过 `legacy.py` 直接处理旧状态。
-- 不绕过 Carousel QA、Render QA、Human Review 或 Final Guard；人工可见文字编辑必须通过现代 schema 和必要的 R2/重新渲染。
-- 不修改 ContentLock 已锁定的事实、标题、步骤或可见文字来实现“视觉救援”。
-- 外部素材必须通过 provider、许可、containment、no-follow、事务绑定和字节哈希检查后才能进入已批准 manifest。
+- 保持 v3 合同的 producer/consumer 和哈希绑定：`ContentAtomSet`（atomizer → director/designer/QA/publish）、`VisualDirectionPlan`（director → asset/page-designer/QA/render）、`AssetManifest`/`AssetResolutionResult`（resolver → designer/QA/render/publish）、`CarouselDesignPlan`（designer → QA/compiler/render/publish）、`DesignPlanQAResult`（design_plan_qa → render/publish）、`RenderManifest`（renderer → render_qa/critic/publish）、`RenderQAResult`（render_qa → critic/publish）、`VisualCritique`（critic → human_review/publish）、`ContentLock`（assembler → human_review/final_guard/publish；不再含 storyboards，绑定 `content_atom_set_sha256`）、`PublishAttestation`（publish：`workflow_version=llm_scene_v3`，哈希 10 个合同 + 每个 PNG）。
+- 不恢复已删除的旧视觉 node/合同/renderer（`visual_strategy_planner`、`storyboard_generator`、`carousel_qa`、`editorial_carousel_renderer`、`VisualPlan`、`CarouselPayload`、`ResolvedVariant`、`modern_v2`、`recommended_frame_count`、固定六模板 HTML/CSS）；不让业务节点绕过 `legacy.py` 直接处理旧状态。旧名称只允许出现在历史 spec、checkpoint 迁移说明和断言其不存在的测试中。
+- 不绕过 Design Plan QA、Render QA、Visual Critic、Human Review 或 Final Guard；硬 QA 失败必须走修订回路或中断，永远不允许强制放行。人工可见文字编辑必须清除全部 8 个视觉合同与 atoms，回 R2/assembler/content_atomizer 重新进入。
+- 不修改 ContentLock 已锁定的事实、标题、步骤或可见文字来实现“视觉救援”；视觉阶段只能换行、分组、强调和按语义边界拆分分页。
+- 外部素材必须通过 provider、许可、containment、no-follow、事务绑定和字节哈希检查后才能进入已批准 manifest；AI provenance 仅写入内部数据，绝不进入页面可见文字或 PNG。
 
 ## Commands and verification
 
@@ -41,7 +43,7 @@ python -m compileall -q src main.py
 git diff --check
 ```
 
-默认测试离线，不调用真实素材 provider。只有明确需要时才设置 `RUN_LIVE_ASSET_PROVIDER_TESTS=1` 运行 live smoke tests。修复行为时先添加能复现问题的回归测试；完成前必须重新运行与风险相称的聚焦测试和全套验证。
+默认测试离线，不调用真实素材 provider、Gemini 或 Chromium 远程能力。只有明确需要时才设置 `RUN_LIVE_ASSET_PROVIDER_TESTS=1`（Pexels/Unsplash）、`RUN_LIVE_VISUAL_AI_TESTS=1` 配合 `GEMINI_API_KEY`（结构化视觉与图像生成）运行 live smoke tests。修复行为时先添加能复现问题的回归测试；完成前必须重新运行与风险相称的聚焦测试和全套验证。
 
 ## State, assets, and outputs
 

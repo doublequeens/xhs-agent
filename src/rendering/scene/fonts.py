@@ -6,8 +6,10 @@ network fetch, no clock, no randomness, and no family-specific branch. Every
 stack is the chosen family name followed by one universal generic CSS keyword
 so Chromium can fall back predictably when a named family is unavailable.
 
-This module is deliberately self-contained (it must not import from the
-soon-to-be-deleted family-template packages under ``editorial``).
+This module is deliberately self-contained: the v3 production path has a
+single generic compiler and no family-template packages. The retired
+``src/rendering/editorial`` tree was removed in the llm_scene_v3 cutover,
+so there is no family-template code to import from.
 """
 
 from __future__ import annotations
