@@ -10,8 +10,12 @@ from typing import Any, get_args
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas.content_atoms import ContentAtomSet, ContentFragment
 from src.schemas.content_contract import ContentContract
-from src.schemas.visual_director import AssetDirective, VisualDirectionPlan
-from src.schemas.visual_style import FamilyStyleProfile, TemplateFamily
+from src.schemas.visual_director import (
+    AssetDirective,
+    PageDirection,
+    VisualDirectionPlan,
+)
+from src.schemas.visual_style import FamilyStyleProfile, StrictModel, TemplateFamily
 from src.visual_ai import StructuredVisualModel
 from src.visual_design.model_retry import generate_validated
 from src.visual_design.style_registry import load_style_registry
@@ -83,6 +87,37 @@ _ENGLISH_POSITIVE_VISIBLE_COPY_COMMAND = re.compile(
     rf".{{0,24}}\b(?:{_ENGLISH_VISIBLE_COPY_TOKENS})\b",
     re.IGNORECASE,
 )
+
+
+class FragmentAssignment(StrictModel):
+    """LLM-emitted mapping from one fragment id to exactly one source atom.
+
+    The model picks atom assignments only; the system derives the verbatim
+    ``text``/``start``/``end`` of each ``ContentFragment`` from the atom so the
+    exact-match reconstruction contract holds deterministically.
+    """
+
+    fragment_id: str
+    source_atom_id: str
+
+
+class VisualDirectionDraft(StrictModel):
+    """Wire shape the Visual Director model emits.
+
+    Mirrors :class:`VisualDirectionPlan` for the shared planning fields but
+    replaces ``content_fragments`` (exact text + offsets) with
+    ``content_fragment_assignments``. The node derives the durable plan from a
+    draft plus the bound :class:`ContentAtomSet`.
+    """
+
+    template_family: TemplateFamily
+    art_direction: str
+    palette: tuple[str, ...]
+    typography_direction: dict[str, str]
+    motifs: tuple[str, ...]
+    content_fragment_assignments: tuple[FragmentAssignment, ...]
+    page_sequence: tuple[PageDirection, ...]
+    asset_directives: tuple[AssetDirective, ...]
 
 
 def _required_atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
@@ -259,17 +294,15 @@ def _validate_executable_direction(
         raise ValueError("each page purpose must be non-blank")
 
 
-def _validate_candidate(
-    candidate: VisualDirectionPlan,
+def _validate_plan(
+    plan: VisualDirectionPlan,
     *,
     atom_set: ContentAtomSet,
     profiles: Mapping[TemplateFamily, FamilyStyleProfile],
-) -> None:
+) -> VisualDirectionPlan:
     # Revalidate the complete dump so scripted/future adapters cannot bypass
     # Pydantic invariants by constructing a model without validation.
-    validated = VisualDirectionPlan.model_validate(
-        candidate.model_dump(mode="python")
-    )
+    validated = VisualDirectionPlan.model_validate(plan.model_dump(mode="python"))
     family_profile = profiles[validated.template_family]
     validated.validate_against(atom_set, family_profile)
     _validate_executable_direction(validated, family_profile)
@@ -277,6 +310,68 @@ def _validate_candidate(
     for directive in validated.asset_directives:
         _validate_asset_directive(directive)
     _validate_content_asset_fit(atom_set, validated.asset_directives)
+    return validated
+
+
+def _derive_plan(
+    draft: VisualDirectionDraft,
+    *,
+    atom_set: ContentAtomSet,
+    profiles: Mapping[TemplateFamily, FamilyStyleProfile],
+) -> VisualDirectionPlan:
+    """Derive a fully-validated ``VisualDirectionPlan`` from a draft.
+
+    One whole atom becomes one fragment (``text``/``start``/``end`` filled from
+    the atom), so the exact-match reconstruction contract holds by construction.
+    Each assignment must reference a known atom and the assignments must cover
+    every atom exactly once; otherwise this raises ``ValueError`` so the repair
+    loop can retry.
+    """
+    atoms_by_id = {atom.atom_id: atom for atom in atom_set.atoms}
+    fragments: list[ContentFragment] = []
+    assigned_atoms: set[str] = set()
+    for assignment in draft.content_fragment_assignments:
+        atom = atoms_by_id.get(assignment.source_atom_id)
+        if atom is None:
+            raise ValueError(
+                "content fragment assignment references unknown atom: "
+                f"{assignment.source_atom_id}"
+            )
+        if assignment.source_atom_id in assigned_atoms:
+            raise ValueError(
+                "content fragment assignment duplicates atom: "
+                f"{assignment.source_atom_id}"
+            )
+        assigned_atoms.add(assignment.source_atom_id)
+        fragments.append(
+            ContentFragment(
+                fragment_id=assignment.fragment_id,
+                source_atom_id=assignment.source_atom_id,
+                text=atom.text,
+                start=0,
+                end=len(atom.text),
+            )
+        )
+    missing = set(atoms_by_id) - assigned_atoms
+    if missing:
+        raise ValueError(
+            "content fragment assignments must cover every atom exactly once; "
+            f"missing atoms: {sorted(missing)}"
+        )
+    plan = VisualDirectionPlan(
+        template_family=draft.template_family,
+        page_count=len(draft.page_sequence),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        art_direction=draft.art_direction,
+        palette=draft.palette,
+        typography_direction=draft.typography_direction,
+        motifs=draft.motifs,
+        content_fragments=tuple(fragments),
+        page_sequence=draft.page_sequence,
+        asset_directives=draft.asset_directives,
+        recent_visual_context=(),
+    )
+    return _validate_plan(plan, atom_set=atom_set, profiles=profiles)
 
 
 def _director_prompt(
@@ -338,9 +433,9 @@ def visual_director_node(
     plan = generate_validated(
         model,
         prompt=prompt,
-        response_model=VisualDirectionPlan,
+        response_model=VisualDirectionDraft,
         image_paths=_reference_image_paths(profiles),
-        validate=lambda candidate: _validate_candidate(
+        validate=lambda candidate: _derive_plan(
             candidate,
             atom_set=atom_set,
             profiles=profiles,

@@ -87,10 +87,17 @@ def generate_validated(
     prompt: str,
     response_model: type[T],
     image_paths: Sequence[Path],
-    validate: Callable[[T], None],
+    validate: Callable[[T], BaseModel | None],
     max_attempts: int = 3,
 ) -> T:
-    """Generate and validate with no more than three model attempts."""
+    """Generate and validate with no more than three model attempts.
+
+    The ``validate`` callback may either return ``None`` (the candidate itself is
+    the accepted result) or return a transformed candidate (e.g. a draft that the
+    caller derives into the final contract object). Returning a non-``None``
+    value lets a caller accept a model output whose wire shape differs from the
+    durable contract while still routing it through the same repair loop.
+    """
     if not 1 <= max_attempts <= 3:
         raise ValueError("max_attempts must be between 1 and 3")
 
@@ -113,8 +120,8 @@ def generate_validated(
 
         raw_outputs.append(candidate.model_dump_json())
         try:
-            validate(candidate)
-            return candidate
+            validated = validate(candidate)
+            return validated if validated is not None else candidate
         except (ValidationError, ValueError) as exc:
             _record_repairable_failure(
                 exc,

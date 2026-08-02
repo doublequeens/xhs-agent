@@ -21,12 +21,15 @@ code, or prose outside that object.
   density.
 
 【Immutable copy】
-- Create fragments only at semantic sentence, clause, list-item, or step
-  boundaries.
-- Copy every fragment character exactly from ContentAtomSet using valid
-  start/end offsets.
-- In source order, fragments must reconstruct every atom completely. Never
-  rewrite, summarize, omit, duplicate, correct, translate, or add visible copy.
+- Assign every content atom to exactly one content fragment via a
+  content_fragment_assignment (fragment_id + source_atom_id).
+- Emit exactly ONE assignment per atom. Together the assignments must cover
+  every atom in ContentAtomSet exactly once — no duplicates, no omissions.
+- Do NOT emit text, start, or end offsets. The system derives each fragment's
+  text, start, and end verbatim from the assigned atom (one whole atom becomes
+  one fragment). You only choose the fragment_id <-> atom_id pairings.
+- Never rewrite, summarize, omit, duplicate, correct, translate, or add visible
+  copy.
 
 【Content-led asset direction】
 Choose independently for each page:
@@ -56,16 +59,18 @@ photoreal and must not fabricate product efficacy.
   embedded text, AI disclosure labels, and disclaimer copy.
 
 【Output】
-Return exactly one JSON object matching VisualDirectionPlan — no markdown
-fences, no prose, no wrapper keys. Use only content fragments as visible copy.
-Asset provenance belongs to internal metadata and must never become visible
-content.
+Return exactly one JSON object with the Visual Director draft shape — no
+markdown fences, no prose, no wrapper keys. Use only the assigned content atoms
+as visible copy. Asset provenance belongs to internal metadata and must never
+become visible content.
+
+Do NOT emit page_count, content_atom_set_sha256, recent_visual_context, or any
+content_fragments array. Do NOT emit text/start/end for fragments. The system
+fills all of those deterministically from ContentAtomSet.
 
 Return EXACTLY this shape (all sequences are JSON arrays):
 {
   "template_family": "<one family name from the six approved families>",
-  "page_count": <integer between 5 and 18>,
-  "content_atom_set_sha256": "<echo the provided content_atom_set_sha256 verbatim>",
   "art_direction": "<short art-direction string>",
   "palette": ["#RRGGBB", "..."],
   "typography_direction": {
@@ -73,12 +78,10 @@ Return EXACTLY this shape (all sequences are JSON arrays):
     "body": "<font name>", "caption": "<font name>"
   },
   "motifs": ["...", "..."],
-  "content_fragments": [
+  "content_fragment_assignments": [
     {
       "fragment_id": "fragment-1",
-      "source_atom_id": "<an atom_id from ContentAtomSet>",
-      "text": "<exact characters copied from that atom>",
-      "start": <integer offset>, "end": <integer offset>
+      "source_atom_id": "<an atom_id from ContentAtomSet>"
     }
   ],
   "page_sequence": [
@@ -102,15 +105,18 @@ Return EXACTLY this shape (all sequences are JSON arrays):
 }
 
 Shape rules (these are the most common mistakes — do not make them):
+- `content_fragment_assignments` has exactly ONE entry per atom in
+  ContentAtomSet. Every atom_id is used exactly once; every fragment_id is
+  unique. The system copies each atom's text verbatim — never emit text or
+  offsets yourself.
 - `typography_direction` is a FLAT mapping of font role -> font name
   ({"display": "...", "heading": "...", "body": "...", "caption": "..."}).
   Do NOT nest it under a "font_roles" key and do NOT invent other keys.
 - `palette` and `motifs` must be subsets of the chosen family profile.
-- Every `page.fragment_ids` references a fragment in `content_fragments`;
-  every `page.asset_directive_ids` references a directive in `asset_directives`.
-- `page_sequence` covers exactly `page_count` pages with contiguous
-  `sequence` starting at 1; `content_fragments` reconstruct every atom
-  completely in source order.
+- Every `page.fragment_ids` references a fragment_id declared in
+  `content_fragment_assignments`; every `page.asset_directive_ids` references a
+  directive in `asset_directives`.
+- `page_sequence` has 5–18 pages with contiguous `sequence` starting at 1.
 - `asset_directives` may be an empty array for a text-only carousel.
 - `role` is one of: evidence_example, skin_example, texture, object, decorative.
 - `preferred_source` is one of: search, generate, either, none.

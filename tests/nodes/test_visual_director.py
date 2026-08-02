@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Sequence
 
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from src.schemas.content_atoms import (
     ContentAtom,
@@ -19,7 +19,11 @@ from src.schemas.visual_director import (
     PageDirection,
     VisualDirectionPlan,
 )
-from src.nodes.node_p_visual_director import visual_director_node
+from src.nodes.node_p_visual_director import (
+    FragmentAssignment,
+    VisualDirectionDraft,
+    visual_director_node,
+)
 from src.visual_ai import StructuredVisualResponseError
 from src.visual_design.model_retry import VisualProductionInterrupted
 from src.visual_design.style_registry import load_style_registry
@@ -28,7 +32,7 @@ from src.visual_design.style_registry import load_style_registry
 class ScriptedVisualModel:
     def __init__(
         self,
-        responses: Sequence[VisualDirectionPlan | Exception],
+        responses: Sequence[BaseModel | Exception],
     ) -> None:
         self.responses = list(responses)
         self.calls: list[dict[str, object]] = []
@@ -36,9 +40,9 @@ class ScriptedVisualModel:
     def generate_json(
         self,
         prompt: str,
-        response_model: type[VisualDirectionPlan],
+        response_model: type[BaseModel],
         image_paths: Sequence[Path] = (),
-    ) -> VisualDirectionPlan:
+    ) -> BaseModel:
         self.calls.append(
             {
                 "prompt": prompt,
@@ -142,7 +146,52 @@ def _valid_plan(
             for index in range(1, count + 1)
         ),
         asset_directives=asset_directives,
-        recent_visual_context=("previous=deep_teal",),
+        recent_visual_context=(),
+    )
+
+
+def _valid_draft(
+    atom_set: ContentAtomSet,
+    *,
+    page_count: int | None = None,
+    template_family: str = "pink_red",
+    asset_directives: tuple[AssetDirective, ...] = (),
+) -> VisualDirectionDraft:
+    count = page_count or len(atom_set.atoms)
+    directive_ids_by_page = {
+        directive.page_id: (directive.directive_id,)
+        for directive in asset_directives
+    }
+    return VisualDirectionDraft(
+        template_family=template_family,
+        art_direction="内容驱动的护肤编辑设计",
+        palette=("#F4A7BF", "#DC2333"),
+        typography_direction={
+            "display": "醒目但不拥挤",
+            "body": "清晰易读",
+        },
+        motifs=("red underlines",),
+        content_fragment_assignments=tuple(
+            FragmentAssignment(
+                fragment_id=f"fragment-{index}",
+                source_atom_id=f"atom-{index}",
+            )
+            for index in range(1, len(atom_set.atoms) + 1)
+        ),
+        page_sequence=tuple(
+            PageDirection(
+                page_id=f"page-{index}",
+                sequence=index,
+                purpose=f"解释第{index}个信息重点",
+                visual_job=f"visual-job-{index}",
+                fragment_ids=(f"fragment-{index}",),
+                asset_directive_ids=directive_ids_by_page.get(
+                    f"page-{index}", ()
+                ),
+            )
+            for index in range(1, count + 1)
+        ),
+        asset_directives=asset_directives,
     )
 
 
@@ -177,7 +226,7 @@ def test_director_accepts_content_driven_page_counts_independent_of_sample_count
     page_count,
 ):
     atom_set = _atom_set(page_count)
-    model = ScriptedVisualModel([_valid_plan(atom_set, page_count=page_count)])
+    model = ScriptedVisualModel([_valid_draft(atom_set, page_count=page_count)])
 
     result = visual_director_node(
         _state(atom_set, page_count_hint=5),
@@ -196,7 +245,7 @@ def test_director_accepts_content_driven_page_counts_independent_of_sample_count
 
 def test_director_prompt_sends_all_six_profiles_atoms_contract_and_recent_usage():
     atom_set = _atom_set()
-    model = ScriptedVisualModel([_valid_plan(atom_set)])
+    model = ScriptedVisualModel([_valid_draft(atom_set)])
 
     visual_director_node(_state(atom_set), model=model)
 
@@ -211,34 +260,15 @@ def test_director_prompt_sends_all_six_profiles_atoms_contract_and_recent_usage(
 @pytest.mark.parametrize("page_count", [4, 19])
 def test_director_retries_out_of_range_page_count(page_count):
     atom_set = _atom_set()
-    invalid = _valid_plan(atom_set).model_copy(
-        update={
-            "page_count": page_count,
-            "page_sequence": _valid_plan(atom_set).page_sequence[:page_count],
-        }
-    )
-    valid = _valid_plan(atom_set)
+    invalid = _valid_draft(atom_set, page_count=page_count)
+    valid = _valid_draft(atom_set)
     model = ScriptedVisualModel([invalid, valid])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == valid
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert len(model.calls) == 2
     assert "page_count" in str(model.calls[1]["prompt"])
-
-
-def test_director_retries_fragment_text_that_changes_source_characters():
-    atom_set = _atom_set()
-    plan = _valid_plan(atom_set)
-    fragments = list(plan.content_fragments)
-    fragments[0] = fragments[0].model_copy(update={"text": "被改写的内容。"})
-    invalid = plan.model_copy(update={"content_fragments": tuple(fragments)})
-    model = ScriptedVisualModel([invalid, plan])
-
-    result = visual_director_node(_state(atom_set), model=model)
-
-    assert result["visual_direction_plan"] == plan
-    assert "exactly match" in str(model.calls[1]["prompt"])
 
 
 @pytest.mark.parametrize(
@@ -258,15 +288,15 @@ def test_director_retries_fragment_text_that_changes_source_characters():
 )
 def test_director_retries_empty_or_duplicate_page_jobs(invalid_pages):
     atom_set = _atom_set()
-    plan = _valid_plan(atom_set)
-    invalid = plan.model_copy(
-        update={"page_sequence": tuple(invalid_pages(plan.page_sequence))}
+    draft = _valid_draft(atom_set)
+    invalid = draft.model_copy(
+        update={"page_sequence": tuple(invalid_pages(draft.page_sequence))}
     )
-    model = ScriptedVisualModel([invalid, plan])
+    model = ScriptedVisualModel([invalid, draft])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == plan
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert "visual_job" in str(model.calls[1]["prompt"])
 
 
@@ -294,7 +324,7 @@ def test_director_allows_photo_evidence_for_persistent_pain_example(
         min_width=1080,
         min_height=1440,
     )
-    plan = _valid_plan(atom_set, asset_directives=(directive,))
+    plan = _valid_draft(atom_set, asset_directives=(directive,))
     model = ScriptedVisualModel([plan])
 
     result = visual_director_node(_state(atom_set), model=model)
@@ -304,7 +334,7 @@ def test_director_allows_photo_evidence_for_persistent_pain_example(
 
 def test_director_requires_skin_photo_evidence_for_persistent_pain_example():
     atom_set = _atom_set(persistent_pain=True)
-    without_evidence = _valid_plan(atom_set)
+    without_evidence = _valid_draft(atom_set)
     directive = AssetDirective(
         directive_id="skin-proof",
         page_id="page-3",
@@ -322,18 +352,21 @@ def test_director_requires_skin_photo_evidence_for_persistent_pain_example():
         min_width=1080,
         min_height=1440,
     )
-    with_evidence = _valid_plan(atom_set, asset_directives=(directive,))
+    with_evidence = _valid_draft(atom_set, asset_directives=(directive,))
     model = ScriptedVisualModel([without_evidence, with_evidence])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == with_evidence
+    assert (
+        result["visual_direction_plan"]
+        == _valid_plan(atom_set, asset_directives=(directive,))
+    )
     assert "persistent-pain content requires" in str(model.calls[1]["prompt"])
 
 
 def test_director_prompt_defines_licensed_generated_diagram_and_no_asset_choices():
     atom_set = _atom_set()
-    model = ScriptedVisualModel([_valid_plan(atom_set)])
+    model = ScriptedVisualModel([_valid_draft(atom_set)])
 
     visual_director_node(_state(atom_set), model=model)
 
@@ -349,9 +382,9 @@ def test_director_prompt_defines_licensed_generated_diagram_and_no_asset_choices
 
 def test_director_retries_adapter_json_and_schema_failures_then_recovers():
     atom_set = _atom_set()
-    valid = _valid_plan(atom_set)
+    valid = _valid_draft(atom_set)
     with pytest.raises(ValidationError) as exc_info:
-        VisualDirectionPlan.model_validate({"page_count": "invalid"})
+        VisualDirectionDraft.model_validate({"template_family": "not-a-family"})
     model = ScriptedVisualModel(
         [
             StructuredVisualResponseError(
@@ -365,10 +398,10 @@ def test_director_retries_adapter_json_and_schema_failures_then_recovers():
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == valid
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert len(model.calls) == 3
     assert "response did not contain valid JSON" in str(model.calls[1]["prompt"])
-    assert "page_count" in str(model.calls[2]["prompt"])
+    assert "template_family" in str(model.calls[2]["prompt"])
 
 
 def test_three_adapter_failures_interrupt_and_retain_only_available_raw_outputs():
@@ -435,13 +468,13 @@ def test_director_retries_asset_prompt_requesting_forbidden_visible_copy():
         min_width=1080,
         min_height=1440,
     )
-    invalid = _valid_plan(atom_set, asset_directives=(malicious,))
-    valid = _valid_plan(atom_set)
+    invalid = _valid_draft(atom_set, asset_directives=(malicious,))
+    valid = _valid_draft(atom_set)
     model = ScriptedVisualModel([invalid, valid])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == valid
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert "forbidden visible image copy" in str(model.calls[1]["prompt"])
 
 
@@ -464,12 +497,15 @@ def test_director_keeps_factual_skin_subject_matter_without_visible_boilerplate(
         min_width=1080,
         min_height=1440,
     )
-    plan = _valid_plan(atom_set, asset_directives=(factual,))
-    model = ScriptedVisualModel([plan])
+    draft = _valid_draft(atom_set, asset_directives=(factual,))
+    model = ScriptedVisualModel([draft])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == plan
+    assert (
+        result["visual_direction_plan"]
+        == _valid_plan(atom_set, asset_directives=(factual,))
+    )
 
 
 @pytest.mark.parametrize(
@@ -498,12 +534,15 @@ def test_director_allows_english_texture_descriptions(query_or_prompt):
         min_width=1080,
         min_height=1440,
     )
-    plan = _valid_plan(atom_set, asset_directives=(factual,))
-    model = ScriptedVisualModel([plan])
+    draft = _valid_draft(atom_set, asset_directives=(factual,))
+    model = ScriptedVisualModel([draft])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == plan
+    assert (
+        result["visual_direction_plan"]
+        == _valid_plan(atom_set, asset_directives=(factual,))
+    )
 
 
 def test_director_still_retries_explicit_english_embedded_text_command():
@@ -527,13 +566,13 @@ def test_director_still_retries_explicit_english_embedded_text_command():
         min_width=1080,
         min_height=1440,
     )
-    invalid = _valid_plan(atom_set, asset_directives=(embedded_text,))
-    valid = _valid_plan(atom_set)
+    invalid = _valid_draft(atom_set, asset_directives=(embedded_text,))
+    valid = _valid_draft(atom_set)
     model = ScriptedVisualModel([invalid, valid])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == valid
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert "forbidden visible image copy" in str(model.calls[1]["prompt"])
 
 
@@ -571,13 +610,13 @@ def test_director_retries_plural_english_visible_copy_commands(
         min_width=1080,
         min_height=1440,
     )
-    invalid = _valid_plan(atom_set, asset_directives=(visible_copy,))
-    valid = _valid_plan(atom_set)
+    invalid = _valid_draft(atom_set, asset_directives=(visible_copy,))
+    valid = _valid_draft(atom_set)
     model = ScriptedVisualModel([invalid, valid])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == valid
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert "forbidden visible image copy" in str(model.calls[1]["prompt"])
 
 
@@ -620,12 +659,15 @@ def test_director_allows_explicit_english_no_text_constraints(
         min_width=1080,
         min_height=1440,
     )
-    plan = _valid_plan(atom_set, asset_directives=(no_visible_copy,))
-    model = ScriptedVisualModel([plan])
+    draft = _valid_draft(atom_set, asset_directives=(no_visible_copy,))
+    model = ScriptedVisualModel([draft])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == plan
+    assert (
+        result["visual_direction_plan"]
+        == _valid_plan(atom_set, asset_directives=(no_visible_copy,))
+    )
 
 
 @pytest.mark.parametrize(
@@ -660,22 +702,21 @@ def test_director_allows_explicit_english_no_text_constraints(
 )
 def test_director_retries_empty_shell_direction_fields(make_invalid, feedback):
     atom_set = _atom_set()
-    valid = _valid_plan(atom_set)
+    valid = _valid_draft(atom_set)
     model = ScriptedVisualModel([make_invalid(valid), valid])
 
     result = visual_director_node(_state(atom_set), model=model)
 
-    assert result["visual_direction_plan"] == valid
+    assert result["visual_direction_plan"] == _valid_plan(atom_set)
     assert feedback in str(model.calls[1]["prompt"])
 
 
 def test_third_validation_failure_raises_resumable_interruption_with_evidence():
     atom_set = _atom_set()
-    plan = _valid_plan(atom_set)
     invalid_responses = [
-        plan.model_copy(update={"page_count": 4}),
-        plan.model_copy(update={"page_count": 19}),
-        plan.model_copy(update={"page_count": 4}),
+        _valid_draft(atom_set, page_count=4),
+        _valid_draft(atom_set, page_count=19),
+        _valid_draft(atom_set, page_count=4),
     ]
     model = ScriptedVisualModel(invalid_responses)
 
@@ -710,3 +751,49 @@ def test_director_rejects_missing_content_atom_set_before_calling_model():
         )
 
     assert model.calls == []
+
+
+def test_director_derives_fragments_deterministically_from_atom_assignments():
+    atom_set = _atom_set()
+    draft = _valid_draft(atom_set)
+    model = ScriptedVisualModel([draft])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    plan = result["visual_direction_plan"]
+    # The model never emitted text/bounds; the system derived them per whole atom.
+    atoms_by_id = {atom.atom_id: atom for atom in atom_set.atoms}
+    assert len(plan.content_fragments) == len(atom_set.atoms)
+    for fragment in plan.content_fragments:
+        atom = atoms_by_id[fragment.source_atom_id]
+        assert fragment.text == atom.text
+        assert fragment.start == 0
+        assert fragment.end == len(atom.text)
+    # The derived fragments satisfy the canonical exact-reconstruction validator.
+    atom_set.validate_complete_fragments(plan.content_fragments)
+    registry = load_style_registry()
+    plan.validate_against(atom_set, registry[plan.template_family])
+    # The fragment_ids the LLM chose survive into the derived plan unchanged.
+    assert {f.fragment_id for f in plan.content_fragments} == {
+        f"fragment-{i}" for i in range(1, len(atom_set.atoms) + 1)
+    }
+
+
+def test_director_retries_when_assignment_misses_an_atom():
+    atom_set = _atom_set()
+    incomplete = _valid_draft(atom_set).model_copy(
+        update={
+            "content_fragment_assignments": _valid_draft(
+                atom_set
+            ).content_fragment_assignments[:-1]
+        }
+    )
+    complete = _valid_draft(atom_set)
+    model = ScriptedVisualModel([incomplete, complete])
+
+    result = visual_director_node(_state(atom_set), model=model)
+
+    plan = result["visual_direction_plan"]
+    atom_set.validate_complete_fragments(plan.content_fragments)
+    assert len(model.calls) == 2
+    assert "missing atoms" in str(model.calls[1]["prompt"])
