@@ -1,0 +1,33 @@
+{
+  "case_id": "case-24",
+  "family": "white_quote",
+  "page_count": 10,
+  "density": "standard",
+  "copy_shape": "diagnostic",
+  "asset_mode": "mixed optional asset loss",
+  "note": "emoji",
+  "publish_package": {
+    "topic_id": "case-24-tp",
+    "angle_id": "case-24-ag",
+    "topic": "护肤不适自测指南",
+    "angle": "按反应判断处理方式",
+    "target_group": "敏感肌人群",
+    "core_pain": "护肤后出现不适不知如何处理",
+    "focus_keyword": "护肤不适",
+    "title": "护肤的一句话",
+    "cover_copy": "刺痛泛红怎么办",
+    "content": "如果出现持续刺痛，先停用新产品 ✨\n明显泛红超过两小时需要冷敷\n第二天仍然紧绷说明屏障偏干\n洁面后有拉扯感换更温和的产品\n涂抹时刺痛可能是屏障受损\n局部泛红先暂停活性成分\n全脸发烫退回基础保湿\n脱屑集中在鼻翼加强局部保湿",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "出现刺痛泛红紧绷时这样做"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

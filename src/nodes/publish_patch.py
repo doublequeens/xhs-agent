@@ -5,6 +5,19 @@ STORYBOARD_VISIBLE_FIELDS = ("kicker", "headline", "footer")
 STORYBOARD_VISIBLE_LIST_FIELDS = ("emphasis",)
 CONTENT_BLOCK_VISIBLE_FIELDS = ("heading", "body")
 TITLE_MAX_LENGTH = 20
+
+# The human-editable publish-copy fields whose change is a visible-text edit
+# in the ``llm_scene_v3`` atom/content model. The content atomizer rebuilds the
+# atom set (the carousel's visible text source) from ``title``/``cover_copy``/
+# ``content``; ``hashtags`` are the post tags. A change to any of these forces
+# an R2 re-check and a full visual re-atomization (Human Review clears the
+# whole visual chain via ``invalidated_visual_artifacts``).
+VISIBLE_PUBLISH_COPY_FIELDS = ("title", "content", "cover_copy", "hashtags")
+
+# Assembler-authoritative fields: a pending human patch never overrides these
+# (the assembler owns them). Storyboards were retired with the fixed-card
+# renderer; the v3 publish_package never carries them, so they no longer appear
+# in the authoritative set.
 ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "focus_keyword",
     "focus_keyword_cli_present",
@@ -18,7 +31,6 @@ ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "core_pain",
     "cover_copy",
     "hashtags",
-    "storyboards",
     "domain",
     "profile_version",
     "subdomain",
@@ -29,6 +41,14 @@ ASSEMBLER_AUTHORITATIVE_FIELDS = {
     "narrative_form",
     "closing_mode",
 }
+
+
+def has_visible_publish_copy_edits(previous: dict, current: dict) -> bool:
+    """Return True if a human edit changed any visible publish-copy field."""
+    return any(
+        previous.get(field) != current.get(field)
+        for field in VISIBLE_PUBLISH_COPY_FIELDS
+    )
 
 
 def enforce_title_length(title, max_length: int = TITLE_MAX_LENGTH) -> str:

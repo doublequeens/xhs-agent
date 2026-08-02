@@ -1,0 +1,286 @@
+{
+  "_comment": "Golden 24-case registry for the llm_scene_v3 dynamic visual production pipeline. Each case stores immutable input copy plus the structural dimensions (family / page_count / density / copy_shape / asset_mode). Scripted VisualDirectionPlan / CarouselDesignPlan / AssetManifest / VisualCritique are built at runtime by tests/dynamic_visual/golden_fixtures .py against the real ContentAtomSet. No expected HTML is stored.",
+  "matrix_axes": {
+    "families": [
+      "pink_red",
+      "deep_teal",
+      "soft_pink",
+      "coral_impact",
+      "green_catalog",
+      "white_quote"
+    ],
+    "page_counts": [
+      5,
+      6,
+      8,
+      10,
+      12,
+      15,
+      18
+    ],
+    "densities": [
+      "sparse",
+      "standard",
+      "dense"
+    ],
+    "copy_shapes": [
+      "tutorial",
+      "checklist",
+      "comparison",
+      "Q&A",
+      "diagnostic",
+      "narrative",
+      "myth correction",
+      "saveable-reference"
+    ],
+    "asset_modes": [
+      "text-only",
+      "searched photo",
+      "generated photoreal skin example",
+      "texture",
+      "mixed optional asset loss"
+    ]
+  },
+  "cases": [
+    {
+      "case_id": "case-01",
+      "family": "pink_red",
+      "page_count": 6,
+      "density": "standard",
+      "copy_shape": "tutorial",
+      "asset_mode": "text-only",
+      "note": "ordered steps",
+      "fixture": "cases/case-01.json"
+    },
+    {
+      "case_id": "case-02",
+      "family": "pink_red",
+      "page_count": 10,
+      "density": "dense",
+      "copy_shape": "checklist",
+      "asset_mode": "searched photo",
+      "note": "emoji",
+      "fixture": "cases/case-02.json"
+    },
+    {
+      "case_id": "case-03",
+      "family": "pink_red",
+      "page_count": 15,
+      "density": "standard",
+      "copy_shape": "saveable-reference",
+      "asset_mode": "mixed optional asset loss",
+      "note": "Latin ingredient names",
+      "fixture": "cases/case-03.json"
+    },
+    {
+      "case_id": "case-19",
+      "family": "pink_red",
+      "page_count": 8,
+      "density": "dense",
+      "copy_shape": "tutorial",
+      "asset_mode": "texture",
+      "note": "ordered steps",
+      "fixture": "cases/case-19.json"
+    },
+    {
+      "case_id": "case-04",
+      "family": "deep_teal",
+      "page_count": 8,
+      "density": "sparse",
+      "copy_shape": "diagnostic",
+      "asset_mode": "generated photoreal skin example",
+      "note": "persistent pain/redness/tightness",
+      "fixture": "cases/case-04.json"
+    },
+    {
+      "case_id": "case-05",
+      "family": "deep_teal",
+      "page_count": 12,
+      "density": "standard",
+      "copy_shape": "comparison",
+      "asset_mode": "texture",
+      "note": "long Chinese lines",
+      "fixture": "cases/case-05.json"
+    },
+    {
+      "case_id": "case-06",
+      "family": "deep_teal",
+      "page_count": 5,
+      "density": "standard",
+      "copy_shape": "Q&A",
+      "asset_mode": "text-only",
+      "note": "emoji",
+      "fixture": "cases/case-06.json"
+    },
+    {
+      "case_id": "case-20",
+      "family": "deep_teal",
+      "page_count": 18,
+      "density": "dense",
+      "copy_shape": "checklist",
+      "asset_mode": "mixed optional asset loss",
+      "note": "emoji",
+      "fixture": "cases/case-20.json"
+    },
+    {
+      "case_id": "case-07",
+      "family": "soft_pink",
+      "page_count": 6,
+      "density": "standard",
+      "copy_shape": "narrative",
+      "asset_mode": "text-only",
+      "note": "long Chinese lines",
+      "fixture": "cases/case-07.json"
+    },
+    {
+      "case_id": "case-08",
+      "family": "soft_pink",
+      "page_count": 18,
+      "density": "dense",
+      "copy_shape": "checklist",
+      "asset_mode": "searched photo",
+      "note": "Latin ingredient names",
+      "fixture": "cases/case-08.json"
+    },
+    {
+      "case_id": "case-09",
+      "family": "soft_pink",
+      "page_count": 10,
+      "density": "sparse",
+      "copy_shape": "myth correction",
+      "asset_mode": "text-only",
+      "note": "emoji",
+      "fixture": "cases/case-09.json"
+    },
+    {
+      "case_id": "case-21",
+      "family": "soft_pink",
+      "page_count": 12,
+      "density": "standard",
+      "copy_shape": "comparison",
+      "asset_mode": "searched photo",
+      "note": "long Chinese lines",
+      "fixture": "cases/case-21.json"
+    },
+    {
+      "case_id": "case-10",
+      "family": "coral_impact",
+      "page_count": 5,
+      "density": "standard",
+      "copy_shape": "tutorial",
+      "asset_mode": "generated photoreal skin example",
+      "note": "ordered steps",
+      "fixture": "cases/case-10.json"
+    },
+    {
+      "case_id": "case-11",
+      "family": "coral_impact",
+      "page_count": 12,
+      "density": "dense",
+      "copy_shape": "saveable-reference",
+      "asset_mode": "mixed optional asset loss",
+      "note": "Latin ingredient names",
+      "fixture": "cases/case-11.json"
+    },
+    {
+      "case_id": "case-12",
+      "family": "coral_impact",
+      "page_count": 8,
+      "density": "standard",
+      "copy_shape": "Q&A",
+      "asset_mode": "texture",
+      "note": "persistent pain/redness/tightness",
+      "fixture": "cases/case-12.json"
+    },
+    {
+      "case_id": "case-22",
+      "family": "coral_impact",
+      "page_count": 15,
+      "density": "standard",
+      "copy_shape": "narrative",
+      "asset_mode": "text-only",
+      "note": "persistent pain/redness/tightness",
+      "fixture": "cases/case-22.json"
+    },
+    {
+      "case_id": "case-13",
+      "family": "green_catalog",
+      "page_count": 15,
+      "density": "dense",
+      "copy_shape": "comparison",
+      "asset_mode": "searched photo",
+      "note": "Latin ingredient names",
+      "fixture": "cases/case-13.json"
+    },
+    {
+      "case_id": "case-14",
+      "family": "green_catalog",
+      "page_count": 6,
+      "density": "standard",
+      "copy_shape": "checklist",
+      "asset_mode": "text-only",
+      "note": "emoji",
+      "fixture": "cases/case-14.json"
+    },
+    {
+      "case_id": "case-15",
+      "family": "green_catalog",
+      "page_count": 10,
+      "density": "standard",
+      "copy_shape": "diagnostic",
+      "asset_mode": "generated photoreal skin example",
+      "note": "persistent pain/redness/tightness",
+      "fixture": "cases/case-15.json"
+    },
+    {
+      "case_id": "case-23",
+      "family": "green_catalog",
+      "page_count": 18,
+      "density": "sparse",
+      "copy_shape": "Q&A",
+      "asset_mode": "generated photoreal skin example",
+      "note": "Latin ingredient names",
+      "fixture": "cases/case-23.json"
+    },
+    {
+      "case_id": "case-16",
+      "family": "white_quote",
+      "page_count": 5,
+      "density": "sparse",
+      "copy_shape": "narrative",
+      "asset_mode": "text-only",
+      "note": "long Chinese lines",
+      "fixture": "cases/case-16.json"
+    },
+    {
+      "case_id": "case-17",
+      "family": "white_quote",
+      "page_count": 12,
+      "density": "standard",
+      "copy_shape": "myth correction",
+      "asset_mode": "text-only",
+      "note": "emoji",
+      "fixture": "cases/case-17.json"
+    },
+    {
+      "case_id": "case-18",
+      "family": "white_quote",
+      "page_count": 8,
+      "density": "sparse",
+      "copy_shape": "saveable-reference",
+      "asset_mode": "texture",
+      "note": "Latin ingredient names",
+      "fixture": "cases/case-18.json"
+    },
+    {
+      "case_id": "case-24",
+      "family": "white_quote",
+      "page_count": 10,
+      "density": "standard",
+      "copy_shape": "diagnostic",
+      "asset_mode": "mixed optional asset loss",
+      "note": "emoji",
+      "fixture": "cases/case-24.json"
+    }
+  ]
+}

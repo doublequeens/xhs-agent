@@ -36,15 +36,6 @@ def _selected_content_contract(state: AgentState, topic_id: str) -> dict:
         if hasattr(content_contract, "model_dump")
         else dict(content_contract)
     )
-    # The beauty/skincare account cannot produce real skin/product photos, so
-    # carousels must be pure-text (proof_mode="none"). The topic ideator is
-    # guided toward proof_mode="none"; this guard guarantees it regardless of
-    # model output, keeping VisualPlan.required_assets empty so the asset
-    # resolver never crashes on an unresolvable photo requirement.
-    domain_context = state.get("domain_context")
-    domain = _get_value(domain_context, "domain") if domain_context else None
-    if domain == "beauty" and contract_dict.get("proof_mode") != "none":
-        contract_dict["proof_mode"] = "none"
     return contract_dict
 
 def assembler_node(state: AgentState) -> AgentState:

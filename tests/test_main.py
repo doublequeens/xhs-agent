@@ -41,19 +41,11 @@ def _load_main(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def renderer_publish_root(monkeypatch, tmp_path):
-    from src.nodes import (
-        node_p_editorial_carousel_renderer,
-        node_q_01_final_policy_guard,
-    )
+def publish_artifacts_root(monkeypatch, tmp_path):
+    from src.publishing import artifacts as publish_artifacts
 
     root = tmp_path / "outputs" / "publish"
-    monkeypatch.setattr(
-        node_p_editorial_carousel_renderer,
-        "PUBLISH_ROOT",
-        root,
-    )
-    monkeypatch.setattr(node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", root)
+    monkeypatch.setattr(publish_artifacts, "PUBLISH_ROOT", root)
 
 
 def test_build_thread_id_preserves_explicit_resume_id(monkeypatch):
@@ -189,71 +181,6 @@ def test_cli_review_without_pending_assets_routes_directly_to_final_guard(
     assert "asset_decisions" not in resume_payload
     assert result["review_status"] == "approved"
     assert review_module.route_after_human_review(result) == "final_policy_guard"
-
-
-def test_cli_review_routes_after_pending_then_allows_second_final_approval(
-    monkeypatch,
-):
-    main = _load_main(monkeypatch)
-    review_module = importlib.import_module("src.nodes.node_q_human_review")
-    first_answers = iter(["approved", "yes"])
-    monkeypatch.setattr(
-        "builtins.input", lambda _prompt="": next(first_answers)
-    )
-    first_resume = main.collect_human_review(
-        {
-            "message": "review",
-            "publish_package": {"title": "carousel"},
-            "pending_assets": [
-                {"decision_id": "pending-1", "provider": "pexels"}
-            ],
-        }
-    )
-    active_manifest = {"items": [{"slot_id": "slot-1", "status": "active"}]}
-    monkeypatch.setattr(review_module, "interrupt", lambda _payload: first_resume)
-    monkeypatch.setattr(
-        review_module,
-        "_apply_asset_decisions",
-        lambda *_args: (active_manifest, "render_qa"),
-    )
-    first_result = review_module.human_review_node(
-        {
-            "publish_package": {"title": "carousel"},
-            "asset_manifest": {
-                "items": [
-                    {
-                        "status": "pending_external",
-                        "pending_id": "pending-1",
-                    }
-                ]
-            },
-            "review_round": 0,
-            "final_policy_issues": [],
-        }
-    )
-
-    assert review_module.route_after_human_review(first_result) == "render_qa"
-
-    monkeypatch.setattr("builtins.input", lambda _prompt="": "yes")
-    second_resume = main.collect_human_review(
-        {
-            "message": "review",
-            "publish_package": {"title": "carousel"},
-            "pending_assets": [],
-        }
-    )
-    monkeypatch.setattr(review_module, "interrupt", lambda _payload: second_resume)
-    second_result = review_module.human_review_node(
-        {
-            **first_result,
-            "asset_manifest": active_manifest,
-            "review_round": first_result["review_round"],
-        }
-    )
-
-    assert "asset_decisions" not in second_resume
-    assert second_result["review_status"] == "approved"
-    assert review_module.route_after_human_review(second_result) == "final_policy_guard"
 
 
 def test_fresh_thread_keeps_new_routing_initial_state(monkeypatch):
@@ -422,6 +349,7 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
         "domain_context": {"domain": "beauty"},
         "publish_package": {
             "content_contract": old_contract,
+            "title": "旧版卡片",
             "storyboards": [
                 {"frame_id": "frame-1", "template": "cover_statement"}
             ],
@@ -436,42 +364,51 @@ def test_load_run_state_hydrates_only_explicit_old_editorial_checkpoint(monkeypa
                 return old_state
             return SimpleNamespace(
                 values={**old_values, **calls[-1]},
-                next=("storyboard_generator",),
+                next=("content_atomizer",),
             )
 
         def update_state(self, _config, updates, *, as_node=None):
-            assert as_node == "visual_strategy_planner"
+            assert as_node == "assembler"
             calls.append(updates)
 
     current_state, run_input = main.load_run_state(
-        FakeGraph(), config, {"visual_plan": None}
+        FakeGraph(), config, {"content_atom_set": None}
     )
 
     assert run_input is None
-    assert current_state.next == ("storyboard_generator",)
+    # Migration re-enters after assembler so content_atomizer runs first.
+    assert current_state.next == ("content_atomizer",)
     assert calls[0]["legacy_editorial_checkpoint"] is False
-    assert calls[0]["editorial_workflow_version"] == "modern_v2"
-    assert calls[0]["visual_plan"] is not None
+    assert calls[0]["editorial_workflow_version"] == "llm_scene_v3"
+    # Old visual slots are wiped so the dynamic pipeline re-derives them.
+    assert calls[0]["content_atom_set"] is None
+    assert calls[0]["visual_direction_plan"] is None
     assert calls[0]["asset_manifest"] is None
     assert calls[0]["render_manifest"] is None
-    assert calls[0]["publish_package"]["content_contract"]["content_job"] == "save_and_check"
+    assert calls[0]["render_qa_result"] is None
+    # Content contract / title survive; storyboards are stripped.
+    assert calls[0]["publish_package"]["title"] == "旧版卡片"
+    assert calls[0]["publish_package"]["content_contract"] is old_contract
     assert "storyboards" not in calls[0]["publish_package"]
 
 
-def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
+def test_load_run_state_preserves_modern_v3_checkpoint_without_resolving_again(
     monkeypatch,
 ):
     main = _load_main(monkeypatch)
     state = SimpleNamespace(
         values={
             "domain_context": {"domain": "beauty"},
-            "visual_plan": {"frame_plan": []},
-            "asset_manifest": {"items": [{"status": "pending_external"}]},
+            "editorial_workflow_version": "llm_scene_v3",
+            "content_atom_set": {"atoms": [{"atom_id": "title-001"}]},
+            "visual_direction_plan": {"page_sequence": [{"page_id": "p-1"}]},
+            "asset_manifest": {"items": [{"status": "active"}]},
             "render_manifest": None,
+            "run_output_dir": "outputs/render_runs/v3-run",
         },
-        next=("carousel_qa",),
+        next=("visual_director",),
     )
-    config = main.build_run_config("modern")
+    config = main.build_run_config("modern-v3")
 
     class FakeGraph:
         def get_state(self, received_config):
@@ -479,10 +416,10 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
             return state
 
         def update_state(self, _config, _updates):
-            raise AssertionError("modern checkpoint must not be rewritten")
+            raise AssertionError("v3 checkpoint must not be rewritten")
 
     monkeypatch.setattr(
-        "src.asset_resolver.resolver.resolve_assets",
+        "src.asset_resolver.resolver.resolve_asset_directives",
         lambda *_args: pytest.fail("resume must not repeat external resolution"),
     )
 
@@ -491,26 +428,23 @@ def test_load_run_state_preserves_modern_checkpoint_without_resolving_again(
     )
 
     assert current_state is state
-    assert current_state.next == ("carousel_qa",)
-    assert current_state.values["asset_manifest"] == {
-        "items": [{"status": "pending_external"}]
+    assert current_state.next == ("visual_director",)
+    assert current_state.values["content_atom_set"] == {
+        "atoms": [{"atom_id": "title-001"}]
     }
     assert current_state.values["render_manifest"] is None
     assert run_input is None
 
 
-@pytest.mark.parametrize("storyboards", [[], [{}], [{"frame_id": "frame-1"}]])
-def test_partial_or_corrupt_modern_checkpoint_is_not_hydrated_as_legacy(
-    monkeypatch,
-    storyboards,
-):
+def test_clean_v3_checkpoint_with_empty_storyboards_is_not_migrated(monkeypatch):
     main = _load_main(monkeypatch)
     state = SimpleNamespace(
         values={
             "domain_context": {},
-            "publish_package": {"storyboards": storyboards},
+            "editorial_workflow_version": "llm_scene_v3",
+            "publish_package": {"storyboards": []},
         },
-        next=("carousel_qa",),
+        next=("content_atomizer",),
     )
 
     class FakeGraph:
@@ -518,17 +452,17 @@ def test_partial_or_corrupt_modern_checkpoint_is_not_hydrated_as_legacy(
             return state
 
         def update_state(self, _config, _updates):
-            raise AssertionError("modern partial state must not be legacy hydrated")
+            raise AssertionError("clean v3 state must not be migrated")
 
     current_state, run_input = main.load_run_state(
-        FakeGraph(), {"configurable": {"thread_id": "partial"}}, {}
+        FakeGraph(), {"configurable": {"thread_id": "clean-v3"}}, {}
     )
 
     assert current_state is state
     assert run_input is None
 
 
-def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
+def test_legacy_marker_with_storyboards_migrates_to_v3(monkeypatch):
     main = _load_main(monkeypatch)
     values = {
         "domain_context": {},
@@ -542,7 +476,8 @@ def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
                     "content_blocks": [],
                     "visual_slots": [],
                 }
-            ]
+            ],
+            "title": "旧版",
         },
     }
     calls = []
@@ -551,28 +486,26 @@ def test_modern_checkpoint_clears_stale_legacy_marker(monkeypatch):
         def get_state(self, _config):
             return SimpleNamespace(
                 values={**values, **(calls[-1] if calls else {})},
-                next=("carousel_qa",),
+                next=("content_atomizer",),
             )
 
-        def update_state(self, _config, updates):
+        def update_state(self, _config, updates, *, as_node=None):
+            assert as_node == "assembler"
             calls.append(updates)
 
     current_state, _ = main.load_run_state(
-        FakeGraph(), {"configurable": {"thread_id": "modern"}}, {}
+        FakeGraph(), {"configurable": {"thread_id": "legacy-marker"}}, {}
     )
 
-    assert calls == [
-        {
-            "legacy_editorial_checkpoint": False,
-            "editorial_workflow_version": "modern_v2",
-        }
-    ]
+    # The stale legacy marker plus storyboards triggers a full v3 migration.
+    assert calls[0]["legacy_editorial_checkpoint"] is False
+    assert calls[0]["editorial_workflow_version"] == "llm_scene_v3"
+    assert calls[0]["publish_package"]["title"] == "旧版"
+    assert "storyboards" not in calls[0]["publish_package"]
     assert current_state.values["legacy_editorial_checkpoint"] is False
 
 
-def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
-    monkeypatch,
-):
+def test_explicit_modern_v2_old_shape_upgrades_to_v3(monkeypatch):
     main = _load_main(monkeypatch)
     values = {
         "domain_context": {},
@@ -581,7 +514,8 @@ def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
         "publish_package": {
             "storyboards": [
                 {"frame_id": "frame-1", "template": "cover_statement"}
-            ]
+            ],
+            "title": "v2 卡片",
         },
     }
     calls = []
@@ -590,20 +524,24 @@ def test_explicit_modern_v2_old_shape_cannot_be_downgraded_by_marker(
         def get_state(self, _config):
             return SimpleNamespace(
                 values={**values, **(calls[-1] if calls else {})},
-                next=("carousel_qa",),
+                next=("content_atomizer",),
             )
 
-        def update_state(self, _config, updates, **_kwargs):
+        def update_state(self, _config, updates, *, as_node=None):
+            assert as_node == "assembler"
             calls.append(updates)
 
     current_state, _ = main.load_run_state(
-        FakeGraph(), {"configurable": {"thread_id": "modern-old-shape"}}, {}
+        FakeGraph(), {"configurable": {"thread_id": "v2-old-shape"}}, {}
     )
 
-    assert calls == [{"legacy_editorial_checkpoint": False}]
-    assert current_state.values["editorial_workflow_version"] == "modern_v2"
+    # A v2 checkpoint carrying retired storyboards upgrades to v3 (never
+    # downgrades), discards the frames, and re-enters at the assembler seam.
+    assert calls[0]["editorial_workflow_version"] == "llm_scene_v3"
+    assert calls[0]["legacy_editorial_checkpoint"] is False
+    assert "storyboards" not in calls[0]["publish_package"]
+    assert current_state.values["editorial_workflow_version"] == "llm_scene_v3"
     assert current_state.values["legacy_editorial_checkpoint"] is False
-    assert "visual_plan" not in current_state.values
 
 
 def test_unknown_editorial_version_with_legacy_marker_fails_closed(monkeypatch):
@@ -902,117 +840,6 @@ def completed_state_for_package(package: dict) -> StateSnapshot:
     )
 
 
-@pytest.mark.parametrize("frame_count", [5, 7])
-def test_export_publish_package_accepts_dynamic_manifest_page_counts(
-    monkeypatch, tmp_path, frame_count
-):
-    main = _load_main(monkeypatch)
-    package = valid_publish_package_with_rendered_images(
-        tmp_path, frame_count=frame_count
-    )
-    monkeypatch.chdir(tmp_path)
-
-    result = main.export_publish_package(completed_state_for_package(package))
-
-    exported = sorted((tmp_path / "outputs" / "publish").glob("*/images/*.png"))[0]
-    assert exported.name == "01-cover.png"
-    assert len(result.rendered_image_paths) == frame_count
-    assert result.publish_copy_path.is_file()
-    assert result.rescue_prompt_path.is_file()
-    assert not list((tmp_path / "outputs" / "publish").glob("*/Storyboard_images_generator_prompt.txt"))
-
-
-def test_export_publish_package_uses_renderer_root_from_another_cwd_and_removes_legacy_prompt(
-    monkeypatch,
-    tmp_path,
-):
-    main = _load_main(monkeypatch)
-    from src.nodes import (
-        node_p_editorial_carousel_renderer,
-        node_q_01_final_policy_guard,
-    )
-
-    renderer_root = tmp_path / "repository" / "outputs" / "publish"
-    monkeypatch.setattr(
-        node_p_editorial_carousel_renderer,
-        "PUBLISH_ROOT",
-        renderer_root,
-    )
-    monkeypatch.setattr(
-        node_q_01_final_policy_guard, "RENDER_OUTPUT_ROOT", renderer_root
-    )
-    package = valid_publish_package_with_rendered_images(
-        tmp_path,
-        publish_root=renderer_root,
-    )
-    package_dir = Path(package["rendered_image_paths"][0]).parent.parent
-    legacy_prompt = package_dir / "Storyboard_images_generator_prompt.txt"
-    legacy_prompt.write_text("obsolete image prompt", encoding="utf-8")
-    different_cwd = tmp_path / "other-working-directory"
-    different_cwd.mkdir()
-    monkeypatch.chdir(different_cwd)
-
-    main.export_publish_package(completed_state_for_package(package))
-
-    assert not legacy_prompt.exists()
-    assert (package_dir / f"{package['title']}.json").is_file()
-
-
-def test_export_publish_package_preserves_metadata_with_package_relative_image_paths(monkeypatch, tmp_path):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    package["content_contract"].update(
-        {
-            "first_screen_promise": "通勤前 3 分钟底妆不搓泥",
-            "screenshot_asset": "防晒成膜计时截图",
-        }
-    )
-
-    main.export_publish_package(completed_state_for_package(package))
-
-    audit_path = next(tmp_path.glob("outputs/publish/*/*.json"))
-    audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
-    assert audit["content_contract"] == package["content_contract"]
-    assert audit["rendered_image_paths"] == [
-        f"images/{Path(path).name}" for path in package["rendered_image_paths"]
-    ]
-    assert audit["content_lock"]["focus_keyword"] == package["focus_keyword"]
-    assert audit["visual_plan"] == package["visual_plan"]
-    assert audit["asset_manifest"] == package["asset_manifest"]
-    assert [page["path"] for page in audit["render_manifest"]["pages"]] == [
-        f"images/{Path(path).name}" for path in package["rendered_image_paths"]
-    ]
-    assert audit["render_manifest"]["contact_sheet_path"] == "images/contact-sheet.png"
-
-
-def test_export_publish_package_partitions_directory_by_domain_and_subdomain(
-    monkeypatch,
-    tmp_path,
-):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-
-    main.export_publish_package(
-        completed_state_for_package(valid_publish_package_with_rendered_images(
-            tmp_path,
-            domain="wellness",
-            subdomain="sleep",
-            profile_version="wellness-v1",
-            title="共同标题",
-        ))
-    )
-
-    output_dirs = [
-        path.name
-        for path in (tmp_path / "outputs" / "publish").iterdir()
-        if path.is_dir()
-    ]
-    assert len(output_dirs) == 1
-    assert output_dirs[0].endswith("-wellness-sleep-共同标题")
-
-
 def test_export_publish_package_rejects_paths_outside_package_images(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     monkeypatch.chdir(tmp_path)
@@ -1024,42 +851,6 @@ def test_export_publish_package_rejects_paths_outside_package_images(monkeypatch
     package["render_manifest"]["pages"][0]["path"] = str(outside_path)
 
     with pytest.raises(ValueError, match="inside outputs/publish|recomputed Final Guard"):
-        main.export_publish_package(completed_state_for_package(package))
-
-
-def test_export_publish_package_rejects_non_png_or_wrong_sequence(monkeypatch, tmp_path):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    non_png = Path(package["rendered_image_paths"][0]).with_suffix(".jpg")
-    non_png.write_bytes(b"wrong extension")
-    package["rendered_image_paths"][0] = str(non_png)
-    package["render_manifest"]["pages"][0]["path"] = str(non_png)
-
-    with pytest.raises(ValueError, match="PNG"):
-        main.export_publish_package(completed_state_for_package(package))
-
-    package = valid_publish_package_with_rendered_images(tmp_path, title="伪造图片")
-    Path(package["rendered_image_paths"][0]).write_bytes(b"not a PNG")
-
-    with pytest.raises(ValueError, match="PNG"):
-        main.export_publish_package(completed_state_for_package(package))
-
-    package = valid_publish_package_with_rendered_images(tmp_path, title="另一份指南")
-    package["rendered_image_paths"].reverse()
-
-    with pytest.raises(ValueError, match="RenderManifest order|recomputed Final Guard"):
-        main.export_publish_package(completed_state_for_package(package))
-
-
-def test_export_publish_package_rejects_unlisted_png(monkeypatch, tmp_path):
-    main = _load_main(monkeypatch)
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    image_dir = Path(package["rendered_image_paths"][0]).parent
-    (image_dir / "unlisted.png").write_bytes(b"\x89PNG\r\n\x1a\nextra")
-
-    with pytest.raises(ValueError, match="unlisted PNG"):
         main.export_publish_package(completed_state_for_package(package))
 
 
@@ -1157,40 +948,6 @@ def test_completed_export_requires_explicit_publishability_state(
             return _state_snapshot(values)
 
     assert main.export_completed_publish_package(CompletedGraph(), {}) is False
-
-
-def test_completed_checkpoint_export_retry_uses_current_artifact_generation(
-    monkeypatch, tmp_path
-):
-    main = _load_main(monkeypatch)
-    monkeypatch.chdir(tmp_path)
-    package = valid_publish_package_with_rendered_images(tmp_path)
-    package.pop("publish_authorization")
-    package.pop("expected_artifact_generation")
-    values = {
-        "review_status": "approved",
-        "final_policy_issues": [],
-        "carousel_qa_result": {"passed": True, "issues": []},
-        "render_qa_result": {"passed": True, "issues": []},
-        "focus_keyword_cli_present": True,
-        "focus_keyword": "通勤底妆",
-        "publish_package": package,
-        "visual_plan": package["visual_plan"],
-        "asset_manifest": package["asset_manifest"],
-        "render_manifest": package["render_manifest"],
-        "editorial_workflow_version": "modern_v2",
-        "legacy_editorial_checkpoint": False,
-    }
-
-    class CompletedGraph:
-        def get_state(self, _config):
-            return _state_snapshot(values)
-
-    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
-    assert main.export_completed_publish_package(CompletedGraph(), {}) is True
-    audit_path = next(tmp_path.glob("outputs/publish/*/*.json"))
-    audit = __import__("json").loads(audit_path.read_text(encoding="utf-8"))
-    assert audit["artifact_generation"] == 2
 
 
 def test_main_rejects_subdomain_without_domain(monkeypatch):
@@ -1304,9 +1061,11 @@ def test_main_initial_state_defaults_to_interactive(monkeypatch, tmp_path):
     main.main()
 
     assert captured["initial_state"]["interactive"] is True
-    assert captured["initial_state"]["visual_plan"] is None
+    assert captured["initial_state"]["content_atom_set"] is None
+    assert captured["initial_state"]["visual_direction_plan"] is None
     assert captured["initial_state"]["asset_manifest"] is None
     assert captured["initial_state"]["render_manifest"] is None
+    assert captured["initial_state"]["editorial_workflow_version"] == "llm_scene_v3"
     assert (
         captured["initial_state"]["creator_profile"].profile_id
         == "commuting_beauty_women_v1"

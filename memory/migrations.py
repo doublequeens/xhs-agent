@@ -26,6 +26,19 @@ VISUAL_SIGNATURE_COLUMNS: dict[str, str] = {
     "density_profile": "TEXT",
 }
 
+# Task 16 (llm_scene_v3): additive, nullable columns for the dynamic-visual
+# diversity metadata written by content_writer_node. ``template_family`` is the
+# pre-existing v2 column (in VISUAL_SIGNATURE_COLUMNS) and is intentionally NOT
+# duplicated here -- the v3 path reuses it. These columns are added
+# non-destructively; historical rows stay readable with NULL values.
+DYNAMIC_VISUAL_COLUMNS: dict[str, str] = {
+    "page_count": "INTEGER",
+    "direction_signature": "TEXT",
+    "design_signature": "TEXT",
+    "density_summary": "TEXT",
+    "color_summary": "TEXT",
+}
+
 METRICS_COLLECTION_COLUMNS: dict[str, str] = {
     "impressions": "INTEGER",
     "cover_click_rate": "REAL",
@@ -116,6 +129,34 @@ def migrate_contents_visual_signature_fields(connection: sqlite3.Connection) -> 
         raise
     else:
         connection.execute("RELEASE migrate_contents_visual_signature_fields")
+
+
+def migrate_contents_dynamic_visual_fields(connection: sqlite3.Connection) -> None:
+    """Add the ``llm_scene_v3`` dynamic-visual columns to ``contents`` tables.
+
+    Mirrors ``migrate_contents_visual_signature_fields``: idempotent, single
+    SAVEPOINT, no destructive actions, no row deletion. Adds five nullable
+    columns (``page_count``, ``direction_signature``, ``design_signature``,
+    ``density_summary``, ``color_summary``) that the v3 ``content_writer_node``
+    populates from the dynamic visual contracts. Existing DBs migrate
+    additively; historical rows keep their old values and read as NULL on the
+    new columns. ``template_family`` is reused from the v2 signature migration.
+    """
+
+    connection.execute("SAVEPOINT migrate_contents_dynamic_visual_fields")
+    try:
+        existing_columns = _existing_columns(connection)
+        for column_name, column_type in DYNAMIC_VISUAL_COLUMNS.items():
+            if column_name not in existing_columns:
+                connection.execute(
+                    f"ALTER TABLE contents ADD COLUMN {column_name} {column_type}"
+                )
+    except Exception:
+        connection.execute("ROLLBACK TO migrate_contents_dynamic_visual_fields")
+        connection.execute("RELEASE migrate_contents_dynamic_visual_fields")
+        raise
+    else:
+        connection.execute("RELEASE migrate_contents_dynamic_visual_fields")
 
 
 def migrate_metrics_collection_schema(connection: sqlite3.Connection) -> None:

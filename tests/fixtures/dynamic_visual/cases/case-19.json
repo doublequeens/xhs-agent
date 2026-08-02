@@ -1,0 +1,33 @@
+{
+  "case_id": "case-19",
+  "family": "pink_red",
+  "page_count": 8,
+  "density": "dense",
+  "copy_shape": "tutorial",
+  "asset_mode": "texture",
+  "note": "ordered steps",
+  "publish_package": {
+    "topic_id": "case-19-tp",
+    "angle_id": "case-19-ag",
+    "topic": "通勤防晒底妆教程",
+    "angle": "成膜与上妆顺序",
+    "target_group": "通勤上班族",
+    "core_pain": "防晒后底妆搓泥",
+    "focus_keyword": "防晒搓泥",
+    "title": "防晒不搓泥红榜",
+    "cover_copy": "三步搞定防晒成膜",
+    "content": "1. 用温水打湿面部，避免水温过高\n2. 取一元硬币大小的温和洁面\n3. 画圈按摩三十秒后冲净\n4. 轻拍至八成干，再上后续产品\n5. 取适量防晒均匀涂抹全脸\n6. 等待三分钟让防晒成膜",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "三步让防晒不再搓泥"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

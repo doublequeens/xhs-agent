@@ -12,6 +12,7 @@ from typing import Any, Iterator, Optional
 from memory.migrations import (
     deduplicate_content_post_ids,
     migrate_contents_domain_fields,
+    migrate_contents_dynamic_visual_fields,
     migrate_contents_visual_signature_fields,
     migrate_metrics_collection_schema,
     migrate_topic_generation_schema,
@@ -176,6 +177,7 @@ class XHSMemoryManager:
                         conn.execute(statement)
                 migrate_contents_domain_fields(conn)
                 migrate_contents_visual_signature_fields(conn)
+                migrate_contents_dynamic_visual_fields(conn)
                 migrate_metrics_collection_schema(conn)
                 deduplicate_content_post_ids(conn)
                 migrate_topic_generation_schema(conn)
@@ -275,9 +277,17 @@ class XHSMemoryManager:
                     narrative_signature,
                     template_family,
                     frame_plan_signature,
-                    density_profile
+                    density_profile,
+                    page_count,
+                    direction_signature,
+                    design_signature,
+                    density_summary,
+                    color_summary
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                )
                 ON CONFLICT(content_id) DO UPDATE SET
                     status = CASE
                         WHEN contents.post_id IS NOT NULL THEN contents.status
@@ -317,7 +327,12 @@ class XHSMemoryManager:
                     narrative_signature = excluded.narrative_signature,
                     template_family = excluded.template_family,
                     frame_plan_signature = excluded.frame_plan_signature,
-                    density_profile = excluded.density_profile
+                    density_profile = excluded.density_profile,
+                    page_count = excluded.page_count,
+                    direction_signature = excluded.direction_signature,
+                    design_signature = excluded.design_signature,
+                    density_summary = excluded.density_summary,
+                    color_summary = excluded.color_summary
                 """,
                 (
                     record.content_id,
@@ -357,6 +372,11 @@ class XHSMemoryManager:
                     record.template_family,
                     json_dumps(record.frame_plan_signature),
                     json_dumps(record.density_profile),
+                    record.page_count,
+                    record.direction_signature,
+                    record.design_signature,
+                    json_dumps(record.density_summary),
+                    json_dumps(record.color_summary),
                 ),
             )
             _insert_event(
@@ -1227,7 +1247,12 @@ class XHSMemoryManager:
                     narrative_signature,
                     template_family,
                     frame_plan_signature,
-                    density_profile
+                    density_profile,
+                    page_count,
+                    direction_signature,
+                    design_signature,
+                    density_summary,
+                    color_summary
                 FROM contents
                 WHERE created_at >= ?
                   AND domain = ?
@@ -1456,6 +1481,8 @@ class XHSMemoryManager:
             data.pop("frame_plan_signature", None), []
         )
         data["density_profile"] = json_loads(data.pop("density_profile", None), [])
+        data["density_summary"] = json_loads(data.pop("density_summary", None), [])
+        data["color_summary"] = json_loads(data.pop("color_summary", None), {})
         return data
 
     def _calculate_rates(
@@ -1523,6 +1550,11 @@ class XHSMemoryManager:
             data.pop("frame_plan_signature", None), []
         )
         data["density_profile"] = json_loads(data.pop("density_profile", None), [])
+        # Task 16 columns are optional on legacy rows; decode defensively.
+        if "density_summary" in data:
+            data["density_summary"] = json_loads(data.pop("density_summary", None), [])
+        if "color_summary" in data:
+            data["color_summary"] = json_loads(data.pop("color_summary", None), {})
         return data
 
     def _performance_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
@@ -1584,18 +1616,27 @@ class XHSMemoryManager:
         for item in contents:
             narrative_form = item.get("narrative_form")
             template_family = item.get("template_family")
-            if not narrative_form or not template_family:
+            # v3 dynamic-visual rows carry direction_signature as the plan
+            # identity; accept either the v2 (narrative_form+template_family)
+            # or v3 (template_family+direction_signature) identity so legacy
+            # rows keep surfacing while v3 rows enrich the diversity channel.
+            direction_signature = item.get("direction_signature")
+            if not template_family or not (narrative_form or direction_signature):
                 continue
             frame_plan_signature = list(item.get("frame_plan_signature") or [])
-            signatures.append(
-                {
-                    "narrative_form": narrative_form,
-                    "template_family": template_family,
-                    "frame_plan_signature": frame_plan_signature,
-                    "frame_count": len(frame_plan_signature),
-                    "density_profile": list(item.get("density_profile") or []),
-                }
-            )
+            signature = {
+                "narrative_form": narrative_form,
+                "template_family": template_family,
+                "frame_plan_signature": frame_plan_signature,
+                "frame_count": len(frame_plan_signature),
+                "density_profile": list(item.get("density_profile") or []),
+            }
+            if direction_signature:
+                signature["direction_signature"] = direction_signature
+                signature["page_count"] = item.get("page_count")
+                signature["design_signature"] = item.get("design_signature")
+                signature["density_summary"] = list(item.get("density_summary") or [])
+            signatures.append(signature)
         return signatures
 
     def _extract_global_format_patterns(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:

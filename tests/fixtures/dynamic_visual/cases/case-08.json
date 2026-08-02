@@ -1,0 +1,33 @@
+{
+  "case_id": "case-08",
+  "family": "soft_pink",
+  "page_count": 18,
+  "density": "dense",
+  "copy_shape": "checklist",
+  "asset_mode": "searched photo",
+  "note": "Latin ingredient names",
+  "publish_package": {
+    "topic_id": "case-08-tp",
+    "angle_id": "case-08-ag",
+    "topic": "通勤底妆自检清单",
+    "angle": "出门前可保存检查项",
+    "target_group": "通勤上班族",
+    "core_pain": "底妆细节容易遗漏",
+    "focus_keyword": "底妆清单",
+    "title": "温柔护肤小心得",
+    "cover_copy": "出门前自检七件事",
+    "content": "- 确认防晒已经成膜再上底妆\n- 检查底妆是否均匀推开\n- T 区是否泛油需要压粉\n- 鼻翼有没有卡粉堆积\n- 发际线边缘是否自然过渡\n- 下颌线是否均匀衔接\n- 眉毛有没有沾到粉底\n- 嘴角是否干净无残妆\n- 脖子色号是否衔接脸部\n- 耳后是否也带一点底妆\n- 防晒是否每两小时补涂\n- 随身是否带补妆工具\n- 晚间是否完整卸除底妆\n- 睡前是否做好 Niacinamide 保湿修复\n- 一周是否做一次深层清洁\n- 是否定期更换美妆蛋",
+    "hashtags": [
+      "#通勤护肤",
+      "#防晒不搓泥"
+    ],
+    "domain": "beauty",
+    "subdomain": "skincare",
+    "content_contract": {
+      "first_screen_promise": "一份可保存的底妆自检表"
+    }
+  },
+  "human_review": {
+    "approved": true
+  }
+}

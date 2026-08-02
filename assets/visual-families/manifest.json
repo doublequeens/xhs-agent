@@ -1,0 +1,70 @@
+{
+  "families": [
+    {
+      "family": "pink_red",
+      "reference_image_paths": ["examples/templates-mockup/set1-pink-red/contact-sheet.png"],
+      "palette": ["#F4A7BF", "#DC2333", "#FFF7F8"],
+      "font_roles": {"display": "Alibaba PuHuiTi Heavy", "heading": "Alibaba PuHuiTi Heavy", "body": "HarmonyOS Sans", "caption": "HarmonyOS Sans"},
+      "composition_principles": ["high-contrast editorial cover", "bold grouped statements"],
+      "whitespace_range": [0.18, 0.42],
+      "density_range": [0.45, 0.82],
+      "allowed_motifs": ["oversized type", "rounded emphasis blocks", "red underlines"],
+      "prohibited_patterns": ["thin low-contrast copy", "photoreal product claims"]
+    },
+    {
+      "family": "deep_teal",
+      "reference_image_paths": ["examples/templates-mockup/set2-teal/contact-sheet.png"],
+      "palette": ["#0E5A5A", "#7FD6D6", "#F3FFFF"],
+      "font_roles": {"display": "HarmonyOS Sans Black", "heading": "HarmonyOS Sans Bold", "body": "HarmonyOS Sans", "caption": "HarmonyOS Sans"},
+      "composition_principles": ["calm structured reading path", "clear section rhythm"],
+      "whitespace_range": [0.28, 0.58],
+      "density_range": [0.28, 0.68],
+      "allowed_motifs": ["teal panels", "fine dividers", "numbered prompts"],
+      "prohibited_patterns": ["neon accents", "crowded decorative stickers"]
+    },
+    {
+      "family": "soft_pink",
+      "reference_image_paths": ["examples/templates-mockup/set3-soft-pink/contact-sheet.png"],
+      "palette": ["#F8DADA", "#EE5C5C", "#FFF9F8"],
+      "font_roles": {"display": "HarmonyOS Sans Black", "heading": "HarmonyOS Sans Bold", "body": "HarmonyOS Sans", "caption": "HarmonyOS Sans"},
+      "composition_principles": ["gentle conversational pacing", "soft focal groupings"],
+      "whitespace_range": [0.32, 0.68],
+      "density_range": [0.18, 0.58],
+      "allowed_motifs": ["soft color fields", "small hearts", "rounded callouts"],
+      "prohibited_patterns": ["hard geometric grids", "aggressive warning treatment"]
+    },
+    {
+      "family": "coral_impact",
+      "reference_image_paths": ["examples/templates-mockup/set4-coral-promo/contact-sheet.png"],
+      "palette": ["#F45A5A", "#FFE3E3", "#FFF9F5"],
+      "font_roles": {"display": "Alibaba PuHuiTi Heavy", "heading": "Alibaba PuHuiTi Heavy", "body": "HarmonyOS Sans", "caption": "HarmonyOS Sans"},
+      "composition_principles": ["decisive editorial hierarchy", "one dominant action per frame"],
+      "whitespace_range": [0.2, 0.48],
+      "density_range": [0.42, 0.78],
+      "allowed_motifs": ["coral banners", "strong contrast labels", "large numerals"],
+      "prohibited_patterns": ["pastel-only hierarchy", "subtle unmarked actions"]
+    },
+    {
+      "family": "green_catalog",
+      "reference_image_paths": ["examples/templates-mockup/set5-green-favorites/contact-sheet.png"],
+      "palette": ["#1E5A2E", "#F3E9D2", "#FBF8EF"],
+      "font_roles": {"display": "HarmonyOS Sans Black", "heading": "HarmonyOS Sans Bold", "body": "HarmonyOS Sans", "caption": "HarmonyOS Sans"},
+      "composition_principles": ["catalog-like comparison", "repeatable collection rhythm"],
+      "whitespace_range": [0.2, 0.5],
+      "density_range": [0.45, 0.85],
+      "allowed_motifs": ["cream cards", "green labels", "product-neutral category tags"],
+      "prohibited_patterns": ["unstructured long paragraphs", "unlabeled comparisons"]
+    },
+    {
+      "family": "white_quote",
+      "reference_image_paths": ["examples/templates-mockup/set6-white-quote/contact-sheet.png"],
+      "palette": ["#FFFFFF", "#2A4A8C", "#E8EEF8"],
+      "font_roles": {"display": "LXGW WenKai", "heading": "LXGW WenKai", "body": "HarmonyOS Sans", "caption": "HarmonyOS Sans"},
+      "composition_principles": ["generous editorial silence", "one reflective thought at a time"],
+      "whitespace_range": [0.48, 0.82],
+      "density_range": [0.1, 0.42],
+      "allowed_motifs": ["blue handwritten accents", "quote marks", "delicate rules"],
+      "prohibited_patterns": ["dense checklists", "large saturated color fields"]
+    }
+  ]
+}

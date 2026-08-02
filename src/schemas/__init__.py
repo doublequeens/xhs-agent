@@ -1,4 +1,36 @@
 from .agent_state import AgentState
+from .angle import AngleStrategy, ContentAngle
+from .assets import (
+    AssetManifest,
+    AssetManifestItem,
+    AssetResolutionResult,
+    AssetTransactionEvidence,
+    UnresolvedOptionalAsset,
+)
+from .content_atoms import (
+    ContentAtom,
+    ContentAtomSet,
+    ContentFragment,
+    canonical_sha256,
+    sha256_text,
+)
+from .content_contract import ContentJob, PrimaryVisualStructure
+from .content_lock import ContentLock
+from .decision import (
+    DecisionOutput,
+    DecisionTrace,
+    DensityHint,
+    HashTagInput,
+    NormalizedInput,
+    PageArchetype,
+    R2Input,
+    RevisionMeta,
+)
+from .design_qa import DesignIssue, DesignPlanQAResult
+from .draft import DraftItem
+from .hashtag import HashTagOutput
+from .id_images import IdImageItems
+from .image import ImageItem
 from .narrative import (
     ClosingMode,
     NarrativeBeat,
@@ -6,81 +38,137 @@ from .narrative import (
     NarrativeForm,
     NarrativePlan,
 )
-from .topic import TopicItem
-from .angle import AngleStrategy, ContentAngle
-from .virality_score import ScoreBreakdown, ScoreResult
-from .novelty_guard import MatchedHistoryItem, MemorySignalResult, NoveltyCheckResult, NoveltyCheckResults, NoveltyMatches
+from .novelty_guard import (
+    MatchedHistoryItem,
+    MemorySignalResult,
+    NoveltyCheckResult,
+    NoveltyCheckResults,
+    NoveltyMatches,
+)
 from .outline import OutlineItem
-from .draft import DraftItem
-from .title import DraftTitles
-from .title_ranker import R1Input, TitleRankResult, TitleWinner
 from .r1_output import R1Output, R1Scores, TaskReport
-from .r2_output import R2ComplianceIssue, R2ComplianceAudit, R2Output, R2FixTask, R2ContentSnapShoot
-from .id_images import IdImageItems
-from .image import ImageItem
-from .decision import DecisionTrace, NormalizedInput, HashTagInput, DecisionOutput, DecisionOutput, RevisionMeta, R2Input
-from .hashtag import HashTagOutput
-from .assets import (
-    AssetManifest,
-    AssetManifestItem,
-    AssetRequirement,
-    AssetSearchReport,
-    LayoutName,
-    ProviderSearchReport,
+from .r2_output import (
+    R2ComplianceAudit,
+    R2ComplianceIssue,
+    R2ContentSnapShoot,
+    R2FixTask,
+    R2Output,
 )
-from .editorial_templates import (
-    CopyMetrics,
-    Density,
-    DensityHint,
-    PageArchetype,
-    ResolvedVariant,
-    TemplateFamily,
-    TemplateSelection,
-)
-from .content_lock import ContentLock
 from .render_manifest import (
     AssetProbeResult,
     FontLoadReport,
     PageProbeAttestation,
+    RenderedElementProbe,
     RenderedPage,
     RenderManifest,
     TextProbeResult,
 )
-from .storyboard import (
-    CarouselFrame,
-    CarouselPayload,
-    ContentBlock,
-    VisualSlot,
+from .render_qa import RenderIssue, RenderQAIssue, RenderQAResult
+from .scene_graph import (
+    Box,
+    CarouselDesignPlan,
+    IconElement,
+    ImageElement,
+    LineElement,
+    PageScene,
+    SceneElement,
+    ShapeElement,
+    TextElement,
+    TextStyle,
 )
-from .visual_plan import ContentJob, FramePlanItem, VisualFamily, VisualPlan
-from .render_qa import RenderQAIssue, RenderQAResult
+from .title import DraftTitles
+from .title_ranker import R1Input, TitleRankResult, TitleWinner
+from .topic import TopicItem
+from .virality_score import ScoreBreakdown, ScoreResult
+from .visual_critique import VisualCritique, VisualCritiqueIssue
+from .visual_director import AssetDirective, PageDirection, VisualDirectionPlan
+from .visual_style import FamilyStyleProfile, HexColor, Sha256, TemplateFamily
 
 
 __all__ = [
     "AgentState",
-    "NarrativeForm", "NarrativeBeatKind", "ClosingMode", "NarrativeBeat", "NarrativePlan",
-    "TopicItem",
-    "AngleStrategy", "ContentAngle",
-    "MatchedHistoryItem", "MemorySignalResult", "NoveltyCheckResult", "NoveltyCheckResults", "NoveltyMatches"
-    "ScoreBreakdown", "ScoreResult",
-    "OutlineItem",
+    "AngleStrategy",
+    "AssetDirective",
+    "AssetManifest",
+    "AssetManifestItem",
+    "AssetResolutionResult",
+    "AssetTransactionEvidence",
+    "AssetProbeResult",
+    "Box",
+    "CarouselDesignPlan",
+    "ClosingMode",
+    "ContentAngle",
+    "ContentAtom",
+    "ContentAtomSet",
+    "ContentFragment",
+    "ContentJob",
+    "ContentLock",
+    "DecisionOutput",
+    "DecisionTrace",
+    "DensityHint",
+    "DesignIssue",
+    "DesignPlanQAResult",
     "DraftItem",
     "DraftTitles",
-    "R1Input", "TitleRankResult", "TitleWinner"
-    "R1Output", "R1Scores", "TaskReport",
-    "R2ComplianceIssue", "R2ComplianceAudit", "R2Output", "R2FixTask", "R2ContentSnapShoot",
+    "FamilyStyleProfile",
+    "FontLoadReport",
+    "HashTagInput",
+    "HashTagOutput",
+    "HexColor",
+    "IconElement",
     "IdImageItems",
     "ImageItem",
-    "DecisionTrace", "NormalizedInput", "HashTagInput", "DecisionOutput", "R2Input",
+    "ImageElement",
+    "LineElement",
+    "MatchedHistoryItem",
+    "MemorySignalResult",
+    "NarrativeBeat",
+    "NarrativeBeatKind",
+    "NarrativeForm",
+    "NarrativePlan",
+    "NormalizedInput",
+    "NoveltyCheckResult",
+    "NoveltyCheckResults",
+    "NoveltyMatches",
+    "OutlineItem",
+    "PageArchetype",
+    "PageDirection",
+    "PageProbeAttestation",
+    "PageScene",
+    "PrimaryVisualStructure",
+    "UnresolvedOptionalAsset",
+    "R1Input",
+    "R1Output",
+    "R1Scores",
+    "R2ComplianceAudit",
+    "R2ComplianceIssue",
+    "R2ContentSnapShoot",
+    "R2FixTask",
+    "R2Input",
+    "R2Output",
+    "RenderedElementProbe",
+    "RenderedPage",
+    "RenderQAIssue",
+    "RenderIssue",
+    "RenderManifest",
+    "RenderQAResult",
     "RevisionMeta",
-    "HashTagOutput",
-    "CarouselFrame", "CarouselPayload", "ContentBlock", "VisualSlot",
-    "ContentJob", "VisualFamily", "LayoutName", "FramePlanItem", "VisualPlan",
-    "TemplateFamily", "PageArchetype", "Density", "DensityHint",
-    "TemplateSelection", "CopyMetrics", "ResolvedVariant",
-    "AssetRequirement", "AssetManifestItem", "AssetManifest",
-    "ProviderSearchReport", "AssetSearchReport",
-    "TextProbeResult", "AssetProbeResult", "PageProbeAttestation",
-    "RenderedPage", "FontLoadReport", "RenderManifest", "ContentLock",
-    "RenderQAIssue", "RenderQAResult",
+    "ScoreBreakdown",
+    "ScoreResult",
+    "SceneElement",
+    "Sha256",
+    "ShapeElement",
+    "TaskReport",
+    "TemplateFamily",
+    "TextElement",
+    "TextProbeResult",
+    "TextStyle",
+    "TitleRankResult",
+    "TitleWinner",
+    "TopicItem",
+    "VisualCritique",
+    "VisualCritiqueIssue",
+    "VisualDirectionPlan",
+    "canonical_sha256",
+    "sha256_text",
 ]

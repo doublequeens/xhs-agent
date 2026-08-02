@@ -1,29 +1,22 @@
-from collections.abc import Mapping
-from types import MappingProxyType
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
-
-def _deep_freeze(value: Any) -> Any:
-    if isinstance(value, dict):
-        return MappingProxyType(
-            {key: _deep_freeze(item) for key, item in value.items()}
-        )
-    if isinstance(value, list):
-        return tuple(_deep_freeze(item) for item in value)
-    return value
-
-
-def _deep_thaw(value: Any) -> Any:
-    if isinstance(value, Mapping):
-        return {key: _deep_thaw(item) for key, item in value.items()}
-    if isinstance(value, tuple):
-        return [_deep_thaw(item) for item in value]
-    return value
+from .visual_style import Sha256
 
 
 class ContentLock(BaseModel):
+    """Immutable locked publish content for the ``llm_scene_v3`` path.
+
+    The lock binds the canonical visible source copy (title, body, hashtags,
+    first-screen promise and the textual brief fields) plus the
+    ``content_atom_set_sha256`` of the atom set that feeds the dynamic visual
+    chain. The locked fields and ``content_atom_set_sha256`` together feed
+    ``canonical_sha256``. Storyboard-based locking was retired with the old
+    fixed-card renderer; visible carousel text now derives from the content
+    atom set, so the atom-set hash is the structural binding.
+    """
+
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     focus_keyword: str
@@ -37,16 +30,18 @@ class ContentLock(BaseModel):
     cover_copy: str
     first_screen_promise: str
     content: str
-    hashtags: list[str]
-    storyboards: list[dict]
-    canonical_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    hashtags: tuple[str, ...]
+    content_atom_set_sha256: Sha256
+    canonical_sha256: Sha256
 
     @model_validator(mode="after")
     def freeze_nested_values(self):
-        object.__setattr__(self, "hashtags", _deep_freeze(self.hashtags))
-        object.__setattr__(self, "storyboards", _deep_freeze(self.storyboards))
+        # ``hashtags`` arrives coerced to a tuple by pydantic (tuple[str, ...]);
+        # freeze it again so a mutated nested structure can never survive.
+        object.__setattr__(self, "hashtags", tuple(self.hashtags))
         return self
 
-    @field_serializer("hashtags", "storyboards")
-    def serialize_nested_values(self, value):
-        return _deep_thaw(value)
+    @field_serializer("hashtags")
+    def serialize_hashtags(self, value):
+        # JSON consumers (publish copy, rescue prompt, audit) expect a list.
+        return list(value)

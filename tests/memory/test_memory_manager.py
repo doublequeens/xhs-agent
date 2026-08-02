@@ -746,6 +746,83 @@ def _record_with_visual_signatures() -> ContentRecord:
     )
 
 
+def _record_with_dynamic_visual_fields() -> ContentRecord:
+    from datetime import datetime, timedelta, timezone
+
+    now_iso = datetime.now(timezone(timedelta(hours=8))).isoformat()
+    return ContentRecord(
+        content_id="content-dynamic-visual",
+        topic="分区护肤",
+        created_at=now_iso,
+        status="reviewed",
+        platform="xiaohongshu",
+        topic_id="tp_dynamic",
+        angle_id="ag_dynamic",
+        angle="动态视觉",
+        target_group="通勤护肤",
+        core_pain="视觉疲劳",
+        title="分区护肤视觉指南",
+        cover_copy="cover",
+        content="body",
+        hashtags=["#分区护肤"],
+        content_format="educational_cards",
+        visual_style="domain_editorial",
+        domain="beauty",
+        subdomain="skincare",
+        content_intent="how_to",
+        profile_version="beauty-v1",
+        risk_level="low",
+        template_family="soft_pink",
+        page_count=6,
+        direction_signature="a" * 64,
+        design_signature="b" * 64,
+        density_summary=[3, 5, 4, 6, 4, 2],
+        color_summary={
+            "palette": ["#F4A7BF", "#FFFFFF", "#1A1A1A"],
+            "page_backgrounds": ["#FFFFFF", "#FFF0F4", "#FFFFFF"],
+        },
+    )
+
+
+def test_save_generated_content_roundtrips_dynamic_visual_fields(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "dynamic-visual.db")
+    manager.init_db(SCHEMA_PATH)
+
+    manager.save_generated_content(_record_with_dynamic_visual_fields())
+    content = manager.get_content_by_id("content-dynamic-visual")
+
+    assert content is not None
+    assert content["template_family"] == "soft_pink"
+    assert content["page_count"] == 6
+    assert content["direction_signature"] == "a" * 64
+    assert content["design_signature"] == "b" * 64
+    assert content["density_summary"] == [3, 5, 4, 6, 4, 2]
+    assert content["color_summary"] == {
+        "palette": ["#F4A7BF", "#FFFFFF", "#1A1A1A"],
+        "page_backgrounds": ["#FFFFFF", "#FFF0F4", "#FFFFFF"],
+    }
+
+
+def test_save_generated_content_persists_empty_dynamic_visual_fields(tmp_path):
+    manager = XHSMemoryManager(tmp_path / "dynamic-visual-empty.db")
+    manager.init_db(SCHEMA_PATH)
+
+    record = ContentRecord(
+        content_id="content-empty-dynamic",
+        topic="睡眠改善",
+        created_at="2026-07-03T10:00:00+08:00",
+    )
+    manager.save_generated_content(record)
+
+    content = manager.get_content_by_id("content-empty-dynamic")
+    assert content is not None
+    assert content["page_count"] is None
+    assert content["direction_signature"] is None
+    assert content["design_signature"] is None
+    assert content["density_summary"] == []
+    assert content["color_summary"] == {}
+
+
 def test_save_generated_content_roundtrips_visual_signatures(tmp_path):
     manager = XHSMemoryManager(tmp_path / "signatures.db")
     manager.init_db(SCHEMA_PATH)

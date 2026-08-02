@@ -1,98 +1,85 @@
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field, field_serializer, model_validator
 
-from .editorial_templates import PageArchetype
-
-
-LayoutName = Literal[
-    "editorial_cover",
-    "texture_baseline",
-    "front_face_zone",
-    "three_quarter_face_zone",
-    "step_timeline",
-    "morning_evening_flow",
-    "left_right_comparison",
-    "three_state_diagnostic",
-    "decision_tree",
-    "saveable_checklist",
-    "saveable_reference",
-]
-
-
-class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-
-class AssetRequirement(StrictModel):
-    slot_id: str = Field(min_length=1, max_length=64)
-    role: str = Field(min_length=1, max_length=64)
-    page_archetype: PageArchetype
-    min_width: int = Field(ge=1)
-    min_height: int = Field(ge=1)
-    context_tags: list[str] = Field(default_factory=list, max_length=12)
-    orientation: Literal["portrait", "landscape", "square", "any"] = "any"
-    palette_tags: list[str] = Field(default_factory=list, max_length=8)
-    fallback_asset_ids: list[str] = Field(default_factory=list, max_length=4)
-
-
-class ProviderSearchReport(StrictModel):
-    provider: str = Field(min_length=1, max_length=32)
-    status: Literal["not_configured", "skipped", "success", "failed"]
-    query: str | None = None
-    result_ids: list[str] = Field(default_factory=list)
-    error: str | None = None
-    elapsed_ms: float | None = Field(default=None, ge=0)
-    download_errors: list[str] = Field(default_factory=list)
-
-
-class AssetSearchReport(StrictModel):
-    search_triggered: bool
-    queries: list[str]
-    provider_reports: list[ProviderSearchReport]
-    selection_reasons: dict[str, str]
+from .visual_style import Sha256, StrictModel, deep_freeze, deep_thaw
 
 
 class AssetManifestItem(StrictModel):
-    slot_id: str = Field(min_length=1, max_length=64)
-    role: str = Field(min_length=1, max_length=64)
-    page_archetype: PageArchetype
-    status: Literal["active", "pending_external", "fallback"]
-    path: str = Field(min_length=1)
-    asset_id: str | None = None
-    source_type: str = Field(min_length=1)
-    provider: str | None = None
-    provider_asset_id: str | None = None
-    source_url: str | None = None
-    source_file_url: str | None = None
-    author: str | None = None
-    provider_attribution: dict[str, str] = Field(default_factory=dict)
+    asset_id: str = Field(min_length=1)
+    directive_id: str = Field(min_length=1)
+    page_id: str = Field(min_length=1)
+    source_kind: Literal["catalog", "search", "generated"]
+    provider: str = Field(min_length=1)
     license: str = Field(min_length=1)
-    license_snapshot: str | None = None
-    license_snapshot_sha256: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    license_terms_url: str | None = None
+    local_path: str = Field(min_length=1)
     width: int = Field(ge=1)
     height: int = Field(ge=1)
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    pending_id: str | None = None
-    metadata_path: str | None = None
-    run_id: str | None = None
-    acquired_at: str | None = None
-    average_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{16}$")
-    candidate_rank: int | None = Field(default=None, ge=1)
-    requirement_fingerprint: str | None = Field(
-        default=None, pattern=r"^[0-9a-f]{64}$"
-    )
-    attempt_number: int | None = Field(default=None, ge=1, le=3)
-    unresolved_safety_checks: list[str] = Field(default_factory=list)
-    safety_review_decisions: dict[str, bool] = Field(default_factory=dict)
-    safety_reviewed_at: str | None = None
-    review_status: Literal["approved"] | None = None
-    review_disposition: Literal["approved_for_publishing"] | None = None
+    sha256: Sha256
+    subject_focal_point: tuple[float, float]
+    crop_guidance: str
+    security_status: Literal["approved", "rejected"]
+    human_decision: Literal["pending", "approved", "rejected"]
+    run_id: str = Field(min_length=1)
+    transaction_id: str = Field(min_length=1)
+    internal_provenance: dict[str, str]
+
+    @model_validator(mode="after")
+    def validate_focal_point(self):
+        if any(value < 0 or value > 1 for value in self.subject_focal_point):
+            raise ValueError("asset subject focal point must be within 0..1")
+        object.__setattr__(
+            self,
+            "internal_provenance",
+            deep_freeze(self.internal_provenance),
+        )
+        return self
+
+    @field_serializer("internal_provenance")
+    def serialize_internal_provenance(self, value):
+        return deep_thaw(value)
 
 
 class AssetManifest(StrictModel):
-    items: list[AssetManifestItem]
-    search_report: AssetSearchReport
+    items: tuple[AssetManifestItem, ...]
+
+    @model_validator(mode="after")
+    def require_unique_bindings(self):
+        asset_ids = [item.asset_id for item in self.items]
+        if len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("asset manifest asset IDs must be unique")
+        directive_ids = [item.directive_id for item in self.items]
+        if len(directive_ids) != len(set(directive_ids)):
+            raise ValueError("asset manifest directive IDs must be unique")
+        return self
+
+
+class UnresolvedOptionalAsset(StrictModel):
+    directive_id: str = Field(min_length=1)
+    page_id: str = Field(min_length=1)
+    reason: str = Field(min_length=1)
+
+
+class AssetTransactionEvidence(StrictModel):
+    """Evidence about one asset-resolution transaction.
+
+    Note: ``transaction_root`` here is the per-transaction subdirectory
+    (``transaction_root / transaction_id``), not the top-level transactions
+    root. ``journal_path`` is the would-be recovery journal path; the file is
+    only materialized on the interruption path (``status == "interrupted"``)
+    and does not exist on the success path.
+    """
+
+    run_id: str = Field(min_length=1)
+    transaction_id: str = Field(min_length=1)
+    transaction_root: str = Field(min_length=1)
+    journal_path: str = Field(min_length=1)
+    status: Literal["complete", "interrupted"]
+    resolved_directive_ids: tuple[str, ...] = ()
+    unresolved_optional_directive_ids: tuple[str, ...] = ()
+
+
+class AssetResolutionResult(StrictModel):
+    manifest: AssetManifest
+    unresolved_optional_assets: tuple[UnresolvedOptionalAsset, ...] = ()
+    transaction_evidence: AssetTransactionEvidence

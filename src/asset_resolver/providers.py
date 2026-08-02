@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 import requests
 
-from src.schemas.assets import AssetRequirement
+from src.schemas.visual_director import AssetDirective
 
 
 PEXELS_SEARCH_URL = "https://api.pexels.com/v1/search"
@@ -78,7 +78,7 @@ class ExternalAssetCandidate:
 class AssetProvider(Protocol):
     name: str
 
-    def search(self, requirement: AssetRequirement) -> list[ExternalAssetCandidate]: ...
+    def search(self, directive: AssetDirective) -> list[ExternalAssetCandidate]: ...
 
     def record_download(self, candidate: ExternalAssetCandidate) -> None: ...
 
@@ -176,14 +176,13 @@ def candidate_urls_are_allowed(
     return False
 
 
-def structured_query(requirement: AssetRequirement) -> str:
-    """Build deterministic English-only provider search terms from a slot."""
+def _directive_search_query(directive: AssetDirective) -> str:
+    """Build deterministic English-only provider search terms from a directive."""
 
-    raw_terms = [
-        *requirement.role.replace("_", " ").split(),
-        *requirement.context_tags,
-        *requirement.palette_tags,
-    ]
+    raw_terms: list[str] = []
+    if directive.query_or_prompt:
+        raw_terms.extend(directive.query_or_prompt.replace("_", " ").split())
+    raw_terms.extend(directive.role.replace("_", " ").split())
     terms: list[str] = []
     seen: set[str] = set()
     for raw in raw_terms:
@@ -222,14 +221,14 @@ def _safety_flags(tags: tuple[str, ...]) -> dict[str, bool | None]:
 
 
 def _search_params(
-    requirement: AssetRequirement, *, provider: str
+    directive: AssetDirective, *, provider: str
 ) -> dict[str, str | int]:
     params: dict[str, str | int] = {
-        "query": structured_query(requirement),
+        "query": _directive_search_query(directive),
         "per_page": 15,
     }
-    if requirement.orientation != "any":
-        orientation = requirement.orientation
+    if directive.orientation != "any":
+        orientation = directive.orientation
         if provider == "unsplash" and orientation == "square":
             orientation = "squarish"
         params["orientation"] = orientation
@@ -260,16 +259,16 @@ class PexelsProvider:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": self.api_key}
 
-    def search(self, requirement: AssetRequirement) -> list[ExternalAssetCandidate]:
+    def search(self, directive: AssetDirective) -> list[ExternalAssetCandidate]:
         if not self.enabled:
             return []
-        query = structured_query(requirement)
+        query = _directive_search_query(directive)
         response = _validated_get(
             self.session,
             PEXELS_SEARCH_URL,
             allowed_hosts=_PEXELS_API_HOSTS,
             headers=self._headers,
-            params=_search_params(requirement, provider=self.name),
+            params=_search_params(directive, provider=self.name),
             timeout=self.timeout,
         )
         try:
@@ -312,11 +311,7 @@ class PexelsProvider:
                     license_snapshot=PEXELS_LICENSE_SUMMARY,
                     license_terms_url=PEXELS_LICENSE_URL,
                     score_tags=(tags := _score_tags(photo.get("alt"))),
-                    palette_tags=tuple(
-                        tag
-                        for tag in requirement.palette_tags
-                        if tag.lower() in tags
-                    ),
+                    palette_tags=(),
                     dominant_color=photo.get("avg_color"),
                     provider_attribution=(("photographer", author),),
                     **_safety_flags(tags),
@@ -369,16 +364,16 @@ class UnsplashProvider:
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Client-ID {self.access_key}"}
 
-    def search(self, requirement: AssetRequirement) -> list[ExternalAssetCandidate]:
+    def search(self, directive: AssetDirective) -> list[ExternalAssetCandidate]:
         if not self.enabled:
             return []
-        query = structured_query(requirement)
+        query = _directive_search_query(directive)
         response = _validated_get(
             self.session,
             UNSPLASH_SEARCH_URL,
             allowed_hosts=_UNSPLASH_API_HOSTS,
             headers=self._headers,
-            params=_search_params(requirement, provider=self.name),
+            params=_search_params(directive, provider=self.name),
             timeout=self.timeout,
         )
         try:
@@ -426,11 +421,7 @@ class UnsplashProvider:
                     license_snapshot=UNSPLASH_LICENSE_SUMMARY,
                     license_terms_url=UNSPLASH_LICENSE_URL,
                     score_tags=description_tags,
-                    palette_tags=tuple(
-                        tag
-                        for tag in requirement.palette_tags
-                        if tag.lower() in description_tags
-                    ),
+                    palette_tags=(),
                     dominant_color=photo.get("color"),
                     download_location=download_location,
                     provider_attribution=tuple(

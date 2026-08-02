@@ -5,10 +5,6 @@ import pytest
 from src.domain import get_domain_profile
 from src.evidence import EvidenceBrief, EvidenceItem
 from src.prompts.composer import TASK_FILES
-from tests.editorial_carousel.golden_fixtures import (
-    GOLDEN_FIXTURE_NAMES,
-    load_golden_fixture,
-)
 
 
 def _profile_bound_state():
@@ -77,33 +73,13 @@ def test_healthy_lifestyle_prompt_omits_skincare_identity():
     assert "只讨论日常护肤" not in prompt
 
 
-def test_storyboard_prompt_requires_semantic_carousel_contract():
+def test_storyboard_prompt_task_is_retired():
     from src.prompts.composer import compose_prompt
 
-    prompt = compose_prompt(
-        "storyboards_generator",
-        get_domain_profile("beauty"),
-    )
-
-    assert "CarouselPayload" in prompt
-    assert "VisualPlan.frame_plan" in prompt
-    assert "first_screen_promise" in prompt
-    assert '"page_archetype"' in prompt
-    assert '"content_density_hint"' in prompt
-    assert "publish_package.narrative_plan" in prompt
-    assert "Empty `visual_slots` is valid" in prompt
-    assert "exactly three" in prompt
-    assert "收藏 + 关注" in prompt
-    assert "Emoji" in prompt
-    assert "HTML" in prompt
-    assert "CSS" in prompt
-    assert "坐标" in prompt
-    assert "URL" in prompt
-    assert "image-generation prompt" in prompt
-    assert "不得改变 topic" in prompt
-    assert "不得增加额外 frame" in prompt
-    assert '"layout"' not in prompt
-    assert "固定六张" not in prompt
+    # The storyboards_generator node and its prompt task were removed with the
+    # obsolete fixed-template visual path (Task 17); composing it must fail.
+    with pytest.raises(ValueError, match="Unknown prompt task: storyboards_generator"):
+        compose_prompt("storyboards_generator", get_domain_profile("beauty"))
 
 
 @pytest.mark.parametrize("task", ["r1_reflector", "decision_engine"])
@@ -116,42 +92,6 @@ def test_visible_text_revision_prompts_preserve_v2_structural_metadata(task):
     assert '"content_density_hint"' in prompt
     assert "page_archetype 与 content_density_hint" in prompt
     assert '"layout"' not in prompt
-
-
-@pytest.mark.parametrize("fixture_name", GOLDEN_FIXTURE_NAMES)
-def test_task10_golden_fixture_names_and_copy_never_enter_production_prompts(
-    fixture_name,
-):
-    from src.prompts.composer import compose_prompt_for_state
-
-    fixture = load_golden_fixture(fixture_name)
-    production_prompt = "\n".join(
-        compose_prompt_for_state(task, _profile_bound_state())
-        for task in TASK_FILES
-    )
-
-    # Collect every fixture-owned copy string so the isolation check covers
-    # the v2 envelope's ``visible_copy`` (cover/save anchors plus any dense
-    # archetype item lists) instead of the retired per-frame ``frame_copy``.
-    def _visible_copy_values(node):
-        if isinstance(node, str):
-            yield node
-        elif isinstance(node, dict):
-            for value in node.values():
-                yield from _visible_copy_values(value)
-        elif isinstance(node, list):
-            for value in node:
-                yield from _visible_copy_values(value)
-
-    isolated_copy = {
-        fixture_name,
-        fixture["synthetic_title"],
-        fixture["package"]["focus_keyword"],
-        fixture["package"]["topic"],
-        fixture["package"]["cover_copy"],
-        *_visible_copy_values(fixture.get("visible_copy", {})),
-    }
-    assert all(value not in production_prompt for value in isolated_copy)
 
 
 def test_legacy_storyboard_prompt_task_is_retired():
@@ -238,6 +178,117 @@ def test_selected_copy_prompts_require_exact_narrative_plan_preservation(task):
 
     assert "narrative_plan" in prompt
     assert "逐字段原样复制" in prompt
+
+
+def test_r2_prompt_blocks_visible_disclosure_and_disclaimer_copy_without_blocking_risk_guidance():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("r2_compliance", get_domain_profile("beauty"))
+
+    assert "AI 生成" in prompt
+    assert "示意图" in prompt
+    assert "仅供参考" in prompt
+    assert "不构成医疗建议" in prompt
+    assert "页面可见" in prompt
+    assert "普通事实风险条件" in prompt
+    assert "停用指导" in prompt
+
+
+def test_visual_director_prompt_bans_visible_labels_and_disclaimer_copy():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("visual_director", get_domain_profile("beauty"))
+
+    assert "5–18" in prompt
+    assert "one family" in prompt
+    assert "embedded text" in prompt
+    assert "AI disclosure" in prompt
+    assert "disclaimer" in prompt
+    assert "AI 生成示意图" in prompt
+    assert "仅供参考" in prompt
+    assert "不构成医疗建议" in prompt
+
+
+def test_composer_registry_includes_page_designer_and_design_reviser_tasks():
+    from src.prompts.composer import TASK_FILES
+
+    assert TASK_FILES["page_designer"] == "page_designer.txt"
+    assert TASK_FILES["design_reviser"] == "design_reviser.txt"
+
+
+def test_composer_registry_includes_visual_critic_task():
+    from src.prompts.composer import TASK_FILES
+
+    assert TASK_FILES["visual_critic"] == "visual_critic.txt"
+
+
+def test_visual_critic_prompt_lays_out_scoring_dimensions_and_read_only_contract():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("visual_critic", get_domain_profile("beauty"))
+
+    # The eight aesthetic dimensions the multimodal critic must score.
+    for dimension in (
+        "hierarchy",
+        "legibility",
+        "composition",
+        "family",
+        "variation",
+        "rhythm",
+        "color",
+        "spacing",
+    ):
+        assert dimension in prompt.lower()
+    assert "image relevance" in prompt.lower() or "image_relevance" in prompt
+    assert "not_applicable" in prompt
+    # The critic scores and instructs only; it must not mutate immutable sources.
+    assert "read-only" in prompt.lower() or "read only" in prompt.lower()
+    assert "content_atom_set_sha256" in prompt
+    assert "direction_plan_sha256" in prompt
+    assert "design_plan_sha256" in prompt
+    assert "render_manifest_sha256" in prompt
+    # Every issue must locate a page/element and give concrete revision advice.
+    assert "revision_instruction" in prompt
+    # Global rule: never instruct the critic to add compliance/disclaimer copy.
+    assert "disclaimer" in prompt.lower()
+    assert "AI disclosure" in prompt or "AI 生成" in prompt
+
+
+def test_page_designer_prompt_lays_out_canvas_and_structured_element_contract():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("page_designer", get_domain_profile("beauty"))
+
+    assert "1080" in prompt
+    assert "1440" in prompt
+    assert "content_ref" in prompt
+    assert "asset_ref" in prompt
+    assert "font_role" in prompt
+    assert "display" in prompt
+    assert "heading" in prompt
+    assert "HTML" in prompt
+    assert "CSS" in prompt
+    assert "script" in prompt
+    assert "external URL" in prompt
+    assert "AI 生成示意图" in prompt
+    assert "仅供参考" in prompt
+    assert "不构成医疗建议" in prompt
+
+
+def test_design_reviser_prompt_constrains_patches_and_routes_replan_feedback():
+    from src.prompts.composer import compose_prompt
+
+    prompt = compose_prompt("design_reviser", get_domain_profile("beauty"))
+
+    assert "revision" in prompt
+    assert "content_ref" in prompt
+    assert "asset_ref" in prompt
+    assert "approved" in prompt
+    assert "HTML" in prompt
+    assert "CSS" in prompt
+    assert "visual_director" in prompt
+    assert "AI 生成示意图" in prompt
+    assert "不构成医疗建议" in prompt
 
 
 def test_compose_prompt_rejects_unknown_task():
@@ -423,7 +474,6 @@ def test_lazy_prompt_mapping_defers_file_reads_and_preserves_legacy_keys(monkeyp
         ("src/nodes/node_j_decision_engine.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
         ("src/nodes/node_k_hashtag_seo.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
         ("src/nodes/node_o_assembler.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
-        ("src/nodes/node_o_storyboards_generator.py", "from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value"),
     ],
 )
 def test_migrated_active_nodes_use_direct_composer_imports(node_path, import_line):

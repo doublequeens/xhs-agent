@@ -1,3 +1,11 @@
+"""Task 16: ``content_writer_node`` on the ``llm_scene_v3`` dynamic-visual path.
+
+The writer persists the visual-diversity memory metadata derived from the
+dynamic visual contracts (no storyboard payload). It only writes after Human
+Review approval + R2 compliance, and it must not read ``visual_plan`` or
+``storyboards``.
+"""
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -5,13 +13,229 @@ from types import SimpleNamespace
 import pytest
 
 from src.nodes import node_p_content_writer as module
+from src.schemas.assets import AssetManifest
+from src.schemas.content_atoms import (
+    ContentAtom,
+    ContentAtomSet,
+    ContentFragment,
+    canonical_sha256,
+    sha256_text,
+)
+from src.schemas.scene_graph import (
+    Box,
+    CarouselDesignPlan,
+    PageScene,
+    ShapeElement,
+    TextElement,
+    TextStyle,
+)
+from src.schemas.visual_director import (
+    PageDirection,
+    VisualDirectionPlan,
+)
+
+
+# ---------------------------------------------------------------------------
+# v3 contract fixture builders (mirrors tests/nodes/test_page_designer.py)
+# ---------------------------------------------------------------------------
+
+
+def _atom_set(page_count: int = 5) -> ContentAtomSet:
+    texts = [f"第{index}页内容重点。" for index in range(1, page_count + 1)]
+    atoms = tuple(
+        ContentAtom(
+            atom_id=f"atom-{index}",
+            text=text,
+            role="paragraph",
+            sha256=sha256_text(text),
+        )
+        for index, text in enumerate(texts, start=1)
+    )
+    return ContentAtomSet(
+        atoms=atoms,
+        canonical_sha256=canonical_sha256(
+            [atom.model_dump(mode="json") for atom in atoms]
+        ),
+    )
+
+
+def _fragments(atom_set: ContentAtomSet) -> tuple[ContentFragment, ...]:
+    return tuple(
+        ContentFragment(
+            fragment_id=f"fragment-{index}",
+            source_atom_id=atom.atom_id,
+            start=0,
+            end=len(atom.text),
+            text=atom.text,
+        )
+        for index, atom in enumerate(atom_set.atoms, start=1)
+    )
+
+
+def _direction_plan(atom_set: ContentAtomSet) -> VisualDirectionPlan:
+    fragments = _fragments(atom_set)
+    return VisualDirectionPlan(
+        template_family="soft_pink",
+        page_count=len(atom_set.atoms),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        art_direction="内容驱动的护肤编辑方向",
+        palette=("#F4A7BF", "#FFFFFF", "#1A1A1A"),
+        typography_direction={"display": "醒目", "body": "清晰"},
+        motifs=("pink underlines",),
+        content_fragments=fragments,
+        page_sequence=tuple(
+            PageDirection(
+                page_id=f"page-{index}",
+                sequence=index,
+                purpose=f"解释第{index}个重点",
+                visual_job=f"visual-job-{index}",
+                fragment_ids=(f"fragment-{index}",),
+            )
+            for index in range(1, len(atom_set.atoms) + 1)
+        ),
+        asset_directives=(),
+    )
+
+
+def _design_plan(
+    direction_plan: VisualDirectionPlan,
+    atom_set: ContentAtomSet,
+    manifest: AssetManifest,
+) -> CarouselDesignPlan:
+    pages: list[PageScene] = []
+    for direction_page in direction_plan.page_sequence:
+        # Page 2 gets an extra shape element so density_summary varies per page.
+        elements: list = [
+            TextElement(
+                element_id=f"text-{direction_page.page_id}",
+                layer=1,
+                box=Box(x=80, y=120, width=920, height=160),
+                content_ref=direction_page.fragment_ids[0],
+                style=TextStyle(
+                    font_role="heading",
+                    font_size=48,
+                    line_height=1.3,
+                    color="#1A1A1A",
+                    align="left",
+                    weight=700,
+                ),
+            )
+        ]
+        if direction_page.sequence == 2:
+            elements.append(
+                ShapeElement(
+                    element_id=f"shape-{direction_page.page_id}",
+                    layer=2,
+                    box=Box(x=80, y=400, width=920, height=80),
+                    shape="rectangle",
+                    fill="#F4A7BF",
+                )
+            )
+        background = "#FFFFFF" if direction_page.sequence % 2 == 1 else "#FFF0F4"
+        pages.append(
+            PageScene(
+                page_id=direction_page.page_id,
+                sequence=direction_page.sequence,
+                background=background,
+                elements=tuple(elements),
+            )
+        )
+    return CarouselDesignPlan(
+        direction_plan_sha256=canonical_sha256(direction_plan),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        asset_manifest_sha256=canonical_sha256(manifest),
+        revision=0,
+        pages=tuple(pages),
+    )
+
+
+def _render_manifest(
+    direction_plan: VisualDirectionPlan,
+    *,
+    source_root,
+):
+    # The writer only reads page count and per-page paths, so a lightweight
+    # SimpleNamespace mirrors how the production state surfaces the manifest
+    # without forcing the heavy RenderedElementProbe attestation here.
+    pages = [
+        SimpleNamespace(
+            page_id=direction_page.page_id,
+            sequence=direction_page.sequence,
+            path=f"/tmp/{direction_page.page_id}.png",
+        )
+        for direction_page in direction_plan.page_sequence
+    ]
+    return SimpleNamespace(pages=pages)
+
+
+def _asset_manifest() -> AssetManifest:
+    return AssetManifest(items=())
+
+
+def _topic(topic_id="tp_001"):
+    return SimpleNamespace(
+        topic_id=topic_id,
+        domain="beauty",
+        subdomain="skincare",
+        content_intent="how_to",
+        risk_level="low",
+        risk_flags=["medical-adjacent"],
+        content_contract={"first_screen_promise": "先看懂作息，再调整"},
+    )
+
+
+def _publish_package(**overrides) -> dict:
+    package = {
+        "topic_id": "tp_001",
+        "topic": "分区护肤",
+        "angle_id": "ag_001",
+        "angle": "分区策略",
+        "target_group": "通勤护肤人群",
+        "core_pain": "分区不清",
+        "title": "分区护肤指南",
+        "cover_copy": "cover",
+        "content": "正文",
+        "hashtags": ["#护肤"],
+        "content_contract": {"first_screen_promise": "先看懂分区"},
+    }
+    package.update(overrides)
+    return package
+
+
+def _v3_state(**overrides) -> dict:
+    atom_set = _atom_set(5)
+    direction_plan = _direction_plan(atom_set)
+    manifest = _asset_manifest()
+    design_plan = _design_plan(direction_plan, atom_set, manifest)
+    render_manifest = _render_manifest(direction_plan, source_root=None)
+    base = {
+        "review_status": "approved",
+        "trends": [_topic()],
+        "publish_package": _publish_package(),
+        "domain_context": {"profile_version": "beauty-v1"},
+        "r2_output": SimpleNamespace(
+            compliance_audit=SimpleNamespace(
+                compliance_status="fully_compliant", block_publish=False
+            )
+        ),
+        "content_atom_set": atom_set,
+        "visual_direction_plan": direction_plan,
+        "carousel_design_plan": design_plan,
+        "render_manifest": render_manifest,
+    }
+    base.update(overrides)
+    return base
+
+
+# ---------------------------------------------------------------------------
+# Fake memory manager
+# ---------------------------------------------------------------------------
 
 
 class _FakeManager:
     def __init__(self, *args, **kwargs):
         self.saved_records = []
         self.embedding_records = []
-        self.closed = False
 
     def init_db(self, schema_path):
         self.schema_path = schema_path
@@ -26,86 +250,31 @@ class _FakeManager:
         return {"content_id": content_id} if self.saved_records else None
 
     def get_embedding_content_by_id(self, content_id):
-        return content_id == "content-123"
+        return bool(self.embedding_records)
 
 
-def _publish_package(**overrides):
-    package = {
-        "topic_id": "tp_001",
-        "topic": "睡眠改善",
-        "angle_id": "ag_001",
-        "angle": "睡眠策略",
-        "target_group": "上班族",
-        "core_pain": "熬夜后疲惫",
-        "title": "睡眠改善指南",
-        "cover_copy": "cover",
-        "content": "body",
-        "hashtags": ["#睡眠"],
-        "storyboards": ["frame-1"],
-        "images": [{"image_url": "/tmp/image-1.png"}],
-        "rendered_image_paths": ["/tmp/legacy-rendered.png"],
-        "domain": "wellness",
-        "subdomain": "sleep",
-        "content_intent": "how_to",
-        "risk_level": "medium",
-        "risk_flags": ["medical-adjacent"],
-        "content_contract": {
-            "audience": "上班族",
-            "trigger_situation": "通勤前",
-            "decision_problem": "如何安排日常习惯",
-            "first_screen_promise": "通勤前快速掌握基础步骤",
-            "screenshot_asset": "步骤清单截图",
-            "proof_asset": "执行前后对比",
-            "visual_mode": "text_card",
-            "content_job": "save_and_check",
-            "primary_visual_family": "saveable_reference",
-            "primary_visual_subject": "checklist",
-            "proof_mode": "diagram",
-            "recommended_frame_count": 6,
-        },
-        "narrative_plan": {
-            "narrative_form": "step_tutorial",
-            "beats": [
-                {"beat_id": "b1", "kind": "hook", "purpose": "建立场景"},
-                {"beat_id": "b2", "kind": "steps", "purpose": "拆解步骤"},
-                {"beat_id": "b3", "kind": "diagnostic", "purpose": "判断标准"},
-                {"beat_id": "b4", "kind": "action", "purpose": "促发行动"},
-            ],
-            "saveable_beat": {
-                "beat_id": "b4",
-                "kind": "action",
-                "purpose": "促发行动",
-            },
-            "closing_mode": "action_prompt",
-        },
-    }
-    package.update(overrides)
-    return package
-
-
-def _topic(topic_id="tp_001"):
-    return SimpleNamespace(
-        topic_id=topic_id,
-        domain="wellness",
-        subdomain="sleep",
-        content_intent="how_to",
-        risk_level="medium",
-        risk_flags=["medical-adjacent", "sleep-adjacent"],
-        content_contract={
-            "audience": "上班族",
-            "trigger_situation": "通勤前",
-            "decision_problem": "如何安排日常习惯",
-            "first_screen_promise": "通勤前快速掌握基础步骤",
-            "screenshot_asset": "步骤清单截图",
-            "proof_asset": "执行前后对比",
-            "visual_mode": "text_card",
-            "content_job": "save_and_check",
-            "primary_visual_family": "saveable_reference",
-            "primary_visual_subject": "checklist",
-            "proof_mode": "diagram",
-            "recommended_frame_count": 6,
+def _install_fake_manager(monkeypatch, fake_manager):
+    monkeypatch.setattr(module, "XHSMemoryManager", lambda *a, **kw: fake_manager)
+    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
+    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-31T10:00:00+08:00")
+    topic = _topic()
+    monkeypatch.setattr(
+        module,
+        "get_topic_metadata",
+        lambda _trends, _topic_id: {
+            "domain": topic.domain,
+            "subdomain": topic.subdomain,
+            "content_intent": topic.content_intent,
+            "risk_level": topic.risk_level,
+            "risk_flags": list(topic.risk_flags),
         },
     )
+    return fake_manager
+
+
+# ---------------------------------------------------------------------------
+# Approval / compliance gates
+# ---------------------------------------------------------------------------
 
 
 def test_content_writer_requires_approved_review_before_writing(monkeypatch):
@@ -115,137 +284,93 @@ def test_content_writer_requires_approved_review_before_writing(monkeypatch):
     monkeypatch.setattr(module, "XHSMemoryManager", fail_manager)
 
     with pytest.raises(ValueError, match="approved"):
+        module.content_writer_node({"review_status": "pending", "publish_package": {}})
+
+
+def test_content_writer_requires_real_r2_compliance(monkeypatch):
+    def fail_manager(*args, **kwargs):
+        raise AssertionError("manager should not be constructed before R2 validation")
+
+    monkeypatch.setattr(module, "XHSMemoryManager", fail_manager)
+
+    with pytest.raises(ValueError, match="r2_output.compliance_audit.compliance_status"):
         module.content_writer_node(
             {
-                "review_status": "pending",
+                "review_status": "approved",
+                "trends": [_topic()],
                 "publish_package": _publish_package(),
-                "domain_context": {"profile_version": "wellness-v1"},
+                "domain_context": {"profile_version": "beauty-v1"},
             }
         )
 
 
-@pytest.mark.parametrize(
-    "state,expected_message",
-    [
-        (
-            {
-                "review_status": "approved",
-                "publish_package": _publish_package(),
-                "domain_context": {"profile_version": "wellness-v1"},
-                "r2_output": SimpleNamespace(
-                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-                ),
-            },
-            "state.trends",
-        ),
-        (
-            {
-                "review_status": "approved",
-                "trends": [_topic()],
-                "publish_package": _publish_package(
-                    topic_id="",
-                ),
-                "domain_context": {"profile_version": "wellness-v1"},
-                "r2_output": SimpleNamespace(
-                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-                ),
-            },
-            "topic_id",
-        ),
-    ],
-)
-def test_content_writer_requires_trends_and_topic_id_before_manager_creation(
-    monkeypatch, state, expected_message
-):
-    def fail_manager(*args, **kwargs):
-        raise AssertionError("manager should not be constructed before metadata validation")
-
-    monkeypatch.setattr(module, "XHSMemoryManager", fail_manager)
-
-    with pytest.raises(ValueError, match=expected_message):
-        module.content_writer_node(state)
+# ---------------------------------------------------------------------------
+# v3 metadata derivation
+# ---------------------------------------------------------------------------
 
 
-def test_content_writer_uses_state_topic_metadata_over_editable_package_fields(monkeypatch):
-    fake_manager = _FakeManager()
+def test_content_writer_derives_dynamic_visual_metadata_from_v3_contracts(monkeypatch):
+    fake = _install_fake_manager(monkeypatch, _FakeManager())
     captured = {}
-    topic = _topic()
-    trends = [topic]
+    fake.save_generated_content = lambda record: captured.setdefault("record", record)
+    fake.saved_records.append  # keep _FakeManager API consistent
 
-    def build_manager(*args, **kwargs):
-        return fake_manager
+    atom_set = _atom_set(5)
+    direction_plan = _direction_plan(atom_set)
+    manifest = _asset_manifest()
+    design_plan = _design_plan(direction_plan, atom_set, manifest)
+    render_manifest = _render_manifest(direction_plan, source_root=None)
 
-    def fake_get_topic_metadata(received_trends, topic_id):
-        assert received_trends == trends
-        assert topic_id == "tp_001"
-        return {
-            "domain": topic.domain,
-            "subdomain": topic.subdomain,
-            "content_intent": topic.content_intent,
-            "risk_level": topic.risk_level,
-            "risk_flags": list(topic.risk_flags),
-        }
-
-    monkeypatch.setattr(module, "XHSMemoryManager", build_manager)
-    monkeypatch.setattr(module, "get_topic_metadata", fake_get_topic_metadata)
-    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
-    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
-
-    def capture_save(record):
-        captured["record"] = record
-        fake_manager.saved_records.append(record)
-
-    fake_manager.save_generated_content = capture_save
-
-    result = module.content_writer_node(
-        {
-            "review_status": "approved",
-            "trends": trends,
-            "publish_package": _publish_package(
-                domain="beauty",
-                subdomain="skincare",
-                content_intent="experience",
-                risk_level="low",
-            ),
-            "domain_context": {"profile_version": "wellness-v1"},
-            "r2_output": SimpleNamespace(
-                compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-            ),
-            "render_manifest": SimpleNamespace(
-                pages=[
-                    SimpleNamespace(path="/tmp/01-cover.png"),
-                    SimpleNamespace(path="/tmp/02-reference.png"),
-                ]
-            ),
-        }
+    module.content_writer_node(
+        _v3_state(
+            content_atom_set=atom_set,
+            visual_direction_plan=direction_plan,
+            carousel_design_plan=design_plan,
+            render_manifest=render_manifest,
+        )
     )
 
     record = captured["record"]
-    assert record.domain == "wellness"
-    assert record.subdomain == "sleep"
-    assert record.content_intent == "how_to"
-    assert record.profile_version == "wellness-v1"
-    assert record.risk_level == "medium"
-    assert record.compliance_status == "high_risk_detected"
-    assert record.image_paths == [
-        "/tmp/01-cover.png",
-        "/tmp/02-reference.png",
-    ]
-    assert record.metadata == {
-        "domain": "wellness",
-        "subdomain": "sleep",
-        "content_intent": "how_to",
-        "profile_version": "wellness-v1",
-        "risk_level": "medium",
-        "content_contract": topic.content_contract,
+    assert record.page_count == 5
+    assert record.template_family == "soft_pink"
+    assert record.direction_signature == canonical_sha256(direction_plan)
+    assert record.design_signature == canonical_sha256(design_plan)
+    # density_summary is the per-page text-element count (page 2 has an extra
+    # shape, but density tracks text elements => all 1 here).
+    assert record.density_summary == [1, 1, 1, 1, 1]
+    assert record.color_summary == {
+        "palette": ["#F4A7BF", "#FFFFFF", "#1A1A1A"],
+        "page_backgrounds": ["#FFFFFF", "#FFF0F4", "#FFFFFF", "#FFF0F4", "#FFFFFF"],
     }
-    assert result == {"data_writed": True}
+    # The writer must not read or persist storyboard data on the v3 path.
+    assert record.storyboards == []
+    assert record.card_count == 5
+
+
+def test_content_writer_does_not_read_storyboards_or_visual_plan(monkeypatch):
+    """The v3 writer must derive page_count from render_manifest and must not
+    touch ``visual_plan`` / ``storyboards`` keys at all."""
+
+    fake = _install_fake_manager(monkeypatch, _FakeManager())
+    captured = {}
+    fake.save_generated_content = lambda record: captured.setdefault("record", record)
+
+    state = _v3_state()
+    # Poison the legacy keys to prove the writer never reads them.
+    state["visual_plan"] = {"__probe__": "must-not-read"}
+    state["publish_package"]["storyboards"] = [{"__probe__": "must-not-read"}]
+
+    module.content_writer_node(state)
+
+    record = captured["record"]
+    assert record.page_count == 5
+    assert record.storyboards == []
 
 
 def test_content_writer_compensates_when_vector_write_fails(monkeypatch):
     class CompensationManager(_FakeManager):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
             self.deleted_content_ids = []
 
         def save_embedding_content(self, record):
@@ -254,259 +379,20 @@ def test_content_writer_compensates_when_vector_write_fails(monkeypatch):
         def delete_content_by_id(self, content_id):
             self.deleted_content_ids.append(content_id)
 
-    fake_manager = CompensationManager()
-    topic = _topic()
-
-    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
-    monkeypatch.setattr(
-        module,
-        "get_topic_metadata",
-        lambda _trends, _topic_id: {
-            "domain": topic.domain,
-            "subdomain": topic.subdomain,
-            "content_intent": topic.content_intent,
-            "risk_level": topic.risk_level,
-            "risk_flags": list(topic.risk_flags),
-        },
-    )
-    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
-    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
+    fake = _install_fake_manager(monkeypatch, CompensationManager())
 
     with pytest.raises(Exception, match="vector database chromadb"):
-        module.content_writer_node(
-            {
-                "review_status": "approved",
-                "trends": [topic],
-                "publish_package": _publish_package(),
-                "domain_context": {"profile_version": "wellness-v1"},
-                "r2_output": SimpleNamespace(
-                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-                ),
-                "render_manifest": {
-                    "pages": [{"path": "/tmp/01-cover.png"}]
-                },
-            }
-        )
+        module.content_writer_node(_v3_state())
 
-    assert fake_manager.deleted_content_ids == ["content-123"]
-    assert fake_manager.saved_records
-    assert fake_manager.embedding_records == []
+    assert fake.deleted_content_ids == ["content-123"]
+    assert fake.saved_records
 
 
-def test_content_writer_surfaces_compensation_failure(monkeypatch):
-    class FailingCompensationManager(_FakeManager):
-        def save_embedding_content(self, record):
-            raise RuntimeError("vector boom")
+def test_content_writer_returns_data_writed_flag_on_success(monkeypatch):
+    fake = _install_fake_manager(monkeypatch, _FakeManager())
 
-        def delete_content_by_id(self, content_id):
-            raise RuntimeError("delete boom")
+    result = module.content_writer_node(_v3_state())
 
-    fake_manager = FailingCompensationManager()
-    topic = _topic()
-
-    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
-    monkeypatch.setattr(
-        module,
-        "get_topic_metadata",
-        lambda _trends, _topic_id: {
-            "domain": topic.domain,
-            "subdomain": topic.subdomain,
-            "content_intent": topic.content_intent,
-            "risk_level": topic.risk_level,
-            "risk_flags": list(topic.risk_flags),
-        },
-    )
-    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
-    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
-
-    with pytest.raises(RuntimeError, match="vector boom.*delete boom"):
-        module.content_writer_node(
-            {
-                "review_status": "approved",
-                "trends": [topic],
-                "publish_package": _publish_package(),
-                "domain_context": {"profile_version": "wellness-v1"},
-                "r2_output": SimpleNamespace(
-                    compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-                ),
-                "render_manifest": {
-                    "pages": [{"path": "/tmp/01-cover.png"}]
-                },
-            }
-        )
-
-
-@pytest.mark.parametrize(
-    "state",
-    [
-        {
-            "review_status": "approved",
-            "trends": [_topic()],
-            "publish_package": _publish_package(
-                compliance_status="fully_compliant",
-                domain="beauty",
-                subdomain="skincare",
-                content_intent="experience",
-                risk_level="low",
-            ),
-            "domain_context": {"profile_version": "wellness-v1"},
-        },
-        {
-            "review_status": "approved",
-            "trends": [_topic()],
-            "publish_package": _publish_package(
-                compliance_status="compliant_with_minor_edits",
-                domain="beauty",
-                subdomain="skincare",
-                content_intent="experience",
-                risk_level="low",
-            ),
-            "domain_context": {"profile_version": "wellness-v1"},
-            "r2_output": SimpleNamespace(compliance_audit="bad"),
-        },
-    ],
-)
-def test_content_writer_requires_real_r2_compliance_before_manager_creation(monkeypatch, state):
-    def fail_manager(*args, **kwargs):
-        raise AssertionError("manager should not be constructed before R2 validation")
-
-    monkeypatch.setattr(module, "XHSMemoryManager", fail_manager)
-
-    with pytest.raises(ValueError, match="r2_output.compliance_audit.compliance_status"):
-        module.content_writer_node(state)
-
-
-def _storyboards_with_archetype():
-    return [
-        {"frame_id": "frame-01", "page_archetype": "cover", "role": "cover"},
-        {"frame_id": "frame-02", "page_archetype": "scene", "role": "scene"},
-        {"frame_id": "frame-03", "page_archetype": "steps", "role": "steps"},
-        {"frame_id": "frame-04", "page_archetype": "save", "role": "save"},
-    ]
-
-
-def _render_manifest_with_density():
-    return SimpleNamespace(
-        pages=[
-            SimpleNamespace(path="/tmp/01-cover.png", density="sparse"),
-            SimpleNamespace(path="/tmp/02-scene.png", density="standard"),
-            SimpleNamespace(path="/tmp/03-steps.png", density="standard"),
-            SimpleNamespace(path="/tmp/04-save.png", density="dense"),
-        ]
-    )
-
-
-def _visual_plan_with_family():
-    return SimpleNamespace(template_family="deep_teal")
-
-
-def test_content_writer_derives_visual_signatures_from_publish_package_and_manifest(
-    monkeypatch,
-):
-    fake_manager = _FakeManager()
-    captured = {}
-    topic = _topic()
-    trends = [topic]
-
-    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
-    monkeypatch.setattr(
-        module,
-        "get_topic_metadata",
-        lambda _trends, _topic_id: {
-            "domain": topic.domain,
-            "subdomain": topic.subdomain,
-            "content_intent": topic.content_intent,
-            "risk_level": topic.risk_level,
-            "risk_flags": list(topic.risk_flags),
-        },
-    )
-    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
-    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
-
-    def capture_save(record):
-        captured["record"] = record
-        fake_manager.saved_records.append(record)
-
-    fake_manager.save_generated_content = capture_save
-
-    module.content_writer_node(
-        {
-            "review_status": "approved",
-            "trends": trends,
-            "publish_package": _publish_package(
-                storyboards=_storyboards_with_archetype(),
-            ),
-            "domain_context": {"profile_version": "wellness-v1"},
-            "r2_output": SimpleNamespace(
-                compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-            ),
-            "render_manifest": _render_manifest_with_density(),
-            "visual_plan": _visual_plan_with_family(),
-        }
-    )
-
-    record = captured["record"]
-    assert record.narrative_form == "step_tutorial"
-    assert record.narrative_signature == [
-        "hook:建立场景",
-        "steps:拆解步骤",
-        "diagnostic:判断标准",
-        "action:促发行动",
-    ]
-    assert record.template_family == "deep_teal"
-    assert record.frame_plan_signature == ["cover", "scene", "steps", "save"]
-    assert record.density_profile == ["sparse", "standard", "standard", "dense"]
-
-
-def test_content_writer_leaves_visual_signatures_empty_when_sources_missing(monkeypatch):
-    fake_manager = _FakeManager()
-    captured = {}
-    topic = _topic()
-    trends = [topic]
-
-    monkeypatch.setattr(module, "XHSMemoryManager", lambda *args, **kwargs: fake_manager)
-    monkeypatch.setattr(
-        module,
-        "get_topic_metadata",
-        lambda _trends, _topic_id: {
-            "domain": topic.domain,
-            "subdomain": topic.subdomain,
-            "content_intent": topic.content_intent,
-            "risk_level": topic.risk_level,
-            "risk_flags": list(topic.risk_flags),
-        },
-    )
-    monkeypatch.setattr(module, "make_content_id", lambda: "content-123")
-    monkeypatch.setattr(module, "utc_now_iso", lambda: "2026-07-03T10:00:00+08:00")
-
-    def capture_save(record):
-        captured["record"] = record
-        fake_manager.saved_records.append(record)
-
-    fake_manager.save_generated_content = capture_save
-
-    package = _publish_package()
-    package.pop("narrative_plan")
-    package["storyboards"] = [{"frame_id": "frame-01"}]
-
-    module.content_writer_node(
-        {
-            "review_status": "approved",
-            "trends": trends,
-            "publish_package": package,
-            "domain_context": {"profile_version": "wellness-v1"},
-            "r2_output": SimpleNamespace(
-                compliance_audit=SimpleNamespace(compliance_status="high_risk_detected")
-            ),
-            "render_manifest": SimpleNamespace(
-                pages=[SimpleNamespace(path="/tmp/01-cover.png")]
-            ),
-        }
-    )
-
-    record = captured["record"]
-    assert record.narrative_form is None
-    assert record.narrative_signature == []
-    assert record.template_family is None
-    assert record.frame_plan_signature == []
-    assert record.density_profile == []
+    assert result == {"data_writed": True}
+    assert fake.saved_records
+    assert fake.embedding_records

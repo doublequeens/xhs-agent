@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from src.domain import get_topic_metadata
 from src.schemas.decision import HashTagInput
+from src.schemas.narrative import NarrativePlan
 from src.schemas.topic import TopicItem
 
 
@@ -35,8 +36,28 @@ def _content_contract():
         "primary_visual_family": "saveable_reference",
         "primary_visual_subject": "checklist",
         "proof_mode": "diagram",
-        "recommended_frame_count": 6,
+        "page_count_hint": 6,
     }
+
+
+def _narrative_plan():
+    return NarrativePlan.model_validate(
+        {
+            "narrative_form": "checklist_collection",
+            "beats": [
+                {"beat_id": "hook", "kind": "hook", "purpose": "说明承诺"},
+                {"beat_id": "context", "kind": "scene", "purpose": "交代场景"},
+                {"beat_id": "check", "kind": "checklist", "purpose": "给出清单"},
+                {"beat_id": "action", "kind": "action", "purpose": "提示行动"},
+            ],
+            "saveable_beat": {
+                "beat_id": "check",
+                "kind": "checklist",
+                "purpose": "给出清单",
+            },
+            "closing_mode": "action_prompt",
+        }
+    )
 
 
 def _load_main(monkeypatch):
@@ -203,6 +224,7 @@ def test_hashtag_input_requires_complete_domain_metadata():
         target_group="上班族",
         core_pain="熬夜失眠",
         best_cover_copy="今晚就能试",
+        narrative_plan=_narrative_plan(),
     )
 
     assert hashtag_input.domain == "wellness"
@@ -225,6 +247,7 @@ def test_hashtag_input_rejects_missing_domain_metadata():
             target_group="上班族",
             core_pain="熬夜失眠",
             best_cover_copy="今晚就能试",
+            narrative_plan=_narrative_plan(),
     )
 
     assert [error["loc"] for error in exc_info.value.errors()] == [("domain",)]

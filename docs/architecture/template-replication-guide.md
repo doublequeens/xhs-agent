@@ -1,5 +1,17 @@
 # 模板复刻指南：从原型到生产
 
+> **历史文档 / 已被取代（HISTORICAL — SUPERSEDED）。**
+> 本指南记录的是 2026-07-19 的固定六模板 HTML/CSS 复刻工作（`visual_strategy_planner` →
+> `storyboard_generator` → `carousel_qa` → `editorial_carousel_renderer` 路径，5–7 页限制，
+> `CarouselPayload`/`ResolvedVariant`/`modern_v2`/`recommended_frame_count` 等概念）。该路径已在
+> `llm_scene_v3` 动态视觉生产部署中整体删除（见
+> `docs/superpowers/specs/2026-07-31-llm-directed-dynamic-visual-production-design.md` 与
+> [当前工作流](workflow.md)）。当前生产路径使用通用 scene→HTML 编译器，不再有 family-specific
+> 模板分支。本文件仅作为历史决策记录保留，**不是当前架构说明**；其中的命令、测试路径、probe
+> 和模板字段在生产代码中已不存在。
+
+---
+
 > 本文档从 soft_pink 复刻过程中提炼（2026-07-19），记录了每一个正确决策和每一个错误弯路。
 > 用于指导 agent 高效无误地复刻其余 5 个模板家族到生产渲染管线。
 

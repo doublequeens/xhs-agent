@@ -1,52 +1,49 @@
-from typing import Literal, Optional
-
 from pydantic import BaseModel, Field, model_validator
+
+from .visual_style import Sha256, StrictModel
+
+
+class RenderIssue(StrictModel):
+    rule: str = Field(min_length=1)
+    message: str = Field(min_length=1)
+    repair_instruction: str = Field(min_length=1)
+    page_id: str | None = None
+    element_id: str | None = None
+    atom_id: str | None = None
+
+    @model_validator(mode="after")
+    def require_issue_location(self):
+        if self.page_id is None and self.element_id is None and self.atom_id is None:
+            raise ValueError("render issue must identify page, element, or atom")
+        return self
+
+
+class RenderQAResult(StrictModel):
+    passed: bool
+    issues: tuple[RenderIssue, ...] = ()
+    render_manifest_sha256: Sha256
+    content_attestation: bool
+    geometry_attestation: bool
+    asset_attestation: bool
+
+    @model_validator(mode="after")
+    def validate_passed_state(self):
+        attestations = (
+            self.content_attestation,
+            self.geometry_attestation,
+            self.asset_attestation,
+        )
+        if self.passed and (self.issues or not all(attestations)):
+            raise ValueError("passing render QA requires no issues and all attestations")
+        if not self.passed and not self.issues:
+            raise ValueError("failing render QA requires at least one issue")
+        return self
 
 
 class RenderQAIssue(BaseModel):
+    """Temporary import compatibility for the v2 render-QA node."""
+
     rule_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
     message: str
     location_hint: str
-    frame_id: Optional[str] = None
-
-
-class RenderQAResult(BaseModel):
-    passed: bool
-    issues: list[RenderQAIssue] = Field(default_factory=list)
-    metrics_available: bool = False
-    metric_kind: Literal["deterministic_proxy"] = "deterministic_proxy"
-    metric_note: str = (
-        "Deterministic proxy metrics derived from measured layout, token, and asset "
-        "facts; they do not replace human aesthetic review."
-    )
-    editorial_quality: int | None = Field(default=None, ge=0, le=100)
-    beauty_category_fit: int | None = Field(default=None, ge=0, le=100)
-    visual_hierarchy: int | None = Field(default=None, ge=0, le=100)
-    saveability: int | None = Field(default=None, ge=0, le=100)
-    cross_page_consistency: int | None = Field(default=None, ge=0, le=100)
-    template_stiffness: int | None = Field(
-        default=None,
-        ge=0,
-        le=100,
-        description=(
-            "Higher means more repeated archetype-density-composition signatures "
-            "or reuse of the exact recent visual combination."
-        ),
-    )
-
-    @model_validator(mode="after")
-    def require_metrics_only_for_passing_editorial_qa(self):
-        values = (
-            self.editorial_quality,
-            self.beauty_category_fit,
-            self.visual_hierarchy,
-            self.saveability,
-            self.cross_page_consistency,
-            self.template_stiffness,
-        )
-        if self.metrics_available:
-            if not self.passed or self.issues or any(value is None for value in values):
-                raise ValueError("available proxy metrics require a passing QA result")
-        elif any(value is not None for value in values):
-            raise ValueError("unavailable proxy metrics must not publish values")
-        return self
+    frame_id: str | None = None

@@ -1,286 +1,191 @@
+"""Unified dynamic-visual Human Review node (Task 15).
+
+In the ``llm_scene_v3`` graph Human Review is the single human gate after the
+multimodal critic. It surfaces the complete rendered carousel, the visual
+critique, asset provenance/decisions and every QA attestation, then routes the
+human decision to one of four registered nodes through ``state["review_route"]``:
+
+    direct approval       -> final_policy_guard
+    visible-text edit      -> r2_compliance  (clears atoms + the whole visual chain)
+    image rejection        -> asset_resolver (clears manifest/scene/render/critique,
+                                               preserves atoms + direction)
+    layout/color/spacing   -> design_reviser
+
+A ``visual_needs_attention`` carousel (the critic's terminal round-2 failure)
+cannot be approved without an explicit human aesthetic override. Human Review
+can never approve a security-rejected asset or an unresolved required asset.
+There is no asset-specific interrupt before this unified gate.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from typing import Any, Literal
+
 from langgraph.types import interrupt
 
-from src.asset_resolver import (
-    review_pending_asset_batch,
-    resolve_assets,
+from src.nodes.publish_patch import (
+    enforce_publish_package_title_length,
+    has_visible_publish_copy_edits,
+    merge_publish_package,
 )
-from src.nodes.node_p_asset_resolver import load_asset_catalog_for_state
-from src.schemas import (
-    AssetManifest,
-    CarouselPayload,
+from src.schemas import AgentState
+from src.schemas.decision import (
     DecisionOutput,
     DecisionTrace,
     NormalizedInput,
     R2ContentSnapShoot,
     R2Input,
     RevisionMeta,
-    VisualPlan,
-)
-from src.schemas import AgentState
-from src.schemas.content_contract import ContentContract
-from src.nodes.publish_patch import (
-    enforce_publish_package_title_length,
-    extract_storyboard_visible_text,
-    merge_publish_package,
 )
 
 
-def _get_value(payload, key, default=None):
-    if isinstance(payload, dict):
+def invalidated_visual_artifacts() -> dict:
+    """Clear the complete dynamic visual chain (used on a visible-text edit).
+
+    A visible-text change re-runs R2 and then re-atomizes, so every downstream
+    visual contract is stale: atoms, direction, asset manifest, design plan,
+    design-plan QA, render manifest, render QA and the critique.
+    """
+    return {
+        "content_atom_set": None,
+        "visual_direction_plan": None,
+        "asset_manifest": None,
+        "carousel_design_plan": None,
+        "design_plan_qa_result": None,
+        "render_manifest": None,
+        "render_qa_result": None,
+        "visual_critique": None,
+    }
+
+
+def _invalidated_render_artifacts() -> dict:
+    """Clear render-chain artifacts while preserving atoms + direction.
+
+    Used on image rejection/replacement: the atoms and art direction are still
+    valid, but the asset manifest, design plan, QA results, render manifest and
+    critique must be rebuilt against the new assets.
+    """
+    return {
+        "asset_manifest": None,
+        "carousel_design_plan": None,
+        "design_plan_qa_result": None,
+        "render_manifest": None,
+        "render_qa_result": None,
+        "visual_critique": None,
+    }
+
+
+def route_after_human_review(
+    state: AgentState,
+) -> Literal["r2_compliance", "asset_resolver", "design_reviser", "final_policy_guard"]:
+    """Route purely on the ``review_route`` the node wrote into state."""
+    return state["review_route"]
+
+
+def _value(payload: Any, key: str, default: Any = None) -> Any:
+    if payload is None:
+        return default
+    if isinstance(payload, Mapping):
         return payload.get(key, default)
     return getattr(payload, key, default)
 
 
-def _build_risk_context(state: AgentState, publish_package: dict) -> dict:
-    domain_context = state.get("domain_context", {}) or {}
-    return {
-        "domain": publish_package.get("domain"),
-        "subdomain": publish_package.get("subdomain"),
-        "content_intent": publish_package.get("content_intent"),
-        "risk_level": publish_package.get("risk_level"),
-        "risk_flags": list(publish_package.get("risk_flags") or []),
-        "profile_version": publish_package.get("profile_version") or domain_context.get("profile_version"),
-    }
-
-
-def _matched_policy_rules(state: AgentState) -> list[str]:
-    r2_output = state.get("r2_output")
-    audit = _get_value(r2_output, "compliance_audit", {})
-    return list(_get_value(audit, "matched_policy_rules", []) or [])
-
-
-def _serialized_evidence_items(state: AgentState) -> list[dict]:
-    serialized = []
-    for topic_id, brief in (state.get("evidence_briefs") or {}).items():
-        for item in list(_get_value(brief, "items", []) or []):
-            payload = (
-                item.model_dump(mode="json")
-                if hasattr(item, "model_dump")
-                else dict(item)
-            )
-            serialized.append({"topic_id": topic_id, **payload})
-    return serialized
-
-
-def _storyboard_signature(storyboards) -> list[dict]:
-    return extract_storyboard_visible_text(storyboards)
-
-
-def _visible_text_signature(publish_package: dict) -> dict:
-    return {
-        "title": str(publish_package.get("title") or ""),
-        "content": str(publish_package.get("content") or ""),
-        "cover_copy": str(publish_package.get("cover_copy") or ""),
-        "hashtags": [str(item) for item in list(publish_package.get("hashtags") or [])],
-        "storyboards": _storyboard_signature(publish_package.get("storyboards")),
-    }
-
-
-def _has_visible_text_edits(previous_package: dict, current_package: dict) -> bool:
-    return _visible_text_signature(previous_package) != _visible_text_signature(current_package)
-
-
-def _storyboard_render_structure_signature(storyboards) -> list[dict]:
-    signature = []
-    for frame in list(storyboards or []):
-        if not isinstance(frame, dict):
-            signature.append({"value": frame})
-            continue
-        signature.append(
-            {
-                "frame_id": frame.get("frame_id"),
-                "role": frame.get("role"),
-                "page_archetype": frame.get("page_archetype"),
-                "content_density_hint": frame.get(
-                    "content_density_hint"
-                ),
-                "content_block_types": [
-                    block.get("block_type") if isinstance(block, dict) else block
-                    for block in list(frame.get("content_blocks") or [])
-                ],
-                "visual_slots": list(frame.get("visual_slots") or []),
-            }
-        )
-    return signature
-
-
-def _has_render_structure_edits(previous_package: dict, current_package: dict) -> bool:
-    def signature(package: dict):
-        raw_contract = package.get("content_contract")
-        try:
-            contract = ContentContract.model_validate(raw_contract).model_dump(
-                mode="json"
-            )
-        except (TypeError, ValueError):
-            contract = _json_value(raw_contract)
-        return {
-            "focus_keyword": package.get("focus_keyword"),
-            "focus_keyword_cli_present": package.get(
-                "focus_keyword_cli_present"
-            ),
-            "content_contract": contract,
-            "storyboards": _storyboard_render_structure_signature(
-                package.get("storyboards")
-            ),
-        }
-
-    return signature(previous_package) != signature(current_package)
-
-
-def _validate_modern_storyboards(publish_package: dict) -> dict:
-    """Enforce the strict modern CarouselPayload boundary without mutating edits.
-
-    ``CarouselPayload`` forbids extra fields, so any retired fixed-card key
-    raises here and never reaches the publish package. Validation alone is
-    enough; re-serializing through ``model_dump`` would inject default slots
-    and silently rewrite the human edit, so the validated storyboards are
-    returned unchanged.
-    """
-
-    try:
-        CarouselPayload.model_validate(
-            {"storyboards": publish_package.get("storyboards")}
-        )
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "human storyboard edits must produce a valid modern CarouselPayload"
-        ) from exc
-    return publish_package
-
-
-def _invalidated_editorial_artifacts() -> dict:
-    return {
-        "visual_plan": None,
-        "asset_manifest": None,
-        "carousel_qa_result": None,
-        "render_manifest": None,
-        "render_qa_result": None,
-    }
-
-
-def _json_value(value):
+def _json_value(value: Any) -> Any:
     if value is None:
         return None
     if hasattr(value, "model_dump"):
         return value.model_dump(mode="json")
-    if isinstance(value, dict):
+    if isinstance(value, Mapping):
         return dict(value)
     return value
 
 
-def _pending_asset_payload(asset_manifest) -> list[dict]:
-    manifest = _json_value(asset_manifest) or {}
-    pending = []
-    for item in list(manifest.get("items") or []):
-        if item.get("status") != "pending_external":
-            continue
-        decision_id = item.get("pending_id") or item.get("asset_id")
-        pending.append(
-            {
-                **item,
-                "decision_id": decision_id,
-                "decision_binding": {
-                    field_name: item.get(field_name)
-                    for field_name in (
-                        "pending_id",
-                        "slot_id",
-                        "provider",
-                        "provider_asset_id",
-                        "requirement_fingerprint",
-                        "sha256",
-                        "metadata_path",
-                    )
-                },
-            }
-        )
-    return pending
+def _has_visible_text_edits(previous: dict, current: dict) -> bool:
+    return has_visible_publish_copy_edits(previous, current)
 
 
-def _review_artifacts(state: AgentState, publish_package: dict) -> dict:
-    render_manifest = _json_value(state.get("render_manifest"))
-    asset_manifest = _json_value(state.get("asset_manifest"))
-    carousel_qa = _json_value(state.get("carousel_qa_result"))
-    render_qa = _json_value(state.get("render_qa_result"))
-    pages = list((render_manifest or {}).get("pages") or [])
-    images = [page.get("path") for page in pages if page.get("path")]
-    if not images:
-        images = list(publish_package.get("rendered_image_paths") or [])
-    visual_plan = _json_value(state.get("visual_plan")) or {}
-    if not isinstance(visual_plan, dict):
-        visual_plan = {}
+def _required_directive_ids(direction_plan: Any) -> set[str]:
+    if direction_plan is None:
+        return set()
+    directives = _value(direction_plan, "asset_directives", ()) or ()
+    required: set[str] = set()
+    for directive in directives:
+        if _value(directive, "required") is True:
+            directive_id = _value(directive, "directive_id")
+            if directive_id:
+                required.add(str(directive_id))
+    return required
+
+
+def _validate_approval_asset_gate(state: Mapping[str, Any]) -> None:
+    """Forbid approving a security-rejected or unresolved required asset."""
+    asset_manifest = state.get("asset_manifest")
+    items = list(_value(asset_manifest, "items", ()) or ()) if asset_manifest is not None else []
+    for item in items:
+        if _value(item, "security_status") == "rejected":
+            raise ValueError(
+                "Human Review cannot approve a security-rejected asset; "
+                "reject or replace it first."
+            )
+        if _value(item, "human_decision") == "rejected":
+            raise ValueError(
+                "Human Review cannot approve a human-rejected asset; "
+                "reject or replace it first."
+            )
+    required_ids = _required_directive_ids(state.get("visual_direction_plan"))
+    if required_ids:
+        covered = {
+            str(_value(item, "directive_id"))
+            for item in items
+            if _value(item, "directive_id")
+        }
+        missing = sorted(required_ids - covered)
+        if missing:
+            raise ValueError(
+                "Human Review cannot approve with an unresolved required asset: "
+                + ", ".join(missing)
+            )
+
+
+def _atom_set_summary(atom_set: Any) -> dict | None:
+    if atom_set is None:
+        return None
+    atoms = _value(atom_set, "atoms", ()) or ()
     return {
-        "images": images,
-        "render_manifest": render_manifest,
-        "asset_manifest": asset_manifest,
-        "carousel_qa_result": carousel_qa,
-        "render_qa_result": render_qa,
-        "proxy_metric_label": (render_qa or {}).get("metric_kind"),
-        "proxy_metric_note": (render_qa or {}).get("metric_note"),
-        "pending_assets": _pending_asset_payload(asset_manifest),
-        "visual_summary": {
-            "template_family": visual_plan.get("template_family"),
-            "narrative_form": visual_plan.get("narrative_form"),
-            "frames": [
-                {
-                    "frame_id": frame.get("frame_id"),
-                    "page_archetype": frame.get("page_archetype"),
-                    "density": frame.get("content_density_hint"),
-                }
-                for frame in list(
-                    publish_package.get("storyboards") or []
-                )
-                if isinstance(frame, dict)
-            ],
-        },
+        "canonical_sha256": _value(atom_set, "canonical_sha256"),
+        "atom_count": len(atoms),
     }
 
 
-def _apply_asset_decisions(
-    state: AgentState,
-    asset_manifest,
-    decisions: dict,
-    feedback: str | None,
-):
-    manifest = AssetManifest.model_validate(asset_manifest)
-    pending = [item for item in manifest.items if item.status == "pending_external"]
-    if not pending:
-        if decisions:
-            raise ValueError("asset_decisions contains no pending asset IDs.")
-        return manifest, "final_policy_guard"
-    if not isinstance(decisions, dict):
-        raise ValueError("asset_decisions must be a dict.")
-
-    run_ids = {item.run_id for item in pending}
-    if len(run_ids) != 1 or None in run_ids:
-        raise ValueError("Pending assets must belong to one persisted resolver run.")
-    run_id = next(iter(run_ids))
-    catalog = load_asset_catalog_for_state(
-        state, run_id=run_id, allow_external=False
-    )
-    plan = VisualPlan.model_validate(state.get("visual_plan"))
-
-    def refresh_manifest():
-        refreshed_catalog = load_asset_catalog_for_state(
-            state, run_id=run_id, allow_external=False
-        )
-        return resolve_assets(plan, refreshed_catalog)
-
-    batch_result = review_pending_asset_batch(
-        catalog,
-        list(manifest.items),
-        decisions,
-        rejection_reason=(feedback or "rejected during human review"),
-        finalize=refresh_manifest,
-    )
-    route = (
-        "editorial_carousel_renderer"
-        if batch_result.any_rejected
-        else "render_qa"
-    )
-    return batch_result.finalized_value, route
+def _visual_direction_summary(direction_plan: Any) -> dict | None:
+    if direction_plan is None:
+        return None
+    return {
+        "template_family": _value(direction_plan, "template_family"),
+        "page_count": _value(direction_plan, "page_count"),
+        "art_direction": _value(direction_plan, "art_direction"),
+    }
 
 
-def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_round: int) -> DecisionOutput:
+def _review_artifacts(state: Mapping[str, Any], publish_package: dict) -> dict:
+    return {
+        "publish_package": publish_package,
+        "render_manifest": _json_value(state.get("render_manifest")),
+        "asset_manifest": _json_value(state.get("asset_manifest")),
+        "visual_critique": _json_value(state.get("visual_critique")),
+        "design_plan_qa_result": _json_value(state.get("design_plan_qa_result")),
+        "render_qa_result": _json_value(state.get("render_qa_result")),
+        "unresolved_optional_assets": list(state.get("unresolved_optional_assets") or []),
+        "review_status": state.get("review_status"),
+        "visual_direction_summary": _visual_direction_summary(state.get("visual_direction_plan")),
+        "content_atom_set_summary": _atom_set_summary(state.get("content_atom_set")),
+    }
+
+
+def _build_r2_recheck_decision(
+    state: Mapping[str, Any], publish_package: dict, review_round: int
+) -> DecisionOutput:
     r2_output = state.get("r2_output")
     previous_snapshot = getattr(r2_output, "content_snapshot", None)
     previous_revision_meta = getattr(r2_output, "revision_meta", None)
@@ -290,14 +195,19 @@ def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_
         normalized_input = getattr(decision_output, "normalized_input", None)
         previous_r2_input = getattr(normalized_input, "r2_input", None)
         previous_snapshot = getattr(previous_r2_input, "content_snapshot", None)
-        previous_revision_meta = getattr(previous_r2_input, "revision_meta", None) or previous_revision_meta
+        previous_revision_meta = (
+            getattr(previous_r2_input, "revision_meta", None)
+            or previous_revision_meta
+        )
 
     draft_id = (
         getattr(previous_snapshot, "draft_id", None)
         or publish_package.get("draft_id")
         or "human_review_edit"
     )
-    previous_revision_id = getattr(previous_revision_meta, "revision_id", None) or "human_review_edit"
+    previous_revision_id = (
+        getattr(previous_revision_meta, "revision_id", None) or "human_review_edit"
+    )
     previous_round = getattr(previous_revision_meta, "round", 0) or 0
     previous_diff_summary = list(getattr(previous_revision_meta, "diff_summary", []) or [])
 
@@ -317,169 +227,177 @@ def _build_r2_recheck_decision(state: AgentState, publish_package: dict, review_
                     core_pain=str(publish_package.get("core_pain") or ""),
                     best_cover_copy=str(publish_package.get("cover_copy") or ""),
                     narrative_plan=publish_package.get("narrative_plan"),
-                    storyboard_visible_text=extract_storyboard_visible_text(
-                        publish_package.get("storyboards")
-                    ),
                 ),
                 revision_meta=RevisionMeta(
                     revision_id=previous_revision_id,
                     round=previous_round + 1,
-                    diff_summary=previous_diff_summary + [f"human_review_round_{review_round}_edited_visible_text"],
+                    diff_summary=previous_diff_summary
+                    + [f"human_review_round_{review_round}_edited_visible_text"],
                     next_actions=["rerun_r2_compliance_after_human_edit"],
                 ),
                 decision_trace=DecisionTrace(
                     source_node="HUMAN_REVIEW",
-                    why_this_route=["Visible text changed during human review; rerun R2 compliance."],
+                    why_this_route=[
+                        "Visible text changed during human review; rerun R2 compliance."
+                    ],
                 ),
             )
         ),
     )
 
 
-def route_after_human_review(state: AgentState) -> str:
-    review_route = state.get("review_route")
-    if review_route in {"editorial_carousel_renderer", "render_qa"}:
-        return review_route
-    review_status = state.get("review_status")
-    if review_status == "needs_r2_recheck":
-        return "r2_compliance"
-    if review_status == "approved":
-        return "final_policy_guard"
-    raise ValueError("route_after_human_review requires an approved review or R2 recheck.")
+def _design_revision_request(feedback: str | None, revision_request: Any) -> dict:
+    """Normalize a design-feedback revision request for the design reviser."""
+    if isinstance(revision_request, Mapping):
+        request = dict(revision_request)
+    else:
+        request = {}
+    if feedback and "feedback" not in request:
+        request["feedback"] = feedback
+    return request
 
 
 def human_review_node(state: AgentState) -> AgentState:
-    """
-    Pause after assembler so a human can review or edit publish_package.
-    Execution continues only after the human explicitly approves it.
-    """
+    """Pause for unified human review, then route via ``state["review_route"]``."""
     publish_package = state.get("publish_package")
-    if not publish_package:
+    if not isinstance(publish_package, Mapping):
         raise ValueError("human_review_node requires `publish_package` in state.")
-    publish_package = enforce_publish_package_title_length(publish_package)
+    publish_package = enforce_publish_package_title_length(dict(publish_package))
 
-    review_round = state.get("review_round", 0) or 0
-    final_policy_issues = list(state.get("final_policy_issues") or [])
-    risk_context = _build_risk_context(state, publish_package)
-    visible_text_edited = False
-    render_structure_edited = False
+    review_round = int(state.get("review_round", 0) or 0)
+    review_status = state.get("review_status")
+    needs_attention = review_status == "visual_needs_attention"
     pending_patch = dict(state.get("pending_human_publish_patch") or {})
-    pending_replace_storyboards = bool(state.get("pending_human_replace_storyboards"))
+
+    visible_text_edited = False
 
     while True:
         review_result = interrupt(
             {
                 "kind": "publish_review",
-                "message": "请审核 assembler 的结果。只有输入 yes 才会继续进入最终策略守门；若仍有风险会返回这里继续修改。",
-                "publish_package": publish_package,
-                "final_policy_issues": final_policy_issues,
-                "risk_context": risk_context,
-                "matched_policy_rules": _matched_policy_rules(state),
-                "evidence_items": _serialized_evidence_items(state),
+                "message": (
+                    "请审核完整的动态视觉产出。批准后进入最终策略守门；修改可见文字会回到 R2；"
+                    "拒绝图片会回到素材解析；布局/配色/间距反馈会回到设计修订。"
+                    + (
+                        " 视觉批评两轮未通过，需要明确的视觉放行才能批准。"
+                        if needs_attention
+                        else ""
+                    )
+                ),
                 "review_round": review_round + 1,
                 **_review_artifacts(state, publish_package),
             }
         )
 
-        if not isinstance(review_result, dict):
+        if not isinstance(review_result, Mapping):
             raise ValueError("Human review resume payload must be a dict.")
 
-        prior_publish_package = publish_package
+        # --- apply edits ---
         edited_publish_package = review_result.get("edited_publish_package")
-        if edited_publish_package is not None:
-            replace_storyboards = review_result.get("replace_storyboards") is True
-            publish_package = merge_publish_package(
-                publish_package,
-                edited_publish_package,
-                replace_storyboards=replace_storyboards,
+        if edited_publish_package:
+            prior_publish_package = publish_package
+            publish_package = enforce_publish_package_title_length(
+                merge_publish_package(publish_package, dict(edited_publish_package))
             )
-            if "storyboards" in edited_publish_package:
-                publish_package = _validate_modern_storyboards(publish_package)
-            publish_package = enforce_publish_package_title_length(publish_package)
-            pending_patch = merge_publish_package(
-                pending_patch,
-                edited_publish_package,
-                replace_storyboards=replace_storyboards,
-            )
-            pending_patch = enforce_publish_package_title_length(pending_patch)
-            pending_replace_storyboards = pending_replace_storyboards or replace_storyboards
             visible_text_edited = visible_text_edited or _has_visible_text_edits(
-                prior_publish_package,
-                publish_package,
+                prior_publish_package, publish_package
             )
-            render_structure_edited = (
-                render_structure_edited
-                or _has_render_structure_edits(
-                    prior_publish_package,
-                    publish_package,
-                )
+            pending_patch = merge_publish_package(
+                pending_patch, dict(edited_publish_package)
             )
-            risk_context = _build_risk_context(state, publish_package)
 
-        approved = review_result.get("approved", False)
         feedback = review_result.get("feedback")
+        reject_assets = review_result.get("reject_assets") or None
+        revision_request = review_result.get("revision_request") or None
+        approved = review_result.get("approved", False)
+        aesthetic_override = review_result.get("aesthetic_override", False) is True
         review_round += 1
 
-        asset_decisions = review_result.get("asset_decisions") or None
-        pending_assets = _pending_asset_payload(state.get("asset_manifest"))
-        if asset_decisions or pending_assets:
-            if asset_decisions is None:
-                raise ValueError(
-                    "Every pending asset requires an explicit asset_decision."
-                )
-            refreshed_manifest, asset_route = _apply_asset_decisions(
-                state,
-                state.get("asset_manifest"),
-                asset_decisions,
-                feedback,
-            )
-            if visible_text_edited or render_structure_edited:
-                return {
-                    "publish_package": publish_package,
-                    **_invalidated_editorial_artifacts(),
-                    "review_status": "needs_r2_recheck",
-                    "review_route": "r2_compliance",
-                    "review_feedback": feedback,
-                    "review_round": review_round,
-                    "final_policy_issues": [],
-                    "pending_human_publish_patch": pending_patch,
-                    "pending_human_replace_storyboards": pending_replace_storyboards,
-                    "decision_output": _build_r2_recheck_decision(
-                        state, publish_package, review_round
-                    ),
-                    "current_node": "HUMAN_REVIEW",
-                }
+        # --- route precedence ---
+
+        # 1. A visible-text edit re-runs the whole chain (R2 -> atomizer -> ...).
+        if visible_text_edited:
             return {
                 "publish_package": publish_package,
-                "asset_manifest": refreshed_manifest,
-                "review_status": "pending",
-                "review_route": asset_route,
+                **invalidated_visual_artifacts(),
+                "review_status": "needs_r2_recheck",
+                "review_route": "r2_compliance",
                 "review_feedback": feedback,
                 "review_round": review_round,
                 "final_policy_issues": [],
+                "pending_human_publish_patch": pending_patch,
+                "visual_aesthetic_override": None,
+                "decision_output": _build_r2_recheck_decision(
+                    state, publish_package, review_round
+                ),
                 "current_node": "HUMAN_REVIEW",
             }
 
+        # 2. Image rejection/replacement -> asset resolver (atoms + direction kept).
+        if reject_assets:
+            return {
+                "publish_package": publish_package,
+                **_invalidated_render_artifacts(),
+                "review_status": "pending",
+                "review_route": "asset_resolver",
+                "review_feedback": feedback,
+                "review_round": review_round,
+                "final_policy_issues": [],
+                "rejected_asset_decisions": dict(reject_assets),
+                "visual_aesthetic_override": None,
+                "current_node": "HUMAN_REVIEW",
+            }
+
+        # 3. Layout/color/image/spacing feedback -> design reviser.
+        if revision_request:
+            return {
+                "publish_package": publish_package,
+                "review_status": "pending",
+                "review_route": "design_reviser",
+                "review_feedback": feedback,
+                "review_round": review_round,
+                "revision_request": _design_revision_request(feedback, revision_request),
+                "final_policy_issues": [],
+                "visual_aesthetic_override": None,
+                "current_node": "HUMAN_REVIEW",
+            }
+
+        # 4. Approval (gated).
         if approved:
-            if visible_text_edited or render_structure_edited:
+            _validate_approval_asset_gate(state)
+            if needs_attention and not aesthetic_override:
+                # Cannot approve a needs-attention carousel without an
+                # explicit aesthetic override; route back to the design
+                # reviser instead.
                 return {
                     "publish_package": publish_package,
-                    **_invalidated_editorial_artifacts(),
-                    "review_status": "needs_r2_recheck",
-                    "review_route": "r2_compliance",
-                    "review_feedback": feedback,
+                    "review_status": "visual_needs_attention",
+                    "review_route": "design_reviser",
+                    "review_feedback": feedback or "visual_needs_attention requires explicit override",
                     "review_round": review_round,
+                    "revision_request": _design_revision_request(
+                        feedback or "visual_needs_attention requires explicit override",
+                        None,
+                    ),
                     "final_policy_issues": [],
-                    "pending_human_publish_patch": pending_patch,
-                    "pending_human_replace_storyboards": pending_replace_storyboards,
-                    "decision_output": _build_r2_recheck_decision(state, publish_package, review_round),
+                    "visual_aesthetic_override": None,
                     "current_node": "HUMAN_REVIEW",
                 }
-            return {
+            result = {
                 "publish_package": publish_package,
                 "review_status": "approved",
                 "review_route": "final_policy_guard",
                 "review_feedback": feedback,
                 "review_round": review_round,
+                "final_policy_issues": [],
+                "pending_human_publish_patch": pending_patch,
                 "current_node": "HUMAN_REVIEW",
             }
+            if needs_attention and aesthetic_override:
+                result["visual_aesthetic_override"] = True
+            else:
+                result["visual_aesthetic_override"] = None
+            return result
+
+        # Not approved and no specific action -> re-loop for another review pass.
+        continue
