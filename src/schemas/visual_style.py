@@ -12,7 +12,14 @@ from pydantic import (
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    # NOTE: ``strict=True`` is intentionally omitted. Real structured-output
+    # providers (Gemini) return JSON, where every sequence is a JSON array
+    # (Python list). Pydantic's strict mode rejects list -> tuple coercion,
+    # which made every tuple-typed field (palette, page_sequence, asset_directives,
+    # ...) fail validation against real model output. ``extra="forbid"`` still
+    # rejects unknown fields and ``frozen=True`` keeps instances immutable, which
+    # are the invariants that actually matter.
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 def deep_freeze(value: Any) -> Any:

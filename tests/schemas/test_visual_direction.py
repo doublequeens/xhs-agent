@@ -154,13 +154,32 @@ def test_direction_rejects_family_values_outside_profile():
         plan.validate_against(make_atom_set(), make_family_profile())
 
 
-def test_visual_contracts_reject_scalar_coercion():
-    with pytest.raises(ValidationError) as exc_info:
-        make_direction_plan(page_count="5")
+def test_visual_direction_accepts_json_arrays_for_sequence_fields():
+    """Structured-output providers (Gemini) return JSON, where every sequence
+    is a JSON array (Python list). The tuple-typed sequence fields must accept
+    lists so real model output validates (StrictModel dropped strict=True for
+    this reason); the values still materialize as immutable tuples."""
+    plan = make_direction_plan()
+    json_payload = plan.model_dump(mode="json")  # tuple fields -> lists
 
-    error = exc_info.value.errors()[0]
-    assert error["loc"] == ("page_count",)
-    assert error["type"] == "int_type"
+    restored = VisualDirectionPlan.model_validate(json_payload)
+
+    assert isinstance(restored.palette, tuple)
+    assert isinstance(restored.motifs, tuple)
+    assert isinstance(restored.page_sequence, tuple)
+    assert isinstance(restored.content_fragments, tuple)
+    assert restored.palette == plan.palette
+    assert [page.page_id for page in restored.page_sequence] == [
+        page.page_id for page in plan.page_sequence
+    ]
+
+
+def test_visual_direction_still_rejects_unknown_fields():
+    """Dropping strict=True keeps extra='forbid': unknown fields are rejected."""
+    with pytest.raises(ValidationError) as exc_info:
+        make_direction_plan(unknown_field="surprise")
+
+    assert exc_info.value.errors()[0]["type"] == "extra_forbidden"
 
 
 def test_direction_and_family_mappings_are_deeply_immutable_and_serializable():
