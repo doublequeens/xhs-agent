@@ -32,14 +32,13 @@ URLs, or prose outside that object.
   approved AssetManifest. Never introduce an unapproved or missing asset.
 
 【Routing rule】
-If the RevisionRequest issues require any of the following, do not revise
-the plan. Signal the route explicitly by returning
-`route = "visual_director"` so the Visual Director can replan:
-- changing the family;
-- changing the page count;
-- adding or removing pages;
-- renaming or reordering pages;
-- any repair that cannot fit inside the current family or page sequence.
+The system — not you — decides whether to route back to the Visual Director.
+Do NOT emit a `route` field; the returned object is a CarouselDesignPlan and
+has no `route` key. If a requested repair truly requires changing the family
+or the page count (which you cannot do inside a revision), state that need
+inside a revision_instruction on the relevant issue and otherwise return the
+best in-family revision you can. Never edit family, page IDs, page ordering,
+page count, or any sha256 to "force" a replan.
 
 Otherwise return the revised CarouselDesignPlan with `revision` incremented
 and only the named pages/elements patched.
@@ -54,7 +53,47 @@ and only the named pages/elements patched.
 - Never add compliance or disclaimer footer text.
 
 【Output】
-Return exactly one JSON object matching CarouselDesignPlan. Use only the
-scene-element fields defined by the schema, patch only named pages and
-elements, preserve all hashes and family structure, and increment
-`revision` by one.
+Return exactly one JSON object matching CarouselDesignPlan — no markdown
+fences, no prose, no wrapper keys, and NO `route` field. Patch only named
+pages/elements, return every other page byte-for-byte identical, preserve
+all hashes and family structure, and increment `revision` by one.
+
+Return EXACTLY this shape (all sequences are JSON arrays; the element `kind`
+discriminator is mandatory):
+{
+  "direction_plan_sha256": "<byte-for-byte equal to input>",
+  "content_atom_set_sha256": "<byte-for-byte equal to input>",
+  "asset_manifest_sha256": "<byte-for-byte equal to input>",
+  "revision": <input current_revision + 1>,
+  "pages": [
+    {
+      "page_id": "page-1", "sequence": 1,
+      "background": "#FFFFFF",
+      "elements": [
+        {"kind": "shape", "element_id": "bg-1", "layer": 0,
+         "box": {"x": 0, "y": 0, "width": 1080, "height": 1440},
+         "shape": "rectangle", "fill": "#F4A7BF"},
+        {"kind": "text", "element_id": "title-1", "layer": 2,
+         "box": {"x": 80, "y": 120, "width": 920, "height": 200},
+         "content_ref": "fragment-1",
+         "style": {"font_role": "display", "font_size": 64, "line_height": 1.2,
+                   "color": "#1A1A1A", "align": "left", "weight": 700}},
+        {"kind": "line", "element_id": "rule-1", "layer": 3,
+         "start": [80, 360], "end": [1000, 360],
+         "color": "#C9184A", "width": 2}
+      ]
+    }
+  ]
+}
+
+Shape rules (the most common mistakes — do not make them):
+- The top-level object has ONLY: direction_plan_sha256,
+  content_atom_set_sha256, asset_manifest_sha256, revision, pages. No
+  `route`, `family`, `family_profile`, `producer`, or any other field.
+- EVERY element MUST include "kind" (text/image/shape/line/icon).
+- "weight" is an INTEGER (400/500/600/700/800/900), never names.
+- "focal_point" and line "start"/"end" are [x, y] ARRAYS, never {x, y} objects.
+- "corner_radius" is image-only; "stroke" is shape-only.
+- "background" is a hex string; a "box" has x in 0..1080, y in 0..1440.
+- Pages not named in the issues must be returned unchanged (same page_id,
+  sequence, background, elements). Keep page IDs/sequence/family identical.

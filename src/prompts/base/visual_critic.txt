@@ -79,7 +79,51 @@ hashes, assets, or the selected family. Specifically:
   or any similar label or boilerplate.
 
 【Output】
-Return exactly one JSON object matching VisualCritique. Score all eight
-dimensions plus image_relevance, set contains_images and revision_round from
-the inputs, echo all four source hashes unchanged, and, on any failure, name
-every problem with its page/element and a concrete revision_instruction.
+Return exactly one JSON object matching VisualCritique — no markdown fences,
+no prose, no wrapper keys. Score all eight dimensions plus image_relevance,
+set contains_images and revision_round from the inputs, echo all four source
+hashes unchanged, and, on any failure, name every problem with its
+page/element and a concrete revision_instruction.
+
+Return EXACTLY this shape (all sequences are JSON arrays):
+{
+  "content_atom_set_sha256": "<echo input>",
+  "direction_plan_sha256": "<echo input>",
+  "design_plan_sha256": "<echo input>",
+  "render_manifest_sha256": "<echo input>",
+  "passed": false,
+  "revision_round": <echo input, 0..2>,
+  "contains_images": <echo input, true or false>,
+  "overall": 0,
+  "hierarchy": 0, "legibility": 0, "composition": 0,
+  "family_consistency": 0, "page_variation": 0, "page_rhythm": 0,
+  "color": 0, "spacing": 0,
+  "image_relevance": "not_applicable",
+  "issues": [
+    {
+      "rule": "spacing.tight_margin",
+      "message": "page-2 body text sits closer than 80px to the left edge",
+      "revision_instruction": "move page-2 body text box x from 40 to 88",
+      "page_id": "page-2",
+      "element_id": "body-2"
+    }
+  ],
+  "revision_instructions": [
+    "move page-2 body text box x from 40 to 88"
+  ]
+}
+
+Shape rules (the most common mistakes — do not make them):
+- Every score is an INTEGER 0..100. image_relevance is an integer 0..100 OR
+  the exact string "not_applicable" (use "not_applicable" only when
+  contains_images is false).
+- The top-level object has ONLY the keys shown above — no extra fields.
+- Echo the four sha256 values, revision_round, and contains_images
+  byte-for-byte from the inputs; never recompute or invent them.
+- A passing critique (passed: true) must have NO issues and meet the
+  thresholds (overall >= 80, hierarchy >= 70, family_consistency >= 75,
+  page_rhythm >= 70, image_relevance not_applicable or >= 70).
+- A failing critique (passed: false) must have at least one issue AND at
+  least one revision_instructions entry.
+- Every issue MUST name a page_id and/or element_id and carry a concrete,
+  non-empty revision_instruction.
