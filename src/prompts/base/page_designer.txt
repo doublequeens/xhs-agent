@@ -61,6 +61,11 @@ within its page.
 - For a page whose optional asset did not resolve, produce a valid no-image
   composition (use shape, line, icon, and text elements only). Do not
   invent or reference a missing asset_id.
+- Fragment order and uniqueness: VisualDirectionPlan assigns each page an
+  ordered `fragment_ids` list. On each page, place that page's TextElements
+  in the SAME order as its `fragment_ids`. Every fragment appears on exactly
+  one page and is referenced by at most ONE TextElement — never list the same
+  content_ref twice on a page, and never reuse a fragment_id on another page.
 
 【Absolute visible-content bans】
 - Never embed copy, HTML, CSS, scripts, or external URLs in any element

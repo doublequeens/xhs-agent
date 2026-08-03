@@ -803,6 +803,38 @@ def test_insufficient_contrast_large_text_fails():
     assert "3.0" in issue.message
 
 
+def test_contrast_uses_shape_behind_text_not_page_background():
+    """Regression: a text element whose color matches the PAGE background but
+    sits on a contrasting shape/card must NOT be flagged. The contrast check
+    must use the topmost shape painted behind the text, not page.background."""
+    base = _inputs()
+    base_style = base.design_plan.pages[0].elements[0].style
+    dark_card = ShapeElement(
+        element_id="card-page-1",
+        layer=0,  # painted behind the text (text sits at layer 1)
+        box=Box(x=80, y=80, width=920, height=220),  # overlaps the text box
+        shape="rectangle",
+        fill="#0E5A5A",
+    )
+    plan = _add_page_element(base.design_plan, "page-1", dark_card)
+    # Text color == page background (#FFFFFF): against the page this is 1:1
+    # (would false-fail); against the dark card it is high contrast.
+    plan = _replace_element(
+        plan,
+        "page-1",
+        "text-page-1",
+        style=base_style.model_copy(update={"color": "#FFFFFF"}),
+        intentional_overlap_with=("card-page-1",),
+    )
+
+    result = evaluate_design_plan(_inputs(design_plan=plan, **_base_from(base)))
+
+    assert (
+        _find(result, "typography.insufficient_contrast", element_id="text-page-1")
+        is None
+    )
+
+
 # --- family envelope ------------------------------------------------------
 
 def test_family_mismatch_fails():

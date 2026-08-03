@@ -437,14 +437,35 @@ def validate_geometry(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
 
 # --- typography -----------------------------------------------------------
 
+def _effective_text_background(page: PageScene, text: TextElement) -> str:
+    """The background a viewer actually sees behind ``text``.
+
+    Text often sits on a shape/card element over the page background (e.g.
+    light text on a dark header bar). Comparing the text color to the page
+    background in that case is a false contrast failure, so pick the topmost
+    shape painted *behind* the text (lower layer, overlapping box) and use
+    its fill; fall back to the page background when nothing sits behind it.
+    """
+    behind = [
+        shape
+        for shape in page.elements
+        if isinstance(shape, ShapeElement)
+        and shape.layer < text.layer
+        and _boxes_intersect(shape.box, text.box)
+    ]
+    if not behind:
+        return page.background
+    return max(behind, key=lambda shape: shape.layer).fill
+
+
 def validate_typography(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
     issues: list[DesignIssue] = []
     for page in inputs.design_plan.pages:
-        background = page.background
         for element in page.elements:
             if not isinstance(element, TextElement):
                 continue
             style = element.style
+            background = _effective_text_background(page, element)
             role = style.font_role
             if role in ("body", "caption") and style.font_size < MIN_BODY_FONT_PX - _EPS:
                 issues.append(
