@@ -81,7 +81,62 @@ within its page.
 - Start at `revision: 0`. The Design Reviser owns later revisions.
 
 【Output】
-Return exactly one JSON object matching CarouselDesignPlan. Use only the
-scene-element fields listed above. The producer must remain the single
+Return exactly one JSON object matching CarouselDesignPlan — no markdown
+fences, no prose, no wrapper keys. The producer must remain the single
 source of structured scene data — no family-specific hardcoded layouts, no
 HTML or CSS templates, no scripts.
+
+Return EXACTLY this shape (all sequences are JSON arrays):
+{
+  "direction_plan_sha256": "<echo input verbatim>",
+  "content_atom_set_sha256": "<echo input verbatim>",
+  "asset_manifest_sha256": "<echo input verbatim>",
+  "revision": 0,
+  "pages": [
+    {
+      "page_id": "page-1", "sequence": 1,
+      "background": "#FFFFFF",
+      "elements": [
+        {"kind": "shape", "element_id": "bg-1", "layer": 0,
+         "box": {"x": 0, "y": 0, "width": 1080, "height": 1440},
+         "shape": "rectangle", "fill": "#F4A7BF"},
+        {"kind": "image", "element_id": "photo-1", "layer": 1,
+         "box": {"x": 80, "y": 400, "width": 920, "height": 720},
+         "asset_ref": "asset-1", "fit": "cover",
+         "focal_point": [0.5, 0.5], "corner_radius": 24},
+        {"kind": "text", "element_id": "title-1", "layer": 2,
+         "box": {"x": 80, "y": 120, "width": 920, "height": 200},
+         "content_ref": "fragment-1",
+         "style": {"font_role": "display", "font_size": 64, "line_height": 1.2,
+                   "color": "#1A1A1A", "align": "left", "weight": 700}},
+        {"kind": "line", "element_id": "rule-1", "layer": 3,
+         "start": [80, 360], "end": [1000, 360],
+         "color": "#C9184A", "width": 2},
+        {"kind": "icon", "element_id": "mark-1", "layer": 3,
+         "box": {"x": 80, "y": 60, "width": 48, "height": 48},
+         "icon": "sparkle", "color": "#C9184A"}
+      ]
+    }
+  ]
+}
+
+Shape rules (these are the most common mistakes — do not make them):
+- EVERY element MUST include "kind" as one of "text", "image", "shape",
+  "line", "icon". An element without "kind" is invalid.
+- "weight" is an INTEGER: 400, 500, 600, 700, 800, or 900. Never use names
+  like "bold", "regular", or "black".
+- "focal_point" and LineElement "start"/"end" are [x, y] ARRAYS, e.g.
+  [0.5, 0.5] or [80, 360]. Never {"x": ..., "y": ...} objects.
+- "corner_radius" exists ONLY on image elements. Never put it on shapes,
+  lines, icons, or text.
+- "stroke" exists ONLY on shape elements (optional). Lines use "color" and
+  "width", never "stroke".
+- "background" is a hex STRING (e.g. "#FFFFFF"), one per page.
+- A "box" has x in 0..1080, y in 0..1440, width and height > 0.
+- The top-level object has ONLY: direction_plan_sha256,
+  content_atom_set_sha256, asset_manifest_sha256, revision, pages. Do NOT
+  add "family", "family_profile", "producer", or any other field.
+- Each page has ONLY: page_id, sequence, background, elements. Each page
+  needs at least one element; element_id is unique within its page.
+- Use exactly the page IDs, sequences, and family from VisualDirectionPlan;
+  echo the three sha256 values byte-for-byte; start at revision 0.
