@@ -96,6 +96,12 @@ def _named_page_ids(issues: tuple[RevisionIssue, ...]) -> frozenset[str]:
     )
 
 
+def _named_element_ids(issues: tuple[RevisionIssue, ...]) -> frozenset[str]:
+    return frozenset(
+        issue.element_id for issue in issues if issue.element_id is not None
+    )
+
+
 def validate_revision(
     before: CarouselDesignPlan,
     after: CarouselDesignPlan,
@@ -118,6 +124,7 @@ def _validate_candidate(
     atom_set: ContentAtomSet,
     manifest: AssetManifest,
     named_pages: frozenset[str],
+    named_elements: frozenset[str],
     current_revision: int,
 ) -> None:
     # Revalidate the complete dump so scripted/future adapters cannot bypass
@@ -154,6 +161,40 @@ def _validate_candidate(
             "revision must modify at least one page named by the issues: "
             + ", ".join(sorted(named_pages))
         )
+    # When the issues name specific elements, at least one of those elements
+    # must change so the revision actually addresses the flagged problem
+    # instead of only touching unrelated content on the named page. A named
+    # element counts as changed whether it was modified, added, or removed.
+    if named_elements:
+        before_element_by_id = {
+            (page_id, element.element_id): element
+            for page_id in named_pages
+            for element in before_pages[page_id].elements
+        }
+        after_element_keys: set[tuple[str, str]] = set()
+        changed_named_element = False
+        for after_page in validated.pages:
+            for element in after_page.elements:
+                key = (after_page.page_id, element.element_id)
+                after_element_keys.add(key)
+                if element.element_id in named_elements:
+                    before_element = before_element_by_id.get(key)
+                    if before_element is None or element != before_element:
+                        changed_named_element = True
+                        break
+            if changed_named_element:
+                break
+        if not changed_named_element:
+            # A named element that existed in a named page and was removed.
+            changed_named_element = any(
+                element_id in named_elements and (page_id, element_id) not in after_element_keys
+                for (page_id, element_id) in before_element_by_id
+            )
+        if not changed_named_element:
+            raise ValueError(
+                "revision must modify at least one element named by the issues: "
+                + ", ".join(sorted(named_elements))
+            )
 
 
 def _design_plan(state: Mapping[str, Any]) -> CarouselDesignPlan:
@@ -360,6 +401,7 @@ def design_reviser_node(
     family_profile = _family_profile(direction_plan.template_family, style_profiles)
     image_paths = _reference_image_paths(family_profile)
     named_pages = _named_page_ids(request.issues)
+    named_elements = _named_element_ids(request.issues)
     prompt = _reviser_prompt(
         state,
         before=before,
@@ -384,6 +426,7 @@ def design_reviser_node(
                 atom_set=atom_set,
                 manifest=manifest,
                 named_pages=named_pages,
+                named_elements=named_elements,
                 current_revision=request.current_revision,
             ),
             max_attempts=MAX_GENERATION_ATTEMPTS,

@@ -223,6 +223,26 @@ def _design_plan(
     )
 
 
+def _replace_element_box(
+    plan: CarouselDesignPlan,
+    page_id: str,
+    element_id: str,
+    box: Box,
+) -> CarouselDesignPlan:
+    """Return ``plan`` with one element's box changed (other pages verbatim)."""
+    new_pages = []
+    for page in plan.pages:
+        if page.page_id != page_id:
+            new_pages.append(page)
+            continue
+        elements = tuple(
+            el.model_copy(update={"box": box}) if el.element_id == element_id else el
+            for el in page.elements
+        )
+        new_pages.append(page.model_copy(update={"elements": elements}))
+    return plan.model_copy(update={"pages": tuple(new_pages)})
+
+
 def _state(
     design_plan: CarouselDesignPlan,
     direction_plan: VisualDirectionPlan,
@@ -282,6 +302,10 @@ def test_reviser_patches_only_named_pages_and_increments_revision():
         manifest,
         revision=1,
         extra_shape_pages=frozenset({"page-2"}),
+    )
+    # The issue names element text-page-2; the revision must change it too.
+    revised = _replace_element_box(
+        revised, "page-2", "text-page-2", Box(x=80, y=120, width=920, height=200)
     )
     model = ScriptedVisualModel([revised])
     request = {
@@ -363,39 +387,53 @@ def test_validate_revision_rejects_family_or_page_sequence_change():
 
 def test_reviser_rejects_revision_referencing_unapproved_asset():
     atom_set = _atom_set()
-    direction_plan = _direction_plan(atom_set)
-    manifest = AssetManifest(items=())
+    directive = AssetDirective(
+        directive_id="directive-2",
+        page_id="page-2",
+        role="skin_example",
+        required=True,
+        preferred_source="search",
+        fallback_source="none",
+        query_or_prompt="realistic skin close-up",
+        negative_constraints=(
+            "no embedded text",
+            "no AI disclosure label",
+            "no disclaimer copy",
+        ),
+        orientation="portrait",
+        min_width=1080,
+        min_height=1440,
+    )
+    direction_plan = _direction_plan(atom_set, page_directive=directive)
+    manifest = AssetManifest(items=(_asset_item(),))
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
 
     # Construct a "revised" plan whose page-2 image points at an asset that is
-    # not in the approved manifest.
+    # not in the approved manifest (re-point the existing image element).
     invalid_pages = list(before.pages)
     invalid_pages[1] = invalid_pages[1].model_copy(
         update={
-            "elements": (
-                ImageElement(
-                    element_id="image-page-2",
-                    layer=0,
-                    box=Box(x=80, y=400, width=920, height=720),
-                    asset_ref="not-in-manifest",
-                    fit="cover",
-                    focal_point=(0.5, 0.5),
-                    corner_radius=0,
-                ),
-                *invalid_pages[1].elements,
+            "elements": tuple(
+                el.model_copy(update={"asset_ref": "not-in-manifest"})
+                if el.element_id == "image-page-2"
+                else el
+                for el in invalid_pages[1].elements
             )
         }
     )
     invalid = before.model_copy(
         update={"pages": tuple(invalid_pages), "revision": 1}
     )
-    # The accepted revision must actually change the named page (page-2).
+    # The accepted revision must change the issue-named element image-page-2.
     valid = _design_plan(
         direction_plan,
         atom_set,
         manifest,
         revision=1,
         extra_shape_pages=frozenset({"page-2"}),
+    )
+    valid = _replace_element_box(
+        valid, "page-2", "image-page-2", Box(x=80, y=400, width=920, height=740)
     )
     model = ScriptedVisualModel([invalid, valid])
     request = {
@@ -487,13 +525,16 @@ def test_reviser_retries_invalid_output_at_most_three_times():
     direction_plan = _direction_plan(atom_set)
     manifest = AssetManifest(items=())
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
-    # The accepted revision must actually change the named page (page-1).
+    # The accepted revision must change the issue-named element text-page-1.
     valid = _design_plan(
         direction_plan,
         atom_set,
         manifest,
         revision=1,
         extra_shape_pages=frozenset({"page-1"}),
+    )
+    valid = _replace_element_box(
+        valid, "page-1", "text-page-1", Box(x=80, y=120, width=920, height=200)
     )
     invalid = valid.model_copy(update={"content_atom_set_sha256": "0" * 64})
     model = ScriptedVisualModel([invalid, valid])
@@ -531,13 +572,16 @@ def test_reviser_rejects_candidate_with_wrong_revision_increment():
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
     unchanged_revision = before.model_copy(update={"revision": 0})  # not incremented
     skipped_revision = before.model_copy(update={"revision": 2})  # jumps by 2
-    # The accepted candidate must also actually change the named page (page-1).
+    # The accepted candidate must also change the issue-named element.
     valid = _design_plan(
         direction_plan,
         atom_set,
         manifest,
         revision=1,
         extra_shape_pages=frozenset({"page-1"}),
+    )
+    valid = _replace_element_box(
+        valid, "page-1", "text-page-1", Box(x=80, y=120, width=920, height=200)
     )
     model = ScriptedVisualModel([unchanged_revision, skipped_revision, valid])
     request = {
@@ -582,6 +626,9 @@ def test_reviser_rejects_noop_revision_that_only_bumps_revision():
         manifest,
         revision=1,
         extra_shape_pages=frozenset({"page-1"}),
+    )
+    valid = _replace_element_box(
+        valid, "page-1", "text-page-1", Box(x=80, y=120, width=920, height=200)
     )
     model = ScriptedVisualModel([noop, valid])
     request = {
@@ -781,13 +828,16 @@ def test_reviser_consumes_asset_resolver_top_level_state():
     direction_plan = _direction_plan(atom_set)
     manifest = AssetManifest(items=())
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
-    # The accepted revision must actually change the named page (page-1).
+    # The accepted revision must change the issue-named element text-page-1.
     revised = _design_plan(
         direction_plan,
         atom_set,
         manifest,
         revision=1,
         extra_shape_pages=frozenset({"page-1"}),
+    )
+    revised = _replace_element_box(
+        revised, "page-1", "text-page-1", Box(x=80, y=120, width=920, height=200)
     )
     model = ScriptedVisualModel([revised])
     request = {

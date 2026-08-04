@@ -644,15 +644,30 @@ def test_design_reviser_assembles_request_from_state_without_crashing(
         pages = []
         for page in current.pages:
             if page.page_id == "page-1":
-                shape = ShapeElement(
-                    element_id=f"shape-rev-{index}",
-                    layer=2,
-                    box=Box(x=88, y=1180 + index * 5, width=904, height=80),
-                    shape="rectangle",
-                    fill="#F4A7BF",
+                # The issue names element text-page-1; every revised plan must
+                # change it (the reviser validation rejects revisions that only
+                # touch other content on the named page).
+                elements = [
+                    el.model_copy(
+                        update={
+                            "box": Box(x=88, y=120 + index, width=904, height=200)
+                        }
+                    )
+                    if el.element_id == "text-page-1"
+                    else el
+                    for el in page.elements
+                ]
+                elements.append(
+                    ShapeElement(
+                        element_id=f"shape-rev-{index}",
+                        layer=2,
+                        box=Box(x=88, y=1180 + index * 5, width=904, height=80),
+                        shape="rectangle",
+                        fill="#F4A7BF",
+                    )
                 )
                 pages.append(
-                    page.model_copy(update={"elements": page.elements + (shape,)})
+                    page.model_copy(update={"elements": tuple(elements)})
                 )
             else:
                 pages.append(page)
