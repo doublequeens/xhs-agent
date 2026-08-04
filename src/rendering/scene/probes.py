@@ -46,6 +46,7 @@ from src.schemas.scene_graph import (
     ImageElement,
     PageScene,
     SceneElement,
+    ShapeElement,
     TextElement,
 )
 
@@ -210,6 +211,39 @@ def _effective_contrast(
     ratio = _contrast_ratio(fg, bg)
     # Clamp into the schema's allowed range to absorb sub-pixel float drift.
     return max(0.0, min(ratio, 21.0))
+
+
+def _boxes_intersect(a: Box, b: Box) -> bool:
+    # Touching edges (<=) do not count as an overlap.
+    return not (
+        a.x + a.width <= b.x + _EPS
+        or b.x + b.width <= a.x + _EPS
+        or a.y + a.height <= b.y + _EPS
+        or b.y + b.height <= a.y + _EPS
+    )
+
+
+def _effective_text_background(page: PageScene, text: TextElement) -> str:
+    """The background a viewer actually sees behind ``text``.
+
+    Text often sits on a shape/card element over the page background (e.g.
+    light text on a dark header bar). Comparing the text color to the page
+    background in that case is a false contrast failure, so pick the topmost
+    shape painted *behind* the text (lower layer, overlapping box) and use its
+    fill; fall back to the page background when nothing sits behind it. Mirrors
+    ``plan_qa._effective_text_background`` so render QA and design QA agree on
+    the same effective background.
+    """
+    behind = [
+        shape
+        for shape in page.elements
+        if isinstance(shape, ShapeElement)
+        and shape.layer < text.layer
+        and _boxes_intersect(shape.box, text.box)
+    ]
+    if not behind:
+        return page.background
+    return max(behind, key=lambda shape: shape.layer).fill
 
 
 # ---------------------------------------------------------------------------
@@ -389,6 +423,7 @@ def build_element_probes(
                 raw=raw,
                 fragments=fragments,
                 assets=assets,
+                page=page,
                 page_background=page_background,
             )
         )
@@ -401,6 +436,7 @@ def _build_one_probe(
     raw: dict,
     fragments: Mapping[str, ContentFragment],
     assets: Mapping[str, AssetManifestItem],
+    page: PageScene,
     page_background: str,
 ) -> RenderedElementProbe:
     actual_box = _clamp_box(
@@ -420,11 +456,16 @@ def _build_one_probe(
     # scene page always clips at 1080x1440 and image containers clip at their
     # box. This is a conservative "visible ink was lost" signal.
     ink_clipped = bool(overflow or layout_clipped)
-    contrast = _effective_contrast(
-        raw["color"], raw["background_color"], page_background
-    )
-
+    # Text contrast is measured against the topmost shape painted behind the
+    # text (or the page background when none), so a light-text-on-dark-panel
+    # design is not falsely reported as low contrast against the page background.
     kind = getattr(element, "kind", None)
+    effective_background = raw["background_color"]
+    if kind == "text":
+        effective_background = _effective_text_background(page, element)
+    contrast = _effective_contrast(
+        raw["color"], effective_background, page_background
+    )
 
     if kind == "text":
         return _build_text_probe(

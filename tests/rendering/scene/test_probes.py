@@ -312,6 +312,67 @@ def test_text_probe_contrast_falls_back_to_page_background_when_transparent():
     assert fallback.contrast_ratio == pytest.approx(solid.contrast_ratio)
 
 
+def test_text_probe_contrast_uses_shape_panel_behind_text():
+    """Render QA must measure text against the shape panel painted behind it,
+    not the page background. A light-text-on-dark-panel design is legible and
+    must not be falsely reported as low contrast (regression for run 12)."""
+    fragment = _fragment("frag-1", "标题")
+    text = _text_element("text-1", "frag-1", color="#F3FFFF")
+    panel = ShapeElement(
+        element_id="panel-1",
+        layer=0,
+        box=Box(x=80, y=120, width=920, height=160),
+        shape="rectangle",
+        fill="#0E5A5A",
+    )
+    page = PageScene(
+        page_id="page-1",
+        sequence=1,
+        background=PAGE_BACKGROUND,
+        elements=(panel, text),
+    )
+    raw = _raw_text_probe(
+        "text-1",
+        content_ref="frag-1",
+        color="rgb(243, 255, 255)",
+        background_color="rgba(0, 0, 0, 0)",
+    )
+    raw_panel = {
+        "element_id": "panel-1",
+        "content_ref": None,
+        "asset_ref": None,
+        "x": 80.0,
+        "y": 120.0,
+        "width": 920.0,
+        "height": 160.0,
+        "scroll_width": 920,
+        "scroll_height": 160,
+        "client_width": 920,
+        "client_height": 160,
+        "font_family": "",
+        "font_size": 0.0,
+        "line_height": 0.0,
+        "color": "rgba(0, 0, 0, 0)",
+        "background_color": "rgb(14, 90, 90)",
+        "natural_width": None,
+        "natural_height": None,
+        "rendered_image_width": None,
+        "rendered_image_height": None,
+    }
+
+    probes = build_element_probes(
+        raw_probes=[raw, raw_panel],
+        page=page,
+        fragments={"frag-1": fragment},
+        assets={},
+        page_background=PAGE_BACKGROUND,
+    )
+
+    # #F3FFFF on #0E5A5A is a high-contrast pair (well above the 3:1 large-text
+    # threshold). Against the white page background it would be ~1.0:1.
+    assert probes[0].contrast_ratio >= 3.0
+
+
 def test_image_probe_carries_asset_hash_focal_point_and_crop_box(tmp_path):
     payload = b"\x89PNG\r\n\x1a\nasset-bytes"
     asset_path = tmp_path / "asset.png"
