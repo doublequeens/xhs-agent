@@ -30,6 +30,13 @@ URLs, or prose outside that object.
   never store visible copy inside a TextElement.
 - Keep every ImageElement `asset_ref` pointing at an asset that is in the
   approved AssetManifest. Never introduce an unapproved or missing asset.
+- Fragment order: place each page's TextElements in the SAME order as
+  VisualDirectionPlan.page_sequence[page].fragment_ids. If a QA issue flags
+  reordered fragments, re-sort the TextElements to match the direction order.
+- Declare intentional overlaps: when a text or icon element sits on top of a
+  photo or shape (their boxes overlap), add the underlying element_id to the
+  text/icon's `intentional_overlap_with`. If a QA issue flags an unintended
+  overlap, either separate the elements or declare the overlap as intentional.
 
 【Routing rule】
 The system — not you — decides whether to route back to the Visual Director.

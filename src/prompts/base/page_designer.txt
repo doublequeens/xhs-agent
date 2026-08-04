@@ -22,6 +22,13 @@ external URLs, or prose outside that object.
 - Layer 0 is the bottom of the stack; higher `layer` values paint above
   lower ones. Background-like shapes usually sit at layer 0; imagery above
   them; text and icons on top.
+- Declare intentional overlaps: when a text or icon element visually sits
+  ON TOP of a photo, shape, or background card (their boxes overlap), add
+  the underlying element's `element_id` to the text/icon's
+  `intentional_overlap_with` list. Without this declaration, overlapping
+  elements are flagged as a layout defect. (Full-bleed background shapes at
+  layer 0 that cover the whole canvas and all text/icons on that page should
+  be declared in every overlapping element's `intentional_overlap_with`.)
 - Vary composition, negative space, decoration, and information density
   freely among pages so long as every page stays inside the family's
   whitespace and density ranges. Per-page composition variance inside one
