@@ -386,7 +386,14 @@ def test_reviser_rejects_revision_referencing_unapproved_asset():
     invalid = before.model_copy(
         update={"pages": tuple(invalid_pages), "revision": 1}
     )
-    valid = before.model_copy(update={"revision": 1})
+    # The accepted revision must actually change the named page (page-2).
+    valid = _design_plan(
+        direction_plan,
+        atom_set,
+        manifest,
+        revision=1,
+        extra_shape_pages=frozenset({"page-2"}),
+    )
     model = ScriptedVisualModel([invalid, valid])
     request = {
         "source": "render_qa",
@@ -477,7 +484,14 @@ def test_reviser_retries_invalid_output_at_most_three_times():
     direction_plan = _direction_plan(atom_set)
     manifest = AssetManifest(items=())
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
-    valid = before.model_copy(update={"revision": 1})
+    # The accepted revision must actually change the named page (page-1).
+    valid = _design_plan(
+        direction_plan,
+        atom_set,
+        manifest,
+        revision=1,
+        extra_shape_pages=frozenset({"page-1"}),
+    )
     invalid = valid.model_copy(update={"content_atom_set_sha256": "0" * 64})
     model = ScriptedVisualModel([invalid, valid])
     request = {
@@ -514,7 +528,14 @@ def test_reviser_rejects_candidate_with_wrong_revision_increment():
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
     unchanged_revision = before.model_copy(update={"revision": 0})  # not incremented
     skipped_revision = before.model_copy(update={"revision": 2})  # jumps by 2
-    valid = before.model_copy(update={"revision": 1})
+    # The accepted candidate must also actually change the named page (page-1).
+    valid = _design_plan(
+        direction_plan,
+        atom_set,
+        manifest,
+        revision=1,
+        extra_shape_pages=frozenset({"page-1"}),
+    )
     model = ScriptedVisualModel([unchanged_revision, skipped_revision, valid])
     request = {
         "source": "design_plan_qa",
@@ -540,6 +561,49 @@ def test_reviser_rejects_candidate_with_wrong_revision_increment():
     # Each repair prompt surfaces the revision-increment rule.
     assert "revision must increment" in str(model.calls[1]["prompt"]).lower()
     assert "revision must increment" in str(model.calls[2]["prompt"]).lower()
+
+
+def test_reviser_rejects_noop_revision_that_only_bumps_revision():
+    """M2: a revision that changes no named page (a pure revision bump) makes no
+    progress toward fixing the QA issues and must be rejected and retried, so
+    the model is forced to actually edit a page the issues name.
+    """
+    atom_set = _atom_set()
+    direction_plan = _direction_plan(atom_set)
+    manifest = AssetManifest(items=())
+    before = _design_plan(direction_plan, atom_set, manifest, revision=0)
+    noop = before.model_copy(update={"revision": 1})  # identical pages
+    valid = _design_plan(
+        direction_plan,
+        atom_set,
+        manifest,
+        revision=1,
+        extra_shape_pages=frozenset({"page-1"}),
+    )
+    model = ScriptedVisualModel([noop, valid])
+    request = {
+        "source": "design_plan_qa",
+        "issues": (
+            DesignIssue(
+                rule="spacing",
+                message="tighten page-1 spacing",
+                repair_instruction="reduce page-1 padding",
+                page_id="page-1",
+                element_id="text-page-1",
+            ).model_dump(mode="json"),
+        ),
+        "current_revision": 0,
+    }
+
+    result = design_reviser_node(
+        _state(before, direction_plan, atom_set, manifest, revision_request=request),
+        model=model,
+    )
+
+    assert result["carousel_design_plan"] == valid
+    assert len(model.calls) == 2
+    # The repair feedback must tell the model it edited nothing.
+    assert "must modify at least one page" in str(model.calls[1]["prompt"])
 
 
 def _valid_plan_with_missing_fragment(
@@ -714,7 +778,14 @@ def test_reviser_consumes_asset_resolver_top_level_state():
     direction_plan = _direction_plan(atom_set)
     manifest = AssetManifest(items=())
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
-    revised = before.model_copy(update={"revision": 1})
+    # The accepted revision must actually change the named page (page-1).
+    revised = _design_plan(
+        direction_plan,
+        atom_set,
+        manifest,
+        revision=1,
+        extra_shape_pages=frozenset({"page-1"}),
+    )
     model = ScriptedVisualModel([revised])
     request = {
         "source": "design_plan_qa",

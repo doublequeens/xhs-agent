@@ -139,6 +139,17 @@ def _validate_candidate(
                 "revision must not modify pages that the issues do not name: "
                 f"{after_page.page_id}"
             )
+    # A revision that edits nothing (a pure revision bump) makes no progress
+    # toward resolving the QA issues; force the model to actually change at
+    # least one page the issues name.
+    if named_pages and not any(
+        after_page.page_id in named_pages and after_page != before_pages[after_page.page_id]
+        for after_page in validated.pages
+    ):
+        raise ValueError(
+            "revision must modify at least one page named by the issues: "
+            + ", ".join(sorted(named_pages))
+        )
 
 
 def _design_plan(state: Mapping[str, Any]) -> CarouselDesignPlan:

@@ -629,13 +629,33 @@ def test_design_reviser_assembles_request_from_state_without_crashing(
     state = _visual_state()
     before = state["carousel_design_plan"]
     # The loop cycles design_plan_qa -> design_reviser -> design_plan_qa; the
-    # real reviser validates that the returned revision == current + 1, so we
-    # pre-build one revised plan per expected reviser call, each bumping only
-    # the revision (pages/hashes stay byte-equal so validate_revision +
-    # validate_bindings pass).
-    revised_plans = [
-        before.model_copy(update={"revision": index}) for index in range(1, 5)
-    ]
+    # real reviser validates that the returned revision == current + 1 AND that
+    # the revision actually changes at least one page the issues name (page-1).
+    # Build one revised plan per expected reviser call, each adding a fresh
+    # shape to page-1 and bumping the revision, while every other page stays
+    # byte-equal (so validate_revision + validate_bindings pass).
+    revised_plans: list[CarouselDesignPlan] = []
+    current = before
+    for index in range(1, 5):
+        pages = []
+        for page in current.pages:
+            if page.page_id == "page-1":
+                shape = ShapeElement(
+                    element_id=f"shape-rev-{index}",
+                    layer=2,
+                    box=Box(x=88, y=1180 + index * 5, width=904, height=80),
+                    shape="rectangle",
+                    fill="#F4A7BF",
+                )
+                pages.append(
+                    page.model_copy(update={"elements": page.elements + (shape,)})
+                )
+            else:
+                pages.append(page)
+        current = current.model_copy(
+            update={"revision": index, "pages": tuple(pages)}
+        )
+        revised_plans.append(current)
     model = _ScriptedReviserModel(revised_plans)
     _patch_visual_model(monkeypatch, model)
 
