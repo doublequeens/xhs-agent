@@ -681,6 +681,19 @@ def main():
                 **extract_run_updates(current_state.values),
             )
             print("Found existing state, resuming from the latest checkpoint...")
+            # A resumed run gets a fresh design/render QA loop budget. The
+            # failure counters persist across attempts, so a run interrupted
+            # after two QA strikes would otherwise resume with only one strike
+            # left before the hard gate interrupts again. Resetting the counters
+            # on resume gives the (human-supervised) retry a full 3-strike
+            # window without ever force-passing the hard gates. A real compiled
+            # graph always has update_state; the guard keeps the CLI testable
+            # with minimal fakes.
+            if hasattr(graph, "update_state"):
+                graph.update_state(
+                    config,
+                    {"design_plan_qa_failures": 0, "render_qa_failures": 0},
+                )
 
         if current_state.values and not current_state.next:
             if export_completed_publish_package(graph, config):
