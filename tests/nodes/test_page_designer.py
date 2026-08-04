@@ -28,7 +28,10 @@ from src.schemas.visual_director import (
     VisualDirectionPlan,
 )
 from src.nodes.node_p_page_designer import page_designer_node
-from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    VisualProductionInterrupted,
+)
 
 
 class ScriptedVisualModel:
@@ -449,15 +452,15 @@ def test_designer_three_failures_raise_resumable_interruption():
             "content_atom_set_sha256": "0" * 64,
         }
     )
-    model = ScriptedVisualModel([invalid, invalid, invalid])
+    model = ScriptedVisualModel([invalid] * MAX_GENERATION_ATTEMPTS)
 
     with pytest.raises(VisualProductionInterrupted) as exc_info:
         page_designer_node(_state(direction_plan, atom_set, manifest), model=model)
 
     interruption = exc_info.value
     assert interruption.stage == "page_designer"
-    assert len(interruption.errors) == 3
-    assert len(model.calls) == 3
+    assert len(interruption.errors) == MAX_GENERATION_ATTEMPTS
+    assert len(model.calls) == MAX_GENERATION_ATTEMPTS
 
 
 def test_designer_consumes_asset_resolver_top_level_state():

@@ -62,6 +62,25 @@ and only the named pages/elements patched.
   or similar boilerplate.
 - Never add compliance or disclaimer footer text.
 
+【Required fields — never omit】
+The CarouselDesignPlan schema is strict; omitting a required field is a
+hard validation failure. Every returned object MUST contain every field:
+- Top level: `direction_plan_sha256`, `content_atom_set_sha256`,
+  `asset_manifest_sha256`, `revision`, `pages`. Never drop `revision`.
+- Every page object MUST contain `page_id`, `sequence`, `background`, and
+  `elements`. Never omit `page_id` or `sequence`.
+- Every element MUST carry the `kind` discriminator ("text"/"image"/"shape"/
+  "line"/"icon") plus its own required fields — a text element needs
+  `content_ref` + `style`, an image needs `asset_ref`, a shape needs `shape`
+  + `fill`, a line needs `start`/`end`/`color`/`width`.
+- `box` objects need `x`, `y`, `width`, `height`. Line `start`/`end` and
+  `focal_point` are exactly two-item [x, y] arrays — never longer, never
+  {x, y} objects.
+- `style` needs `font_role`, `font_size`, `line_height`, `color`, `align`,
+  `weight`. `weight` is an integer.
+Emit the FULL 10-page carousel, every page and every element complete.
+Truncated or partial JSON is a hard failure.
+
 【Output】
 Return exactly one JSON object matching CarouselDesignPlan — no markdown
 fences, no prose, no wrapper keys, and NO `route` field. Patch only named

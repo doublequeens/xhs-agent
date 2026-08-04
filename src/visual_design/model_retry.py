@@ -81,6 +81,16 @@ def _record_repairable_failure(
         raw_outputs.append(raw_response)
 
 
+# The structured visual model (Gemini flash-image) frequently emits complex
+# nested JSON with schema errors (missing fields, missing ``kind``
+# discriminators, wrong tuple arity) on its first pass. The repair loop shows
+# the exact validation errors back to the model, so each retry converges; a
+# 3-attempt ceiling produced frequent hard interruptions on otherwise-valid
+# runs. 6 attempts keeps the hard gates strict while absorbing the model's
+# schema noise.
+MAX_GENERATION_ATTEMPTS = 6
+
+
 def generate_validated(
     model: StructuredVisualModel,
     *,
@@ -88,9 +98,9 @@ def generate_validated(
     response_model: type[T],
     image_paths: Sequence[Path],
     validate: Callable[[T], BaseModel | None],
-    max_attempts: int = 3,
+    max_attempts: int = MAX_GENERATION_ATTEMPTS,
 ) -> T:
-    """Generate and validate with no more than three model attempts.
+    """Generate and validate with a bounded number of model attempts.
 
     The ``validate`` callback may either return ``None`` (the candidate itself is
     the accepted result) or return a transformed candidate (e.g. a draft that the
@@ -98,8 +108,10 @@ def generate_validated(
     value lets a caller accept a model output whose wire shape differs from the
     durable contract while still routing it through the same repair loop.
     """
-    if not 1 <= max_attempts <= 3:
-        raise ValueError("max_attempts must be between 1 and 3")
+    if not 1 <= max_attempts <= MAX_GENERATION_ATTEMPTS:
+        raise ValueError(
+            f"max_attempts must be between 1 and {MAX_GENERATION_ATTEMPTS}"
+        )
 
     errors: list[str] = []
     raw_outputs: list[str] = []

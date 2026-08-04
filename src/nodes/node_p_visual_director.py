@@ -17,7 +17,10 @@ from src.schemas.visual_director import (
 )
 from src.schemas.visual_style import FamilyStyleProfile, StrictModel, TemplateFamily
 from src.visual_ai import StructuredVisualModel
-from src.visual_design.model_retry import generate_validated
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    generate_validated,
+)
 from src.visual_design.style_registry import load_style_registry
 
 
@@ -440,7 +443,7 @@ def visual_director_node(
             atom_set=atom_set,
             profiles=profiles,
         ),
-        max_attempts=3,
+        max_attempts=MAX_GENERATION_ATTEMPTS,
     )
     return {
         "visual_direction_plan": plan,

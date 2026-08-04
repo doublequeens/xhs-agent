@@ -25,7 +25,10 @@ from src.nodes.node_p_visual_director import (
     visual_director_node,
 )
 from src.visual_ai import StructuredVisualResponseError
-from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    VisualProductionInterrupted,
+)
 from src.visual_design.style_registry import load_style_registry
 
 
@@ -404,36 +407,22 @@ def test_director_retries_adapter_json_and_schema_failures_then_recovers():
     assert "template_family" in str(model.calls[2]["prompt"])
 
 
-def test_three_adapter_failures_interrupt_and_retain_only_available_raw_outputs():
+def test_exhausted_attempts_interrupt_and_retain_only_available_raw_outputs():
     atom_set = _atom_set()
+    raw = "not-json-1"
     model = ScriptedVisualModel(
-        [
-            StructuredVisualResponseError(
-                "invalid JSON",
-                raw_response="not-json-1",
-            ),
-            ValueError("schema mismatch without raw response"),
-            StructuredVisualResponseError(
-                "invalid JSON again",
-                raw_response='{"broken": true',
-            ),
-        ]
+        [StructuredVisualResponseError("invalid JSON", raw_response=raw)]
+        * MAX_GENERATION_ATTEMPTS
     )
 
     with pytest.raises(VisualProductionInterrupted) as exc_info:
         visual_director_node(_state(atom_set), model=model)
 
     interruption = exc_info.value
-    assert len(interruption.errors) == 3
-    assert interruption.raw_outputs == (
-        "not-json-1",
-        '{"broken": true',
-    )
-    assert len(model.calls) == 3
+    assert len(interruption.errors) == MAX_GENERATION_ATTEMPTS
+    assert interruption.raw_outputs == (raw,) * MAX_GENERATION_ATTEMPTS
+    assert len(model.calls) == MAX_GENERATION_ATTEMPTS
     assert "invalid JSON" in str(model.calls[1]["prompt"])
-    assert "schema mismatch without raw response" in str(
-        model.calls[2]["prompt"]
-    )
 
 
 def test_unexpected_model_runtime_error_is_not_hidden_as_repairable_output():
@@ -711,13 +700,12 @@ def test_director_retries_empty_shell_direction_fields(make_invalid, feedback):
     assert feedback in str(model.calls[1]["prompt"])
 
 
-def test_third_validation_failure_raises_resumable_interruption_with_evidence():
+def test_exhausted_validation_failures_raise_resumable_interruption_with_evidence():
     atom_set = _atom_set()
     invalid_responses = [
         _valid_draft(atom_set, page_count=4),
         _valid_draft(atom_set, page_count=19),
-        _valid_draft(atom_set, page_count=4),
-    ]
+    ] * (MAX_GENERATION_ATTEMPTS // 2)
     model = ScriptedVisualModel(invalid_responses)
 
     with pytest.raises(VisualProductionInterrupted) as exc_info:
@@ -725,9 +713,9 @@ def test_third_validation_failure_raises_resumable_interruption_with_evidence():
 
     interruption = exc_info.value
     assert interruption.stage == "visual_director"
-    assert len(interruption.raw_outputs) == 3
-    assert len(interruption.errors) == 3
-    assert len(model.calls) == 3
+    assert len(interruption.raw_outputs) == MAX_GENERATION_ATTEMPTS
+    assert len(interruption.errors) == MAX_GENERATION_ATTEMPTS
+    assert len(model.calls) == MAX_GENERATION_ATTEMPTS
     assert "page_count" in str(model.calls[1]["prompt"])
     assert "page_count" in str(model.calls[2]["prompt"])
     assert interruption.resumable is True

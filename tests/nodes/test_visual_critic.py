@@ -53,7 +53,10 @@ from src.schemas.visual_director import (
     PageDirection,
     VisualDirectionPlan,
 )
-from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    VisualProductionInterrupted,
+)
 
 
 # --- offline fake model ---------------------------------------------------
@@ -1042,7 +1045,7 @@ def test_critic_three_hash_mismatches_raise_resumable_interruption(tmp_path):
         design_plan=design_plan,
         render_manifest=render_manifest,
     ).model_copy(update={"content_atom_set_sha256": "0" * 64})
-    model = ScriptedVisualModel([invalid, invalid, invalid])
+    model = ScriptedVisualModel([invalid] * MAX_GENERATION_ATTEMPTS)
 
     with pytest.raises(VisualProductionInterrupted) as exc_info:
         visual_critic_node(
@@ -1060,8 +1063,8 @@ def test_critic_three_hash_mismatches_raise_resumable_interruption(tmp_path):
     interrupted = exc_info.value
     assert interrupted.stage == "visual_critic"
     assert interrupted.resumable is True
-    assert len(interrupted.errors) == 3
-    assert len(model.calls) == 3
+    assert len(interrupted.errors) == MAX_GENERATION_ATTEMPTS
+    assert len(model.calls) == MAX_GENERATION_ATTEMPTS
 
 
 # --- prompt content -------------------------------------------------------

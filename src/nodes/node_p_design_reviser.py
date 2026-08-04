@@ -17,7 +17,11 @@ from src.schemas.visual_critique import VisualCritique, VisualCritiqueIssue
 from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import FamilyStyleProfile, StrictModel, TemplateFamily
 from src.visual_ai import StructuredVisualModel
-from src.visual_design.model_retry import VisualProductionInterrupted, generate_validated
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    VisualProductionInterrupted,
+    generate_validated,
+)
 from src.visual_design.style_registry import load_style_registry
 
 
@@ -382,7 +386,7 @@ def design_reviser_node(
                 named_pages=named_pages,
                 current_revision=request.current_revision,
             ),
-            max_attempts=3,
+            max_attempts=MAX_GENERATION_ATTEMPTS,
         )
     except VisualProductionInterrupted as exc:
         raise VisualProductionInterrupted(

@@ -31,7 +31,10 @@ from src.schemas.visual_director import (
     VisualDirectionPlan,
 )
 from src.nodes.node_p_design_reviser import design_reviser_node, validate_revision
-from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    VisualProductionInterrupted,
+)
 
 
 class ScriptedVisualModel:
@@ -738,13 +741,13 @@ def test_reviser_fixes_missing_fragment_on_its_owning_page():
             assert page == next(p for p in before.pages if p.page_id == page.page_id)
 
 
-def test_reviser_three_failures_raise_resumable_interruption():
+def test_reviser_exhausts_attempts_raise_resumable_interruption():
     atom_set = _atom_set()
     direction_plan = _direction_plan(atom_set)
     manifest = AssetManifest(items=())
     before = _design_plan(direction_plan, atom_set, manifest, revision=0)
     invalid = before.model_copy(update={"revision": 1, "content_atom_set_sha256": "0" * 64})
-    model = ScriptedVisualModel([invalid, invalid, invalid])
+    model = ScriptedVisualModel([invalid] * MAX_GENERATION_ATTEMPTS)
     request = {
         "source": "design_plan_qa",
         "issues": (
@@ -765,8 +768,8 @@ def test_reviser_three_failures_raise_resumable_interruption():
         )
 
     assert exc_info.value.stage == "design_reviser"
-    assert len(exc_info.value.errors) == 3
-    assert len(model.calls) == 3
+    assert len(exc_info.value.errors) == MAX_GENERATION_ATTEMPTS
+    assert len(model.calls) == MAX_GENERATION_ATTEMPTS
 
 
 def test_reviser_consumes_asset_resolver_top_level_state():

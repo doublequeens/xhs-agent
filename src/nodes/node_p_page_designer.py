@@ -13,7 +13,11 @@ from src.schemas.scene_graph import CarouselDesignPlan
 from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import FamilyStyleProfile, TemplateFamily
 from src.visual_ai import StructuredVisualModel
-from src.visual_design.model_retry import VisualProductionInterrupted, generate_validated
+from src.visual_design.model_retry import (
+    MAX_GENERATION_ATTEMPTS,
+    VisualProductionInterrupted,
+    generate_validated,
+)
 from src.visual_design.style_registry import load_style_registry
 
 
@@ -211,7 +215,7 @@ def page_designer_node(
                 atom_set=atom_set,
                 manifest=manifest,
             ),
-            max_attempts=3,
+            max_attempts=MAX_GENERATION_ATTEMPTS,
         )
     except VisualProductionInterrupted as exc:
         raise VisualProductionInterrupted(
