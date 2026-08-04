@@ -33,6 +33,21 @@ _THEMATIC_BREAK = re.compile(
     r"^[ \t]*(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$"
 )
 
+
+def _is_markdown_table_separator(line: str) -> bool:
+    """True for a structural markdown table separator row (e.g. ``|------|``,
+    ``| :--- | ---: |``).
+
+    A separator row is table syntax, not visible copy. If it became a content
+    atom, the fragment-coverage rule would force the carousel to render the raw
+    ``|---|---|`` markup as visible text, so the atomizer must skip it the same
+    way it skips thematic breaks.
+    """
+    stripped = line.strip()
+    if "|" not in stripped or stripped.count("-") < 3:
+        return False
+    return all(char in "|:-\t " for char in stripped)
+
 _INLINE_MARKERS = (
     re.compile(r"(?<!\\)\*\*(?=\S)(.+?)(?<=\S)\*\*"),
     re.compile(r"(?<!\\)__(?=\S)(.+?)(?<=\S)__"),
@@ -155,6 +170,8 @@ def build_content_atoms(
         if not line.strip():
             continue
         if _THEMATIC_BREAK.fullmatch(line):
+            continue
+        if _is_markdown_table_separator(line):
             continue
         role, text = _parse_content_line(line)
         append_atom(role, _strip_inline_markdown(text))

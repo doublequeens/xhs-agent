@@ -220,6 +220,52 @@ def test_atomizer_strips_nested_markdown_without_changing_visible_payload():
     ]
 
 
+def test_atomizer_skips_markdown_table_separator_rows():
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    # A markdown table in the draft: header row, separator row, then data rows.
+    # The separator row is structural syntax, not visible copy, so it must not
+    # become a content atom (which would force the carousel to render the raw
+    # "|---|---|" markup as visible text).
+    result = content_atomizer_node(
+        _state_with_copy(
+            content=(
+                "# 带妆补防晒5步实操清单\n\n"
+                "| 步骤 | 怎么做 | 容易踩的坑 |\n"
+                "|------|--------|------------|\n"
+                "| 吸油 | 吸油纸轻按T区3秒 | 别用纸巾直接擦 |\n"
+                "| 叠加防晒 | 指腹轻拍上脸 | 别打圈揉搓 |\n"
+            )
+        )
+    )
+    atom_set = result["content_atom_set"]
+
+    assert [atom.text for atom in atom_set.atoms] == [
+        "敏感状态先看这 3 个信号✨",
+        "刺痛、泛红、紧绷怎么判断？",
+        "带妆补防晒5步实操清单",
+        "| 步骤 | 怎么做 | 容易踩的坑 |",
+        "| 吸油 | 吸油纸轻按T区3秒 | 别用纸巾直接擦 |",
+        "| 叠加防晒 | 指腹轻拍上脸 | 别打圈揉搓 |",
+    ]
+    assert result["content_atomization_route"] == "visual_director"
+
+
+def test_atomizer_keeps_real_content_rows_that_contain_dashes():
+    from src.nodes.node_p_content_atomizer import content_atomizer_node
+
+    # A data row can legitimately contain a pipe and a dash without being a
+    # table separator (e.g. a date range or hyphenated phrase).
+    result = content_atomizer_node(
+        _state_with_copy(content="| 2024-07-01 | 使用半熟-半生状态 | 观察 3-5 天 |")
+    )
+    assert [atom.text for atom in result["content_atom_set"].atoms] == [
+        "敏感状态先看这 3 个信号✨",
+        "刺痛、泛红、紧绷怎么判断？",
+        "| 2024-07-01 | 使用半熟-半生状态 | 观察 3-5 天 |",
+    ]
+
+
 def test_atomizer_hashes_are_stable_and_change_when_visible_copy_changes():
     from src.nodes.node_p_content_atomizer import content_atomizer_node
 

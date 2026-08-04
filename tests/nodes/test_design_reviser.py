@@ -542,6 +542,138 @@ def test_reviser_rejects_candidate_with_wrong_revision_increment():
     assert "revision must increment" in str(model.calls[2]["prompt"]).lower()
 
 
+def _valid_plan_with_missing_fragment(
+    direction_plan: VisualDirectionPlan,
+    atom_set: ContentAtomSet,
+    manifest: AssetManifest,
+    *,
+    revision: int = 0,
+    missing_page: str | None = None,
+) -> CarouselDesignPlan:
+    """A QA-clean plan, except page ``missing_page`` renders a shape instead of
+    its text element (so QA reports only ``content.missing_fragment``)."""
+    pages: list[PageScene] = []
+    for direction_page in direction_plan.page_sequence:
+        if direction_page.page_id == missing_page:
+            elements: list = [
+                ShapeElement(
+                    element_id=f"shape-{direction_page.page_id}",
+                    layer=1,
+                    box=Box(x=88, y=1180, width=904, height=80),
+                    shape="rectangle",
+                    fill="#F4A7BF",
+                )
+            ]
+        else:
+            elements = [
+                TextElement(
+                    element_id=f"text-{direction_page.page_id}",
+                    layer=1,
+                    box=Box(x=88, y=88, width=904, height=160),
+                    content_ref=direction_page.fragment_ids[0],
+                    style=TextStyle(
+                        font_role="heading",
+                        font_size=48,
+                        line_height=1.3,
+                        color="#1A1A1A",
+                        align="left",
+                        weight=700,
+                    ),
+                )
+            ]
+        pages.append(
+            PageScene(
+                page_id=direction_page.page_id,
+                sequence=direction_page.sequence,
+                background="#FFFFFF",
+                elements=tuple(elements),
+            )
+        )
+    return CarouselDesignPlan(
+        direction_plan_sha256=canonical_sha256(direction_plan),
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        asset_manifest_sha256=canonical_sha256(manifest),
+        revision=revision,
+        pages=tuple(pages),
+    )
+
+
+def test_reviser_fixes_missing_fragment_on_its_owning_page():
+    """I4 regression: a content.missing_fragment issue must name the fragment's
+    owning page, otherwise the reviser's 'only named pages may change' rule
+    forbids touching any page and the required repair (add the missing text
+    element) is impossible. End-to-end through evaluate_design_plan and the
+    reviser's production state-derivation path.
+    """
+    from src.schemas.visual_style import FamilyStyleProfile
+    from src.visual_design.plan_qa import DesignPlanQAInputs, evaluate_design_plan
+    from src.visual_design.style_registry import load_style_registry
+
+    atom_set = _atom_set()
+    direction_plan = _direction_plan(atom_set)
+    manifest = AssetManifest(items=())
+    before = _valid_plan_with_missing_fragment(
+        direction_plan, atom_set, manifest, revision=0, missing_page="page-3"
+    )
+
+    style = load_style_registry()[direction_plan.template_family]
+    assert isinstance(style, FamilyStyleProfile)
+    qa = evaluate_design_plan(
+        DesignPlanQAInputs(
+            atoms=atom_set,
+            direction=direction_plan,
+            assets=manifest,
+            design_plan=before,
+            style=style,
+        )
+    )
+    assert qa.passed is False
+    missing = next(i for i in qa.issues if i.rule == "content.missing_fragment")
+    assert missing.atom_id == "atom-3"
+    # The owning page must be named so the reviser is allowed to patch it.
+    assert missing.page_id == "page-3"
+
+    # Reviser adds fragment-3's text element on page-3 and bumps revision.
+    revised = _valid_plan_with_missing_fragment(
+        direction_plan, atom_set, manifest, revision=1, missing_page=None
+    )
+    model = ScriptedVisualModel([revised])
+    state = {
+        "carousel_design_plan": before,
+        "visual_direction_plan": direction_plan,
+        "content_atom_set": atom_set,
+        "asset_manifest": manifest,
+        "design_plan_qa_result": qa,
+        "unresolved_optional_assets": (),
+        "asset_transaction_evidence": {
+            "run_id": "run-1",
+            "transaction_id": "tx-1",
+            "transaction_root": "/tmp/tx-1",
+            "journal_path": "/tmp/tx-1/recovery.json",
+            "status": "complete",
+        },
+        "domain_context": {"domain": "beauty", "profile_version": "beauty-v1"},
+    }
+
+    result = design_reviser_node(state, model=model)
+
+    after = result["carousel_design_plan"]
+    assert result["current_node"] == "DESIGN_REVISER"
+    assert "route" not in result
+    assert after.revision == 1
+    # Only the named owning page changed; fragment-3 is now rendered there.
+    rendered_on_page_3 = [
+        e for e in next(p for p in after.pages if p.page_id == "page-3").elements
+    ]
+    assert any(
+        getattr(e, "kind", None) == "text" and e.content_ref == "fragment-3"
+        for e in rendered_on_page_3
+    )
+    for page in after.pages:
+        if page.page_id != "page-3":
+            assert page == next(p for p in before.pages if p.page_id == page.page_id)
+
+
 def test_reviser_three_failures_raise_resumable_interruption():
     atom_set = _atom_set()
     direction_plan = _direction_plan(atom_set)

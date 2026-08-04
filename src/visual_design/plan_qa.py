@@ -223,6 +223,16 @@ def validate_content_coverage(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
     fragments = inputs.direction.content_fragments
     fragment_by_id = {fragment.fragment_id: fragment for fragment in fragments}
     order_index = {fragment.fragment_id: index for index, fragment in enumerate(fragments)}
+    # Every fragment is owned by exactly one page (validated on the direction
+    # plan). Naming that page on a missing-fragment issue lets the design
+    # reviser know which page it is allowed to patch to add the text element;
+    # without a page the reviser's "only named pages may change" rule forbids
+    # touching any page and the required fix is impossible.
+    fragment_owner_page = {
+        fragment_id: page.page_id
+        for page in inputs.direction.page_sequence
+        for fragment_id in page.fragment_ids
+    }
 
     rendered_count: dict[str, int] = {}
 
@@ -275,11 +285,25 @@ def validate_content_coverage(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
 
     for fragment in fragments:
         if rendered_count.get(fragment.fragment_id, 0) == 0:
+            owner_page = fragment_owner_page.get(fragment.fragment_id)
+            if owner_page is None:
+                issues.append(
+                    _issue(
+                        "content.missing_fragment",
+                        f"content fragment {fragment.fragment_id} is not rendered",
+                        f"add a text element for fragment {fragment.fragment_id}",
+                        atom_id=fragment.source_atom_id,
+                    )
+                )
+                continue
             issues.append(
                 _issue(
                     "content.missing_fragment",
-                    f"content fragment {fragment.fragment_id} is not rendered",
-                    f"add a text element for fragment {fragment.fragment_id}",
+                    f"content fragment {fragment.fragment_id} is not rendered "
+                    f"on its owning page {owner_page}",
+                    f"add a text element for fragment {fragment.fragment_id} "
+                    f"on page {owner_page}",
+                    page_id=owner_page,
                     atom_id=fragment.source_atom_id,
                 )
             )

@@ -482,6 +482,10 @@ def test_missing_fragment_fails():
     assert result.passed is False
     issue = _find(result, "content.missing_fragment", atom_id="atom-5")
     assert issue is not None
+    # The issue must name the fragment's owning page so the design reviser is
+    # permitted to patch that page to add the missing text element; otherwise
+    # the reviser's "only named pages may change" rule forbids any edit.
+    assert issue.page_id == "page-5"
 
 
 def test_reordered_content_ref_within_page_fails():
