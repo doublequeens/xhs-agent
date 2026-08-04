@@ -1360,18 +1360,20 @@ def test_issues_are_deterministic_in_order(tmp_path):
     assert first.issues == second.issues
 
 
-# --- 3-strike budget (pure boundary) --------------------------------------
+# --- strike budget (pure boundary) ----------------------------------------
 
-def test_three_strike_budget_is_three():
-    assert MAX_RENDER_QA_FAILURES == 3
+def test_render_qa_strike_budget_gives_the_reviser_room():
+    # The reviser resolves a handful of issues per revision; a large render-QA
+    # failure set needs more than the historic 3 rounds.
+    assert MAX_RENDER_QA_FAILURES == 6
 
 
-def test_three_strike_budget_exhausts_on_third_failure():
-    # A fresh failure with 0 or 1 prior failures is recoverable; the third
-    # failure (2 prior + this one) exhausts the budget and must interrupt.
-    assert render_qa_exhausted(0) is False
-    assert render_qa_exhausted(1) is False
-    assert render_qa_exhausted(2) is True
+def test_render_qa_strike_budget_exhausts_on_final_failure():
+    # A fresh failure with fewer than MAX_RENDER_QA_FAILURES - 1 prior failures
+    # is recoverable; the final failure exhausts the budget and must interrupt.
+    for prior in range(MAX_RENDER_QA_FAILURES - 1):
+        assert render_qa_exhausted(prior) is False
+    assert render_qa_exhausted(MAX_RENDER_QA_FAILURES - 1) is True
 
 
 def test_passing_result_is_never_force_passed(tmp_path):

@@ -49,9 +49,11 @@ from src.visual_design.plan_qa import (
     NORMAL_TEXT_CONTRAST,
 )
 
-# The render-reviser loop may consume at most this many failing QA results; on
-# the third failure the render-QA stage interrupts with checkpointable details.
-MAX_RENDER_QA_FAILURES = 3
+# The render-reviser loop may consume at most this many failing QA results
+# before the render-QA stage interrupts with checkpointable details. The
+# reviser model typically resolves a handful of issues per revision, so a large
+# render-QA failure set needs more rounds than the historic 3.
+MAX_RENDER_QA_FAILURES = 6
 
 _EPS = 1e-9
 # Rendered focal points are passed through deterministically from the design

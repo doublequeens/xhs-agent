@@ -253,28 +253,30 @@ def test_route_reads_passed_flag_directly():
     assert route_after_design_plan_qa({"design_plan_qa_result": failing}) == "design_reviser"
 
 
-def test_third_failed_qa_raises_resumable_interruption():
+def test_exhausted_qa_failures_raise_resumable_interruption():
     atom_set = _atom_set()
     direction = _direction(atom_set)
     manifest = AssetManifest(items=())
     plan = _failing_plan(direction, atom_set, manifest)
     style = {"pink_red": _style()}
 
-    # Failure #1: counter 0 -> 1, returns failing result.
-    first = design_plan_qa_node(
-        _state(plan, direction, atom_set, failures=0), style_profiles=style
-    )
-    assert first["design_plan_qa_failures"] == 1
-    # Failure #2: counter 1 -> 2, returns failing result.
-    second = design_plan_qa_node(
-        _state(plan, direction, atom_set, failures=1), style_profiles=style
-    )
-    assert second["design_plan_qa_failures"] == 2
+    # The first MAX_QA_FAILURES - 1 failures return a failing result.
+    for prior in range(MAX_QA_FAILURES - 1):
+        result = design_plan_qa_node(
+            _state(plan, direction, atom_set, failures=prior), style_profiles=style
+        )
+        assert result["design_plan_qa_failures"] == prior + 1
 
-    # Failure #3: counter 2 -> 3 == MAX_QA_FAILURES -> raise, never force-pass.
+    # The MAX_QA_FAILURES-th failure raises, never force-pass.
     with pytest.raises(VisualProductionInterrupted) as exc_info:
         design_plan_qa_node(
-            _state(plan, direction, atom_set, failures=2), style_profiles=style
+            _state(
+                plan,
+                direction,
+                atom_set,
+                failures=MAX_QA_FAILURES - 1,
+            ),
+            style_profiles=style,
         )
 
     assert exc_info.value.stage == "design_plan_qa"
@@ -312,5 +314,7 @@ def test_node_requires_carousel_design_plan_in_state():
         design_plan_qa_node(state, style_profiles={"pink_red": _style()})
 
 
-def test_max_qa_failures_constant_is_three():
-    assert MAX_QA_FAILURES == 3
+def test_max_qa_failures_constant_gives_the_reviser_room():
+    # The reviser resolves a handful of issues per revision; a large initial QA
+    # failure set needs more than the historic 3 rounds.
+    assert MAX_QA_FAILURES == 6

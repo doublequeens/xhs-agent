@@ -49,7 +49,7 @@ Final Guard 仍在 Human Review 之后执行，硬门每个 attestation：审美
 
 - LLM schema 或内容合同失败：Visual Director / Page Designer / Design Reviser 通过 `generate_validated` 最多自修复 6 次（`MAX_GENERATION_ATTEMPTS`，结构化模型产出复杂嵌套 JSON 时频繁出现缺失字段/判别器错误，3 次不足以吸收）；仍失败则 `interrupted` 并 checkpoint，不生成默认五页，不回退旧 node。
 - 素材失败：按 directive 执行允许的 search/generation fallback；optional 全部失败回 Design Reviser 生成无图版本；required 全部失败中断并保留 recovery evidence。
-- Design Plan QA / Render QA：与 Design Reviser 最多循环 3 轮，3 轮后抛 `VisualProductionInterrupted` 中断并 checkpoint。
+- Design Plan QA / Render QA：与 Design Reviser 最多循环 6 轮（`MAX_QA_FAILURES` / `MAX_RENDER_QA_FAILURES`），预算耗尽后抛 `VisualProductionInterrupted` 中断并 checkpoint。
 - Visual Critic：最多自动修订 2 轮，仍不通过进入 `visual_needs_attention` Human Review。
 
 ## 迁移边界

@@ -26,9 +26,11 @@ from src.visual_design.model_retry import VisualProductionInterrupted
 from src.visual_design.plan_qa import DesignPlanQAInputs, evaluate_design_plan
 from src.visual_design.style_registry import load_style_registry
 
-# The reviser loop may consume at most this many failed QA results; on the
-# third failure the QA stage interrupts with checkpointable details.
-MAX_QA_FAILURES = 3
+# The reviser loop may consume at most this many failed QA results before the
+# QA stage interrupts with checkpointable details. The reviser model typically
+# resolves a handful of issues per revision, so a large initial QA failure set
+# (e.g. several overflowing elements) needs more rounds than the historic 3.
+MAX_QA_FAILURES = 6
 
 _DESIGN_PLAN_KEY = "carousel_design_plan"
 _DIRECTION_KEY = "visual_direction_plan"

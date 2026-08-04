@@ -26,8 +26,8 @@ domain_router -> domain_confirmation -> memory_retriever
 视觉阶段有三条确定性修订回路和一条审美回路，全部由 `src/graph.py` 的条件边驱动：
 
 - **Content Atomizer → R2**：`content_atomizer` 检测到禁止的系统文案（免责声明/AI 标注混入可见文字）时路由到 `r2_compliance` 移除；正常路径进入 `visual_director`。
-- **Design Plan QA 失败 → Design Reviser**：`design_plan_qa` 在启动浏览器前确定性校验 scene graph。失败回 `design_reviser` 修订；连续 3 次失败抛 `VisualProductionInterrupted(stage="design_plan_qa")` 并 checkpoint，不进入 renderer。
-- **Render QA 失败 → Design Reviser**：`render_qa` 基于实际 DOM/PNG 校验。失败回 `design_reviser`；连续 3 次失败抛 `VisualProductionInterrupted(stage="render_qa")`，不进入 Visual Critic 或 Human Review。
+- **Design Plan QA 失败 → Design Reviser**：`design_plan_qa` 在启动浏览器前确定性校验 scene graph。失败回 `design_reviser` 修订；连续 6 次失败（`MAX_QA_FAILURES`，reviser 每轮通常只能解决少量问题，多问题失败集需要更多轮次）抛 `VisualProductionInterrupted(stage="design_plan_qa")` 并 checkpoint，不进入 renderer。
+- **Render QA 失败 → Design Reviser**：`render_qa` 基于实际 DOM/PNG 校验。失败回 `design_reviser`；连续 6 次失败（`MAX_RENDER_QA_FAILURES`）抛 `VisualProductionInterrupted(stage="render_qa")`，不进入 Visual Critic 或 Human Review。
 - **Visual Critic 失败 → Design Reviser（最多两轮）**：`visual_critic` 是多模态审美复核。失败且修订轮 < 2 回 `design_reviser`；第 2 轮仍失败时带 `visual_needs_attention` 进入 Human Review，并保留问题和评分。
 - **Design Reviser 路由**：family 或页面序列需要重排时，`design_reviser` 通过专用 `visual_route_override` 通道回 `visual_director` 重新规划；否则回 `design_plan_qa` 重新校验修订后的计划。
 

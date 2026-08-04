@@ -54,7 +54,9 @@ from src.schemas.visual_director import (
     PageDirection,
     VisualDirectionPlan,
 )
+from src.nodes.node_p_design_plan_qa import MAX_QA_FAILURES
 from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_design.render_qa import MAX_RENDER_QA_FAILURES
 
 # A roomy recursion limit so the 3-strike / 2-round terminations occur well
 # before LangGraph's default ceiling; the bugs manifest as GraphRecursionError,
@@ -282,10 +284,11 @@ class _NullModel:
 # ---------------------------------------------------------------------------
 
 
-def test_design_plan_qa_three_strike_terminates_via_interruption(monkeypatch, tmp_path):
-    """A persistently-failing design-plan QA must interrupt after exactly 3
-    calls with the counter advancing 0->1->2->3. Before the AgentState fix the
-    counter write is dropped and the loop only ends on GraphRecursionError."""
+def test_design_plan_qa_strike_budget_terminates_via_interruption(monkeypatch, tmp_path):
+    """A persistently-failing design-plan QA must interrupt after exactly
+    MAX_QA_FAILURES calls with the counter advancing 0->1->...->MAX. Before the
+    AgentState fix the counter write is dropped and the loop only ends on
+    GraphRecursionError."""
     monkeypatch.chdir(tmp_path)
     _install_noop_upstream(monkeypatch)
     _patch_visual_model(monkeypatch, _NullModel())
@@ -299,7 +302,7 @@ def test_design_plan_qa_three_strike_terminates_via_interruption(monkeypatch, tm
         prior = int(state.get("design_plan_qa_failures", 0))
         observed_counters.append(prior)
         failures = prior + 1
-        if failures >= 3:
+        if failures >= MAX_QA_FAILURES:
             raise VisualProductionInterrupted(
                 stage="design_plan_qa",
                 errors=["fake: persistent spacing failure"],
@@ -347,10 +350,10 @@ def test_design_plan_qa_three_strike_terminates_via_interruption(monkeypatch, tm
         graph.invoke(_visual_state(), config=config)
 
     assert excinfo.value.stage == "design_plan_qa"
-    # Exactly 3 QA calls, reading the counter 0, 1, 2 in sequence. If the
+    # Exactly MAX_QA_FAILURES QA calls, reading the counter in sequence. If the
     # counter write were dropped, every call would read 0 and observe would
     # be [0, 0, 0, ...] until GraphRecursionError.
-    assert observed_counters == [0, 1, 2]
+    assert observed_counters == list(range(MAX_QA_FAILURES))
 
 
 # ---------------------------------------------------------------------------
@@ -358,8 +361,9 @@ def test_design_plan_qa_three_strike_terminates_via_interruption(monkeypatch, tm
 # ---------------------------------------------------------------------------
 
 
-def test_render_qa_three_strike_terminates_via_interruption(monkeypatch, tmp_path):
-    """A persistently-failing render QA must interrupt after exactly 3 calls."""
+def test_render_qa_strike_budget_terminates_via_interruption(monkeypatch, tmp_path):
+    """A persistently-failing render QA must interrupt after exactly
+    MAX_RENDER_QA_FAILURES calls."""
     monkeypatch.chdir(tmp_path)
     _install_noop_upstream(monkeypatch)
     _patch_visual_model(monkeypatch, _NullModel())
@@ -394,7 +398,7 @@ def test_render_qa_three_strike_terminates_via_interruption(monkeypatch, tmp_pat
         prior = int(state.get("render_qa_failures", 0))
         observed_counters.append(prior)
         failures = prior + 1
-        if failures >= 3:
+        if failures >= MAX_RENDER_QA_FAILURES:
             raise VisualProductionInterrupted(
                 stage="render_qa",
                 errors=["fake: persistent geometry failure"],
@@ -443,7 +447,7 @@ def test_render_qa_three_strike_terminates_via_interruption(monkeypatch, tmp_pat
         graph.invoke(_visual_state(), config=config)
 
     assert excinfo.value.stage == "render_qa"
-    assert observed_counters == [0, 1, 2]
+    assert observed_counters == list(range(MAX_RENDER_QA_FAILURES))
 
 
 # ---------------------------------------------------------------------------
@@ -636,7 +640,7 @@ def test_design_reviser_assembles_request_from_state_without_crashing(
     # byte-equal (so validate_revision + validate_bindings pass).
     revised_plans: list[CarouselDesignPlan] = []
     current = before
-    for index in range(1, 5):
+    for index in range(1, MAX_QA_FAILURES):
         pages = []
         for page in current.pages:
             if page.page_id == "page-1":
@@ -662,13 +666,13 @@ def test_design_reviser_assembles_request_from_state_without_crashing(
     qa_calls = []
 
     def failing_design_plan_qa(state):
-        # Mirror the real node's 3-strike contract: read the persisted
-        # counter, increment, raise VisualProductionInterrupted on the third
+        # Mirror the real node's strike-budget contract: read the persisted
+        # counter, increment, raise VisualProductionInterrupted on the final
         # failure. The counter write persists because of the C1 fix.
         prior = int(state.get("design_plan_qa_failures", 0))
         qa_calls.append(prior)
         failures = prior + 1
-        if failures >= 3:
+        if failures >= MAX_QA_FAILURES:
             raise VisualProductionInterrupted(
                 stage="design_plan_qa",
                 errors=["fake: persistent spacing failure"],
@@ -707,8 +711,8 @@ def test_design_reviser_assembles_request_from_state_without_crashing(
 
     # The real reviser constructs a RevisionRequest from design_plan_qa_result,
     # calls the fake model, and returns a revised plan that routes back to
-    # design_plan_qa. After 3 QA failures the loop interrupts (proving the
-    # counter persisted across the reviser round-trip too).
+    # design_plan_qa. After MAX_QA_FAILURES QA failures the loop interrupts
+    # (proving the counter persisted across the reviser round-trip too).
     with pytest.raises(VisualProductionInterrupted) as excinfo:
         graph.invoke(state, config=config)
 
@@ -719,11 +723,11 @@ def test_design_reviser_assembles_request_from_state_without_crashing(
     # revision_request. The revised plan was produced and the loop cycled.
     assert len(model.calls) >= 1, "real design_reviser never called the model"
     assert model.calls[0]["response_model"] is CarouselDesignPlan
-    # The counter persisted across the reviser round-trip: QA read 0, 1, 2
-    # across three calls. Before the C1 fix every read would be 0.
-    assert qa_calls == [0, 1, 2]
-    # The reviser ran twice (once per non-terminal QA failure).
-    assert len(model.calls) == 2
+    # The counter persisted across the reviser round-trip: QA read the counter
+    # in sequence. Before the C1 fix every read would be 0.
+    assert qa_calls == list(range(MAX_QA_FAILURES))
+    # The reviser ran once per non-terminal QA failure.
+    assert len(model.calls) == MAX_QA_FAILURES - 1
     # revision_request is never injected; the real reviser assembled it from
     # design_plan_qa_result on every call.
     assert "revision_request" not in state
