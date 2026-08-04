@@ -60,6 +60,13 @@ def assembler_node(state: AgentState) -> AgentState:
         raise ValueError("focus_keyword_cli_present must be a bool")
     if focus_keyword_cli_present and not focus_keyword.strip():
         raise ValueError("explicit CLI focus_keyword cannot be empty")
+    if not focus_keyword.strip():
+        # No CLI focus keyword was given: fall back to the generated topic so
+        # the locked publish field is always populated for topic-driven runs.
+        # The Final Guard requires a non-empty focus_keyword; an empty value
+        # would otherwise fail the gate and bounce the run back to Human Review
+        # in a loop.
+        focus_keyword = str(_get_value(final_content, "topic") or "")
 
     system_prompt = compose_prompt_for_state("assembler", state)
     template = PromptTemplate(
