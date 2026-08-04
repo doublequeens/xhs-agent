@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import io
 import json
@@ -113,20 +114,40 @@ def _top_level_json_objects(raw_response: str) -> list[str]:
     return objects
 
 
+def _strip_code_fences(text: str) -> str:
+    """Strip a single markdown code fence (```json ... ```) wrapper."""
+    s = text.strip()
+    if s.startswith("```"):
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+    if s.endswith("```"):
+        s = s[:-3]
+    return s.strip()
+
+
 def _extract_one_json_object(raw_response: str) -> dict[str, Any]:
+    import json_repair
+
     candidates = _top_level_json_objects(raw_response)
-    if len(candidates) != 1:
-        raise StructuredVisualResponseError(
-            "Gemini response must contain exactly one JSON object",
-            raw_response=raw_response,
-        )
+    if candidates:
+        # Take the largest top-level object (the plan is the biggest).
+        candidate = max(candidates, key=len)
+    else:
+        # Brace matching found nothing (likely unbalanced braces on a large
+        # output). Fall back to the fence-stripped body.
+        candidate = _strip_code_fences(raw_response)
     try:
-        value = json.loads(candidates[0])
-    except json.JSONDecodeError as error:
-        raise StructuredVisualResponseError(
-            "Gemini response did not contain valid JSON",
-            raw_response=raw_response,
-        ) from error
+        value = json.loads(candidate)
+    except json.JSONDecodeError:
+        # LLMs sometimes emit slightly invalid JSON on large structured outputs
+        # (missing commas, unbalanced braces, trailing commas). Use json_repair
+        # as a fallback before giving up.
+        repaired = json_repair.repair_json(candidate, return_objects=True)
+        if not isinstance(repaired, dict):
+            raise StructuredVisualResponseError(
+                "Gemini response did not contain valid JSON",
+                raw_response=raw_response,
+            )
+        value = repaired
     if not isinstance(value, dict):
         raise StructuredVisualResponseError(
             "Gemini response JSON must be an object",
@@ -224,13 +245,11 @@ def _request_aspect_ratio(request: ImageGenerationRequest) -> str:
 
 def _request_image_size(request: ImageGenerationRequest) -> str:
     longest_edge = max(request.width, request.height)
-    if longest_edge <= 1024:
-        return "1K"
-    if longest_edge <= 2048:
-        return "2K"
-    if longest_edge <= 4096:
-        return "4K"
-    raise ValueError("Gemini image dimensions cannot exceed 4K")
+    if longest_edge > 4096:
+        raise ValueError("Gemini image dimensions cannot exceed 4K")
+    # Cap at 1K: 2K/4K generation is too resource-intensive for carousel asset
+    # generation, and the renderer scales the asset to the page box regardless.
+    return "1K"
 
 
 def _generation_prompt(request: ImageGenerationRequest) -> str:
@@ -340,18 +359,50 @@ class GeminiImageGenerationProvider:
         ).hexdigest()
         if request.prompt_sha256 != expected_prompt_sha256:
             raise ValueError("prompt_sha256 does not match prompt")
-        response = self.client.models.generate_content(
-            model=self.model,
-            contents=[_generation_prompt(request)],
-            config=types.GenerateContentConfig(
-                response_modalities=["IMAGE"],
-                image_config=types.ImageConfig(
-                    aspect_ratio=_request_aspect_ratio(request),
-                    image_size=_request_image_size(request),
-                ),
-            ),
-        )
-        data, mime_type = _validated_image_output(response)
+        prompt = _generation_prompt(request)
+        # Use the Gemini interactions API for image generation (the
+        # models.generate_content IMAGE path is capacity-limited and returns
+        # transient 503s under load). Pass aspect_ratio + image_size via
+        # generation_config so the output matches the directive orientation at
+        # the configured (1K) size. Retry transient overload/rate-limit errors.
+        generation_config = {
+            "response_modalities": ["IMAGE"],
+            "image_config": {
+                "aspect_ratio": _request_aspect_ratio(request),
+                "image_size": _request_image_size(request),
+            },
+        }
+        interaction = None
+        last_exc: Exception | None = None
+        for attempt in range(1, _MAX_API_ATTEMPTS + 1):
+            try:
+                interaction = self.client.interactions.create(
+                    model=self.model,
+                    input=prompt,
+                    generation_config=generation_config,
+                )
+                break
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _MAX_API_ATTEMPTS and _is_transient_error(exc):
+                    _retry_sleep(_backoff_delay_seconds(attempt))
+                    continue
+                raise ImageGenerationResponseError(
+                    f"generation provider failed: {exc}"
+                ) from exc
+        output_image = getattr(interaction, "output_image", None)
+        encoded = getattr(output_image, "data", None) if output_image is not None else None
+        if not encoded:
+            raise ImageGenerationResponseError(
+                "Gemini interaction returned no image content"
+            )
+        data = base64.b64decode(encoded)
+        mime_type = (getattr(output_image, "mime_type", None) or "image/png")
+        mime_type = mime_type.split(";", 1)[0].strip()
+        if mime_type not in _IMAGE_EXTENSIONS or not _valid_image_bytes(data, mime_type):
+            raise ImageGenerationResponseError(
+                "Gemini returned invalid image MIME type or bytes"
+            )
         response_sha256 = hashlib.sha256(data).hexdigest()
         path = _write_generated_image(
             data,

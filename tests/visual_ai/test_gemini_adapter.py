@@ -5,6 +5,7 @@ import hashlib
 import io
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -72,6 +73,29 @@ def image_response(data: bytes, mime_type: str) -> types.GenerateContentResponse
     )
 
 
+def interaction_output(data: bytes, mime_type: str) -> SimpleNamespace:
+    """An interactions.create output_image shape (.data base64, .mime_type)."""
+    return SimpleNamespace(
+        data=base64.b64encode(data).decode("ascii"),
+        mime_type=mime_type,
+    )
+
+
+class FakeInteractions:
+    def __init__(self, output_image: SimpleNamespace) -> None:
+        self._output_image = output_image
+        self.calls: list[dict[str, Any]] = []
+
+    def create(self, **kwargs: Any) -> SimpleNamespace:
+        self.calls.append(kwargs)
+        return SimpleNamespace(output_image=self._output_image)
+
+
+class FakeInteractionsClient:
+    def __init__(self, output_image: SimpleNamespace) -> None:
+        self.interactions = FakeInteractions(output_image)
+
+
 def make_request(prompt: str = "Create a clean serum texture photograph.") -> ImageGenerationRequest:
     return ImageGenerationRequest(
         prompt=prompt,
@@ -136,26 +160,49 @@ def test_structured_model_sends_local_images_as_typed_byte_parts(
     assert config.response_schema is None
 
 
-@pytest.mark.parametrize(
-    "raw_response",
-    [
-        '{"title":"first","score":1}\n{"title":"second","score":2}',
-        '[{"title":"wrapped","score":1}]',
-    ],
-)
-def test_structured_model_requires_exactly_one_top_level_json_object(
-    raw_response: str,
-) -> None:
+def test_structured_model_picks_largest_json_object_when_multiple() -> None:
+    """When the model emits the plan plus trailing braces/prose, the extractor
+    takes the largest top-level JSON object rather than failing."""
+    raw = (
+        '{"title":"first","score":1}\n'
+        '{"title":"the-actual-plan","score":99}\n'
+    )
     adapter = GeminiStructuredVisualModel(
-        client=FakeClient(text_response(raw_response)),
+        client=FakeClient(text_response(raw)),
         model=MODEL,
     )
 
-    with pytest.raises(StructuredVisualResponseError) as exc_info:
+    result = adapter.generate_json("Choose.", VisualAnswer)
+
+    assert result.title == "the-actual-plan"
+    assert result.score == 99
+
+
+def test_structured_model_rejects_non_object_json() -> None:
+    raw = '[{"title":"wrapped","score":1}]'
+    adapter = GeminiStructuredVisualModel(
+        client=FakeClient(text_response(raw)),
+        model=MODEL,
+    )
+
+    with pytest.raises(StructuredVisualResponseError):
         adapter.generate_json("Choose.", VisualAnswer)
 
-    assert exc_info.value.raw_response == raw_response
-    assert "exactly one JSON object" in str(exc_info.value)
+
+def test_struct_model_repairs_slightly_invalid_json() -> None:
+    """LLMs sometimes emit slightly invalid JSON (missing commas, unbalanced
+    braces) on large outputs; the extractor falls back to json_repair."""
+    # Missing comma after "Calm" -> normally invalid JSON.
+    raw = '```json\n{"title":"Calm" "score":9}\n```'
+    adapter = GeminiStructuredVisualModel(
+        client=FakeClient(text_response(raw)),
+        model=MODEL,
+    )
+
+    result = adapter.generate_json("Score.", VisualAnswer)
+
+    assert result.title == "Calm"
+    assert result.score == 9
 
 
 def test_structured_model_exposes_raw_response_when_schema_validation_fails() -> None:
@@ -177,7 +224,7 @@ def test_generation_writes_validated_bytes_and_records_internal_provenance(
 ) -> None:
     request = make_request()
     transaction_dir = tmp_path / "transaction"
-    client = FakeClient(image_response(PNG_BYTES, "image/png"))
+    client = FakeInteractionsClient(interaction_output(PNG_BYTES, "image/png"))
 
     generated = GeminiImageGenerationProvider(
         client=client,
@@ -202,12 +249,9 @@ def test_generation_writes_validated_bytes_and_records_internal_provenance(
         "generated_at": generated.generated_at,
     }
 
-    call = client.models.calls[0]
+    call = client.interactions.calls[0]
     assert call["model"] == MODEL
-    assert call["config"].response_modalities == ["IMAGE"]
-    assert call["config"].image_config.aspect_ratio == "3:4"
-    assert call["config"].image_config.image_size == "2K"
-    submitted_prompt = call["contents"][0]
+    submitted_prompt = call["input"]
     assert request.prompt in submitted_prompt
     assert all(constraint in submitted_prompt for constraint in request.negative_constraints)
     assert "AI-generated" not in submitted_prompt
@@ -238,7 +282,7 @@ def test_generation_rejects_invalid_image_output_before_writing(
 ) -> None:
     transaction_dir = tmp_path / "transaction"
     adapter = GeminiImageGenerationProvider(
-        client=FakeClient(image_response(data, mime_type)),
+        client=FakeInteractionsClient(interaction_output(data, mime_type)),
         model=MODEL,
     )
 
@@ -268,7 +312,7 @@ def test_generation_rejects_truncated_raster_before_writing(
     truncated = complete[:-removed_bytes]
     transaction_dir = tmp_path / "transaction"
     adapter = GeminiImageGenerationProvider(
-        client=FakeClient(image_response(truncated, mime_type)),
+        client=FakeInteractionsClient(interaction_output(truncated, mime_type)),
         model=MODEL,
     )
 

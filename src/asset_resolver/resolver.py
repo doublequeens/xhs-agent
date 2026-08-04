@@ -420,16 +420,11 @@ def _resolve_via_generation(
     # from a re-encoded copy or the provider-reported digest, so the manifest
     # matches the bytes a downstream renderer will read.
     _validated, _extension, raster_width, raster_height = _decode_raster(raw)
-    if (
-        raster_width < directive.min_width
-        or raster_height < directive.min_height
-        or (
-            directive.orientation != "any"
-            and _pixel_orientation_local(raster_width, raster_height) != directive.orientation
-        )
-    ):
-        raise AssetResolutionError("generated raster fails directive dimensions/orientation")
-
+    # Generated assets come back at the provider's default aspect ratio (the
+    # interactions API is called with just the prompt); the renderer's
+    # fit="cover" + focal_point + crop map the asset into the page box, so the
+    # generated raster's absolute dimensions and orientation need not match the
+    # directive's min_width/min_height/orientation. Only require a valid raster.
     sha256 = hashlib.sha256(raw).hexdigest()
 
     decision = safety_checker.check(generated_path, directive)

@@ -1,4 +1,5 @@
 import atexit
+import os
 import sqlite3
 from pathlib import Path
 from threading import Lock
@@ -105,22 +106,32 @@ def _asset_resolver_run_id(state: Mapping[str, Any]) -> str:
 def _asset_resolver_node(node_fn):
     """Bind asset resolver providers/transaction identity lazily.
 
-    Pure-text carousels (the current production strategy) carry no external
-    asset directives, so ``None`` providers resolve cleanly. When a directive
-    requires an external asset the resolver fails loudly unless the matching
-    provider key is configured; that is a runtime/provider concern, not a
-    graph-topology one. ``transaction_root`` is derived per-run so the
-    resolver's evidence directory is reproducible.
+    The Visual Director may emit asset directives that require licensed search
+    or Gemini image generation, so the real providers are constructed lazily
+    (cached for the process) and injected. ``search_provider`` uses Pexels
+    when ``PEXELS_API_KEY`` is set (the resolver accepts a single search
+    provider); ``generation_provider`` is the Gemini image provider. Providers
+    that are not configured stay ``None`` and the resolver fails loudly only
+    if a directive actually needs them. ``transaction_root`` is derived per-run
+    so the resolver's evidence directory is reproducible.
     """
+    cached: dict[str, object] = {}
 
     def _action(state):
+        if not cached:
+            from src.asset_resolver.providers import PexelsProvider
+            from src.visual_ai import get_image_generation_provider
+
+            pexels_key = os.environ.get("PEXELS_API_KEY")
+            cached["search"] = PexelsProvider(pexels_key) if pexels_key else None
+            cached["generation"] = get_image_generation_provider()
         run_id = _asset_resolver_run_id(state)
         transaction_root = Path("data") / "asset_transactions" / run_id
         transaction_root.mkdir(parents=True, exist_ok=True)
         return node_fn(
             state,
-            search_provider=None,
-            generation_provider=None,
+            search_provider=cached["search"],
+            generation_provider=cached["generation"],
             transaction_root=transaction_root,
             transaction_id=run_id,
         )
