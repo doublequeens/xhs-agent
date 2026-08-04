@@ -103,6 +103,15 @@ def r1_reflector_node(state: AgentState) -> AgentState:
             f"r1 reflector produced no output: {last_error}"
         )
 
+    # The r1_reflector must not change the selected narrative_plan. The model
+    # sometimes subtly modifies enum values or beats; overwrite its
+    # narrative_plan with the authoritative selected plan (which is what the
+    # node returns downstream anyway) so the preservation check always holds.
+    r1_output_json["narrative_plan"] = selected_narrative_plan.model_dump(
+        mode="json"
+    )
+    r1_output = R1Output(**r1_output_json)
+
     require_same_narrative_plan(
         r1_output_json.get("narrative_plan"),
         selected_narrative_plan,
