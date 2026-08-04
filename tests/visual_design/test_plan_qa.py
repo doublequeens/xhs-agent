@@ -683,6 +683,45 @@ def test_safe_margin_violation_fails():
     assert issue is not None
 
 
+def test_long_text_at_display_font_in_small_box_flags_overflow_estimate():
+    base = _inputs()
+    # A full sentence set in 72px display type inside a narrow badge cannot fit
+    # its box; this must be caught statically before it reaches the renderer.
+    overflowing = _text(
+        "num-badge-1",
+        "fragment-1",
+        font_role="display",
+        font_size=72,
+        box=Box(x=520, y=190, width=180, height=100),
+    )
+    plan = _add_page_element(base.design_plan, "page-1", overflowing)
+
+    result = evaluate_design_plan(_inputs(design_plan=plan, **_base_from(base)))
+
+    assert result.passed is False
+    issue = _find(
+        result, "geometry.text_overflow_estimate", element_id="num-badge-1"
+    )
+    assert issue is not None
+
+
+def test_short_text_at_display_font_in_wide_box_does_not_flag_overflow():
+    base = _inputs()
+    # A short display label in a box sized for it must NOT be flagged.
+    fits = _text(
+        "title-1",
+        "fragment-1",
+        font_role="display",
+        font_size=72,
+        box=Box(x=88, y=88, width=904, height=200),
+    )
+    plan = _add_page_element(base.design_plan, "page-1", fits)
+
+    result = evaluate_design_plan(_inputs(design_plan=plan, **_base_from(base)))
+
+    assert _find(result, "geometry.text_overflow_estimate", element_id="title-1") is None
+
+
 def test_unintended_overlap_fails():
     base = _inputs()
     plan = _add_page_element(

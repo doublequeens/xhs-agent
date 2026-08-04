@@ -13,6 +13,7 @@ Rule prefixes are ``content.`` / ``family.`` / ``asset.`` / ``geometry.`` /
 
 from __future__ import annotations
 
+import math
 from collections.abc import Iterable
 from dataclasses import dataclass
 
@@ -395,8 +396,41 @@ def validate_asset_bindings(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
 
 # --- geometry -------------------------------------------------------------
 
+def _estimate_text_overflow(
+    text: str,
+    font_size: float,
+    line_height: float,
+    box: Box,
+) -> bool:
+    """Rough static overflow estimate for text in a box.
+
+    CJK/full-width glyphs are roughly one ``font_size`` em wide each; latin,
+    space, and punctuation glyphs are narrower (~0.55em). Sum the estimated
+    text width, wrap it across the box width, and flag when the wrapped line
+    height exceeds the box height. The estimate is deliberately approximate so
+    borderline designs are not false-flagged; it exists to catch clearly
+    impossible layouts (e.g. a full sentence set in 72px display type inside a
+    narrow badge) before they reach the renderer.
+    """
+    if font_size <= 0 or line_height <= 0:
+        return False
+    total_ems = sum(
+        1.0 if ord(char) > 0x2E80 else 0.55
+        for char in text
+    )
+    total_width = total_ems * font_size
+    lines = max(1, math.ceil(total_width / box.width))
+    text_height = lines * font_size * line_height
+    # Tolerance for rounding, descenders, and line-box padding.
+    return text_height > box.height + 8.0
+
+
 def validate_geometry(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
     issues: list[DesignIssue] = []
+    fragment_by_id = {
+        fragment.fragment_id: fragment
+        for fragment in inputs.direction.content_fragments
+    }
     for page in inputs.design_plan.pages:
         bearing = _box_bearing_elements(page)
         for element in bearing:
@@ -432,6 +466,31 @@ def validate_geometry(inputs: DesignPlanQAInputs) -> list[DesignIssue]:
                                 f"on page {page.page_id}"
                             ),
                             f"keep readable content inside the {SAFE_MARGIN_PX}px safe area",
+                            page_id=page.page_id,
+                            element_id=element.element_id,
+                        )
+                    )
+            if isinstance(element, TextElement):
+                fragment = fragment_by_id.get(element.content_ref)
+                if fragment is not None and _estimate_text_overflow(
+                    fragment.text,
+                    element.style.font_size,
+                    element.style.line_height,
+                    element.box,
+                ):
+                    issues.append(
+                        _issue(
+                            "geometry.text_overflow_estimate",
+                            (
+                                f"text element {element.element_id} likely overflows its "
+                                f"box: {len(fragment.text)} characters at "
+                                f"{element.style.font_size}px in a "
+                                f"{int(box.width)}x{int(box.height)} box"
+                            ),
+                            (
+                                f"reduce font_size or widen the box so the text fits "
+                                f"({len(fragment.text)} characters)"
+                            ),
                             page_id=page.page_id,
                             element_id=element.element_id,
                         )
