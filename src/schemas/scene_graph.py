@@ -1,6 +1,6 @@
 from typing import Annotated, Literal
 
-from pydantic import Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from .assets import AssetManifest
 from .content_atoms import ContentAtomSet, canonical_sha256
@@ -16,9 +16,24 @@ class Box(StrictModel):
 
 
 class ElementBase(StrictModel):
+    # Scene elements are creative LLM output; tolerate extra fields (e.g. the
+    # model sometimes adds corner_radius to shapes) by ignoring unknown keys.
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
     element_id: str = Field(pattern=r"^[a-z0-9][a-z0-9_-]{0,63}$")
     layer: int = Field(ge=0, le=100)
     intentional_overlap_with: tuple[str, ...] = ()
+
+
+# CSS weight names → integer (LLMs sometimes emit string weights).
+_WEIGHT_NAMES = {
+    "thin": 400, "hairline": 400, "light": 400, "regular": 400, "normal": 400,
+    "medium": 500,
+    "semibold": 600, "semi-bold": 600, "demibold": 600,
+    "bold": 700,
+    "extrabold": 800, "extra-bold": 800, "heavy": 800,
+    "black": 900,
+}
 
 
 class TextStyle(StrictModel):
@@ -29,6 +44,13 @@ class TextStyle(StrictModel):
     align: Literal["left", "center", "right"]
     weight: Literal[400, 500, 600, 700, 800, 900]
     emphasis_ranges: tuple[tuple[int, int], ...] = ()
+
+    @field_validator("weight", mode="before")
+    @classmethod
+    def _coerce_weight(cls, value):
+        if isinstance(value, str):
+            return _WEIGHT_NAMES.get(value.lower().strip(), value)
+        return value
 
     @model_validator(mode="after")
     def validate_emphasis_ranges(self):

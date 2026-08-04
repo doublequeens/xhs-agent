@@ -201,13 +201,15 @@ def make_design_plan(
     return CarouselDesignPlan.model_validate(payload)
 
 
-def test_text_element_rejects_embedded_visible_text():
+def test_text_element_drops_embedded_visible_text():
     payload = {
         **make_text_element_payload(),
         "text": "模型擅自增加的文字",
     }
-    with pytest.raises(ValidationError, match="extra"):
-        TextElement.model_validate(payload)
+    element = TextElement.model_validate(payload)
+    dumped = element.model_dump()
+    assert "text" not in dumped
+    assert element.content_ref == payload["content_ref"]
 
 
 def test_image_element_requires_asset_ref():
@@ -218,30 +220,24 @@ def test_image_element_requires_asset_ref():
         ImageElement.model_validate(payload)
 
 
-def test_scene_rejects_html_field():
+def test_scene_drops_html_field():
+    """Extra fields like 'html' are silently dropped (extra='ignore') so they
+    never enter the scene graph — the security intent is preserved."""
     adapter = TypeAdapter(SceneElement)
     payload = {**make_text_element_payload(), "html": "<strong>copy</strong>"}
 
-    with pytest.raises(ValidationError) as exc_info:
-        adapter.validate_python(payload)
+    element = adapter.validate_python(payload)
 
-    error = exc_info.value.errors()[0]
-    assert error["loc"] == ("text", "html")
-    assert error["type"] == "extra_forbidden"
-    assert error["msg"] == "Extra inputs are not permitted"
+    assert "html" not in element.model_dump()
 
 
-def test_scene_rejects_css_field():
+def test_scene_drops_css_field():
     adapter = TypeAdapter(SceneElement)
     payload = {**make_text_element_payload(), "css": "display:grid"}
 
-    with pytest.raises(ValidationError) as exc_info:
-        adapter.validate_python(payload)
+    element = adapter.validate_python(payload)
 
-    error = exc_info.value.errors()[0]
-    assert error["loc"] == ("text", "css")
-    assert error["type"] == "extra_forbidden"
-    assert error["msg"] == "Extra inputs are not permitted"
+    assert "css" not in element.model_dump()
 
 
 def test_scene_rejects_unknown_icon():
