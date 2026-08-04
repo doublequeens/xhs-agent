@@ -360,49 +360,24 @@ class GeminiImageGenerationProvider:
         if request.prompt_sha256 != expected_prompt_sha256:
             raise ValueError("prompt_sha256 does not match prompt")
         prompt = _generation_prompt(request)
-        # Use the Gemini interactions API for image generation (the
-        # models.generate_content IMAGE path is capacity-limited and returns
-        # transient 503s under load). Pass aspect_ratio + image_size via
-        # generation_config so the output matches the directive orientation at
-        # the configured (1K) size. Retry transient overload/rate-limit errors.
-        generation_config = {
-            "response_modalities": ["IMAGE"],
-            "image_config": {
-                "aspect_ratio": _request_aspect_ratio(request),
-                "image_size": _request_image_size(request),
-            },
-        }
-        interaction = None
-        last_exc: Exception | None = None
-        for attempt in range(1, _MAX_API_ATTEMPTS + 1):
-            try:
-                interaction = self.client.interactions.create(
-                    model=self.model,
-                    input=prompt,
-                    generation_config=generation_config,
-                )
-                break
-            except Exception as exc:
-                last_exc = exc
-                if attempt < _MAX_API_ATTEMPTS and _is_transient_error(exc):
-                    _retry_sleep(_backoff_delay_seconds(attempt))
-                    continue
-                raise ImageGenerationResponseError(
-                    f"generation provider failed: {exc}"
-                ) from exc
-        output_image = getattr(interaction, "output_image", None)
-        encoded = getattr(output_image, "data", None) if output_image is not None else None
-        if not encoded:
-            raise ImageGenerationResponseError(
-                "Gemini interaction returned no image content"
-            )
-        data = base64.b64decode(encoded)
-        mime_type = (getattr(output_image, "mime_type", None) or "image/png")
-        mime_type = mime_type.split(";", 1)[0].strip()
-        if mime_type not in _IMAGE_EXTENSIONS or not _valid_image_bytes(data, mime_type):
-            raise ImageGenerationResponseError(
-                "Gemini returned invalid image MIME type or bytes"
-            )
+        # Use the standard models.generate_content IMAGE path (the experimental
+        # interactions API rejects generation_config.response_modalities with a
+        # 400 invalid_request). Pass aspect_ratio + image_size via image_config
+        # so the output matches the directive orientation at the configured
+        # (1K) size. Retry transient overload/rate-limit errors.
+        config = types.GenerateContentConfig(
+            response_modalities=["IMAGE"],
+            image_config=types.ImageConfig(
+                aspect_ratio=_request_aspect_ratio(request),
+                image_size=_request_image_size(request),
+            ),
+        )
+        response = self._generate_image_with_retry(
+            model=self.model,
+            prompt=prompt,
+            config=config,
+        )
+        data, mime_type = _validated_image_output(response)
         response_sha256 = hashlib.sha256(data).hexdigest()
         path = _write_generated_image(
             data,
@@ -420,3 +395,23 @@ class GeminiImageGenerationProvider:
             response_sha256=response_sha256,
             generated_at=datetime.now(timezone.utc).isoformat(),
         )
+
+    def _generate_image_with_retry(
+        self, *, model: str, prompt: str, config: types.GenerateContentConfig
+    ) -> Any:
+        """Call generate_content for an image, retrying transient errors."""
+        for attempt in range(1, _MAX_API_ATTEMPTS + 1):
+            try:
+                return self.client.models.generate_content(
+                    model=model,
+                    contents=[prompt],
+                    config=config,
+                )
+            except Exception as exc:
+                if attempt < _MAX_API_ATTEMPTS and _is_transient_error(exc):
+                    _retry_sleep(_backoff_delay_seconds(attempt))
+                    continue
+                raise ImageGenerationResponseError(
+                    f"generation provider failed: {exc}"
+                ) from exc
+        raise RuntimeError("image generation retry loop exited unexpectedly")

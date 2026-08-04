@@ -224,7 +224,7 @@ def test_generation_writes_validated_bytes_and_records_internal_provenance(
 ) -> None:
     request = make_request()
     transaction_dir = tmp_path / "transaction"
-    client = FakeInteractionsClient(interaction_output(PNG_BYTES, "image/png"))
+    client = FakeClient(image_response(PNG_BYTES, "image/png"))
 
     generated = GeminiImageGenerationProvider(
         client=client,
@@ -249,14 +249,18 @@ def test_generation_writes_validated_bytes_and_records_internal_provenance(
         "generated_at": generated.generated_at,
     }
 
-    call = client.interactions.calls[0]
+    call = client.models.calls[0]
     assert call["model"] == MODEL
-    submitted_prompt = call["input"]
+    submitted_prompt = call["contents"][0]
     assert request.prompt in submitted_prompt
     assert all(constraint in submitted_prompt for constraint in request.negative_constraints)
     assert "AI-generated" not in submitted_prompt
     assert "示意图" not in submitted_prompt
     assert "disclaimer" not in submitted_prompt.lower()
+    config = call["config"]
+    assert config.response_modalities == ["IMAGE"]
+    assert config.image_config.aspect_ratio == "3:4"
+    assert config.image_config.image_size == "1K"
     assert set(generated.internal_provenance) == {
         "provider",
         "model",
@@ -282,7 +286,7 @@ def test_generation_rejects_invalid_image_output_before_writing(
 ) -> None:
     transaction_dir = tmp_path / "transaction"
     adapter = GeminiImageGenerationProvider(
-        client=FakeInteractionsClient(interaction_output(data, mime_type)),
+        client=FakeClient(image_response(data, mime_type)),
         model=MODEL,
     )
 
