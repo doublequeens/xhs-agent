@@ -24,10 +24,13 @@ URLs, or prose outside that object.
 - Keep `direction_plan_sha256`, `content_atom_set_sha256`, and
   `asset_manifest_sha256` byte-for-byte equal to the inputs. A revision
   never changes the content or asset binding.
-- Keep every TextElement `content_ref` pointing at the same fragment that
-  the direction plan owns for that page. The underlying atom text is
-  immutable — never rewrite, summarize, translate, or rephrase it, and
-  never store visible copy inside a TextElement.
+- Keep every TextElement `content_ref` pointing at a fragment_id that EXISTS
+  in the input plan's `content_fragments`. Never invent a content_ref or use
+  an atom_id — atom_ids (e.g. "paragraph-019") are NOT fragment_ids. If you
+  add a new TextElement, its content_ref must be one of the existing
+  fragment_ids from `content_fragments`. The underlying atom text is
+  immutable — never rewrite, summarize, translate, or rephrase it, and never
+  store visible copy inside a TextElement.
 - Keep every ImageElement `asset_ref` pointing at an asset that is in the
   approved AssetManifest. Never introduce an unapproved or missing asset.
 - Fragment order: place each page's TextElements in the SAME order as

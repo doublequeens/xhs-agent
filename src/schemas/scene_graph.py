@@ -37,6 +37,8 @@ _WEIGHT_NAMES = {
 
 
 class TextStyle(StrictModel):
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
     font_role: Literal["display", "heading", "body", "caption"]
     font_size: float = Field(ge=12, le=180)
     line_height: float = Field(ge=1.0, le=2.0)
