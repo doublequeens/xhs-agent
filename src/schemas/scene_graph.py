@@ -50,7 +50,7 @@ class ImageElement(ElementBase):
     asset_ref: str = Field(min_length=1)
     fit: Literal["cover", "contain"]
     focal_point: tuple[float, float]
-    corner_radius: float = Field(ge=0, le=240)
+    corner_radius: float = Field(default=0, ge=0, le=240)
 
     @model_validator(mode="after")
     def validate_focal_point(self):

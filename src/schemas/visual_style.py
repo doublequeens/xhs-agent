@@ -4,6 +4,7 @@ from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     field_serializer,
@@ -41,7 +42,23 @@ def deep_thaw(value: Any) -> Any:
 
 
 Sha256 = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
-HexColor = Annotated[str, Field(pattern=r"^#[0-9A-Fa-f]{6}$")]
+
+
+def _strip_hex_alpha(value: Any) -> Any:
+    """Strip the alpha channel from 8-digit hex (#RRGGBBAA → #RRGGBB).
+
+    LLMs often emit 8-digit hex with alpha; the scene graph uses 6-digit only.
+    """
+    if isinstance(value, str) and len(value) == 9 and value.startswith("#"):
+        return value[:7]
+    return value
+
+
+HexColor = Annotated[
+    str,
+    BeforeValidator(_strip_hex_alpha),
+    Field(pattern=r"^#[0-9A-Fa-f]{6}$"),
+]
 
 TemplateFamily = Literal[
     "pink_red",
