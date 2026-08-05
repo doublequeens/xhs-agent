@@ -44,8 +44,11 @@ GEMINI_VISUAL_MODEL = "gemini-3.1-flash-image"
 # retry with backoff. ``genai_errors.APIError`` (and its ``ServerError``
 # subclass) carry a ``.code``; we also accept built-in network/timeout errors.
 _TRANSIENT_ERROR_CODES = frozenset({429, 500, 502, 503, 504})
-_MAX_API_ATTEMPTS = 3
-_RETRY_BASE_DELAY_SECONDS = 1.5
+# 5 attempts with exponential backoff (~50s) absorbs Gemini "high demand"
+# overload spikes, which the message itself says are usually temporary.
+_MAX_API_ATTEMPTS = 5
+_RETRY_BASE_DELAY_SECONDS = 2.0
+_RETRY_MAX_DELAY_SECONDS = 20.0
 # Indirection so tests can disable real sleeping.
 _retry_sleep = time.sleep
 
@@ -58,7 +61,7 @@ def _is_transient_error(exc: BaseException) -> bool:
 
 
 def _backoff_delay_seconds(attempt: int) -> float:
-    return min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), 8.0)
+    return min(_RETRY_BASE_DELAY_SECONDS * (2 ** (attempt - 1)), _RETRY_MAX_DELAY_SECONDS)
 
 
 class StructuredVisualResponseError(ValueError):
