@@ -580,6 +580,60 @@ def test_every_planned_element_produces_one_probe_in_scene_order(tmp_path):
     ]
 
 
+def test_icon_probe_does_not_flag_font_metric_overflow():
+    """A decorative icon's font glyph can report scroll dims exceeding its
+    client box without any visible ink being lost; that must not be treated as
+    overflow / ink clipping (render QA was falsely rejecting such icons)."""
+    frag = _fragment("frag-1", "文本")
+    icon = IconElement(
+        element_id="icon-1",
+        layer=1,
+        box=Box(x=500, y=700, width=80, height=80),
+        icon="check",
+        color="#1E5A2E",
+    )
+    page = PageScene(
+        page_id="page-1",
+        sequence=1,
+        background=PAGE_BACKGROUND,
+        elements=(icon,),
+    )
+    raw = {
+        "element_id": "icon-1",
+        "content_ref": None,
+        "asset_ref": None,
+        "x": 500.0,
+        "y": 700.0,
+        "width": 80.0,
+        "height": 80.0,
+        # Font metrics report the glyph overflowing the 80px client box.
+        "scroll_width": 120,
+        "scroll_height": 120,
+        "client_width": 80,
+        "client_height": 80,
+        "font_family": "",
+        "font_size": 0.0,
+        "line_height": 0.0,
+        "color": "rgb(30, 90, 46)",
+        "background_color": "rgba(0, 0, 0, 0)",
+        "natural_width": None,
+        "natural_height": None,
+        "rendered_image_width": None,
+        "rendered_image_height": None,
+    }
+
+    probes = build_element_probes(
+        raw_probes=[raw],
+        page=page,
+        fragments={"frag-1": frag},
+        assets={},
+        page_background=PAGE_BACKGROUND,
+    )
+
+    assert probes[0].overflow is False
+    assert probes[0].ink_clipped is False
+
+
 def test_probe_builder_ignores_raw_probes_for_unknown_element_ids(tmp_path):
     frag = _fragment("frag-1", "已知文本")
     element = _text_element("text-1", "frag-1")

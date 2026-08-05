@@ -442,12 +442,20 @@ def _build_one_probe(
     actual_box = _clamp_box(
         raw["x"], raw["y"], raw["width"], raw["height"]
     )
-    overflow = _overflows(
-        raw["scroll_width"],
-        raw["scroll_height"],
-        raw["client_width"],
-        raw["client_height"],
-    )
+    # Icon glyphs are rendered with font metrics whose scroll dimensions can
+    # exceed the box without any visible ink being lost (the glyph stays
+    # centered and decorative). Treating that as overflow/ink-clipping is a
+    # false positive that the reviser cannot fix, so icons never flag overflow.
+    kind = getattr(element, "kind", None)
+    if kind == "icon":
+        overflow = False
+    else:
+        overflow = _overflows(
+            raw["scroll_width"],
+            raw["scroll_height"],
+            raw["client_width"],
+            raw["client_height"],
+        )
     layout_clipped = _is_off_canvas(
         raw["x"], raw["y"], raw["width"], raw["height"]
     )
