@@ -46,3 +46,17 @@ def require_contract(
     if isinstance(raw, model_type):
         return raw
     return model_type.model_validate(raw)
+
+
+def required_directive_ids(direction_plan: Any) -> set[str]:
+    """IDs of required asset directives on a VisualDirectionPlan (or None)."""
+    if direction_plan is None:
+        return set()
+    directives = get_value(direction_plan, "asset_directives", ()) or ()
+    required: set[str] = set()
+    for directive in directives:
+        if get_value(directive, "required") is True:
+            directive_id = get_value(directive, "directive_id")
+            if directive_id:
+                required.add(str(directive_id))
+    return required

@@ -38,7 +38,7 @@ from src.schemas.decision import (
     R2Input,
     RevisionMeta,
 )
-from src.utils import _value
+from src.utils import required_directive_ids as _required_directive_ids, _value
 
 
 def invalidated_visual_artifacts() -> dict:
@@ -96,19 +96,6 @@ def _json_value(value: Any) -> Any:
 
 def _has_visible_text_edits(previous: dict, current: dict) -> bool:
     return has_visible_publish_copy_edits(previous, current)
-
-
-def _required_directive_ids(direction_plan: Any) -> set[str]:
-    if direction_plan is None:
-        return set()
-    directives = _value(direction_plan, "asset_directives", ()) or ()
-    required: set[str] = set()
-    for directive in directives:
-        if _value(directive, "required") is True:
-            directive_id = _value(directive, "directive_id")
-            if directive_id:
-                required.add(str(directive_id))
-    return required
 
 
 def _validate_approval_asset_gate(state: Mapping[str, Any]) -> None:

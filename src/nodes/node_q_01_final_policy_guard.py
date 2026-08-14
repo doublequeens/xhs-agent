@@ -21,7 +21,7 @@ from src.domain import find_policy_violations
 from src.schemas import AgentState
 from src.schemas.content_atoms import canonical_sha256
 from src.schemas.content_lock import ContentLock
-from src.utils import _value
+from src.utils import required_directive_ids as _required_directive_ids, _value
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s，。！？、；：)\]}>\"']+")
@@ -156,19 +156,6 @@ def _content_lock_issues(
             )
         ]
     return []
-
-
-def _required_directive_ids(direction_plan: Any) -> set[str]:
-    if direction_plan is None:
-        return set()
-    directives = _value(direction_plan, "asset_directives", ()) or ()
-    required: set[str] = set()
-    for directive in directives:
-        if _value(directive, "required") is True:
-            directive_id = _value(directive, "directive_id")
-            if directive_id:
-                required.add(str(directive_id))
-    return required
 
 
 def _attestation_issues(state: Mapping[str, Any]) -> list[dict]:
