@@ -9,7 +9,7 @@ from src.models._guard import invoke_with_hard_timeout
 import os, getpass
 
 class DeepSeekModel(BaseLLMModel):
-    def __init__(self, model_name: str = "deepseek-v4-flash", tools: list = None, temperature: float = 1.3, **kwargs):
+    def __init__(self, model_name: str = "deepseek-v4-pro", tools: list = None, temperature: float = 1.3, **kwargs):
         self._chat_model = None
         self.model_name = model_name
         self.api_key = os.getenv("DEEPSEEK_API_KEY")
