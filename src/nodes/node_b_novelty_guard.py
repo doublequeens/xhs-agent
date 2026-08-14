@@ -1,6 +1,6 @@
 import json
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.prompts import PromptTemplate
 from typing import List, Mapping
 

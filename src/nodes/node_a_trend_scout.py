@@ -1,5 +1,5 @@
 import json
-from langchain_core.prompts import PromptTemplate, ChatPromptTemplate, MessagesPlaceholder
+from langchain_core.prompts import PromptTemplate
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, TopicItem

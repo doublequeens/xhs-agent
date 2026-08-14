@@ -25,7 +25,6 @@ from src.schemas.scene_graph import (
     CarouselDesignPlan,
     IconElement,
     ImageElement,
-    LineElement,
     PageScene,
     ShapeElement,
     TextElement,
