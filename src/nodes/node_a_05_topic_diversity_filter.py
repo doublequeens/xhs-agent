@@ -5,12 +5,7 @@ from zoneinfo import ZoneInfo
 from memory.memory_manager import XHSMemoryManager
 from src.schemas.topic_signal import TopicGenerationTrace
 from src.topic_signals.diversity import filter_topic_candidates
-
-
-def _get_value(payload, key):
-    if isinstance(payload, dict):
-        return payload.get(key)
-    return getattr(payload, key, None)
+from src.utils import _get_value
 
 
 def topic_diversity_filter_node(state: dict) -> dict:

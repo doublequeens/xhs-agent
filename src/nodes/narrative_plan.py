@@ -1,12 +1,7 @@
 from collections.abc import Iterable
 
 from src.schemas.narrative import NarrativePlan
-
-
-def _get_value(payload, key):
-    if isinstance(payload, dict):
-        return payload.get(key)
-    return getattr(payload, key, None)
+from src.utils import _get_value
 
 
 def require_same_narrative_plan(actual, expected, *, stage: str) -> None:

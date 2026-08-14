@@ -7,12 +7,7 @@ from src.schemas import AgentState
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas import DecisionOutput
 from src.nodes.narrative_plan import find_narrative_plan
-
-
-def _get_value(payload, key, default=None):
-    if isinstance(payload, dict):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
+from src.utils import _get_value
 
 
 def _selected_content_payload(source, decision_input):

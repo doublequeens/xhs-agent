@@ -21,6 +21,7 @@ from src.domain import find_policy_violations
 from src.schemas import AgentState
 from src.schemas.content_atoms import canonical_sha256
 from src.schemas.content_lock import ContentLock
+from src.utils import _value
 
 
 _URL_PATTERN = re.compile(r"https?://[^\s，。！？、；：)\]}>\"']+")
@@ -39,14 +40,6 @@ _LOCK_TEXT_FIELDS = (
     "cover_copy",
     "content",
 )
-
-
-def _value(payload: Any, key: str, default: Any = None) -> Any:
-    if payload is None:
-        return default
-    if isinstance(payload, Mapping):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
 
 
 def _coerce_text(value: Any) -> str:

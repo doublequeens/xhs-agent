@@ -53,6 +53,7 @@ from src.schemas.scene_graph import CarouselDesignPlan
 from src.schemas.visual_critique import VisualCritique
 from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import Sha256, StrictModel
+from src.utils import _value
 
 
 # Root directory for exported publish packages. Formerly imported from the
@@ -168,14 +169,6 @@ def _model_or_dict(value: Any) -> Any:
 # ---------------------------------------------------------------------------
 # ContentLock + publish copy
 # ---------------------------------------------------------------------------
-
-
-def _value(payload: Any, key: str, default: Any = None) -> Any:
-    if payload is None:
-        return default
-    if isinstance(payload, Mapping):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
 
 
 def _content_lock_payload(package: Mapping[str, Any], atom_sha: str) -> dict[str, Any]:

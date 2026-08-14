@@ -38,6 +38,7 @@ from src.schemas.decision import (
     R2Input,
     RevisionMeta,
 )
+from src.utils import _value
 
 
 def invalidated_visual_artifacts() -> dict:
@@ -81,14 +82,6 @@ def route_after_human_review(
 ) -> Literal["r2_compliance", "asset_resolver", "design_reviser", "final_policy_guard"]:
     """Route purely on the ``review_route`` the node wrote into state."""
     return state["review_route"]
-
-
-def _value(payload: Any, key: str, default: Any = None) -> Any:
-    if payload is None:
-        return default
-    if isinstance(payload, Mapping):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
 
 
 def _json_value(value: Any) -> Any:

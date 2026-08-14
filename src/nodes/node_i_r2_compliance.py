@@ -12,15 +12,10 @@ from src.nodes.publish_patch import (
 )
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.nodes.narrative_plan import require_same_narrative_plan
+from src.utils import _get_value
 
 
 _R2_COMPLIANCE_MAX_RETRIES = 3
-
-
-def _get_value(payload, key, default=None):
-    if isinstance(payload, dict):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
 
 
 def _with_storyboard_visible_text(content_snapshot, storyboard_visible_text):

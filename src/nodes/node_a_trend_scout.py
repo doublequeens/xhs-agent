@@ -4,15 +4,10 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from src.models import get_model
 from src.schemas import AgentState, TopicItem
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
+from src.utils import _get_value
 
 
 _TREND_SCOUT_MAX_RETRIES = 3
-
-
-def _get_value(payload, key):
-    if isinstance(payload, dict):
-        return payload.get(key)
-    return getattr(payload, key, None)
 
 
 def _normalize_trend_risk_level(trend, domain_context, content_policy):
