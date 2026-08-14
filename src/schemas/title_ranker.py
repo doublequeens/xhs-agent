@@ -4,26 +4,6 @@ from typing import List, Optional
 from .narrative import NarrativePlan
 
 
-class TitleScore(BaseModel):
-    click_score: float
-    save_score: float
-    readability_score: float
-    authenticity_score: float
-    compliance_score: float
-    promise_alignment_score: float
-
-class TitleRankItem(BaseModel):
-    draft_id: str
-    title_id: str
-    total_score: float
-    scores: TitleScore
-    strategy_tags: List[str]
-    reason: str
-    best_title_for_this_draft: str
-    best_cover_copy_for_this_draft: str
-    title_risk_notes: List[str]
-    must_fix_if_selected: List[str]
-
 class Recommendation(BaseModel):
     rec_id: str
     instruction: str
@@ -52,10 +32,3 @@ class TitleWinner(BaseModel):
     core_pain: str
     narrative_plan: NarrativePlan
 
-class TitleRankResult(BaseModel):
-    ranking: List[TitleRankItem]
-    winner: TitleWinner
-
-class R1Input(BaseModel):
-    winner: TitleWinner
-    winner_scores: TitleScore

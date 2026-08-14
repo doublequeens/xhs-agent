@@ -38,12 +38,3 @@ class RenderQAResult(StrictModel):
         if not self.passed and not self.issues:
             raise ValueError("failing render QA requires at least one issue")
         return self
-
-
-class RenderQAIssue(BaseModel):
-    """Temporary import compatibility for the v2 render-QA node."""
-
-    rule_id: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
-    message: str
-    location_hint: str
-    frame_id: str | None = None
