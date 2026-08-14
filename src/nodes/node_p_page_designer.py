@@ -19,35 +19,19 @@ from src.visual_design.model_retry import (
     generate_validated,
 )
 from src.visual_design.style_registry import load_style_registry
+from src.utils import require_contract
 
 
 def _direction_plan(state: Mapping[str, Any]) -> VisualDirectionPlan:
-    raw = state.get("visual_direction_plan")
-    if raw is None:
-        raise ValueError("page_designer requires visual_direction_plan")
-    if isinstance(raw, VisualDirectionPlan):
-        return raw
-    if isinstance(raw, Mapping):
-        return VisualDirectionPlan.model_validate(raw)
-    return VisualDirectionPlan.model_validate(raw)
+    return require_contract(state, "visual_direction_plan", VisualDirectionPlan, "page_designer")
 
 
 def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
-    raw = state.get("content_atom_set")
-    if raw is None:
-        raise ValueError("page_designer requires content_atom_set")
-    if isinstance(raw, ContentAtomSet):
-        return raw
-    return ContentAtomSet.model_validate(raw)
+    return require_contract(state, "content_atom_set", ContentAtomSet, "page_designer")
 
 
 def _manifest(state: Mapping[str, Any]) -> AssetManifest:
-    raw_manifest = state.get("asset_manifest")
-    if raw_manifest is None:
-        raise ValueError("page_designer requires asset_manifest")
-    if isinstance(raw_manifest, AssetManifest):
-        return raw_manifest
-    return AssetManifest.model_validate(raw_manifest)
+    return require_contract(state, "asset_manifest", AssetManifest, "page_designer")
 
 
 def _unresolved_optional_pages(state: Mapping[str, Any]) -> tuple[str, ...]:

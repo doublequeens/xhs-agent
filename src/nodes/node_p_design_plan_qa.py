@@ -25,6 +25,7 @@ from src.schemas.visual_style import FamilyStyleProfile, TemplateFamily
 from src.visual_design.model_retry import VisualProductionInterrupted
 from src.visual_design.plan_qa import DesignPlanQAInputs, evaluate_design_plan
 from src.visual_design.style_registry import load_style_registry
+from src.utils import require_contract
 
 # The reviser loop may consume at most this many failed QA results before the
 # QA stage interrupts with checkpointable details. The reviser model typically
@@ -50,30 +51,15 @@ def _design_plan(state: Mapping[str, Any]) -> CarouselDesignPlan:
 
 
 def _direction_plan(state: Mapping[str, Any]) -> VisualDirectionPlan:
-    raw = state.get(_DIRECTION_KEY)
-    if raw is None:
-        raise ValueError("design_plan_qa requires visual_direction_plan")
-    if isinstance(raw, VisualDirectionPlan):
-        return raw
-    return VisualDirectionPlan.model_validate(raw)
+    return require_contract(state, _DIRECTION_KEY, VisualDirectionPlan, "design_plan_qa")
 
 
 def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
-    raw = state.get(_ATOM_SET_KEY)
-    if raw is None:
-        raise ValueError("design_plan_qa requires content_atom_set")
-    if isinstance(raw, ContentAtomSet):
-        return raw
-    return ContentAtomSet.model_validate(raw)
+    return require_contract(state, _ATOM_SET_KEY, ContentAtomSet, "design_plan_qa")
 
 
 def _manifest(state: Mapping[str, Any]) -> AssetManifest:
-    raw = state.get(_MANIFEST_KEY)
-    if raw is None:
-        raise ValueError("design_plan_qa requires asset_manifest")
-    if isinstance(raw, AssetManifest):
-        return raw
-    return AssetManifest.model_validate(raw)
+    return require_contract(state, _MANIFEST_KEY, AssetManifest, "design_plan_qa")
 
 
 def _family_profile(

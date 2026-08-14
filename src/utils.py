@@ -23,3 +23,26 @@ def get_value(payload: Any, key: str, default: Any = None) -> Any:
 # call sites keep working without a mass rename.
 _get_value = get_value
 _value = get_value
+
+
+def require_contract(
+    state: Any,
+    key: str,
+    model_type: type,
+    label: str,
+    *,
+    error_prefix: str = "requires",
+) -> Any:
+    """Fetch a typed v3 contract from state, validating dict payloads.
+
+    Shared by the visual-chain nodes and the final export; replaces the
+    per-node ``_direction_plan``/``_atom_set``/``_manifest``/``_coerce``
+    copies. ``model_validate`` reconstructs tuple fields from plain dicts
+    that round-tripped through ``model_dump(mode="json")``.
+    """
+    raw = state.get(key)
+    if raw is None:
+        raise ValueError(f"{label} {error_prefix} {key}")
+    if isinstance(raw, model_type):
+        return raw
+    return model_type.model_validate(raw)

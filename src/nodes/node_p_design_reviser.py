@@ -23,6 +23,7 @@ from src.visual_design.model_retry import (
     generate_validated,
 )
 from src.visual_design.style_registry import load_style_registry
+from src.utils import require_contract
 
 
 RevisionIssue = Union[DesignIssue, RenderIssue, VisualCritiqueIssue]
@@ -287,30 +288,15 @@ def _revision_request(
 
 
 def _direction_plan(state: Mapping[str, Any]) -> VisualDirectionPlan:
-    raw = state.get("visual_direction_plan")
-    if raw is None:
-        raise ValueError("design_reviser requires visual_direction_plan")
-    if isinstance(raw, VisualDirectionPlan):
-        return raw
-    return VisualDirectionPlan.model_validate(raw)
+    return require_contract(state, "visual_direction_plan", VisualDirectionPlan, "design_reviser")
 
 
 def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
-    raw = state.get("content_atom_set")
-    if raw is None:
-        raise ValueError("design_reviser requires content_atom_set")
-    if isinstance(raw, ContentAtomSet):
-        return raw
-    return ContentAtomSet.model_validate(raw)
+    return require_contract(state, "content_atom_set", ContentAtomSet, "design_reviser")
 
 
 def _manifest(state: Mapping[str, Any]) -> AssetManifest:
-    raw_manifest = state.get("asset_manifest")
-    if raw_manifest is None:
-        raise ValueError("design_reviser requires asset_manifest")
-    if isinstance(raw_manifest, AssetManifest):
-        return raw_manifest
-    return AssetManifest.model_validate(raw_manifest)
+    return require_contract(state, "asset_manifest", AssetManifest, "design_reviser")
 
 
 def _family_profile(
