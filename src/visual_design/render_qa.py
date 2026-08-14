@@ -38,6 +38,12 @@ from src.schemas.scene_graph import (
     PageScene,
     TextElement,
 )
+from src.visual_design.geometry import (
+    box_bottom as _box_bottom,
+    box_right as _box_right,
+    boxes_intersect as _boxes_intersect,
+)
+
 from src.schemas.visual_director import VisualDirectionPlan
 from src.visual_design.plan_qa import (
     CANVAS_HEIGHT,
@@ -91,25 +97,6 @@ def render_qa_exhausted(prior_failures: int) -> bool:
     return prior_failures + 1 >= MAX_RENDER_QA_FAILURES
 
 
-# --- geometry helpers (mirror plan_qa, kept local for self-containment) ----
-
-
-def _box_right(box: Box) -> float:
-    return box.x + box.width
-
-
-def _box_bottom(box: Box) -> float:
-    return box.y + box.height
-
-
-def _boxes_intersect(a: Box, b: Box) -> bool:
-    # Touching edges (<=) do not count as an overlap.
-    return not (
-        _box_right(a) <= b.x + _EPS
-        or _box_right(b) <= a.x + _EPS
-        or _box_bottom(a) <= b.y + _EPS
-        or _box_bottom(b) <= a.y + _EPS
-    )
 
 
 # --- file helpers ---------------------------------------------------------
