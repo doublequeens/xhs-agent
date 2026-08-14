@@ -30,3 +30,23 @@ def find_narrative_plan(
             f"topic_id={topic_id}, angle_id={angle_id}; found {len(matches)}"
         )
     return NarrativePlan.model_validate(_get_value(matches[0], "narrative_plan"))
+
+
+# Self-repair reminder for LLM retry loops: the enum constraints that
+# validation errors most often trip on. Shared by the nodes whose output
+# embeds a narrative_plan, so the listings can never drift apart.
+NARRATIVE_ENUM_REMINDER = (
+    "narrative_plan.narrative_form 只能是 "
+    "cognitive_correction / step_tutorial / checklist_collection / "
+    "comparison / diagnostic_qa / scenario_story / story_reversal / "
+    "reflective_editorial 之一；"
+    "narrative_plan.closing_mode 只能是 "
+    "none / boundary / reflection / focused_question / "
+    "action_prompt 之一；"
+    "narrative beats 的 kind 只能是 "
+    "hook / scene / tension / misconception / reveal / principle / "
+    "explanation / example / steps / checklist / comparison / "
+    "diagnostic / qa / quote / boundary / summary / action 之一，"
+    "不要把 closing_mode 的值写到 beat kind，也不要把其它字段的"
+    "枚举值串到 narrative_plan"
+)
