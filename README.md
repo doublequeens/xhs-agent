@@ -93,7 +93,7 @@ Human Review 是显式中断，统一在所有硬 QA 和审美复核完成后进
 
 ## 恢复中断任务
 
-LangGraph 状态保存在 `checkpoints.sqlite`，CLI 友好的任务索引保存在 `data/agent_runs.sqlite`。发生 request timeout、终端中断或人工审核暂停时，不要删除这些文件；重新运行 `main.py`，用 `--runs` 选择任务，或直接使用 `--resume <run_id-or-thread_id>`。每个动态视觉合同成功生成后立即 checkpoint；恢复时从最后一个完整且哈希一致的合同继续，不重复已完成的下载或图片生成事务。视觉阶段的 `VisualProductionInterrupted`（Design Plan QA 或 Render QA 3-strike）也允许 `--resume`。旧 v1/v2 checkpoint 会被 `src/editorial_carousel/legacy.py` 迁移到 `llm_scene_v3`（丢弃旧视觉状态，在 assembler 后重新进入）。
+LangGraph 状态保存在 `checkpoints.sqlite`，CLI 友好的任务索引保存在 `data/agent_runs.sqlite`。发生 request timeout、终端中断或人工审核暂停时，不要删除这些文件；重新运行 `main.py`，用 `--runs` 选择任务，或直接使用 `--resume <run_id-or-thread_id>`。每个动态视觉合同成功生成后立即 checkpoint；恢复时从最后一个完整且哈希一致的合同继续，不重复已完成的下载或图片生成事务。视觉阶段的 `VisualProductionInterrupted`（Design Plan QA 或 Render QA 连续失败达到上限）也允许 `--resume`。旧 v1/v2 checkpoint 会被 `src/editorial_carousel/legacy.py` 迁移到 `llm_scene_v3`（丢弃旧视觉状态，在 assembler 后重新进入）。
 
 ## 发布产物
 
@@ -187,6 +187,8 @@ python -m playwright install chromium
 - [持久化与素材安全](docs/architecture/persistence-and-assets.md)
 - `src/graph.py`：LangGraph 拓扑（`llm_scene_v3`）
 - `src/schemas/`：v3 内容、视觉、素材、scene graph、渲染和 ContentLock 合同
+- `src/utils.py`：跨节点共享的小工具（`get_value`/`require_contract`/`required_directive_ids`）
+- `src/visual_design/geometry.py`：Design Plan QA 与 Render QA 共用的 box 几何判定
 - `src/rendering/scene/`：通用 scene→HTML 编译器与字体解析
 - `src/asset_resolver/`：素材解析、provider 和安全生命周期
 - `src/visual_ai/`：Gemini 结构化视觉与图像生成适配器

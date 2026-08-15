@@ -41,4 +41,4 @@ outputs/publish/<date>-<domain>-<title>/
 
 ## 故障处理
 
-普通超时或人工审核暂停应通过 run registry 和 `--resume` 继续，不要删除 checkpoint、run registry 或素材恢复记录。视觉阶段的 `VisualProductionInterrupted`（Design Plan QA 或 Render QA 3-strike）也会 checkpoint，允许 `--resume`。遇到发布导出异常，先读取审计与 recovery 证据，再决定是否重试；不要直接覆盖已生成的 canonical 文件或把未审核外部素材复制进最终 images 目录。
+普通超时或人工审核暂停应通过 run registry 和 `--resume` 继续，不要删除 checkpoint、run registry 或素材恢复记录。视觉阶段的 `VisualProductionInterrupted`（Design Plan QA 或 Render QA 连续失败达到上限）也会 checkpoint，允许 `--resume`。遇到发布导出异常，先读取审计与 recovery 证据，再决定是否重试；不要直接覆盖已生成的 canonical 文件或把未审核外部素材复制进最终 images 目录。

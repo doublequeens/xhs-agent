@@ -22,6 +22,7 @@ from src.schemas.scene_graph import CarouselDesignPlan
 from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import FamilyStyleProfile, TemplateFamily
 from src.visual_design.style_registry import load_style_registry
+from src.utils import require_contract
 
 _DESIGN_PLAN_KEY = "carousel_design_plan"
 _DIRECTION_KEY = "visual_direction_plan"
@@ -41,30 +42,15 @@ def _design_plan(state: Mapping[str, Any]) -> CarouselDesignPlan:
 
 
 def _direction_plan(state: Mapping[str, Any]) -> VisualDirectionPlan:
-    raw = state.get(_DIRECTION_KEY)
-    if raw is None:
-        raise ValueError("generic_scene_renderer requires visual_direction_plan")
-    if isinstance(raw, VisualDirectionPlan):
-        return raw
-    return VisualDirectionPlan.model_validate(raw)
+    return require_contract(state, _DIRECTION_KEY, VisualDirectionPlan, "generic_scene_renderer")
 
 
 def _atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
-    raw = state.get(_ATOM_SET_KEY)
-    if raw is None:
-        raise ValueError("generic_scene_renderer requires content_atom_set")
-    if isinstance(raw, ContentAtomSet):
-        return raw
-    return ContentAtomSet.model_validate(raw)
+    return require_contract(state, _ATOM_SET_KEY, ContentAtomSet, "generic_scene_renderer")
 
 
 def _manifest(state: Mapping[str, Any]) -> AssetManifest:
-    raw = state.get(_MANIFEST_KEY)
-    if raw is None:
-        raise ValueError("generic_scene_renderer requires asset_manifest")
-    if isinstance(raw, AssetManifest):
-        return raw
-    return AssetManifest.model_validate(raw)
+    return require_contract(state, _MANIFEST_KEY, AssetManifest, "generic_scene_renderer")
 
 
 def _qa_result(state: Mapping[str, Any]) -> DesignPlanQAResult:

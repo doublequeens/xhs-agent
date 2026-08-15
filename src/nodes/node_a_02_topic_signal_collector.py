@@ -10,15 +10,10 @@ from src.topic_signals.weather import (
     ShanghaiGeneralizedWeatherProvider,
     weather_signal_from_snapshot,
 )
+from src.utils import _get_value
 
 
 CALENDAR_PATH = Path("config/trend_calendar.yml")
-
-
-def _get_value(payload, key):
-    if isinstance(payload, dict):
-        return payload.get(key)
-    return getattr(payload, key, None)
 
 
 def topic_signal_collector_node(state: AgentState) -> dict:

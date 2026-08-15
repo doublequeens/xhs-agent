@@ -17,14 +17,7 @@ from src.schemas.agent_state import AgentState
 from src.schemas.content_atoms import canonical_sha256
 from src.schemas.scene_graph import TextElement
 from typing import Any, Optional
-
-
-def _get_value(payload, key, default=None):
-    if payload is None:
-        return default
-    if isinstance(payload, dict):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
+from src.utils import _get_value
 
 
 def _require_review_approval(state: AgentState) -> None:

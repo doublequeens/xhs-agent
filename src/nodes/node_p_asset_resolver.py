@@ -4,12 +4,7 @@ from pathlib import Path
 
 from src.asset_resolver import resolve_asset_directives
 from src.schemas import AgentState, VisualDirectionPlan
-
-
-def _value(payload, key, default=None):
-    if isinstance(payload, dict):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
+from src.utils import _value
 
 
 def asset_resolver_node(

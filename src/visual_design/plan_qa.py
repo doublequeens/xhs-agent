@@ -25,11 +25,16 @@ from src.schemas.scene_graph import (
     CarouselDesignPlan,
     IconElement,
     ImageElement,
-    LineElement,
     PageScene,
     ShapeElement,
     TextElement,
 )
+from src.visual_design.geometry import (
+    box_bottom as _box_bottom,
+    box_right as _box_right,
+    boxes_intersect as _boxes_intersect,
+)
+
 from src.schemas.visual_director import VisualDirectionPlan
 from src.schemas.visual_style import FamilyStyleProfile
 
@@ -135,22 +140,6 @@ def contrast_ratio(foreground: str, background: str) -> float:
 
 # --- geometry helpers -----------------------------------------------------
 
-def _box_right(box: Box) -> float:
-    return box.x + box.width
-
-
-def _box_bottom(box: Box) -> float:
-    return box.y + box.height
-
-
-def _boxes_intersect(a: Box, b: Box) -> bool:
-    # Touching edges (<=) do not count as an overlap.
-    return not (
-        _box_right(a) <= b.x + _EPS
-        or _box_right(b) <= a.x + _EPS
-        or _box_bottom(a) <= b.y + _EPS
-        or _box_bottom(b) <= a.y + _EPS
-    )
 
 
 def _box_bearing_elements(page: PageScene) -> tuple:

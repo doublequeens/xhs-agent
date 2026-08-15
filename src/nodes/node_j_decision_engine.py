@@ -7,29 +7,7 @@ from src.schemas import AgentState
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
 from src.schemas import DecisionOutput
 from src.nodes.narrative_plan import find_narrative_plan
-
-
-def _get_value(payload, key, default=None):
-    if isinstance(payload, dict):
-        return payload.get(key, default)
-    return getattr(payload, key, default)
-
-
-def _select_topic_angle_ids(source, decision_input):
-    if source in {"TITLE_RANKER", "R1_REFLECTOR"}:
-        topic_id = _get_value(decision_input, "topic_id")
-        angle_id = _get_value(decision_input, "angle_id")
-    elif source == "R2_COMPLIANCE":
-        content_snapshot = _get_value(decision_input, "content_snapshot")
-        topic_id = _get_value(content_snapshot, "topic_id")
-        angle_id = _get_value(content_snapshot, "angle_id")
-    else:
-        raise ValueError(f"Unsupported decision source: {source}")
-
-    if not topic_id or not angle_id:
-        raise ValueError(f"Missing topic_id or angle_id for source {source}")
-
-    return topic_id, angle_id
+from src.utils import _get_value
 
 
 def _selected_content_payload(source, decision_input):

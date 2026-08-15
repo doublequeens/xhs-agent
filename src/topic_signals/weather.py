@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
-from typing import Literal, Protocol
+from typing import Literal
 
 from src.schemas.topic_signal import TopicSignal
 
@@ -20,10 +20,6 @@ class WeatherSnapshot:
     temperature_low: int | None
     humidity_bucket: str
     source: str
-
-class WeatherProvider(Protocol):
-    def get_weather(self, city: str, today: date) -> WeatherSnapshot: ...
-
 
 class ShanghaiGeneralizedWeatherProvider:
     """Offline seasonal weather approximation for low-risk topic framing."""

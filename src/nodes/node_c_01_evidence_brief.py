@@ -11,12 +11,7 @@ from src.evidence import (
     is_allowlisted_source_url,
 )
 from src.schemas import AgentState
-
-
-def _get_value(payload: Any, key: str) -> Any:
-    if isinstance(payload, Mapping):
-        return payload.get(key)
-    return getattr(payload, key, None)
+from src.utils import _get_value
 
 
 def _topic_index(trends: list[Any]) -> dict[str, Any]:

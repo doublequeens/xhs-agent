@@ -22,6 +22,7 @@ from src.visual_design.model_retry import (
     generate_validated,
 )
 from src.visual_design.style_registry import load_style_registry
+from src.utils import require_contract
 
 
 _SEMANTIC_BOUNDARY_CHARACTERS = frozenset(
@@ -124,12 +125,7 @@ class VisualDirectionDraft(StrictModel):
 
 
 def _required_atom_set(state: Mapping[str, Any]) -> ContentAtomSet:
-    raw_atom_set = state.get("content_atom_set")
-    if raw_atom_set is None:
-        raise ValueError("visual_director requires content_atom_set")
-    if isinstance(raw_atom_set, ContentAtomSet):
-        return raw_atom_set
-    return ContentAtomSet.model_validate(raw_atom_set)
+    return require_contract(state, "content_atom_set", ContentAtomSet, "visual_director")
 
 
 def _required_content_contract(state: Mapping[str, Any]) -> ContentContract:

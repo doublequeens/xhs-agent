@@ -9,12 +9,7 @@ from src.nodes.publish_patch import (
     publish_patch_for_assembler,
 )
 from src.prompts.composer import compose_prompt_for_state, serialize_prompt_value
-
-
-def _get_value(payload, key):
-    if isinstance(payload, dict):
-        return payload.get(key)
-    return getattr(payload, key, None)
+from src.utils import _get_value
 
 
 def _selected_content_contract(state: AgentState, topic_id: str) -> dict:

@@ -5,6 +5,7 @@ from typing import Any, Mapping
 
 from src.domain import get_domain_profile
 from src.domain.models import DomainProfile
+from src.utils import _get_value
 
 PROMPTS_DIR = Path(__file__).resolve().parent
 BASE_DIR = PROMPTS_DIR / "base"
@@ -40,12 +41,6 @@ def _read_prompt_file(path: Path) -> str:
 
 def _serialize_profile(profile: DomainProfile) -> str:
     return json.dumps(profile.model_dump(mode="json"), ensure_ascii=False, indent=2, sort_keys=True)
-
-
-def _get_value(payload: Any, key: str) -> Any:
-    if isinstance(payload, Mapping):
-        return payload.get(key)
-    return getattr(payload, key, None)
 
 
 def _normalize_payload(payload: Any) -> Any:
