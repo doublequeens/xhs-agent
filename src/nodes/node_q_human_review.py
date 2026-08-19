@@ -20,9 +20,12 @@ There is no asset-specific interrupt before this unified gate.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from enum import Enum
+from pathlib import Path
 from typing import Any, Literal
 
 from langgraph.types import interrupt
+from pydantic.networks import AnyUrl
 
 from src.nodes.publish_patch import (
     enforce_publish_package_title_length,
@@ -87,10 +90,16 @@ def route_after_human_review(
 def _json_value(value: Any) -> Any:
     if value is None:
         return None
+    if isinstance(value, Enum):
+        return _json_value(value.value)
     if hasattr(value, "model_dump"):
-        return value.model_dump(mode="json")
+        return _json_value(value.model_dump(mode="json"))
     if isinstance(value, Mapping):
-        return dict(value)
+        return {str(key): _json_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return [_json_value(item) for item in value]
+    if isinstance(value, (AnyUrl, Path)):
+        return str(value)
     return value
 
 
@@ -117,7 +126,7 @@ def _matched_policy_rules(state: Mapping[str, Any]) -> list[Any]:
     r2_output = state.get("r2_output")
     audit = _value(r2_output, "compliance_audit", {})
     rules = list(_value(audit, "matched_policy_rules", []) or [])
-    return [_json_value(rule) for rule in rules]
+    return rules
 
 
 def _serialized_evidence_items(state: Mapping[str, Any]) -> list[dict]:
@@ -128,7 +137,7 @@ def _serialized_evidence_items(state: Mapping[str, Any]) -> list[dict]:
             payload = _json_value(item)
             if not isinstance(payload, Mapping):
                 payload = {"value": payload}
-            serialized.append({"topic_id": topic_id, **dict(payload)})
+            serialized.append({**dict(payload), "topic_id": topic_id})
     return serialized
 
 
@@ -185,10 +194,10 @@ def _visual_direction_summary(direction_plan: Any) -> dict | None:
 def _review_artifacts(state: Mapping[str, Any], publish_package: dict) -> dict:
     return {
         "publish_package": publish_package,
-        "final_policy_issues": list(state.get("final_policy_issues") or []),
-        "risk_context": _build_risk_context(state, publish_package),
-        "matched_policy_rules": _matched_policy_rules(state),
-        "evidence_items": _serialized_evidence_items(state),
+        "final_policy_issues": _json_value(state.get("final_policy_issues") or []),
+        "risk_context": _json_value(_build_risk_context(state, publish_package)),
+        "matched_policy_rules": _json_value(_matched_policy_rules(state)),
+        "evidence_items": _json_value(_serialized_evidence_items(state)),
         "render_manifest": _json_value(state.get("render_manifest")),
         "asset_manifest": _json_value(state.get("asset_manifest")),
         "visual_critique": _json_value(state.get("visual_critique")),

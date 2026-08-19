@@ -1,9 +1,28 @@
+import json
+from enum import Enum
 from types import SimpleNamespace
+
+from pydantic import BaseModel, HttpUrl
 
 from src.evidence import EvidenceBrief, EvidenceItem
 from src.nodes import node_q_human_review as review_module
 from src.schemas.decision import HashTagInput
 from src.schemas.narrative import NarrativePlan
+
+
+class _ReviewPolicyStatus(str, Enum):
+    BLOCKED = "blocked"
+
+
+class _NestedReviewMetadata(BaseModel):
+    source_url: HttpUrl
+    status: _ReviewPolicyStatus
+    tags: list[str]
+
+
+class _MatchedPolicyRule(BaseModel):
+    rule_id: str
+    details: _NestedReviewMetadata
 
 
 def _assembler_state(*, focus_keyword: str, focus_keyword_cli_present: bool) -> dict:
@@ -269,3 +288,94 @@ def test_publish_review_includes_risk_rules_and_serialized_evidence(monkeypatch)
             "verified": False,
         }
     ]
+
+
+def test_publish_review_metadata_is_deep_json_ready_and_read_only(monkeypatch):
+    captured = {}
+
+    def fake_interrupt(payload):
+        captured["payload"] = payload
+        return {"approved": True}
+
+    monkeypatch.setattr(review_module, "interrupt", fake_interrupt)
+    issue_details = _NestedReviewMetadata(
+        source_url="https://example.com/issue",
+        status=_ReviewPolicyStatus.BLOCKED,
+        tags=["issue-state"],
+    )
+    risk_details = {
+        "source_url": issue_details.source_url,
+        "status": _ReviewPolicyStatus.BLOCKED,
+        "tags": ["risk-state"],
+    }
+    evidence_metadata = {
+        "source_url": issue_details.source_url,
+        "status": _ReviewPolicyStatus.BLOCKED,
+        "tags": ["evidence-state"],
+    }
+    matched_rule_details = _NestedReviewMetadata(
+        source_url="https://example.com/rule",
+        status=_ReviewPolicyStatus.BLOCKED,
+        tags=["rule-state"],
+    )
+    matched_rule = _MatchedPolicyRule(
+        rule_id="medical_treatment",
+        details=matched_rule_details,
+    )
+    final_policy_issues = [{"rule_id": "guaranteed_outcome", "details": issue_details}]
+    evidence_item = {
+        "topic_id": "inner-topic-id",
+        "claim": "规律作息与睡眠健康相关。",
+        "summary": "公共健康机构建议保持规律作息。",
+        "source_title": "Sleep guidance",
+        "source_url": issue_details.source_url,
+        "source_type": "professional",
+        "metadata": evidence_metadata,
+    }
+
+    review_module.human_review_node(
+        {
+            "publish_package": {
+                "title": "作息调整清单",
+                "domain": "wellness",
+                "subdomain": "sleep",
+                "content_intent": "checklist",
+                "risk_level": "medium",
+                "risk_flags": [risk_details],
+                "profile_version": "wellness-v1",
+            },
+            "review_round": 0,
+            "final_policy_issues": final_policy_issues,
+            "r2_output": SimpleNamespace(
+                compliance_audit=SimpleNamespace(
+                    matched_policy_rules=[matched_rule]
+                )
+            ),
+            "evidence_briefs": {
+                "outer-topic-id": SimpleNamespace(items=[evidence_item])
+            },
+        }
+    )
+
+    payload = captured["payload"]
+    metadata = {
+        field: payload[field]
+        for field in (
+            "final_policy_issues",
+            "risk_context",
+            "matched_policy_rules",
+            "evidence_items",
+        )
+    }
+    json.dumps(metadata)
+    assert payload["evidence_items"][0]["topic_id"] == "outer-topic-id"
+
+    payload["final_policy_issues"][0]["details"]["tags"].append("payload")
+    payload["risk_context"]["risk_flags"][0]["tags"].append("payload")
+    payload["matched_policy_rules"][0]["details"]["tags"].append("payload")
+    payload["evidence_items"][0]["metadata"]["tags"].append("payload")
+
+    assert issue_details.tags == ["issue-state"]
+    assert risk_details["tags"] == ["risk-state"]
+    assert matched_rule_details.tags == ["rule-state"]
+    assert evidence_metadata["tags"] == ["evidence-state"]
