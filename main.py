@@ -18,6 +18,11 @@ from src.editorial_carousel.legacy import (
     persisted_checkpoint_nodes,
 )
 from src.editorial_carousel.publish_profile import resolve_publish_package_profile
+from src.editorial_carousel.workflow_selection import (
+    build_graph_for_context,
+    build_graph_for_run,
+    select_workflow_context,
+)
 from src.graph import (
     DEFAULT_CHECKPOINT_PATH,
     create_graph,
@@ -29,11 +34,42 @@ from src.publishing.artifacts import (
     PublishArtifacts,
     _export_verified_state_snapshot,
 )
-from src.run_registry import AgentRun, RunRegistry, RunRegistryError, exception_summary, format_run
+from src.run_registry import (
+    AgentRun,
+    EXECUTION_TO_LEGACY_STATUS,
+    LEGACY_STATUS_TO_EXECUTION,
+    RunRegistry,
+    RunRegistryError,
+    V4_RESUMABLE_EXECUTION_STATES,
+    WorkflowVersion,
+    exception_summary,
+    format_run,
+)
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 RUN_REGISTRY_PATH = Path("data/agent_runs.sqlite")
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
+
+
+def _create_v3_graph():
+    """Build the existing production graph without changing its public symbol."""
+
+    return create_graph()
+
+
+def _create_v4_graph():
+    """Import the v4 graph only after a v4 run has been selected."""
+
+    from src.graph_v4 import create_graph_v4
+
+    return create_graph_v4()
+
+
+def _graph_factories():
+    return {
+        "llm_scene_v3": _create_v3_graph,
+        "llm_scene_v4": _create_v4_graph,
+    }
 
 
 def build_thread_id(explicit_id: str | None, now: datetime | None = None) -> str:
@@ -125,6 +161,31 @@ def load_run_state(graph, config: dict, initial_state: dict):
             current_state = graph.get_state(config)
     run_input = None if current_state.values else initial_state
     return current_state, run_input
+
+
+def load_versioned_run(
+    graph,
+    config: dict | None = None,
+    initial_state: dict | None = None,
+    *,
+    workflow_version: WorkflowVersion = "llm_scene_v3",
+):
+    """Load a checkpoint using the selected workflow's recovery contract.
+
+    v3 keeps the historical domain/editorial hydration path intact. A v4
+    checkpoint is authoritative graph state and is therefore read directly,
+    without any v3 migration or state injection.
+    """
+
+    effective_config = {} if config is None else config
+    effective_initial_state = {} if initial_state is None else initial_state
+    if workflow_version == "llm_scene_v3":
+        return load_run_state(graph, effective_config, effective_initial_state)
+    if workflow_version == "llm_scene_v4":
+        current_state = graph.get_state(effective_config)
+        run_input = None if current_state.values else effective_initial_state
+        return current_state, run_input
+    raise RunRegistryError(f"unsupported workflow version: {workflow_version!r}")
 
 
 def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -250,6 +311,95 @@ def extract_run_updates(values: dict, last_node: str | None = None) -> dict[str,
     return {name: value for name, value in fields.items() if isinstance(value, str) and value}
 
 
+def _update_run_lifecycle(
+    registry: RunRegistry,
+    thread_id: str,
+    *,
+    status: str | None = None,
+    execution_state: str | None = None,
+    **updates,
+):
+    """Write lifecycle state through the authoritative versioned field."""
+
+    run = registry.get_by_thread_id(thread_id)
+    if run is None:
+        raise RunRegistryError(f"unknown thread ID: {thread_id}")
+    if run.workflow_version == "llm_scene_v4":
+        if execution_state is None:
+            if status is None:
+                raise ValueError("v4 lifecycle update requires execution_state")
+            execution_state = LEGACY_STATUS_TO_EXECUTION[status]
+        return registry.update_run(
+            thread_id,
+            execution_state=execution_state,
+            **updates,
+        )
+    if status is None:
+        if execution_state is None:
+            raise ValueError("v3 lifecycle update requires status")
+        status = EXECUTION_TO_LEGACY_STATUS[execution_state]
+    return registry.update_run(thread_id, status=status, **updates)
+
+
+def _prepare_run_for_resume(registry: RunRegistry, run: AgentRun) -> AgentRun:
+    """Validate and mark an explicitly selected run without losing v4 state."""
+
+    if run.workflow_version == "llm_scene_v4":
+        if run.execution_state not in V4_RESUMABLE_EXECUTION_STATES:
+            raise RunRegistryError(
+                f"v4 run {run.thread_id!r} in state {run.execution_state} cannot be resumed"
+            )
+        state = (
+            "WAITING_HUMAN"
+            if run.execution_state == "WAITING_HUMAN"
+            else "RUNNING"
+        )
+        return _update_run_lifecycle(
+            registry,
+            run.thread_id,
+            execution_state=state,
+            error_summary=None,
+        )
+    return _update_run_lifecycle(
+        registry,
+        run.thread_id,
+        status="running",
+        error_summary=None,
+    )
+
+
+def _mark_loaded_run_running(
+    registry: RunRegistry,
+    thread_id: str,
+    **updates,
+) -> AgentRun:
+    """Mark a loaded run active while retaining a pending human review."""
+
+    run = registry.get_by_thread_id(thread_id)
+    if run is None:
+        raise RunRegistryError(f"unknown thread ID: {thread_id}")
+    if run.workflow_version == "llm_scene_v4":
+        state = (
+            "WAITING_HUMAN"
+            if run.execution_state == "WAITING_HUMAN"
+            else "RUNNING"
+        )
+        return _update_run_lifecycle(
+            registry,
+            thread_id,
+            execution_state=state,
+            error_summary=None,
+            **updates,
+        )
+    return _update_run_lifecycle(
+        registry,
+        thread_id,
+        status="running",
+        error_summary=None,
+        **updates,
+    )
+
+
 def _print_run_choices(runs: list[AgentRun], output_fn=print) -> None:
     output_fn("\n可恢复的任务：")
     for run in runs:
@@ -263,6 +413,9 @@ def select_run(registry: RunRegistry, args: argparse.Namespace, input_fn=input, 
         registry.create_run(thread_id, args.focus_keyword)
         return thread_id, True
     if args.thread_id:
+        existing = registry.get_by_thread_id(args.thread_id)
+        if existing is not None:
+            _prepare_run_for_resume(registry, existing)
         return args.thread_id, False
     if args.resume not in (None, ""):
         run = registry.get_by_thread_id(args.resume)
@@ -270,7 +423,7 @@ def select_run(registry: RunRegistry, args: argparse.Namespace, input_fn=input, 
             run = registry.get_by_run_id(int(args.resume))
         if run is None:
             raise RunRegistryError(f"找不到要恢复的任务：{args.resume}")
-        registry.update_run(run.thread_id, status="running", error_summary=None)
+        _prepare_run_for_resume(registry, run)
         return run.thread_id, False
     runs = registry.list_resumable()
     if not runs:
@@ -289,7 +442,7 @@ def select_run(registry: RunRegistry, args: argparse.Namespace, input_fn=input, 
         if choice.isdigit():
             run = registry.get_by_run_id(int(choice))
             if run in runs:
-                registry.update_run(run.thread_id, status="running", error_summary=None)
+                _prepare_run_for_resume(registry, run)
                 return run.thread_id, False
         output_fn("无效选择，请输入列表中的任务编号、n 或 q。")
 
@@ -572,7 +725,8 @@ def sync_run_from_graph(
 ) -> None:
     state = graph.get_state(config)
     values = getattr(state, "values", None) or {}
-    registry.update_run(
+    _update_run_lifecycle(
+        registry,
         thread_id,
         status="running",
         error_summary=None,
@@ -601,10 +755,19 @@ def stream_graph_until_stop(
                     if not isinstance(payload, dict):
                         raise ValueError("Interrupt payload must be a dict.")
                     if registry is not None and thread_id is not None:
-                        registry.update_run(thread_id, status="awaiting_review")
+                        _update_run_lifecycle(
+                            registry,
+                            thread_id,
+                            status="awaiting_review",
+                        )
                     next_input = Command(resume=collect_interrupt_response(payload))
                     if registry is not None and thread_id is not None:
-                        registry.update_run(thread_id, status="running", error_summary=None)
+                        _update_run_lifecycle(
+                            registry,
+                            thread_id,
+                            status="running",
+                            error_summary=None,
+                        )
                     break
 
                 print(f"Finished processing node: {key}")
@@ -657,13 +820,33 @@ def main():
         if args.provider:
             set_default_provider(args.provider)
 
+        persisted_run = registry.get_by_thread_id(thread_id)
+        workflow_context = select_workflow_context(
+            registry,
+            thread_id,
+            requested_version=None,
+            run_mode=None,
+        )
+        if persisted_run is None:
+            graph = build_graph_for_context(
+                workflow_context,
+                v3_factory=_create_v3_graph,
+                v4_factory=_create_v4_graph,
+            )
+        else:
+            graph = build_graph_for_run(persisted_run, _graph_factories())
+
         database = XHSMemoryManager("data/xhs_memory.db")
         database.init_db("memory/schema.sql")
-        graph = create_graph()
         initial_state = create_initial_state(args)
         initial_state["run_output_dir"] = _resolve_run_output_dir(thread_id)
         config = build_run_config(thread_id)
-        current_state, run_input = load_run_state(graph, config, initial_state)
+        current_state, run_input = load_versioned_run(
+            graph,
+            config,
+            initial_state,
+            workflow_version=workflow_context.workflow_version,
+        )
 
         if args.thread_id:
             backfill_legacy_run(registry, thread_id, current_state)
@@ -674,10 +857,9 @@ def main():
                 registry.create_run(thread_id, args.focus_keyword)
             print("No existing state found, starting a new run...")
         else:
-            registry.update_run(
+            _mark_loaded_run_running(
+                registry,
                 thread_id,
-                status="running",
-                error_summary=None,
                 **extract_run_updates(current_state.values),
             )
             print("Found existing state, resuming from the latest checkpoint...")
@@ -689,7 +871,9 @@ def main():
             # window without ever force-passing the hard gates. A real compiled
             # graph always has update_state; the guard keeps the CLI testable
             # with minimal fakes.
-            if hasattr(graph, "update_state"):
+            if workflow_context.workflow_version == "llm_scene_v3" and hasattr(
+                graph, "update_state"
+            ):
                 graph.update_state(
                     config,
                     {"design_plan_qa_failures": 0, "render_qa_failures": 0},
@@ -697,9 +881,18 @@ def main():
 
         if current_state.values and not current_state.next:
             if export_completed_publish_package(graph, config):
-                registry.update_run(thread_id, status="completed", error_summary=None)
+                _update_run_lifecycle(
+                    registry,
+                    thread_id,
+                    status="completed",
+                    error_summary=None,
+                )
             else:
-                registry.update_run(thread_id, status="awaiting_review")
+                _update_run_lifecycle(
+                    registry,
+                    thread_id,
+                    status="awaiting_review",
+                )
             return
 
         exported = stream_graph_until_stop(
@@ -710,18 +903,47 @@ def main():
             thread_id=thread_id,
         )
         if exported:
-            registry.update_run(thread_id, status="completed", error_summary=None)
+            _update_run_lifecycle(
+                registry,
+                thread_id,
+                status="completed",
+                error_summary=None,
+            )
         else:
-            registry.update_run(thread_id, status="awaiting_review")
+            _update_run_lifecycle(
+                registry,
+                thread_id,
+                status="awaiting_review",
+            )
     except Exception as exc:
         if thread_id is not None:
             try:
-                if registry.get_by_thread_id(thread_id) is not None:
-                    registry.update_run(
-                        thread_id,
-                        status="interrupted",
-                        error_summary=exception_summary(exc),
-                    )
+                run = registry.get_by_thread_id(thread_id)
+                if run is not None:
+                    if run.workflow_version == "llm_scene_v4":
+                        # A pending review remains pending when input or a
+                        # review-bound operation fails. Other v4 errors are
+                        # retryable unless the selected graph is unavailable.
+                        if run.execution_state != "WAITING_HUMAN":
+                            failure_state = (
+                                "FAILED_FATAL"
+                                if isinstance(exc, ModuleNotFoundError)
+                                and "src.graph_v4" in str(exc)
+                                else "INTERRUPTED_RETRYABLE"
+                            )
+                            _update_run_lifecycle(
+                                registry,
+                                thread_id,
+                                execution_state=failure_state,
+                                error_summary=exception_summary(exc),
+                            )
+                    else:
+                        _update_run_lifecycle(
+                            registry,
+                            thread_id,
+                            status="interrupted",
+                            error_summary=exception_summary(exc),
+                        )
             except RunRegistryError as registry_exc:
                 print(f"本地运行注册表错误：{registry_exc}", file=sys.stderr)
         print(f"Error running agent: {exc}")

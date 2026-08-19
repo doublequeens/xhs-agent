@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
 import pytest
@@ -373,3 +375,45 @@ def test_modern_v3_checkpoint_is_not_re_migrated(monkeypatch):
     assert run_input is None
     assert current.values["content_atom_set"] == {"atoms": [{"atom_id": "title-001"}]}
     assert current.next == ("visual_director",)
+
+
+def test_v4_checkpoint_bypasses_all_legacy_hydration(monkeypatch):
+    state = SimpleNamespace(
+        values={
+            "editorial_workflow_version": "llm_scene_v4",
+            "legacy_editorial_checkpoint": True,
+            "publish_package": {"title": "v4"},
+        },
+        next=("v4_visual_director",),
+    )
+    calls = {"get_state": 0, "update_state": 0}
+
+    class FakeGraph:
+        def get_state(self, _config):
+            calls["get_state"] += 1
+            return state
+
+        def update_state(self, *_args, **_kwargs):
+            calls["update_state"] += 1
+
+    monkeypatch.setattr(
+        main_module,
+        "hydrate_legacy_editorial_state",
+        lambda *_args, **_kwargs: pytest.fail("v4 must not enter legacy hydration"),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "hydrate_legacy_domain_state",
+        lambda *_args, **_kwargs: pytest.fail("v4 must not hydrate legacy domain state"),
+    )
+
+    current, run_input = main_module.load_versioned_run(
+        FakeGraph(),
+        {"configurable": {"thread_id": "v4"}},
+        {"v4_initial": True},
+        workflow_version="llm_scene_v4",
+    )
+
+    assert current is state
+    assert run_input is None
+    assert calls == {"get_state": 1, "update_state": 0}

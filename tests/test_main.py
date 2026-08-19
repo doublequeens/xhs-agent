@@ -11,7 +11,7 @@ from PIL import Image
 from langgraph.types import StateSnapshot
 
 from src.domain import DomainName
-from src.run_registry import RunRegistry
+from src.run_registry import RunRegistry, RunRegistryError
 
 
 def _load_main(monkeypatch):
@@ -1121,6 +1121,53 @@ def test_resume_accepts_run_id_or_full_thread_id(monkeypatch, tmp_path):
     assert main.select_run(registry, main.parse_cli_args(["--resume", run.thread_id])) == (run.thread_id, False)
 
 
+@pytest.mark.parametrize("execution_state", ["FAILED_FATAL", "INTERRUPTED_EXHAUSTED", "COMPLETED"])
+def test_v4_explicit_resume_rejects_non_resumable_execution_states(
+    monkeypatch, tmp_path, execution_state
+):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    run = registry.create_run(
+        f"v4-{execution_state}",
+        workflow_version="llm_scene_v4",
+        execution_state=execution_state,
+    )
+
+    with pytest.raises(RunRegistryError, match="cannot be resumed"):
+        main.select_run(registry, main.parse_cli_args(["--resume", run.thread_id]))
+
+    assert registry.get_by_thread_id(run.thread_id).execution_state == execution_state
+
+
+def test_v4_resume_uses_execution_state_and_preserves_waiting_human(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "agent_runs.sqlite")
+    retry = registry.create_run(
+        "v4-retry",
+        workflow_version="llm_scene_v4",
+        execution_state="INTERRUPTED_RETRYABLE",
+    )
+    waiting = registry.create_run(
+        "v4-waiting",
+        workflow_version="llm_scene_v4",
+        execution_state="WAITING_HUMAN",
+    )
+
+    assert main.select_run(registry, main.parse_cli_args(["--resume", retry.thread_id])) == (
+        retry.thread_id,
+        False,
+    )
+    assert registry.get_by_thread_id(retry.thread_id).execution_state == "RUNNING"
+
+    assert main.select_run(registry, main.parse_cli_args(["--resume", waiting.thread_id])) == (
+        waiting.thread_id,
+        False,
+    )
+    waiting_after = registry.get_by_thread_id(waiting.thread_id)
+    assert waiting_after.execution_state == "WAITING_HUMAN"
+    assert waiting_after.status == "awaiting_review"
+
+
 def test_resume_prefers_exact_numeric_thread_id_over_run_id_collision(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     registry = RunRegistry(tmp_path / "agent_runs.sqlite")
@@ -1355,6 +1402,8 @@ def test_terminal_legacy_checkpoint_awaits_review_when_safe_export_fails(monkeyp
 
     registry = RunRegistry(path)
     assert registry.get_by_thread_id("terminal-legacy").status == "awaiting_review"
+    assert registry.get_by_thread_id("terminal-legacy").workflow_version == "llm_scene_v3"
+    assert registry.get_by_thread_id("terminal-legacy").run_mode == "production"
     registry.close()
 
 
