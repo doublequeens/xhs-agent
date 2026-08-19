@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import io
 import json
@@ -74,6 +75,32 @@ _ATTEMPT_METADATA_KEYS = frozenset(
     {"timestamp", "started_at", "deadline_at", "attempt_number", "retry_count"}
 )
 _LOCAL_PATH_KEYS = frozenset({"image_paths", "absolute_path", "local_root", "result_root"})
+_PATH_BEARING_KEYS = frozenset(
+    {
+        "path",
+        "paths",
+        "root",
+        "roots",
+        "dir",
+        "dirs",
+        "directory",
+        "directories",
+        "file",
+        "files",
+        "local",
+        "local_path",
+        "local_paths",
+        "file_path",
+        "file_paths",
+        "directory_path",
+        "directory_paths",
+        "root_path",
+        "root_paths",
+        "asset_path",
+        "asset_paths",
+        *_LOCAL_PATH_KEYS,
+    }
+)
 _IMAGE_VALIDATION_CONTRACT_VERSION = "llm_scene_v4.image_validation_contract.v1"
 IMAGE_VALIDATION_CONTRACT_SHA256 = hashlib.sha256(
     _IMAGE_VALIDATION_CONTRACT_VERSION.encode("utf-8")
@@ -146,7 +173,12 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def _safe_fingerprint_value(value: Any, *, key: str | None = None) -> Any:
+def _safe_fingerprint_value(
+    value: Any,
+    *,
+    key: str | None = None,
+    path_context: bool = False,
+) -> Any:
     if key is not None and key.lower().replace("-", "_") in _SECRET_KEYS:
         return "<redacted>"
     if isinstance(value, Path):
@@ -163,17 +195,27 @@ def _safe_fingerprint_value(value: Any, *, key: str | None = None) -> Any:
                 continue
             if normalized_key in _ATTEMPT_METADATA_KEYS:
                 continue
-            if normalized_key in _LOCAL_PATH_KEYS:
-                continue
-            result[key_text] = _safe_fingerprint_value(item, key=key_text)
+            result[key_text] = _safe_fingerprint_value(
+                item,
+                key=key_text,
+                path_context=path_context or normalized_key in _PATH_BEARING_KEYS,
+            )
         return result
     if isinstance(value, (list, tuple)):
-        return [_safe_fingerprint_value(item) for item in value]
+        return [
+            _safe_fingerprint_value(item, key=key, path_context=path_context)
+            for item in value
+        ]
     if isinstance(value, str):
         # A local path can occur under an arbitrary application-specific key;
-        # key-name filtering alone is therefore insufficient.  ``ntpath``
-        # covers Windows paths when fingerprints are produced on another OS.
-        if os.path.isabs(value) or ntpath.isabs(value):
+        # only path-bearing metadata keys may opt into path normalization.
+        # ``ntpath`` covers Windows paths when fingerprints are produced on
+        # another OS.  Slash-prefixed prompt/content text remains semantic
+        # request data.
+        normalized_key = key.lower().replace("-", "_") if key is not None else ""
+        if (path_context or normalized_key in _PATH_BEARING_KEYS) and (
+            os.path.isabs(value) or ntpath.isabs(value)
+        ):
             return "<local-path>"
         return value
     if isinstance(value, (int, float, bool)) or value is None:
@@ -859,8 +901,7 @@ class VisualLLMGateway:
         suffix = ".json" if kind == "structured" else _extension_for_mime(data)
         relative = Path("v4") / kind / f"{attempt_id}{suffix}"
         digest = hashlib.sha256(data).hexdigest()
-        root_fd: int | None = None
-        v4_fd: int | None = None
+        owned_fds: dict[int, str] = {}
         kind_fd: int | None = None
         temporary_name: str | None = None
         primary_error: BaseException | None = None
@@ -871,12 +912,16 @@ class VisualLLMGateway:
             # descriptors.  This keeps v4/kind containment intact even when a
             # pre-existing path component is hostile.
             root_fd = self._open_result_root(root)
+            owned_fds[root_fd] = "result-root"
             v4_fd = self._open_result_directory(root_fd, "v4")
+            owned_fds[v4_fd] = "result-v4"
             kind_fd = self._open_result_directory(v4_fd, kind)
+            owned_fds[kind_fd] = f"result-{kind}"
 
             temporary_name = f".result-{uuid4().hex}.tmp"
             temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | self._no_follow_flag() | self._close_on_exec_flag()
             temp_fd = os.open(temporary_name, temp_flags, 0o600, dir_fd=kind_fd)
+            owned_fds[temp_fd] = "result-temporary"
             try:
                 offset = 0
                 while offset < len(data):
@@ -886,7 +931,9 @@ class VisualLLMGateway:
                     offset += written
                 os.fsync(temp_fd)
             finally:
-                os.close(temp_fd)
+                close_errors = self._close_owned_fd(owned_fds, temp_fd)
+                if close_errors:
+                    raise RuntimeError("result temporary cleanup failed") from None
 
             os.replace(
                 temporary_name,
@@ -910,12 +957,8 @@ class VisualLLMGateway:
                     pass
                 except BaseException as exc:
                     cleanup_errors.append(exc)
-            for descriptor in (kind_fd, v4_fd, root_fd):
-                if descriptor is not None:
-                    try:
-                        os.close(descriptor)
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
+            for descriptor in tuple(owned_fds):
+                cleanup_errors.extend(self._close_owned_fd(owned_fds, descriptor))
         if primary_error is not None or cleanup_errors:
             # Do not expose OS exception text, absolute paths, or symlink
             # targets through the parent-side error boundary.
@@ -939,6 +982,56 @@ class VisualLLMGateway:
         return os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | cls._no_follow_flag() | cls._close_on_exec_flag()
 
     @classmethod
+    def _close_fd_bounded(
+        cls,
+        descriptor: int,
+        *,
+        max_attempts: int = 2,
+    ) -> tuple[list[BaseException], bool]:
+        """Close one owned fd, checking EBADF before a bounded second try."""
+
+        errors: list[BaseException] = []
+        for _attempt in range(max_attempts):
+            try:
+                os.close(descriptor)
+                return errors, False
+            except BaseException as exc:
+                errors.append(exc)
+                try:
+                    os.fstat(descriptor)
+                except OSError as state_error:
+                    if state_error.errno == errno.EBADF:
+                        return errors, False
+                    errors.append(state_error)
+                    return errors, True
+                except BaseException as state_error:
+                    errors.append(state_error)
+                    return errors, True
+        try:
+            os.fstat(descriptor)
+        except OSError as state_error:
+            if state_error.errno == errno.EBADF:
+                return errors, False
+            errors.append(state_error)
+        except BaseException as state_error:
+            errors.append(state_error)
+        return errors, True
+
+    @classmethod
+    def _close_owned_fd(cls, owned_fds: dict[int, str], descriptor: int) -> list[BaseException]:
+        errors, still_open = cls._close_fd_bounded(descriptor)
+        if not still_open:
+            owned_fds.pop(descriptor, None)
+        return errors
+
+    @classmethod
+    def _cleanup_owned_fds(cls, owned_fds: dict[int, str]) -> list[BaseException]:
+        errors: list[BaseException] = []
+        for descriptor in tuple(owned_fds):
+            errors.extend(cls._close_owned_fd(owned_fds, descriptor))
+        return errors
+
+    @classmethod
     def _open_result_root(cls, root: Path) -> int:
         """Create/open an absolute root by descriptor-relative components."""
 
@@ -946,8 +1039,10 @@ class VisualLLMGateway:
         components = absolute.parts
         if not components or components[0] != os.sep:
             raise OSError("result root must be absolute")
-        descriptor = os.open(os.sep, cls._directory_open_flags())
+        owned_fds: dict[int, str] = {}
         try:
+            descriptor = os.open(os.sep, cls._directory_open_flags())
+            owned_fds[descriptor] = "result-root-parent"
             for component in components[1:]:
                 try:
                     os.mkdir(component, 0o700, dir_fd=descriptor)
@@ -958,15 +1053,18 @@ class VisualLLMGateway:
                     cls._directory_open_flags(),
                     dir_fd=descriptor,
                 )
-                os.close(descriptor)
+                owned_fds[next_descriptor] = "result-root-component"
+                close_errors = cls._close_owned_fd(owned_fds, descriptor)
+                if close_errors:
+                    raise RuntimeError("result root descriptor cleanup failed") from None
                 descriptor = next_descriptor
+            owned_fds.pop(descriptor, None)
             return descriptor
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-            raise
+            cleanup_errors = cls._cleanup_owned_fds(owned_fds)
+            if cleanup_errors:
+                raise RuntimeError("result root descriptor cleanup failed") from None
+            raise RuntimeError("result root open failed") from None
 
     @classmethod
     def _open_result_directory(cls, parent_fd: int, name: str) -> int:
@@ -980,11 +1078,11 @@ class VisualLLMGateway:
                 raise OSError("result path is not a directory")
             return descriptor
         except BaseException:
-            try:
-                os.close(descriptor)
-            except OSError:
-                pass
-            raise
+            owned_fds = {descriptor: "result-directory"}
+            cleanup_errors = cls._cleanup_owned_fds(owned_fds)
+            if cleanup_errors:
+                raise RuntimeError("result directory cleanup failed") from None
+            raise RuntimeError("result path is not a directory") from None
 
     @staticmethod
     def _value_from_bytes(data: bytes, response_model: type[T]) -> T:

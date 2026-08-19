@@ -7,7 +7,7 @@ import base64
 import json
 from dataclasses import dataclass
 from multiprocessing.connection import Connection
-from typing import Any
+from typing import Any, Callable
 
 from src.visual_ai.protocols import InvocationRequest, ProviderConfig
 
@@ -193,11 +193,22 @@ def _child_entry(
 class V4Worker:
     """One fresh spawned process for each provider attempt."""
 
-    def __init__(self, *, start_method: str = "spawn", cleanup_grace_seconds: float = 0.2) -> None:
+    def __init__(
+        self,
+        *,
+        start_method: str = "spawn",
+        cleanup_grace_seconds: float = 0.2,
+        process_factory: Callable[..., Any] | None = None,
+    ) -> None:
         if cleanup_grace_seconds < 0:
             raise ValueError("cleanup_grace_seconds must be non-negative")
+        if process_factory is not None and not callable(process_factory):
+            raise TypeError("process_factory must be callable")
         self.start_method = start_method
         self.cleanup_grace_seconds = cleanup_grace_seconds
+        # This is a parent-side seam for failure injection and process
+        # instrumentation. Production uses the context's Process directly.
+        self.process_factory = process_factory
 
     def invoke_once(
         self,
@@ -218,7 +229,8 @@ class V4Worker:
         try:
             context = multiprocessing.get_context(self.start_method)
             parent_connection, child_connection = context.Pipe(duplex=False)
-            process = context.Process(
+            process_factory = self.process_factory or context.Process
+            process = process_factory(
                 target=_child_entry,
                 args=(child_connection, provider_config, request),
                 daemon=False,
@@ -241,6 +253,12 @@ class V4Worker:
             result = deserialize_envelope(data)
         except BaseException as exc:
             primary_error = exc
+            # ``Process.start`` can raise after the OS has created the child
+            # and assigned a pid.  In that partial-start window ``started``
+            # must transfer cleanup ownership when observable process state
+            # says a child may exist.
+            if process is not None and not started and self._process_may_exist(process):
+                started = True
         finally:
             if process is not None and started and not reaped:
                 try:
@@ -281,6 +299,26 @@ class V4Worker:
     @staticmethod
     def _close_connection(connection: Connection) -> None:
         connection.close()
+
+    @staticmethod
+    def _process_may_exist(process: Any) -> bool:
+        try:
+            if process.is_alive():
+                return True
+        except BaseException:
+            # A never-started multiprocessing.Process commonly raises here;
+            # pid/_popen below are the remaining observable ownership clues.
+            pass
+        try:
+            if getattr(process, "_popen", None) is not None:
+                return True
+        except BaseException:
+            pass
+        try:
+            pid = getattr(process, "pid", None)
+            return isinstance(pid, int) and pid > 0
+        except BaseException:
+            return False
 
     def _reap(self, process: multiprocessing.Process, *, timed_out: bool) -> None:
         cleanup_errors: list[BaseException] = []

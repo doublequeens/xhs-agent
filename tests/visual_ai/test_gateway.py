@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import os
 import time
 from pathlib import Path
 from typing import Any
@@ -259,6 +260,16 @@ def test_fingerprint_excludes_endpoint_local_roots_and_redacts_endpoint_parts(
     assert "private" not in repr(config_one.sanitized())
 
 
+def test_fingerprint_keeps_slash_prefixed_prompt_and_content_semantics() -> None:
+    config = ProviderConfig(provider="fake", model="model-a")
+    first = make_request(payload={"prompt": "/skin/serum", "content": "/alpha"})
+    second = make_request(payload={"prompt": "/skin/cream", "content": "/beta"})
+
+    assert request_fingerprint(first, config, Answer) != request_fingerprint(
+        second, config, Answer
+    )
+
+
 def test_request_secret_fields_are_rejected_before_attempt_started(tmp_path: Path) -> None:
     gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
     request = make_request(payload={"prompt": "safe", "nested": {"token": "secret"}})
@@ -278,7 +289,7 @@ def test_fingerprint_binds_image_bytes_and_excludes_local_attempt_metadata(
         operation_kind="image_evaluation",
         payload={
             "prompt": "inspect",
-            "nested": {"arbitrary_local": str(tmp_path / "first")},
+            "nested": {"path": str(tmp_path / "first")},
             "attempt_number": 1,
             "timestamp": "2026-08-20T00:00:00Z",
             "image_mime_types": ("image/png",),
@@ -286,7 +297,7 @@ def test_fingerprint_binds_image_bytes_and_excludes_local_attempt_metadata(
     ).with_payload(
         {
             "prompt": "inspect",
-            "nested": {"arbitrary_local": str(tmp_path / "first")},
+            "nested": {"path": str(tmp_path / "first")},
             "attempt_number": 1,
             "timestamp": "2026-08-20T00:00:00Z",
             "image_mime_types": ("image/png",),
@@ -296,7 +307,7 @@ def test_fingerprint_binds_image_bytes_and_excludes_local_attempt_metadata(
     second = first.with_payload(
         {
             "prompt": "inspect",
-            "nested": {"arbitrary_local": str(tmp_path / "second")},
+            "nested": {"path": str(tmp_path / "second")},
             "attempt_number": 99,
             "timestamp": "2026-08-21T00:00:00Z",
             "image_mime_types": ("image/png",),
@@ -464,6 +475,120 @@ def test_result_store_rejects_symlinked_result_directory_without_outside_write(
     ledger.close()
 
 
+def test_result_root_traversal_close_failure_is_bounded_and_redacted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.visual_ai.gateway as gateway_module
+
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    real_open = os.open
+    real_close = os.close
+    real_fstat = os.fstat
+    root_fd: int | None = None
+    close_failures = 0
+
+    def capture_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal root_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == os.sep and root_fd is None:
+            root_fd = descriptor
+        return descriptor
+
+    def fail_root_close(descriptor: int) -> None:
+        nonlocal close_failures
+        if descriptor == root_fd and close_failures < 2:
+            close_failures += 1
+            raise OSError("injected root close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(gateway_module.os, "open", capture_open)
+    monkeypatch.setattr(gateway_module.os, "close", fail_root_close)
+    with pytest.raises(VisualInvocationError, match="result_store"):
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert root_fd is not None
+    with pytest.raises(OSError):
+        real_fstat(root_fd)
+    ledger.close()
+
+
+def test_result_temp_fd_close_failure_is_bounded_without_leak(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.visual_ai.gateway as gateway_module
+
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    real_open = os.open
+    real_close = os.close
+    real_fstat = os.fstat
+    temp_fd: int | None = None
+    failed = False
+
+    def capture_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal temp_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if isinstance(path, str) and path.startswith(".result-"):
+            temp_fd = descriptor
+        return descriptor
+
+    def fail_temp_close(descriptor: int) -> None:
+        nonlocal failed
+        if descriptor == temp_fd and not failed:
+            failed = True
+            raise OSError("injected temporary close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(gateway_module.os, "open", capture_open)
+    monkeypatch.setattr(gateway_module.os, "close", fail_temp_close)
+    with pytest.raises(VisualInvocationError, match="result_store"):
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert temp_fd is not None
+    with pytest.raises(OSError):
+        real_fstat(temp_fd)
+    ledger.close()
+
+
+def test_result_kind_final_close_failure_is_bounded_without_outside_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.visual_ai.gateway as gateway_module
+
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    real_open = os.open
+    real_close = os.close
+    real_fstat = os.fstat
+    kind_fd: int | None = None
+    failed = False
+
+    def capture_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal kind_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == "structured" and kind_fd is None:
+            kind_fd = descriptor
+        return descriptor
+
+    def fail_kind_close(descriptor: int) -> None:
+        nonlocal failed
+        if descriptor == kind_fd and not failed:
+            failed = True
+            raise OSError("injected final close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(gateway_module.os, "open", capture_open)
+    monkeypatch.setattr(gateway_module.os, "close", fail_kind_close)
+    with pytest.raises(VisualInvocationError, match="result_store"):
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert kind_fd is not None
+    with pytest.raises(OSError):
+        real_fstat(kind_fd)
+    ledger.close()
+
+
 def test_attempt_order_is_start_worker_persist_finish(tmp_path: Path) -> None:
     events: list[str] = []
     worker = QueueWorker(success())
@@ -559,6 +684,33 @@ def test_success_finish_failure_is_reconciled_without_duplicate_terminal(
     latest = ledger.latest()
     assert latest is not None and latest.status == "SUCCESS"
     assert len([event for event in ledger.events() if type(event).__name__ == "AttemptFinished"]) == 1
+    ledger.close()
+
+
+def test_post_commit_success_ack_loss_is_accepted_without_second_finish(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    original_finish = ledger.finish
+    calls = 0
+
+    def append_then_lose_ack(attempt_id: str, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        event = original_finish(attempt_id, **kwargs)
+        if kwargs.get("status") == "SUCCESS":
+            raise RuntimeError("ack lost after durable append SECRET")
+        return event
+
+    monkeypatch.setattr(ledger, "finish", append_then_lose_ack)
+    result = gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert result.value == "ok"
+    assert calls == 1
+    terminal_events = [event for event in ledger.events() if type(event).__name__ == "AttemptFinished"]
+    assert len(terminal_events) == 1
+    assert ledger.latest() is not None and ledger.latest().status == "SUCCESS"
     ledger.close()
 
 

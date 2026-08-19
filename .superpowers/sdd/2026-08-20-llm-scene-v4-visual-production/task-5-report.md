@@ -122,3 +122,66 @@ warnings from the real child-process cleanup proofs. The other two are the
 pre-existing pytest temporary-directory cleanup warnings emitted while
 `tests/metrics_collector/test_launchd.py::test_plist_mode_is_0600_under_restrictive_umask`
 is collected/cleaned.
+
+## Fix round 2: scoped re-review after ece82f3
+
+### TDD evidence
+
+The round-2 regression tests were added before the corresponding fixes. The
+required red command was:
+
+```text
+pytest -q tests/visual_ai/test_gateway.py tests/visual_ai/test_v4_worker.py tests/visual_ai/test_factory.py tests/visual_ai/test_gemini_adapter.py tests/models/test_guard.py
+```
+
+It failed as expected with:
+
+```text
+4 failed, 84 passed, 2 warnings in 5.69s
+```
+
+The failures covered slash-prefixed prompt fingerprint collisions, missing
+spawned-child PID proofs, SIGTERM-ignored cleanup, and the missing partial
+`Process.start()` failure-injection seam.
+
+### Changes
+
+- Kept production worker launch on `spawn`, added a parent-side process factory
+  seam, and made partial-start ownership observable through `pid`, `_popen`,
+  and `is_alive()`. A child created before `start()` raises now follows the
+  same bounded terminate/join then kill/join path and cannot return or retry
+  while live. The tests launch real spawned blocked children, record PIDs,
+  prove they disappear, cover the kill fallback, and verify normal IPC/handle
+  cleanup without fork deprecation warnings.
+- Restricted absolute-string fingerprint redaction to explicit path-bearing
+  metadata keys while continuing to exclude `Path` values. Slash-prefixed
+  prompt/content strings therefore remain semantic fingerprint input, while
+  distinct local path metadata remains reusable across roots.
+- Made result-store descriptor ownership explicit from open through cleanup.
+  Root traversal, temporary files, and final kind directories use bounded
+  close retries with `fstat`/`EBADF` state checks before any second close;
+  cleanup failures remain contextual `result_store` failures and do not leak
+  or redirect writes outside the contained root.
+- Added a post-commit/lost-ack ledger proof: a durable SUCCESS observed after
+  the first `finish` error is honored without a second append, preserving one
+  terminal event.
+
+### GREEN verification
+
+```text
+pytest -q tests/visual_ai/test_gateway.py tests/visual_ai/test_v4_worker.py tests/visual_ai/test_factory.py tests/visual_ai/test_gemini_adapter.py tests/models/test_guard.py
+91 passed, 2 warnings in 5.39s
+
+pytest -q
+1450 passed, 2 skipped, 2 warnings in 32.30s
+
+python -m compileall -q src main.py
+git diff --check
+```
+
+The two live Gemini tests remained skipped by their documented opt-in guard.
+The two remaining warnings are the pre-existing pytest temporary-directory
+cleanup warnings emitted by
+`tests/metrics_collector/test_launchd.py::test_plist_mode_is_0600_under_restrictive_umask`;
+the round-2 spawned-worker proofs no longer use `fork` and add no fork
+deprecation warnings.
