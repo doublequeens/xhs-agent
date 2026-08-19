@@ -9,6 +9,7 @@ from src.visual_ai.factory import (
     configured_visual_model,
     get_image_generation_provider,
     get_structured_visual_model,
+    get_v4_visual_llm_gateway,
 )
 from src.visual_ai.gemini import (
     GeminiImageGenerationProvider,
@@ -79,3 +80,25 @@ def test_factory_creates_developer_api_client_with_api_key_only(
     get_structured_visual_model()
 
     assert calls == [{"api_key": "test-key"}]
+
+
+def test_v4_factory_is_lazy_and_does_not_construct_a_parent_google_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GEMINI_VISUAL_MODEL", raising=False)
+    calls: list[dict[str, Any]] = []
+
+    def forbidden_client(**kwargs: Any) -> FakeClient:
+        calls.append(kwargs)
+        raise AssertionError("v4 factory must construct its client in the worker")
+
+    monkeypatch.setattr("src.visual_ai.factory.genai.Client", forbidden_client)
+    gateway = get_v4_visual_llm_gateway(
+        ledger_path=tmp_path / "attempts.sqlite",
+        result_root=tmp_path / "results",
+    )
+
+    assert gateway.provider_config.model == DEFAULT_VISUAL_MODEL
+    assert calls == []

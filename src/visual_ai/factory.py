@@ -12,8 +12,11 @@ from src.visual_ai.gemini import (
 )
 from src.visual_ai.protocols import (
     ImageGenerationProvider,
+    InvocationPolicy,
+    ProviderConfig,
     StructuredVisualModel,
 )
+from src.visual_runtime.attempt_ledger import AttemptLedger
 
 
 DEFAULT_VISUAL_MODEL = GEMINI_VISUAL_MODEL
@@ -50,3 +53,50 @@ def get_image_generation_provider(
         client=client if client is not None else _developer_api_client(),
         model=model,
     )
+
+
+def get_v4_visual_llm_gateway(
+    *,
+    ledger: AttemptLedger | None = None,
+    ledger_path: str | os.PathLike[str] | None = None,
+    result_root: str | os.PathLike[str] | None = None,
+    provider_config: ProviderConfig | None = None,
+    worker: Any | None = None,
+    default_policy: InvocationPolicy | None = None,
+):
+    """Construct the v4 gateway without creating a Google client in parent."""
+
+    # Validate model before reading the key.  The key is secret configuration
+    # passed only to the spawned worker; this function never calls genai.Client.
+    model = configured_visual_model()
+    config = provider_config or ProviderConfig(
+        provider="gemini",
+        model=model,
+        api_key=os.environ.get("GEMINI_API_KEY", ""),
+    )
+    if config.model != model:
+        raise ValueError(f"v4 provider model must be {model}")
+    if ledger is None:
+        from pathlib import Path
+
+        path = ledger_path or Path("data") / "agent_runs.sqlite"
+        root = result_root or Path("data") / "visual_v4_results"
+        ledger = AttemptLedger(path, result_root=root)
+    elif result_root is not None and ledger.result_root is None:
+        raise ValueError("result_root must be configured on the supplied ledger")
+    from src.visual_ai.gateway import VisualLLMGateway
+
+    gateway = VisualLLMGateway(
+        worker=worker,
+        ledger=ledger,
+        provider_config=config,
+        default_policy=default_policy,
+    )
+    return gateway
+
+
+get_v4_gateway = get_v4_visual_llm_gateway
+get_visual_llm_gateway_v4 = get_v4_visual_llm_gateway
+get_v4_visual_gateway = get_v4_visual_llm_gateway
+get_v4_llm_gateway = get_v4_visual_llm_gateway
+get_visual_gateway_v4 = get_v4_visual_llm_gateway
