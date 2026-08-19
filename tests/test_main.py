@@ -1489,6 +1489,111 @@ def test_review_interrupt_remains_awaiting_review_when_input_stops(monkeypatch, 
     assert registry.get_by_thread_id(run.thread_id).status == "awaiting_review"
 
 
+def test_v4_terminal_export_false_is_retryable_with_actionable_error(
+    monkeypatch, tmp_path
+):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run(
+        "v4-terminal-export-false",
+        workflow_version="llm_scene_v4",
+        execution_state="RUNNING",
+    )
+    registry.close()
+    state = SimpleNamespace(
+        values={
+            "domain_context": {"domain": "beauty"},
+            "publish_package": {"title": "终态导出失败"},
+        },
+        next=(),
+    )
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return state
+
+    class MemoryManager:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def init_db(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(main, "_create_v4_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "XHSMemoryManager", MemoryManager)
+    monkeypatch.setattr(main, "export_completed_publish_package", lambda *_args: False)
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", run.thread_id])
+
+    main.main()
+
+    check = RunRegistry(path)
+    failed = check.get_by_thread_id(run.thread_id)
+    assert failed.execution_state == "INTERRUPTED_RETRYABLE"
+    assert failed.error_summary == main.PUBLISH_EXPORT_RETRYABLE_ERROR
+    check.close()
+
+
+@pytest.mark.parametrize("workflow_version", ["llm_scene_v3", "llm_scene_v4"])
+def test_stream_completion_export_false_uses_version_aware_lifecycle(
+    monkeypatch, tmp_path, workflow_version
+):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run(
+        f"{workflow_version}-stream-export-false",
+        workflow_version=workflow_version,
+        execution_state="RUNNING",
+    )
+    registry.close()
+    state = SimpleNamespace(
+        values={
+            "domain_context": {"domain": "beauty"},
+            "publish_package": {"title": "流式导出失败"},
+        },
+        next=("next-node",),
+    )
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return state
+
+        def stream(self, *_args, **_kwargs):
+            if False:
+                yield {}
+
+    class MemoryManager:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def init_db(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    if workflow_version == "llm_scene_v4":
+        monkeypatch.setattr(main, "_create_v4_graph", lambda: FakeGraph())
+    else:
+        monkeypatch.setattr(main, "create_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "XHSMemoryManager", MemoryManager)
+    monkeypatch.setattr(main, "export_completed_publish_package", lambda *_args: False)
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", run.thread_id])
+
+    main.main()
+
+    check = RunRegistry(path)
+    finished = check.get_by_thread_id(run.thread_id)
+    if workflow_version == "llm_scene_v4":
+        assert finished.execution_state == "INTERRUPTED_RETRYABLE"
+        assert finished.error_summary == main.PUBLISH_EXPORT_RETRYABLE_ERROR
+    else:
+        assert finished.status == "awaiting_review"
+        assert finished.execution_state == "WAITING_HUMAN"
+        assert finished.error_summary is None
+    check.close()
+
+
 def test_legacy_thread_id_backfills_only_real_checkpoints(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     registry = RunRegistry(tmp_path / "agent_runs.sqlite")

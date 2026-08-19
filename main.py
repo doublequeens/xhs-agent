@@ -48,6 +48,9 @@ from src.run_registry import (
 
 SUPPORTED_DOMAINS = get_args(DomainName)
 RUN_REGISTRY_PATH = Path("data/agent_runs.sqlite")
+PUBLISH_EXPORT_RETRYABLE_ERROR = (
+    "Publish package export failed validation; inspect the checkpoint and retry."
+)
 _LEGACY_DOMAIN_HYDRATION_WARNED = False
 
 
@@ -406,6 +409,29 @@ def _mark_loaded_run_running(
         status="running",
         error_summary=None,
         **updates,
+    )
+
+
+def _record_publish_export_failure(
+    registry: RunRegistry,
+    thread_id: str,
+) -> AgentRun:
+    """Persist a failed terminal export without creating a false v4 review wait."""
+
+    run = registry.get_by_thread_id(thread_id)
+    if run is None:
+        raise RunRegistryError(f"unknown thread ID: {thread_id}")
+    if run.workflow_version == "llm_scene_v4":
+        return _update_run_lifecycle(
+            registry,
+            thread_id,
+            execution_state="INTERRUPTED_RETRYABLE",
+            error_summary=PUBLISH_EXPORT_RETRYABLE_ERROR,
+        )
+    return _update_run_lifecycle(
+        registry,
+        thread_id,
+        status="awaiting_review",
     )
 
 
@@ -908,11 +934,7 @@ def main():
                     error_summary=None,
                 )
             else:
-                _update_run_lifecycle(
-                    registry,
-                    thread_id,
-                    status="awaiting_review",
-                )
+                _record_publish_export_failure(registry, thread_id)
             return
 
         exported = stream_graph_until_stop(
@@ -931,11 +953,7 @@ def main():
                 error_summary=None,
             )
         else:
-            _update_run_lifecycle(
-                registry,
-                thread_id,
-                status="awaiting_review",
-            )
+            _record_publish_export_failure(registry, thread_id)
     except Exception as exc:
         if thread_id is not None:
             try:
