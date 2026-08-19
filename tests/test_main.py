@@ -1335,6 +1335,134 @@ def test_main_marks_timeout_interrupted_with_truncated_reason(monkeypatch, tmp_p
     check.close()
 
 
+def test_v4_waiting_resume_marks_missing_selected_graph_fatal(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run(
+        "v4-waiting-missing-graph",
+        workflow_version="llm_scene_v4",
+        execution_state="WAITING_HUMAN",
+    )
+    registry.close()
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(
+        main,
+        "_create_v4_graph",
+        lambda: (_ for _ in ()).throw(
+            ModuleNotFoundError("No module named 'src.graph_v4'")
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", run.thread_id])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 1
+    check = RunRegistry(path)
+    failed = check.get_by_thread_id(run.thread_id)
+    assert failed.execution_state == "FAILED_FATAL"
+    assert failed.error_summary == "ModuleNotFoundError: No module named 'src.graph_v4'"
+    check.close()
+
+
+def test_v4_waiting_resume_marks_checkpoint_bootstrap_failure_retryable(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run(
+        "v4-waiting-bootstrap-error",
+        workflow_version="llm_scene_v4",
+        execution_state="WAITING_HUMAN",
+    )
+    registry.close()
+
+    class FailingMemoryManager:
+        def __init__(self, *_args, **_kwargs):
+            raise RuntimeError("memory bootstrap failed")
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(main, "_create_v4_graph", lambda: object())
+    monkeypatch.setattr(main, "XHSMemoryManager", FailingMemoryManager)
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", run.thread_id])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 1
+    check = RunRegistry(path)
+    failed = check.get_by_thread_id(run.thread_id)
+    assert failed.execution_state == "INTERRUPTED_RETRYABLE"
+    assert failed.error_summary == "RuntimeError: memory bootstrap failed"
+    check.close()
+
+
+def test_v4_waiting_resume_preserves_state_only_for_review_input_failure(
+    monkeypatch, tmp_path
+):
+    main = _load_main(monkeypatch)
+    path = tmp_path / "agent_runs.sqlite"
+    registry = RunRegistry(path)
+    run = registry.create_run(
+        "v4-waiting-review-input",
+        workflow_version="llm_scene_v4",
+        execution_state="WAITING_HUMAN",
+    )
+    registry.close()
+
+    state = SimpleNamespace(
+        values={
+            "publish_package": {"title": "待审核"},
+            "review_status": None,
+        },
+        next=("human_review",),
+    )
+
+    class Interrupt:
+        value = {
+            "kind": "publish_review",
+            "message": "请审核",
+            "publish_package": {"title": "待审核"},
+        }
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return state
+
+        def stream(self, *_args, **_kwargs):
+            yield {"__interrupt__": [Interrupt()]}
+
+    class MemoryManager:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def init_db(self, *_args, **_kwargs):
+            pass
+
+    monkeypatch.setattr(main, "RUN_REGISTRY_PATH", path)
+    monkeypatch.setattr(main, "_create_v4_graph", lambda: FakeGraph())
+    monkeypatch.setattr(main, "XHSMemoryManager", MemoryManager)
+    monkeypatch.setattr(
+        main,
+        "collect_interrupt_response",
+        lambda _payload: (_ for _ in ()).throw(
+            ValueError("review input failed")
+        ),
+    )
+    monkeypatch.setattr("sys.argv", ["main.py", "--thread-id", run.thread_id])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.main()
+
+    assert exc_info.value.code == 1
+    check = RunRegistry(path)
+    waiting = check.get_by_thread_id(run.thread_id)
+    assert waiting.execution_state == "WAITING_HUMAN"
+    assert waiting.error_summary == "ValueError: review input failed"
+    check.close()
+
+
 def test_review_interrupt_remains_awaiting_review_when_input_stops(monkeypatch, tmp_path):
     main = _load_main(monkeypatch)
     registry = RunRegistry(tmp_path / "agent_runs.sqlite")

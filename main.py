@@ -341,6 +341,15 @@ def _update_run_lifecycle(
     return registry.update_run(thread_id, status=status, **updates)
 
 
+def _is_missing_selected_v4_graph(error: BaseException) -> bool:
+    """Identify the specific lazy-import failure for the selected v4 graph."""
+
+    return isinstance(error, ModuleNotFoundError) and (
+        getattr(error, "name", None) == "src.graph_v4"
+        or "No module named 'src.graph_v4'" in str(error)
+    )
+
+
 def _prepare_run_for_resume(registry: RunRegistry, run: AgentRun) -> AgentRun:
     """Validate and mark an explicitly selected run without losing v4 state."""
 
@@ -741,6 +750,7 @@ def stream_graph_until_stop(
     *,
     registry: RunRegistry | None = None,
     thread_id: str | None = None,
+    review_input_state: dict[str, bool] | None = None,
 ) -> bool:
     next_input = run_input
 
@@ -760,7 +770,12 @@ def stream_graph_until_stop(
                             thread_id,
                             status="awaiting_review",
                         )
-                    next_input = Command(resume=collect_interrupt_response(payload))
+                    if review_input_state is not None:
+                        review_input_state["bound"] = True
+                    response = collect_interrupt_response(payload)
+                    if review_input_state is not None:
+                        review_input_state["bound"] = False
+                    next_input = Command(resume=response)
                     if registry is not None and thread_id is not None:
                         _update_run_lifecycle(
                             registry,
@@ -789,6 +804,9 @@ def main():
         sys.exit(1)
 
     thread_id = None
+    graph_ready = False
+    checkpoint_loaded = False
+    review_input_state = {"bound": False}
     try:
         if args.runs:
             for run in registry.list_recent(20):
@@ -835,6 +853,7 @@ def main():
             )
         else:
             graph = build_graph_for_run(persisted_run, _graph_factories())
+        graph_ready = True
 
         database = XHSMemoryManager("data/xhs_memory.db")
         database.init_db("memory/schema.sql")
@@ -847,6 +866,7 @@ def main():
             initial_state,
             workflow_version=workflow_context.workflow_version,
         )
+        checkpoint_loaded = True
 
         if args.thread_id:
             backfill_legacy_run(registry, thread_id, current_state)
@@ -901,6 +921,7 @@ def main():
             config,
             registry=registry,
             thread_id=thread_id,
+            review_input_state=review_input_state,
         )
         if exported:
             _update_run_lifecycle(
@@ -921,22 +942,24 @@ def main():
                 run = registry.get_by_thread_id(thread_id)
                 if run is not None:
                     if run.workflow_version == "llm_scene_v4":
-                        # A pending review remains pending when input or a
-                        # review-bound operation fails. Other v4 errors are
-                        # retryable unless the selected graph is unavailable.
-                        if run.execution_state != "WAITING_HUMAN":
+                        review_input_failure = (
+                            checkpoint_loaded and review_input_state["bound"]
+                        )
+                        if review_input_failure:
+                            failure_state = "WAITING_HUMAN"
+                        else:
                             failure_state = (
                                 "FAILED_FATAL"
-                                if isinstance(exc, ModuleNotFoundError)
-                                and "src.graph_v4" in str(exc)
+                                if not graph_ready
+                                and _is_missing_selected_v4_graph(exc)
                                 else "INTERRUPTED_RETRYABLE"
                             )
-                            _update_run_lifecycle(
-                                registry,
-                                thread_id,
-                                execution_state=failure_state,
-                                error_summary=exception_summary(exc),
-                            )
+                        _update_run_lifecycle(
+                            registry,
+                            thread_id,
+                            execution_state=failure_state,
+                            error_summary=exception_summary(exc),
+                        )
                     else:
                         _update_run_lifecycle(
                             registry,
