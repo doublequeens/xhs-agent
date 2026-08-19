@@ -3,7 +3,7 @@
 ## 状态
 
 - 日期：2026-08-20
-- 状态：对话设计已确认；等待书面规格复核
+- 状态：书面规格已批准；等待实施计划执行
 - 目标 workflow version：`llm_scene_v4`
 - 当前生产 workflow version：`llm_scene_v3`
 
