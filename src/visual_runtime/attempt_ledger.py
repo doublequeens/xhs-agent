@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
+import stat
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -53,7 +55,7 @@ class ReusableResult:
     request_fingerprint: str
     result_ref: str
     result_sha256: str
-    path: Path
+    content: bytes
     validated_contract_sha256: str | None = None
 
     @property
@@ -63,6 +65,12 @@ class ReusableResult:
     @property
     def sanitized_result_sha256(self) -> str:
         return self.result_sha256
+
+    @property
+    def data(self) -> bytes:
+        """Alias for consumers that call the verified bytes ``data``."""
+
+        return self.content
 
 
 def _utc_now() -> datetime:
@@ -82,10 +90,12 @@ class AttemptLedger:
         if busy_timeout_ms <= 0:
             raise ValueError("busy_timeout_ms must be positive")
         self.path = Path(path)
-        self.result_root = Path(result_root).resolve() if result_root is not None else None
+        self.result_root: Path | None = None
         self.busy_timeout_ms = busy_timeout_ms
         self._connection: sqlite3.Connection | None = None
         try:
+            if result_root is not None:
+                self.result_root = Path(result_root).resolve()
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._connection = sqlite3.connect(
                 self.path,
@@ -103,12 +113,12 @@ class AttemptLedger:
                     if "locked" not in str(exc).lower() or attempt_number == 7:
                         raise
                     time.sleep(0.01 * (attempt_number + 1))
-            self._connection.execute("PRAGMA synchronous=NORMAL")
+            self._connection.execute("PRAGMA synchronous=FULL")
             self._create_schema()
         except AttemptLedgerError:
             self.close()
             raise
-        except (OSError, sqlite3.Error) as exc:
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
             self.close()
             raise AttemptLedgerError(f"could not initialize ledger {self.path}: {exc}") from exc
 
@@ -142,35 +152,63 @@ class AttemptLedger:
     def _create_schema(self) -> None:
         connection = self._require_connection()
         try:
-            connection.executescript(
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute(
                 """
                 CREATE TABLE IF NOT EXISTS visual_attempt_events (
-                    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                    sequence INTEGER PRIMARY KEY AUTOINCREMENT CHECK (sequence > 0),
                     attempt_id TEXT NOT NULL,
                     event_kind TEXT NOT NULL CHECK (
                         event_kind IN ('AttemptStarted', 'AttemptFinished', 'AttemptReconciled')
                     ),
-                    payload_json TEXT NOT NULL
-                );
-
+                    payload_json TEXT NOT NULL,
+                    run_id TEXT,
+                    candidate_id TEXT,
+                    request_fingerprint TEXT
+                )
+                """
+            )
+            existing_columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(visual_attempt_events)")
+            }
+            for column in ("run_id", "candidate_id", "request_fingerprint"):
+                if column not in existing_columns:
+                    connection.execute(
+                        f"ALTER TABLE visual_attempt_events ADD COLUMN {column} TEXT"
+                    )
+            schema_statements = (
+                """
                 CREATE INDEX IF NOT EXISTS idx_visual_attempt_events_attempt
                     ON visual_attempt_events(attempt_id, sequence);
-
+                """,
+                """
                 CREATE INDEX IF NOT EXISTS idx_visual_attempt_events_kind_attempt
                     ON visual_attempt_events(event_kind, attempt_id, sequence);
-
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_visual_attempt_events_run_candidate
+                    ON visual_attempt_events(event_kind, run_id, candidate_id, sequence, attempt_id);
+                """,
+                """
+                CREATE INDEX IF NOT EXISTS idx_visual_attempt_events_fingerprint
+                    ON visual_attempt_events(event_kind, request_fingerprint, sequence, attempt_id);
+                """,
+                """
                 CREATE TRIGGER IF NOT EXISTS visual_attempt_events_no_update
                 BEFORE UPDATE ON visual_attempt_events
                 BEGIN
                     SELECT RAISE(ABORT, 'visual attempt events are append-only');
                 END;
-
+                """,
+                """
                 CREATE TRIGGER IF NOT EXISTS visual_attempt_events_no_delete
                 BEFORE DELETE ON visual_attempt_events
                 BEGIN
                     SELECT RAISE(ABORT, 'visual attempt events are append-only');
                 END;
-
+                """,
+                """
                 CREATE TRIGGER IF NOT EXISTS visual_attempt_events_one_start
                 BEFORE INSERT ON visual_attempt_events
                 WHEN NEW.event_kind = 'AttemptStarted'
@@ -182,7 +220,8 @@ class AttemptLedger:
                 BEGIN
                     SELECT RAISE(ABORT, 'attempt already has a start event');
                 END;
-
+                """,
+                """
                 CREATE TRIGGER IF NOT EXISTS visual_attempt_events_requires_start
                 BEFORE INSERT ON visual_attempt_events
                 WHEN NEW.event_kind IN ('AttemptFinished', 'AttemptReconciled')
@@ -194,7 +233,8 @@ class AttemptLedger:
                 BEGIN
                     SELECT RAISE(ABORT, 'terminal event requires a start event');
                 END;
-
+                """,
+                """
                 CREATE TRIGGER IF NOT EXISTS visual_attempt_events_one_terminal
                 BEFORE INSERT ON visual_attempt_events
                 WHEN NEW.event_kind IN ('AttemptFinished', 'AttemptReconciled')
@@ -206,9 +246,29 @@ class AttemptLedger:
                 BEGIN
                     SELECT RAISE(ABORT, 'attempt already has a terminal event');
                 END;
+                """,
+            )
+            for statement in schema_statements:
+                connection.execute(statement)
+            # SQLite evaluates same-timing triggers in reverse creation order.
+            # Install this guard last so an explicit sequence is rejected before
+            # any event-kind trigger can report a misleading domain error.
+            connection.execute(
+                "DROP TRIGGER IF EXISTS visual_attempt_events_no_explicit_sequence"
+            )
+            connection.execute(
+                """
+                CREATE TRIGGER visual_attempt_events_no_explicit_sequence
+                BEFORE INSERT ON visual_attempt_events
+                WHEN NEW.sequence >= 0
+                BEGIN
+                    SELECT RAISE(ABORT, 'sequence is database-assigned');
+                END
                 """
             )
+            connection.commit()
         except sqlite3.Error as exc:
+            connection.rollback()
             raise AttemptLedgerError(f"could not create ledger schema {self.path}: {exc}") from exc
 
     @contextmanager
@@ -227,7 +287,27 @@ class AttemptLedger:
 
     @staticmethod
     def _payload_for(event: Event) -> str:
-        return canonical_json(event.model_dump(mode="json", exclude={"sequence"}))
+        return canonical_json(event.model_dump(mode="python", exclude={"sequence"}))
+
+    def _query_identity_for_event(self, event: Event) -> tuple[str, str, str]:
+        if isinstance(event, AttemptStarted):
+            return event.run_id, event.candidate_id, event.request_fingerprint
+        try:
+            row = self._require_connection().execute(
+                "SELECT run_id, candidate_id, request_fingerprint "
+                "FROM visual_attempt_events "
+                "WHERE attempt_id = ? AND event_kind = 'AttemptStarted'",
+                (event.attempt_id,),
+            ).fetchone()
+        except sqlite3.Error as exc:
+            raise AttemptLedgerError(
+                f"could not read start identity for attempt {event.attempt_id}: {exc}"
+            ) from exc
+        if row is None:
+            raise AttemptLedgerError(
+                f"unknown attempt while appending {type(event).__name__}: {event.attempt_id}"
+            )
+        return str(row[0]), str(row[1]), str(row[2])
 
     @staticmethod
     def _event_with_sequence(event: Event, sequence: int) -> Event:
@@ -235,12 +315,29 @@ class AttemptLedger:
 
     def _insert_event(self, event: Event) -> Event:
         connection = self._require_connection()
-        payload_json = self._payload_for(event)
+        try:
+            payload_json = self._payload_for(event)
+            run_id, candidate_id, request_fingerprint = self._query_identity_for_event(event)
+        except AttemptLedgerError:
+            raise
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise AttemptLedgerError(
+                f"could not serialize {type(event).__name__} for attempt "
+                f"{event.attempt_id}: {exc}"
+            ) from exc
         try:
             cursor = connection.execute(
-                "INSERT INTO visual_attempt_events(attempt_id, event_kind, payload_json) "
-                "VALUES (?, ?, ?)",
-                (event.attempt_id, type(event).__name__, payload_json),
+                "INSERT INTO visual_attempt_events "
+                "(attempt_id, event_kind, payload_json, run_id, candidate_id, request_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    event.attempt_id,
+                    type(event).__name__,
+                    payload_json,
+                    run_id,
+                    candidate_id,
+                    request_fingerprint,
+                ),
             )
             sequence = int(cursor.lastrowid)
         except sqlite3.Error as exc:
@@ -337,7 +434,11 @@ class AttemptLedger:
 
         try:
             with self._write_transaction():
-                self._require_open_attempt(attempt_id)
+                projection = self._require_open_attempt(attempt_id)
+                if event.completed_at < projection.started_at:
+                    raise AttemptLedgerError(
+                        f"completed_at must not precede started_at for attempt {attempt_id}"
+                    )
                 persisted = self._insert_event(event)
         except AttemptLedgerError:
             raise
@@ -366,7 +467,11 @@ class AttemptLedger:
             ) from exc
         try:
             with self._write_transaction():
-                self._require_open_attempt(attempt_id)
+                projection = self._require_open_attempt(attempt_id)
+                if event.reconciled_at < projection.started_at:
+                    raise AttemptLedgerError(
+                        f"reconciled_at must not precede started_at for attempt {attempt_id}"
+                    )
                 persisted = self._insert_event(event)
         except AttemptLedgerError:
             raise
@@ -388,32 +493,40 @@ class AttemptLedger:
         try:
             with self._write_transaction():
                 rows = self._require_connection().execute(
-                    "SELECT sequence, attempt_id, event_kind, payload_json "
-                    "FROM visual_attempt_events ORDER BY sequence"
+                    """
+                    SELECT start.sequence, start.attempt_id, start.event_kind,
+                           start.payload_json, start.run_id, start.candidate_id,
+                           start.request_fingerprint
+                    FROM visual_attempt_events AS start
+                    WHERE start.event_kind = 'AttemptStarted'
+                      AND start.run_id = ?
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM visual_attempt_events AS terminal
+                          WHERE terminal.attempt_id = start.attempt_id
+                            AND terminal.event_kind IN ('AttemptFinished', 'AttemptReconciled')
+                      )
+                    ORDER BY start.sequence
+                    """,
+                    (run_id,),
                 ).fetchall()
-                replayed = self._replay_rows(rows)
-                grouped: dict[str, list[Event]] = {}
-                for existing in replayed:
-                    grouped.setdefault(existing.attempt_id, []).append(existing)
-                open_attempt_ids = [
-                    attempt_id
-                    for attempt_id, attempt_events in grouped.items()
-                    if any(
-                        isinstance(existing, AttemptStarted)
-                        and existing.run_id == run_id
-                        for existing in attempt_events
+                for row in rows:
+                    attempt_id = str(row[1])
+                    projection = self._project_events(
+                        attempt_id,
+                        self._events_for_attempt(attempt_id),
                     )
-                    and not any(
-                        isinstance(existing, (AttemptFinished, AttemptReconciled))
-                        for existing in attempt_events
-                    )
-                ]
-                for attempt_id in open_attempt_ids:
+                    if projection.status != "RUNNING":
+                        continue
                     event = AttemptReconciled(
                         attempt_id=attempt_id,
                         reconciled_at=_utc_now(),
                         evidence=evidence,
                     )
+                    if event.reconciled_at < projection.started_at:
+                        raise AttemptLedgerError(
+                            f"reconciled_at must not precede started_at for attempt {attempt_id}"
+                        )
                     persisted.append(self._insert_event(event))  # type: ignore[arg-type]
         except AttemptLedgerError:
             raise
@@ -438,7 +551,8 @@ class AttemptLedger:
         try:
             connection = self._require_connection()
             rows = connection.execute(
-                "SELECT sequence, attempt_id, event_kind, payload_json "
+                "SELECT sequence, attempt_id, event_kind, payload_json, "
+                "run_id, candidate_id, request_fingerprint "
                 "FROM visual_attempt_events WHERE attempt_id = ? ORDER BY sequence",
                 (attempt_id,),
             ).fetchall()
@@ -453,12 +567,14 @@ class AttemptLedger:
             connection = self._require_connection()
             if attempt_id is None:
                 rows = connection.execute(
-                    "SELECT sequence, attempt_id, event_kind, payload_json "
+                    "SELECT sequence, attempt_id, event_kind, payload_json, "
+                    "run_id, candidate_id, request_fingerprint "
                     "FROM visual_attempt_events ORDER BY sequence"
                 ).fetchall()
             else:
                 rows = connection.execute(
-                    "SELECT sequence, attempt_id, event_kind, payload_json "
+                    "SELECT sequence, attempt_id, event_kind, payload_json, "
+                    "run_id, candidate_id, request_fingerprint "
                     "FROM visual_attempt_events WHERE attempt_id = ? ORDER BY sequence",
                     (attempt_id,),
                 ).fetchall()
@@ -469,12 +585,19 @@ class AttemptLedger:
 
     def _replay_rows(self, rows: list[sqlite3.Row] | list[tuple[Any, ...]]) -> list[Event]:
         replayed: list[Event] = []
+        row_metadata: list[tuple[str, str, str]] = []
         previous_sequence = 0
         for row in rows:
             sequence = int(row[0])
             row_attempt_id = str(row[1])
             event_kind = str(row[2])
             raw_payload = row[3]
+            if len(row) < 7:
+                raise AttemptLedgerError(
+                    f"invalid event sequence {sequence} ({event_kind}) for "
+                    f"attempt {row_attempt_id}: missing query identity columns"
+                )
+            query_identity = (row[4], row[5], row[6])
             if sequence <= previous_sequence:
                 raise AttemptLedgerError(
                     f"invalid event sequence {sequence}: sequence is not increasing"
@@ -494,7 +617,9 @@ class AttemptLedger:
                 expected_json = canonical_json(payload)
                 if raw_payload != expected_json:
                     raise ValueError("payload is not canonical JSON")
-                event = model_type.model_validate({**payload, "sequence": sequence})
+                event = model_type.model_validate_json(
+                    canonical_json({**payload, "sequence": sequence})
+                )
                 if event.attempt_id != row_attempt_id:
                     raise ValueError("row attempt_id does not match payload attempt_id")
             except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as exc:
@@ -503,6 +628,30 @@ class AttemptLedger:
                     f"attempt {row_attempt_id}: {exc}"
                 ) from exc
             replayed.append(event)  # type: ignore[arg-type]
+            row_metadata.append(query_identity)
+
+        starts_by_attempt = {
+            event.attempt_id: event
+            for event in replayed
+            if isinstance(event, AttemptStarted)
+        }
+        for event, query_identity in zip(replayed, row_metadata, strict=True):
+            start = starts_by_attempt.get(event.attempt_id)
+            if start is None:
+                raise AttemptLedgerError(
+                    f"invalid replay for attempt {event.attempt_id}: "
+                    "terminal event has no start identity"
+                )
+            expected_identity = (
+                start.run_id,
+                start.candidate_id,
+                start.request_fingerprint,
+            )
+            if query_identity != expected_identity:
+                raise AttemptLedgerError(
+                    f"invalid replay for attempt {event.attempt_id}: "
+                    "query identity does not match start payload"
+                )
         return replayed
 
     @staticmethod
@@ -527,6 +676,27 @@ class AttemptLedger:
                 f"invalid replay for attempt {attempt_id}: multiple terminal events"
             )
         terminal = terminals[0] if terminals else None
+        if terminal is not None:
+            if start.sequence is None or terminal.sequence is None:
+                raise AttemptLedgerError(
+                    f"invalid replay for attempt {attempt_id}: missing event sequence"
+                )
+            if terminal.sequence <= start.sequence:
+                raise AttemptLedgerError(
+                    f"invalid replay for attempt {attempt_id}: terminal sequence "
+                    "must follow start sequence"
+                )
+            if isinstance(terminal, AttemptFinished):
+                if terminal.completed_at < start.started_at:
+                    raise AttemptLedgerError(
+                        f"invalid replay for attempt {attempt_id}: completed_at "
+                        "must not precede started_at"
+                    )
+            elif terminal.reconciled_at < start.started_at:
+                raise AttemptLedgerError(
+                    f"invalid replay for attempt {attempt_id}: reconciled_at "
+                    "must not precede started_at"
+                )
         values: dict[str, Any] = {
             **start.model_dump(mode="python", exclude={"sequence"}),
             "status": "RUNNING",
@@ -564,12 +734,24 @@ class AttemptLedger:
     def consumed_attempts(self, run_id: str, candidate_id: str) -> int:
         if not run_id or not candidate_id:
             raise AttemptLedgerError("run_id and candidate_id are required")
-        return sum(
-            isinstance(event, AttemptStarted)
-            and event.run_id == run_id
-            and event.candidate_id == candidate_id
-            for event in self.events()
-        )
+        try:
+            rows = self._require_connection().execute(
+                """
+                SELECT sequence, attempt_id, event_kind, payload_json,
+                       run_id, candidate_id, request_fingerprint
+                FROM visual_attempt_events
+                WHERE event_kind = 'AttemptStarted'
+                  AND run_id = ?
+                  AND candidate_id = ?
+                ORDER BY sequence
+                """,
+                (run_id, candidate_id),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise AttemptLedgerError(
+                f"could not count attempts for run {run_id}, candidate {candidate_id}: {exc}"
+            ) from exc
+        return sum(isinstance(event, AttemptStarted) for event in self._replay_rows(rows))
 
     @staticmethod
     def _normalize_result_ref(reference: str) -> str:
@@ -583,35 +765,67 @@ class AttemptLedger:
             raise AttemptLedgerError("result reference must name a file")
         return PurePosixPath(*parts).as_posix()
 
-    def _verified_result_path(self, reference: str, expected_sha256: str) -> tuple[str, Path]:
+    def _read_verified_result(self, reference: str, expected_sha256: str) -> tuple[str, bytes]:
         normalized = self._normalize_result_ref(reference)
         if self.result_root is None:
             raise AttemptLedgerError("result_root is required for result references")
         root = self.result_root
-        if not root.exists() or not root.is_dir():
-            raise AttemptLedgerError(f"result_root is not an existing directory: {root}")
-        candidate = root.joinpath(*PurePosixPath(normalized).parts)
-        current = root
-        for part in PurePosixPath(normalized).parts:
-            current = current / part
-            if current.is_symlink():
-                raise AttemptLedgerError("result reference may not traverse symlinks")
-        resolved_root = root.resolve()
-        resolved_candidate = candidate.resolve(strict=False)
+        directory_flag = getattr(os, "O_DIRECTORY", 0)
+        no_follow_flag = getattr(os, "O_NOFOLLOW", 0)
+        close_on_exec_flag = getattr(os, "O_CLOEXEC", 0)
+        root_fd = -1
+        current_fd = -1
+        result_fd = -1
         try:
-            resolved_candidate.relative_to(resolved_root)
-        except ValueError as exc:
-            raise AttemptLedgerError("result reference is outside result_root") from exc
-        if not candidate.is_file() or candidate.is_symlink():
-            raise AttemptLedgerError("result reference must identify a regular file")
-        actual_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
-        if not _SHA256_RE.fullmatch(expected_sha256) or actual_sha256 != expected_sha256:
-            raise AttemptLedgerError("result reference sha256 does not match bytes")
-        return normalized, candidate
+            root_fd = os.open(
+                root,
+                os.O_RDONLY | directory_flag | no_follow_flag | close_on_exec_flag,
+            )
+            current_fd = root_fd
+            if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+                raise AttemptLedgerError(f"result_root is not an existing directory: {root}")
 
-    def _verify_result_file(self, reference: str, expected_sha256: str) -> tuple[str, Path]:
+            parts = PurePosixPath(normalized).parts
+            for part in parts[:-1]:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | directory_flag | no_follow_flag | close_on_exec_flag,
+                    dir_fd=current_fd,
+                )
+                if current_fd != root_fd:
+                    os.close(current_fd)
+                current_fd = next_fd
+
+            result_fd = os.open(
+                parts[-1],
+                os.O_RDONLY | no_follow_flag | close_on_exec_flag,
+                dir_fd=current_fd,
+            )
+            if not stat.S_ISREG(os.fstat(result_fd).st_mode):
+                raise AttemptLedgerError("result reference must identify a regular file")
+
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(result_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            content = b"".join(chunks)
+            actual_sha256 = hashlib.sha256(content).hexdigest()
+            if not _SHA256_RE.fullmatch(expected_sha256) or actual_sha256 != expected_sha256:
+                raise AttemptLedgerError("result reference sha256 does not match bytes")
+            return normalized, content
+        finally:
+            if result_fd >= 0:
+                os.close(result_fd)
+            if current_fd >= 0 and current_fd != root_fd:
+                os.close(current_fd)
+            if root_fd >= 0:
+                os.close(root_fd)
+
+    def _verify_result_file(self, reference: str, expected_sha256: str) -> tuple[str, bytes]:
         try:
-            return self._verified_result_path(reference, expected_sha256)
+            return self._read_verified_result(reference, expected_sha256)
         except AttemptLedgerError:
             raise
         except (OSError, ValueError) as exc:
@@ -620,27 +834,28 @@ class AttemptLedger:
     def reusable_result(self, request_fingerprint: str) -> ReusableResult | None:
         if not _SHA256_RE.fullmatch(request_fingerprint):
             return None
-        replayed = self.events()
-        grouped: dict[str, list[Event]] = {}
-        for event in replayed:
-            grouped.setdefault(event.attempt_id, []).append(event)
-        candidates = [
-            attempt_id
-            for attempt_id, attempt_events in grouped.items()
-            if any(
-                isinstance(event, AttemptStarted)
-                and event.request_fingerprint == request_fingerprint
-                for event in attempt_events
+        try:
+            rows = self._require_connection().execute(
+                """
+                SELECT sequence, attempt_id, event_kind, payload_json,
+                       run_id, candidate_id, request_fingerprint
+                FROM visual_attempt_events
+                WHERE event_kind = 'AttemptStarted'
+                  AND request_fingerprint = ?
+                ORDER BY sequence DESC
+                """,
+                (request_fingerprint,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            raise AttemptLedgerError(
+                f"could not find reusable result for fingerprint {request_fingerprint}: {exc}"
+            ) from exc
+        for row in rows:
+            attempt_id = str(row[1])
+            projection = self._project_events(
+                attempt_id,
+                self._events_for_attempt(attempt_id),
             )
-        ]
-        candidates.sort(
-            key=lambda attempt_id: max(
-                event.sequence or 0 for event in grouped[attempt_id]
-            ),
-            reverse=True,
-        )
-        for attempt_id in candidates:
-            projection = self._project_events(attempt_id, grouped[attempt_id])
             if projection.status != "SUCCESS":
                 continue
             if (
@@ -649,7 +864,7 @@ class AttemptLedger:
             ):
                 continue
             try:
-                normalized, path = self._verify_result_file(
+                normalized, content = self._verify_result_file(
                     projection.sanitized_result_ref,
                     projection.sanitized_result_sha256,
                 )
@@ -662,7 +877,7 @@ class AttemptLedger:
                 request_fingerprint=projection.request_fingerprint,
                 result_ref=normalized,
                 result_sha256=projection.sanitized_result_sha256,
-                path=path,
+                content=content,
                 validated_contract_sha256=projection.validated_contract_sha256,
             )
         return None

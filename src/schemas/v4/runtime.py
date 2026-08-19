@@ -13,7 +13,15 @@ from pathlib import PurePosixPath
 from typing import Any, Literal, TypeAlias
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_validator,
+    model_validator,
+)
 
 
 AttemptTerminalStatus: TypeAlias = Literal[
@@ -79,7 +87,21 @@ def _validate_result_ref(value: str | None) -> str | None:
 
 
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+
+
+def _validate_token_usage(
+    value: dict[StrictStr, StrictInt] | None,
+) -> dict[StrictStr, StrictInt] | None:
+    if value is None:
+        return None
+    if not value:
+        raise ValueError("token_usage must contain at least one count")
+    if any(not key.strip() for key in value):
+        raise ValueError("token_usage keys must be non-empty")
+    if any(count < 0 for count in value.values()):
+        raise ValueError("token_usage counts must be non-negative")
+    return value
 
 
 class AttemptStarted(StrictModel):
@@ -136,7 +158,7 @@ class AttemptFinished(StrictModel):
     error_class: str | None = None
     provider_request_id: str | None = None
     latency_ms: float | None = Field(default=None, ge=0)
-    token_usage: dict[str, int | float] | None = None
+    token_usage: dict[StrictStr, StrictInt] | None = None
     sanitized_result_ref: str | None = None
     sanitized_result_sha256: str | None = None
     validated_contract_sha256: str | None = None
@@ -156,6 +178,11 @@ class AttemptFinished(StrictModel):
     @classmethod
     def validate_hashes(cls, value: str | None, info) -> str | None:
         return _validate_sha256(value, field_name=info.field_name)
+
+    @field_validator("token_usage")
+    @classmethod
+    def validate_token_usage(cls, value):
+        return _validate_token_usage(value)
 
     @model_validator(mode="after")
     def validate_result_pair(self) -> "AttemptFinished":
@@ -217,7 +244,7 @@ class AttemptProjection(StrictModel):
     error_class: str | None = None
     provider_request_id: str | None = None
     latency_ms: float | None = Field(default=None, ge=0)
-    token_usage: dict[str, int | float] | None = None
+    token_usage: dict[StrictStr, StrictInt] | None = None
     sanitized_result_ref: str | None = None
     sanitized_result_sha256: str | None = None
     validated_contract_sha256: str | None = None
@@ -248,6 +275,11 @@ class AttemptProjection(StrictModel):
     def validate_projection_hashes(cls, value: str | None, info) -> str | None:
         return _validate_sha256(value, field_name=info.field_name)
 
+    @field_validator("token_usage")
+    @classmethod
+    def validate_token_usage(cls, value):
+        return _validate_token_usage(value)
+
     @model_validator(mode="after")
     def validate_projection_result_pair(self) -> "AttemptProjection":
         if (self.sanitized_result_ref is None) != (
@@ -262,8 +294,22 @@ class AttemptProjection(StrictModel):
 def canonical_json(value: BaseModel | dict[str, Any]) -> str:
     """Serialize an event payload using the ledger's canonical JSON rules."""
 
-    payload = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    payload = value.model_dump(mode="python") if isinstance(value, BaseModel) else value
+
+    def encode_datetime(item: Any) -> str:
+        if isinstance(item, datetime):
+            serialized = item.isoformat()
+            return serialized[:-6] + "Z" if serialized.endswith("+00:00") else serialized
+        raise TypeError(f"Object of type {type(item).__name__} is not JSON serializable")
+
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+        default=encode_datetime,
+    )
 
 
 __all__ = [

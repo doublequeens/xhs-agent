@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -9,11 +11,13 @@ from pathlib import Path
 
 import pytest
 
+import src.visual_runtime.attempt_ledger as ledger_module
 from src.schemas.v4.runtime import (
     AttemptFinished,
     AttemptProjection,
     AttemptReconciled,
     AttemptStarted,
+    canonical_json,
 )
 from src.run_registry import RunRegistry
 from src.visual_runtime.attempt_ledger import AttemptLedger, AttemptLedgerError
@@ -28,7 +32,9 @@ def make_attempt(
     attempt_number: int = 1,
     request_fingerprint: str = "f" * 64,
 ) -> AttemptStarted:
-    started_at = datetime(2026, 8, 20, 1, 2, 3, 456789, tzinfo=UTC)
+    # Keep the fixture in the past relative to either local or UTC wall-clock
+    # time; the ledger enforces terminal-event causality against this instant.
+    started_at = datetime(2020, 8, 20, 1, 2, 3, 456789, tzinfo=UTC)
     return AttemptStarted(
         run_id="run-1",
         workflow_version="llm_scene_v4",
@@ -158,6 +164,37 @@ def test_direct_update_and_delete_are_rejected_by_database_triggers(tmp_path: Pa
         ledger.close()
 
 
+def test_external_explicit_sequence_cannot_replace_or_insert_history(tmp_path: Path):
+    database = tmp_path / "agent_runs.sqlite"
+    ledger = AttemptLedger(database)
+    try:
+        started = ledger.start(make_attempt())
+        payload_json = json.dumps(
+            started.model_dump(mode="json", exclude={"sequence"}),
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        for sequence in (started.sequence, 999):
+            with pytest.raises(sqlite3.IntegrityError, match="database-assigned"):
+                ledger.connection.execute(
+                    "INSERT OR REPLACE INTO visual_attempt_events "
+                    "(sequence, attempt_id, event_kind, payload_json) VALUES (?, ?, ?, ?)",
+                    (sequence, started.attempt_id, "AttemptStarted", payload_json),
+                )
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_ledger_uses_full_synchronous_durability(tmp_path: Path):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        assert ledger.connection.execute("PRAGMA synchronous").fetchone()[0] == 2
+    finally:
+        ledger.close()
+
+
 def test_persisted_payload_is_canonical_json_and_sequence_is_global(tmp_path: Path):
     database = tmp_path / "agent_runs.sqlite"
     ledger = AttemptLedger(database)
@@ -269,7 +306,11 @@ def test_runtime_models_are_frozen_strict_and_reject_invalid_terminal_shapes():
             {**started.model_dump(), "unexpected": "field"}
         )
     with pytest.raises(ValueError):
-        AttemptFinished(status="UNKNOWN_AFTER_CRASH", completed_at=datetime.now(UTC))
+        AttemptFinished(
+            attempt_id="attempt-1",
+            status="UNKNOWN_AFTER_CRASH",
+            completed_at=datetime.now(UTC),
+        )
     with pytest.raises(ValueError):
         AttemptReconciled(
             attempt_id="attempt",
@@ -300,7 +341,92 @@ def test_result_success_requires_contained_file_and_hash_verified_reuse(tmp_path
         assert reusable.attempt_id == started.attempt_id
         assert reusable.result_ref == "nested/result.json"
         assert reusable.result_sha256 == result_hash
-        assert reusable.path == result_file
+        assert reusable.content == result_file.read_bytes()
+        assert not hasattr(reusable, "path")
+    finally:
+        ledger.close()
+
+
+def test_final_path_swap_to_symlink_fails_closed_before_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"safe")
+    outside = tmp_path / "outside.json"
+    outside.write_bytes(b"outside")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    real_open = os.open
+    swapped = False
+
+    def swap_before_final_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and kwargs.get("dir_fd") is not None and os.fspath(path) == "result.json":
+            result_file.unlink()
+            result_file.symlink_to(outside)
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.os, "open", swap_before_final_open)
+    try:
+        started = ledger.start(make_attempt())
+        with pytest.raises(AttemptLedgerError):
+            ledger.finish(
+                started.attempt_id,
+                status="SUCCESS",
+                sanitized_result_ref="result.json",
+                sanitized_result_sha256=sha256_bytes(b"safe"),
+            )
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_ancestor_swap_after_open_keeps_read_on_original_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    nested = result_root / "nested"
+    nested.mkdir()
+    result_file = nested / "result.json"
+    result_file.write_bytes(b"safe")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "result.json").write_bytes(b"outside")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    real_open = os.open
+    swapped = False
+    swap_enabled = False
+
+    def swap_after_nested_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        fd = real_open(path, flags, *args, **kwargs)
+        if (
+            swap_enabled
+            and not swapped
+            and kwargs.get("dir_fd") is not None
+            and os.fspath(path) == "nested"
+        ):
+            nested.rename(result_root / "nested-original")
+            nested.symlink_to(outside, target_is_directory=True)
+            swapped = True
+        return fd
+
+    monkeypatch.setattr(ledger_module.os, "open", swap_after_nested_open)
+    try:
+        started = ledger.start(make_attempt())
+        ledger.finish(
+            started.attempt_id,
+            status="SUCCESS",
+            sanitized_result_ref="nested/result.json",
+            sanitized_result_sha256=sha256_bytes(b"safe"),
+        )
+        swap_enabled = True
+        reusable = ledger.reusable_result("f" * 64)
+        assert reusable is not None
+        assert reusable.content == b"safe"
     finally:
         ledger.close()
 
@@ -412,6 +538,178 @@ def test_failure_result_is_never_reused(tmp_path: Path):
         assert ledger.reusable_result("f" * 64) is None
     finally:
         ledger.close()
+
+
+def test_scoped_queries_ignore_unrelated_malformed_history(tmp_path: Path):
+    database = tmp_path / "agent_runs.sqlite"
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"safe")
+    result_hash = sha256_bytes(b"safe")
+    ledger = AttemptLedger(database, result_root=result_root)
+    try:
+        target = ledger.start(make_attempt())
+        ledger.finish(
+            target.attempt_id,
+            status="SUCCESS",
+            sanitized_result_ref="result.json",
+            sanitized_result_sha256=result_hash,
+        )
+        other = make_attempt(
+            candidate_id="other-candidate", request_fingerprint="e" * 64
+        ).model_copy(update={"run_id": "other-run"})
+        ledger.connection.execute(
+            "INSERT INTO visual_attempt_events "
+            "(attempt_id, event_kind, payload_json, run_id, candidate_id, request_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "malformed-other",
+                "AttemptStarted",
+                "{not-json",
+                other.run_id,
+                other.candidate_id,
+                other.request_fingerprint,
+            ),
+        )
+        ledger.connection.commit()
+
+        assert ledger.consumed_attempts("run-1", "candidate-1") == 1
+        assert ledger.reusable_result("f" * 64) is not None
+        reconciled = ledger.reconcile_open_attempts(run_id="run-1")
+        assert [event.attempt_id for event in reconciled] == []
+    finally:
+        ledger.close()
+
+
+def test_scoped_query_indexes_cover_run_candidate_and_fingerprint(tmp_path: Path):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        indexes = {
+            row[1]
+            for row in ledger.connection.execute(
+                "PRAGMA index_list(visual_attempt_events)"
+            )
+        }
+        assert "idx_visual_attempt_events_run_candidate" in indexes
+        assert "idx_visual_attempt_events_fingerprint" in indexes
+        run_plan = ledger.connection.execute(
+            "EXPLAIN QUERY PLAN SELECT attempt_id FROM visual_attempt_events "
+            "WHERE event_kind = 'AttemptStarted' AND run_id = ? AND candidate_id = ?",
+            ("run-1", "candidate-1"),
+        ).fetchall()
+        fingerprint_plan = ledger.connection.execute(
+            "EXPLAIN QUERY PLAN SELECT attempt_id FROM visual_attempt_events "
+            "WHERE event_kind = 'AttemptStarted' AND request_fingerprint = ?",
+            ("f" * 64,),
+        ).fetchall()
+        assert any("idx_visual_attempt_events_run_candidate" in row[3] for row in run_plan)
+        assert any("idx_visual_attempt_events_fingerprint" in row[3] for row in fingerprint_plan)
+    finally:
+        ledger.close()
+
+
+def test_terminal_timestamps_must_not_precede_start(tmp_path: Path):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        started = ledger.start(make_attempt())
+        before = started.started_at - timedelta(microseconds=1)
+        with pytest.raises(AttemptLedgerError, match="completed_at"):
+            ledger.finish(started.attempt_id, status="SUCCESS", completed_at=before)
+        with pytest.raises(AttemptLedgerError, match="reconciled_at"):
+            ledger.reconcile_attempt(started.attempt_id, reconciled_at=before)
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_replay_rejects_terminal_timestamp_before_start(tmp_path: Path):
+    database = tmp_path / "agent_runs.sqlite"
+    ledger = AttemptLedger(database)
+    started = ledger.start(make_attempt())
+    finished = AttemptFinished(
+        attempt_id=started.attempt_id,
+        completed_at=started.started_at - timedelta(seconds=1),
+        status="SUCCESS",
+    )
+    payload_json = json.dumps(
+        finished.model_dump(mode="json", exclude={"sequence"}),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    ledger.connection.execute(
+        "INSERT INTO visual_attempt_events "
+        "(attempt_id, event_kind, payload_json, run_id, candidate_id, request_fingerprint) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            started.attempt_id,
+            "AttemptFinished",
+            payload_json,
+            started.run_id,
+            started.candidate_id,
+            started.request_fingerprint,
+        ),
+    )
+    ledger.connection.commit()
+    try:
+        with pytest.raises(AttemptLedgerError, match="completed_at"):
+            ledger.projection(started.attempt_id)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize(
+    "token_usage",
+    [
+        {},
+        {"": 1},
+        {"input_tokens": -1},
+        {"input_tokens": 1.5},
+        {"input_tokens": math.nan},
+        {"input_tokens": math.inf},
+        {"input_tokens": True},
+    ],
+)
+def test_token_usage_is_nonempty_finite_nonnegative_integer_counts(token_usage):
+    with pytest.raises(ValueError):
+        AttemptFinished(
+            attempt_id="attempt-1",
+            completed_at=datetime.now(UTC),
+            status="SUCCESS",
+            token_usage=token_usage,
+        )
+
+
+def test_canonical_json_rejects_nonfinite_numbers():
+    with pytest.raises(ValueError):
+        canonical_json({"value": math.nan})
+
+
+def test_non_json_reconciliation_evidence_fails_without_append(tmp_path: Path):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        started = ledger.start(make_attempt())
+        with pytest.raises(AttemptLedgerError, match="serialize"):
+            ledger.reconcile_attempt(started.attempt_id, evidence={"path": Path("x")})
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_result_root_resolution_errors_are_translated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    original_resolve = Path.resolve
+
+    def fail_resolve(path, *args, **kwargs):
+        if path.name == "results":
+            raise OSError("resolve failed")
+        return original_resolve(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "resolve", fail_resolve)
+    with pytest.raises(AttemptLedgerError, match="result_root"):
+        AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=tmp_path / "results")
 
 
 def test_concurrent_wal_writers_have_strict_global_sequences_and_no_loss(tmp_path: Path):
