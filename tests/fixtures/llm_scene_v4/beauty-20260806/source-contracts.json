@@ -1,0 +1,32 @@
+{
+  "case_id": "beauty-20260806",
+  "critic": {
+    "contains_images": true,
+    "overall": 91,
+    "hierarchy": 90,
+    "legibility": 93,
+    "composition": 92,
+    "family_consistency": 89,
+    "page_variation": 95,
+    "page_rhythm": 90,
+    "color": 95,
+    "spacing": 88,
+    "image_relevance": 92,
+    "passed": true,
+    "revision_round": 0,
+    "issues": []
+  },
+  "pages": [
+    {"page_id": "page-1", "human_issues": []},
+    {"page_id": "page-2", "human_issues": ["excessive_empty_space", "weak_hierarchy"]},
+    {"page_id": "page-3", "human_issues": ["excessive_empty_space", "weak_visual_anchor"]},
+    {"page_id": "page-4", "human_issues": ["excessive_empty_space", "unbalanced_composition"]},
+    {"page_id": "page-5", "human_issues": ["inconsistent_scale", "awkward_spacing"]},
+    {"page_id": "page-6", "human_issues": ["inconsistent_scale", "awkward_spacing"]},
+    {"page_id": "page-7", "human_issues": ["content_visual_mismatch", "poor_information_design"]},
+    {"page_id": "page-8", "human_issues": ["repetitive_layout", "awkward_spacing"]},
+    {"page_id": "page-9", "human_issues": ["excessive_empty_space", "weak_visual_anchor"]}
+  ],
+  "design_plan_sha256": "cd11db0d309abee8f66a1a09915f09f0ff54b3ac7a4cb2cb1cfed145a2b1d2c3",
+  "render_manifest_sha256": "d4c58a197437ffce7da6ad5c15ca8388568017e9d8ccd251a44b6558bdb48e7e"
+}
