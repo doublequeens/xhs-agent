@@ -11,6 +11,13 @@ from zoneinfo import ZoneInfo
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
+try:
+    from lxml.etree import XMLSyntaxError as LxmlXMLSyntaxError
+except ImportError:
+    _LXML_READ_ERRORS: tuple[type[BaseException], ...] = ()
+else:
+    _LXML_READ_ERRORS = (LxmlXMLSyntaxError,)
+
 from metrics_collector.matcher import normalize_title
 from metrics_collector.models import ExportedMetrics
 
@@ -60,7 +67,7 @@ _WORKBOOK_READ_ERRORS = (
     OSError,
     ParseError,
     ValueError,
-)
+) + _LXML_READ_ERRORS
 MAX_XLSX_BYTES = 10 * 1024 * 1024
 MAX_XLSX_ZIP_ENTRIES = 200
 MAX_XLSX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
