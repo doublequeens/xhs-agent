@@ -8,6 +8,7 @@ start before doing work and append exactly one terminal event afterwards.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -41,6 +42,9 @@ _EVENT_KINDS = {
 }
 _TERMINAL_EVENT_KINDS = ("AttemptFinished", "AttemptReconciled")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_STALE_RESULT_ERRNOS = frozenset(
+    {errno.ENOENT, errno.ELOOP, errno.ENOTDIR, errno.EISDIR}
+)
 
 
 class AttemptLedgerError(RuntimeError):
@@ -1079,6 +1083,23 @@ class AttemptLedger:
         except BaseException as exc:
             cleanup_errors.append(f"{label} fd {fd}: {exc}")
 
+    @staticmethod
+    def _open_result_component(
+        component: str,
+        flags: int,
+        *,
+        dir_fd: int,
+        label: str,
+    ) -> int:
+        try:
+            return os.open(component, flags, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno in _STALE_RESULT_ERRNOS:
+                raise _StaleResultVerificationError(
+                    f"{label} is stale or missing: {exc}"
+                ) from exc
+            raise
+
     def _read_verified_result(self, reference: str, expected_sha256: str) -> tuple[str, bytes]:
         normalized = self._normalize_result_ref(reference)
         if self.result_root is None:
@@ -1103,10 +1124,11 @@ class AttemptLedger:
 
             parts = PurePosixPath(normalized).parts
             for part in parts[:-1]:
-                next_fd = os.open(
+                next_fd = self._open_result_component(
                     part,
                     os.O_RDONLY | directory_flag | no_follow_flag | close_on_exec_flag,
                     dir_fd=current_fd,
+                    label=f"result path component {part}",
                 )
                 open_fds[next_fd] = f"ancestor {part}"
                 if current_fd != root_fd:
@@ -1118,14 +1140,17 @@ class AttemptLedger:
                     )
                 current_fd = next_fd
 
-            result_fd = os.open(
+            result_fd = self._open_result_component(
                 parts[-1],
                 os.O_RDONLY | no_follow_flag | close_on_exec_flag,
                 dir_fd=current_fd,
+                label=f"result target {parts[-1]}",
             )
             open_fds[result_fd] = "result"
             if not stat.S_ISREG(os.fstat(result_fd).st_mode):
-                raise AttemptLedgerError("result reference must identify a regular file")
+                raise _StaleResultVerificationError(
+                    "result reference must identify a regular file"
+                )
 
             chunks: list[bytes] = []
             while True:
@@ -1148,9 +1173,18 @@ class AttemptLedger:
 
         if primary_error is not None:
             if cleanup_errors:
-                primary_error.add_note(
+                combined_error = AttemptLedgerError(
+                    f"could not verify result reference {reference}: {primary_error}; "
+                    "descriptor cleanup also failed: "
+                    + "; ".join(cleanup_errors)
+                )
+                combined_error.add_note(
+                    f"primary verification error: {primary_error}"
+                )
+                combined_error.add_note(
                     "result descriptor cleanup errors: " + "; ".join(cleanup_errors)
                 )
+                raise combined_error from primary_error
             raise primary_error
         if cleanup_errors:
             raise AttemptLedgerError(
@@ -1167,7 +1201,7 @@ class AttemptLedger:
         except AttemptLedgerError:
             raise
         except OSError as exc:
-            raise _StaleResultVerificationError(
+            raise AttemptLedgerError(
                 f"could not verify result reference {reference}: {exc}"
             ) from exc
         except ValueError as exc:

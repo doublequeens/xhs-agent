@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import math
@@ -968,7 +969,9 @@ def test_result_descriptor_cleanup_attempts_all_fds_without_masking_primary_erro
                 sanitized_result_sha256=sha256_bytes(b"expected"),
             )
         assert len(close_calls) >= 2
-        assert "close failed" not in str(error.value)
+        assert "close failed" in str(error.value) or "close failed" in "\n".join(
+            getattr(error.value, "__notes__", [])
+        )
         assert ledger.events(started.attempt_id) == [started]
     finally:
         ledger.close()
@@ -1120,6 +1123,231 @@ def test_reusable_result_propagates_descriptor_cleanup_failure(
     try:
         with pytest.raises(AttemptLedgerError, match="close"):
             ledger.reusable_result("f" * 64)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize(
+    ("error_number", "expected_stale"),
+    [
+        (errno.ENOENT, True),
+        (errno.ELOOP, True),
+        (errno.ENOTDIR, True),
+        (errno.EACCES, False),
+        (errno.EMFILE, False),
+        (errno.EIO, False),
+    ],
+)
+def test_reusable_result_classifies_target_open_errno(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    error_number: int,
+    expected_stale: bool,
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"verified")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    started = ledger.start(make_attempt())
+    ledger.finish(
+        started.attempt_id,
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(b"verified"),
+    )
+    real_open = os.open
+
+    def fail_target_open(path, flags, *args, **kwargs):
+        if kwargs.get("dir_fd") is not None:
+            raise OSError(error_number, os.strerror(error_number))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.os, "open", fail_target_open)
+    try:
+        if expected_stale:
+            assert ledger.reusable_result("f" * 64) is None
+        else:
+            with pytest.raises(
+                AttemptLedgerError, match="could not verify result reference"
+            ) as error:
+                ledger.reusable_result("f" * 64)
+            assert isinstance(error.value.__cause__, OSError)
+    finally:
+        ledger.close()
+
+
+def test_reusable_result_propagates_missing_configured_result_root(tmp_path: Path):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"verified")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    started = ledger.start(make_attempt())
+    ledger.finish(
+        started.attempt_id,
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(b"verified"),
+    )
+    result_file.unlink()
+    result_root.rmdir()
+    try:
+        with pytest.raises(
+            AttemptLedgerError, match="could not verify result reference"
+        ) as error:
+            ledger.reusable_result("f" * 64)
+        assert isinstance(error.value.__cause__, OSError)
+    finally:
+        ledger.close()
+
+
+def test_reusable_result_propagates_unopenable_configured_result_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"verified")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    started = ledger.start(make_attempt())
+    ledger.finish(
+        started.attempt_id,
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(b"verified"),
+    )
+    real_open = os.open
+
+    def fail_root_open(path, flags, *args, **kwargs):
+        if kwargs.get("dir_fd") is None:
+            raise OSError(errno.EACCES, os.strerror(errno.EACCES))
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.os, "open", fail_root_open)
+    try:
+        with pytest.raises(
+            AttemptLedgerError, match="could not verify result reference"
+        ) as error:
+            ledger.reusable_result("f" * 64)
+        assert isinstance(error.value.__cause__, OSError)
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("operation", ["fstat", "read"])
+def test_reusable_result_propagates_unexpected_fstat_and_read_errors(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"verified")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    started = ledger.start(make_attempt())
+    ledger.finish(
+        started.attempt_id,
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(b"verified"),
+    )
+    if operation == "fstat":
+        real_fstat = os.fstat
+        fstat_calls = 0
+
+        def fail_result_fstat(fd: int):
+            nonlocal fstat_calls
+            fstat_calls += 1
+            if fstat_calls == 2:
+                raise OSError(errno.EIO, os.strerror(errno.EIO))
+            return real_fstat(fd)
+
+        monkeypatch.setattr(ledger_module.os, "fstat", fail_result_fstat)
+    else:
+        def fail_result_read(fd: int, size: int):
+            raise OSError(errno.EIO, os.strerror(errno.EIO))
+
+        monkeypatch.setattr(ledger_module.os, "read", fail_result_read)
+    try:
+        with pytest.raises(
+            AttemptLedgerError, match="could not verify result reference"
+        ) as error:
+            ledger.reusable_result("f" * 64)
+        assert isinstance(error.value.__cause__, OSError)
+    finally:
+        ledger.close()
+
+
+def test_reusable_result_skips_non_regular_target(tmp_path: Path):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    (result_root / "directory").mkdir()
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    try:
+        started = ledger.start(make_attempt())
+        finished = AttemptFinished(
+            attempt_id=started.attempt_id,
+            completed_at=started.started_at + timedelta(seconds=1),
+            status="SUCCESS",
+            sanitized_result_ref="directory",
+            sanitized_result_sha256="a" * 64,
+        )
+        ledger.connection.execute(
+            "INSERT INTO visual_attempt_events "
+            "(attempt_id, event_kind, payload_json, run_id, candidate_id, "
+            "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                finished.attempt_id,
+                "AttemptFinished",
+                legacy_payload(finished),
+                started.run_id,
+                started.candidate_id,
+                started.request_fingerprint,
+            ),
+        )
+        ledger.connection.commit()
+        assert ledger.reusable_result("f" * 64) is None
+    finally:
+        ledger.close()
+
+
+def test_reusable_result_stale_primary_plus_cleanup_failure_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"verified")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    started = ledger.start(make_attempt())
+    ledger.finish(
+        started.attempt_id,
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(b"verified"),
+    )
+    result_file.unlink()
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def fail_first_close(fd: int):
+        close_calls.append(fd)
+        if len(close_calls) == 1:
+            raise OSError("close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(ledger_module.os, "close", fail_first_close)
+    try:
+        with pytest.raises(AttemptLedgerError, match="close") as error:
+            ledger.reusable_result("f" * 64)
+        assert close_calls
+        assert "primary verification error" in "\n".join(
+            getattr(error.value, "__notes__", [])
+        )
+        assert isinstance(error.value.__cause__, AttemptLedgerError)
+        assert isinstance(error.value.__cause__.__cause__, OSError)
     finally:
         ledger.close()
 

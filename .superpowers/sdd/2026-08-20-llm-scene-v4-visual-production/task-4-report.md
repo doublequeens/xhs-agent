@@ -31,8 +31,11 @@
   open. Reuse scans are capped at a documented fixed candidate limit.
 - Nullable legacy identity columns are backfilled from each validated start payload;
   malformed or causally invalid matching-fingerprint history now raises during
-  reuse projection. Only stale/missing/hash-invalid result files are skipped, while
-  descriptor cleanup failures remain contextual ledger errors.
+  reuse projection. Only missing target components, no-follow symlink swaps,
+  non-regular targets, and hash-invalid result files are skipped; operational
+  filesystem/root-boundary/read/fstat failures remain contextual ledger errors.
+  Descriptor cleanup failures are never suppressed, including when they accompany
+  an otherwise stale or hash-invalid result.
 - The context manager preserves an active body exception when close cleanup fails
   (attaching cleanup context), and raises a contextual `AttemptLedgerError` when
   cleanup is the only failure.
@@ -88,21 +91,30 @@ high-water preservation, corrupt reuse propagation, and context-manager cleanup)
 The follow-up result-file cleanup regression was also red before its dedicated
 exception classification fix: `1 failed, 2 passed, 57 deselected, 2 warnings`.
 
+The final review's deterministic filesystem regressions were run red before the
+classification and combined-error fixes:
+
+```text
+pytest -q tests/visual_runtime/test_attempt_ledger.py -k 'classifies_target_open_errno or missing_configured_result_root or non_regular_target or stale_primary_plus_cleanup_failure'
+```
+
+Result: `6 failed, 3 passed, 60 deselected, 2 warnings`.
+
 After implementing the schema and ledger, the focused green command was rerun:
 
 ```text
 pytest -q tests/visual_runtime/test_attempt_ledger.py
 ```
 
-Result: `60 passed, 2 warnings`.
+Result: `72 passed, 2 warnings`.
 
 ## Verification
 
 - `pytest -q tests/visual_runtime/test_attempt_ledger.py tests/test_run_registry.py`
-  — `91 passed, 2 warnings`.
+  — `103 passed, 2 warnings`.
 - `pytest -q tests/visual_runtime/test_attempt_ledger.py -k concurrent_wal`
-  — `1 passed, 59 deselected`.
-- `pytest -q` — `1386 passed, 2 skipped, 2 warnings`. The skips are the documented
+  — `1 passed, 71 deselected`.
+- `pytest -q` — `1398 passed, 2 skipped, 2 warnings`. The skips are the documented
   opt-in Gemini live tests.
 - `python -m compileall -q src main.py` — passed.
 - `git diff --check` — passed.
