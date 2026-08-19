@@ -286,7 +286,9 @@ def test_design_reviser_prompt_constrains_patches_and_routes_replan_feedback():
     assert "approved" in prompt
     assert "HTML" in prompt
     assert "CSS" in prompt
-    assert "visual_director" in prompt
+    assert "The system — not you — decides whether to route back to the Visual Director." in prompt
+    assert "Do NOT emit a `route` field" in prompt
+    assert "the returned object is a CarouselDesignPlan" in prompt
     assert "AI 生成示意图" in prompt
     assert "不构成医疗建议" in prompt
 

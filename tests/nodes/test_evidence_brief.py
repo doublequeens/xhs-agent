@@ -2,6 +2,7 @@ import pytest
 
 from src.domain import build_content_policy, get_domain_profile
 from src.nodes import evidence_brief_node
+from src.schemas.narrative import NarrativePlan
 from src.schemas.topic import TopicItem
 from src.schemas.virality_score import ScoreBreakdown, ScoreResult
 
@@ -49,6 +50,21 @@ def _topic(*, topic_id: str, topic: str, content_intent: str, risk_level: str) -
     )
 
 
+def _narrative_plan() -> dict:
+    beats = [
+        {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+        {"beat_id": "scene", "kind": "scene", "purpose": "呈现具体场景"},
+        {"beat_id": "steps", "kind": "steps", "purpose": "给出可执行步骤"},
+        {"beat_id": "summary", "kind": "summary", "purpose": "总结可保存结论"},
+    ]
+    return NarrativePlan(
+        narrative_form="step_tutorial",
+        beats=beats,
+        saveable_beat=beats[2],
+        closing_mode="none",
+    ).model_dump(mode="json")
+
+
 def _score(*, topic_id: str, topic: str, angle_id: str) -> ScoreResult:
     return ScoreResult(
         total_score=88,
@@ -76,6 +92,7 @@ def _score(*, topic_id: str, topic: str, angle_id: str) -> ScoreResult:
         opening_hook="hook",
         value_promise="value",
         suggested_structure="list",
+        narrative_plan=_narrative_plan(),
     )
 
 

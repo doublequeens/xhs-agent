@@ -47,7 +47,7 @@ class DeepSeekModel(BaseLLMModel):
     
     def execute(self, messages: List[BaseMessage]) -> dict:
         chat_model = self.get_chat_model()
-        # deepseek-v4-pro runs with reasoning_effort="high" + thinking, so a
+        # deepseek-v4-pro runs with reasoning_effort="max" + thinking, so a
         # legitimate review call is slower than a plain chat call; give it a
         # generous wall-clock cap (480s) but still bound true hangs via the
         # shared guard so a stalled call retries instead of freezing the run.

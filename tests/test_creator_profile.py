@@ -22,5 +22,10 @@ def test_commuting_beauty_profile_is_frozen():
         COMMUTING_BEAUTY_WOMEN_V1.audience = "another audience"
 
 
-def test_profile_and_carousel_qa_are_optional_agent_state_keys():
-    assert {"creator_profile", "carousel_qa_result"} <= AgentState.__optional_keys__
+def test_profile_and_v3_qa_are_optional_agent_state_keys():
+    assert {
+        "creator_profile",
+        "design_plan_qa_result",
+        "render_qa_result",
+    } <= AgentState.__optional_keys__
+    assert "carousel_qa_result" not in AgentState.__optional_keys__

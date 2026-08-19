@@ -69,5 +69,5 @@ def test_deepseek_client_has_one_bounded_retry_owner(mock_chat_deepseek, monkeyp
     kwargs = mock_chat_deepseek.call_args.kwargs
     assert kwargs["timeout"] == 480
     assert kwargs["max_retries"] == 0
-    assert kwargs["reasoning_effort"] == "high"
+    assert kwargs["reasoning_effort"] == "max"
     assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}

@@ -559,8 +559,6 @@ def test_human_focus_keyword_edit_invalidates_downstream_artifacts_and_reruns_r2
 ):
     module = importlib.import_module("src.nodes.node_q_human_review")
     package = {
-        "focus_keyword": "防晒搓泥",
-        "focus_keyword_cli_present": True,
         "title": "通勤底妆指南",
         "content": "正文",
         "cover_copy": "先看这里",
@@ -571,42 +569,36 @@ def test_human_focus_keyword_edit_invalidates_downstream_artifacts_and_reruns_r2
         "angle": "成膜顺序",
         "target_group": "通勤人群",
         "core_pain": "防晒后搓泥",
-        "storyboards": [],
-        "content_contract": {
-            "audience": "通勤人群",
-            "trigger_situation": "早晨上班前",
-            "decision_problem": "如何避免搓泥",
-            "first_screen_promise": "三步避免搓泥",
-            "screenshot_asset": "步骤清单",
-            "proof_asset": "质地图",
-            "visual_mode": "text_card",
-            "content_job": "diagnose_and_adjust",
-            "primary_visual_family": "beauty_editorial",
-            "primary_visual_subject": "serum_texture",
-            "proof_mode": "product_texture",
-            "recommended_frame_count": 5,
-        },
+        "narrative_plan": narrative_plan().model_dump(mode="json"),
     }
     monkeypatch.setattr(
         module,
         "interrupt",
         lambda _payload: {
             "approved": True,
-            "edited_publish_package": {"focus_keyword": "人工换词"},
-            "feedback": "change keyword",
+            "edited_publish_package": {"title": "人工换标题"},
+            "feedback": "change title",
         },
     )
 
+    visual_artifacts = {
+        "content_atom_set": {"canonical_sha256": "old-atoms", "atoms": []},
+        "visual_direction_plan": {
+            "template_family": "white_quote",
+            "page_count": 5,
+            "art_direction": "editorial",
+        },
+        "asset_manifest": {"items": []},
+        "carousel_design_plan": {"pages": []},
+        "design_plan_qa_result": {"passed": True, "issues": []},
+        "render_manifest": {"pages": []},
+        "render_qa_result": {"passed": True, "issues": []},
+        "visual_critique": {"passed": True, "issues": []},
+    }
     result = module.human_review_node(
         {
-            "focus_keyword": "防晒搓泥",
-            "focus_keyword_cli_present": True,
             "publish_package": package,
-            "asset_manifest": {"items": []},
-            "visual_plan": {"frame_plan": []},
-            "render_manifest": {"pages": []},
-            "carousel_qa_result": {"passed": True, "issues": []},
-            "render_qa_result": {"passed": True, "issues": []},
+            **visual_artifacts,
             "review_round": 0,
             "final_policy_issues": [],
         }
@@ -614,8 +606,16 @@ def test_human_focus_keyword_edit_invalidates_downstream_artifacts_and_reruns_r2
 
     assert result["review_status"] == "needs_r2_recheck"
     assert result["review_route"] == "r2_compliance"
-    assert result["visual_plan"] is None
-    assert result["render_manifest"] is None
+    assert result["publish_package"]["title"] == "人工换标题"
+    assert {
+        key: result[key]
+        for key in visual_artifacts
+    } == {key: None for key in visual_artifacts}
+    assert (
+        result["decision_output"]
+        .normalized_input.r2_input.content_snapshot.narrative_plan
+        == narrative_plan()
+    )
 
 
 def test_retrieve_memory_node_requires_domain_context():

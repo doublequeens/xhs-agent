@@ -1,4 +1,56 @@
 from src.nodes import node_c_virality_scorer as module
+from src.schemas.narrative import NarrativePlan
+from src.schemas.novelty_guard import NoveltyCheckResults
+
+
+def _narrative_plan() -> dict:
+    beats = [
+        {"beat_id": "hook", "kind": "hook", "purpose": "建立阅读承诺"},
+        {"beat_id": "scene", "kind": "scene", "purpose": "呈现具体场景"},
+        {"beat_id": "steps", "kind": "steps", "purpose": "给出可执行步骤"},
+        {"beat_id": "summary", "kind": "summary", "purpose": "总结可保存结论"},
+    ]
+    return NarrativePlan(
+        narrative_form="step_tutorial",
+        beats=beats,
+        saveable_beat=beats[2],
+        closing_mode="none",
+    ).model_dump(mode="json")
+
+
+def _novelty_check_results() -> NoveltyCheckResults:
+    return NoveltyCheckResults(
+        novelty_results=[
+            {
+                "topic_id": "tp_001",
+                "topic": "健康生活习惯",
+                "target_group": "上班族",
+                "core_pain": "难坚持",
+                "angle_id": "ag_001",
+                "angle": "微习惯清单",
+                "opening_hook": "先从一分钟开始",
+                "value_promise": "降低执行门槛",
+                "suggested_structure": "场景、步骤、清单",
+                "narrative_plan": _narrative_plan(),
+                "decision": "keep",
+                "novelty_score": 0.9,
+                "max_similarity": 0.1,
+                "matched_history": [],
+                "reason": "足够新颖",
+                "revision_suggestions": [],
+                "memory_signal": {
+                    "decision": "keep",
+                    "novelty_score": 0.9,
+                    "max_similarity": 0.1,
+                    "rejected_by_memory": False,
+                    "similar_to_recent_content": False,
+                    "similar_to_high_performing_pattern": False,
+                    "similar_to_low_performing_pattern": False,
+                    "recommended_for_virality_scorer": True,
+                },
+            }
+        ]
+    )
 
 
 def _valid_score():
@@ -28,6 +80,7 @@ def _valid_score():
         "opening_hook": "先从一分钟开始",
         "value_promise": "降低执行门槛",
         "suggested_structure": "场景、步骤、清单",
+        "narrative_plan": _narrative_plan(),
     }
 
 
@@ -45,7 +98,7 @@ def test_virality_scorer_receives_content_contract(monkeypatch):
 
     result = module.virality_scorer_node(
         {
-            "novelty_check_results": [],
+            "novelty_check_results": _novelty_check_results(),
             "trends": [
                 {
                     "topic_id": "tp_001",
@@ -96,7 +149,7 @@ def test_virality_scorer_retries_schema_errors_with_model_feedback(monkeypatch):
 
     result = module.virality_scorer_node(
         {
-            "novelty_check_results": [],
+            "novelty_check_results": _novelty_check_results(),
             "domain_context": {
                 "domain": "healthy_lifestyle",
                 "profile_version": "healthy-lifestyle-v1",
