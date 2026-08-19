@@ -11,6 +11,7 @@ from src.visual_ai.factory import (
     get_structured_visual_model,
     get_v4_visual_llm_gateway,
 )
+from src.visual_ai.protocols import ProviderConfig
 from src.visual_ai.gemini import (
     GeminiImageGenerationProvider,
     GeminiStructuredVisualModel,
@@ -102,3 +103,30 @@ def test_v4_factory_is_lazy_and_does_not_construct_a_parent_google_client(
 
     assert gateway.provider_config.model == DEFAULT_VISUAL_MODEL
     assert calls == []
+
+
+def test_default_v4_factory_requires_api_key_before_creating_run_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    with pytest.raises(ValueError, match="GEMINI_API_KEY"):
+        get_v4_visual_llm_gateway(
+            ledger_path=tmp_path / "attempts.sqlite",
+            result_root=tmp_path / "results",
+        )
+    assert not (tmp_path / "attempts.sqlite").exists()
+
+
+def test_v4_factory_accepts_explicit_fake_provider_without_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    gateway = get_v4_visual_llm_gateway(
+        provider_config=ProviderConfig(provider="fake", model="fake-model"),
+        ledger_path=tmp_path / "attempts.sqlite",
+        result_root=tmp_path / "results",
+    )
+    assert gateway.provider_config.provider == "fake"
+    assert gateway.provider_config.api_key == ""

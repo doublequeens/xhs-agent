@@ -66,16 +66,23 @@ def get_v4_visual_llm_gateway(
 ):
     """Construct the v4 gateway without creating a Google client in parent."""
 
-    # Validate model before reading the key.  The key is secret configuration
-    # passed only to the spawned worker; this function never calls genai.Client.
-    model = configured_visual_model()
-    config = provider_config or ProviderConfig(
-        provider="gemini",
-        model=model,
-        api_key=os.environ.get("GEMINI_API_KEY", ""),
-    )
-    if config.model != model:
-        raise ValueError(f"v4 provider model must be {model}")
+    # The default Gemini path must fail before creating a ledger/run state when
+    # its required secret is absent.  An explicitly injected non-Gemini config
+    # is a supported seam for offline tests and local providers.
+    if provider_config is None:
+        model = configured_visual_model()
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY is required for the default v4 Gemini factory")
+        config = ProviderConfig(provider="gemini", model=model, api_key=api_key)
+    else:
+        config = provider_config
+        if config.provider == "gemini":
+            model = configured_visual_model()
+            if not config.api_key:
+                raise ValueError("GEMINI_API_KEY is required for an injected Gemini config")
+            if config.model != model:
+                raise ValueError(f"v4 provider model must be {model}")
     if ledger is None:
         from pathlib import Path
 

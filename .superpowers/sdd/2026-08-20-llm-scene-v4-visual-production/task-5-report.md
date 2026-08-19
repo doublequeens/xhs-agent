@@ -52,3 +52,73 @@ cycles. The final focused command is green.
   `RUN_LIVE_VISUAL_AI_TESTS=1` and credentials.
 - Task 9 still owns approved asset-transaction binding for generated images;
   this gateway stores only diagnostic/cache results beneath the v4 result root.
+
+## Fix round 1: review findings after be01d0a
+
+### TDD evidence
+
+The review regression tests were added before the corresponding fixes. The
+required red command was:
+
+```text
+pytest -q tests/visual_ai/test_gateway.py tests/visual_ai/test_v4_worker.py tests/visual_ai/test_factory.py tests/visual_ai/test_gemini_adapter.py tests/models/test_guard.py
+```
+
+It failed as expected with:
+
+```text
+11 failed, 63 passed, 2 warnings in 2.38s
+```
+
+The failures covered hard-timeout retry, endpoint/path and request-secret
+redaction, strict validated-contract reuse, direct image validation, symlink
+containment, ambiguous SUCCESS finish reconciliation, and default factory key
+validation.
+
+### Changes
+
+- HARD_TIMEOUT now uses the same bounded retry path as transient transport,
+  clipped by the invocation-wide deadline.
+- Structured reuse requires the exact response-schema hash and strict canonical
+  JSON/model validation. Image reuse requires a stable versioned image
+  validation-contract hash, exact bytes hash, MIME, and decodability checks.
+- Direct image inputs require one matching supported MIME per decodable byte
+  sequence before an AttemptStarted event; ambiguous path-plus-byte inputs are
+  rejected.
+- Fingerprints omit endpoints, recursively redact absolute local paths and
+  attempt metadata, and reject secret-bearing request payload keys. Provider
+  endpoint representations remove userinfo/query/fragment data.
+- Result persistence now opens root/v4/kind through descriptor-relative
+  O_NOFOLLOW handles, creates exclusive temporary files, writes/fsyncs,
+  renames atomically, fsyncs directories, and performs bounded cleanup. A
+  pre-existing symlink cannot redirect a write outside the configured root.
+- Worker allocations are cleanup-owned from Pipe construction onward. Process
+  start, IPC, timeout, terminate/kill fallback, join, close, and pipe cleanup
+  failures are contextual fatal outcomes; no normal return occurs with a live
+  child. The v4 adapter remains one SDK call per attempt.
+- Result persistence is separate from terminal ledger append. Terminal append
+  reconciliation inspects the durable projection and retries only an observed
+  open attempt, honoring an already durable intended terminal and leaving
+  unresolved state for reconciliation instead of blindly double-finishing.
+- The default Gemini factory requires GEMINI_API_KEY before creating ledger
+  state; explicitly injected non-Gemini configurations remain usable offline.
+
+### GREEN verification
+
+```text
+pytest -q tests/visual_ai/test_gateway.py tests/visual_ai/test_v4_worker.py tests/visual_ai/test_factory.py tests/visual_ai/test_gemini_adapter.py tests/models/test_guard.py
+85 passed, 2 warnings in 2.42s
+
+pytest -q
+1444 passed, 2 skipped, 6 warnings in 29.33s
+
+python -m compileall -q src main.py
+git diff --check
+```
+
+The two live Gemini tests remained skipped by their documented opt-in guard.
+The four additional warnings are the test-only Python 3.12 fork deprecation
+warnings from the real child-process cleanup proofs. The other two are the
+pre-existing pytest temporary-directory cleanup warnings emitted while
+`tests/metrics_collector/test_launchd.py::test_plist_mode_is_0600_under_restrictive_umask`
+is collected/cleaned.

@@ -5,11 +5,35 @@ import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Mapping, Protocol, Sequence, TypeVar
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import BaseModel
 
 
 T = TypeVar("T", bound=BaseModel)
+
+
+def _redacted_endpoint(value: str) -> str:
+    """Return endpoint routing information without credentials or selectors.
+
+    Endpoints are configuration rather than request identity.  Keeping only
+    scheme/host/path is useful in diagnostics while ensuring userinfo, query
+    parameters, and fragments (where API tokens commonly appear) never cross
+    the representation boundary.
+    """
+
+    try:
+        parsed = urlsplit(value)
+        if not parsed.scheme or not parsed.hostname:
+            return "<redacted-endpoint>"
+        host = parsed.hostname
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        if parsed.port is not None:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+    except (TypeError, ValueError):
+        return "<redacted-endpoint>"
 
 
 class _FrozenDict(dict[str, Any]):
@@ -66,13 +90,13 @@ class ProviderConfig:
             raise ValueError("api_key must be a string")
 
     def __repr__(self) -> str:
-        endpoint = f", endpoint={self.endpoint!r}" if self.endpoint else ""
+        endpoint = f", endpoint={_redacted_endpoint(self.endpoint)!r}" if self.endpoint else ""
         return f"ProviderConfig(provider={self.provider!r}, model={self.model!r}{endpoint})"
 
     def sanitized(self) -> dict[str, str]:
         values = {"provider": self.provider, "model": self.model}
         if self.endpoint:
-            values["endpoint"] = self.endpoint
+            values["endpoint"] = _redacted_endpoint(self.endpoint)
         return values
 
 

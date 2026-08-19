@@ -144,6 +144,10 @@ class WorkerTimeout(TimeoutError):
     """The parent reached its shared deadline and reaped the child."""
 
 
+class WorkerCleanupError(RuntimeError):
+    """The worker process or IPC handles could not be closed safely."""
+
+
 def _child_entry(
     child_connection: Connection,
     provider_config: ProviderConfig,
@@ -203,73 +207,124 @@ class V4Worker:
     ) -> WorkerEnvelope:
         if timeout_seconds <= 0:
             raise WorkerTimeout("deadline elapsed before worker launch")
-        context = multiprocessing.get_context(self.start_method)
-        parent_connection, child_connection = context.Pipe(duplex=False)
-        process = context.Process(
-            target=_child_entry,
-            args=(child_connection, provider_config, request),
-            daemon=False,
-        )
+        parent_connection: Connection | None = None
+        child_connection: Connection | None = None
+        process: multiprocessing.Process | None = None
         started = False
+        reaped = False
+        result: WorkerEnvelope | None = None
+        primary_error: BaseException | None = None
+        cleanup_errors: list[BaseException] = []
         try:
+            context = multiprocessing.get_context(self.start_method)
+            parent_connection, child_connection = context.Pipe(duplex=False)
+            process = context.Process(
+                target=_child_entry,
+                args=(child_connection, provider_config, request),
+                daemon=False,
+            )
             process.start()
             started = True
-            child_connection.close()
+            self._close_connection(child_connection)
             if not parent_connection.poll(timeout_seconds):
                 self._reap(process, timed_out=True)
+                reaped = True
                 raise WorkerTimeout("worker deadline elapsed")
             try:
                 data = parent_connection.recv_bytes()
             except (EOFError, OSError, ValueError) as exc:
                 self._reap(process, timed_out=False)
+                reaped = True
                 raise RuntimeError("worker IPC failed") from exc
             self._reap(process, timed_out=False)
-            return deserialize_envelope(data)
-        except WorkerTimeout:
-            raise
-        except Exception:
-            if started:
-                self._reap(process, timed_out=False)
-            raise
+            reaped = True
+            result = deserialize_envelope(data)
+        except BaseException as exc:
+            primary_error = exc
         finally:
-            try:
-                parent_connection.close()
-            except Exception:
-                pass
-            try:
-                child_connection.close()
-            except Exception:
-                pass
+            if process is not None and started and not reaped:
+                try:
+                    self._reap(process, timed_out=isinstance(primary_error, WorkerTimeout))
+                    reaped = True
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            elif process is not None and not started:
+                close = getattr(process, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+            for connection in (parent_connection, child_connection):
+                if connection is not None:
+                    try:
+                        self._close_connection(connection)
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+
+        if cleanup_errors:
+            # A child/pipe cleanup failure is fatal even when the provider
+            # operation itself already failed; never retry with live handles.
+            raise WorkerCleanupError("worker cleanup failed") from None
+        if primary_error is not None:
+            if isinstance(primary_error, WorkerTimeout):
+                raise primary_error
+            if isinstance(primary_error, RuntimeError) and str(primary_error) in {
+                "worker IPC failed",
+            }:
+                raise primary_error
+            raise RuntimeError("worker process invocation failed") from None
+        if result is None:
+            raise RuntimeError("worker process returned no envelope") from None
+        return result
+
+    @staticmethod
+    def _close_connection(connection: Connection) -> None:
+        connection.close()
 
     def _reap(self, process: multiprocessing.Process, *, timed_out: bool) -> None:
+        cleanup_errors: list[BaseException] = []
         if process.is_alive():
             try:
                 process.terminate()
-            except (OSError, RuntimeError):
+            except BaseException as exc:
                 # The kill fallback below is still attempted when terminate
                 # cannot reach an already-crashed child.
-                pass
-            process.join(self.cleanup_grace_seconds)
+                cleanup_errors.append(exc)
+            try:
+                process.join(self.cleanup_grace_seconds)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
         if process.is_alive():
             kill = getattr(process, "kill", None)
             if kill is not None:
                 try:
                     kill()
-                except (OSError, RuntimeError):
-                    pass
-            process.join(self.cleanup_grace_seconds)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            else:
+                cleanup_errors.append(RuntimeError("worker kill is unavailable"))
+            try:
+                process.join(self.cleanup_grace_seconds)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
         if process.is_alive():
             # A live child after bounded terminate/kill is a contextual worker
             # failure; do not return while it remains attached to this call.
-            raise RuntimeError("worker cleanup exceeded bounded grace")
+            raise WorkerCleanupError("worker cleanup exceeded bounded grace") from None
         else:
-            process.join(self.cleanup_grace_seconds)
+            try:
+                process.join(self.cleanup_grace_seconds)
+            except BaseException as exc:
+                cleanup_errors.append(exc)
             close = getattr(process, "close", None)
             if close is not None:
                 try:
                     close()
-                except (OSError, RuntimeError):
-                    pass
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+        if cleanup_errors:
+            raise WorkerCleanupError("worker cleanup failed") from None
         if timed_out:
             return
 
@@ -287,6 +342,7 @@ __all__ = [
     "WorkerFailure",
     "WorkerSuccess",
     "WorkerTimeout",
+    "WorkerCleanupError",
     "deserialize_envelope",
     "serialize_envelope",
     "worker_main",

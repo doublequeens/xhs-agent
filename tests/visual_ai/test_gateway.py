@@ -12,6 +12,7 @@ from pydantic import BaseModel
 
 from src.schemas.v4.runtime import AttemptStarted
 from src.visual_ai.gateway import (
+    IMAGE_VALIDATION_CONTRACT_SHA256,
     InvocationPolicy,
     InvocationRequest,
     ProviderConfig,
@@ -22,8 +23,9 @@ from src.visual_ai.gateway import (
 from src.visual_ai.v4_worker import (
     WorkerFailure,
     WorkerSuccess,
+    WorkerTimeout,
 )
-from src.visual_runtime.attempt_ledger import AttemptLedger
+from src.visual_runtime.attempt_ledger import AttemptLedger, ReusableResult
 
 
 class Answer(BaseModel):
@@ -124,6 +126,23 @@ def test_schema_repair_consumes_a_visible_attempt(tmp_path: Path) -> None:
     ledger.close()
 
 
+def test_hard_timeout_retries_within_shared_deadline(tmp_path: Path) -> None:
+    worker = QueueWorker(WorkerTimeout("blocked"), success())
+    gateway, ledger = make_gateway(tmp_path, worker=worker, sleep=lambda _seconds: None)
+
+    result = gateway.invoke_structured(
+        make_request(), Answer, InvocationPolicy(deadline_seconds=2, max_attempts=2)
+    )
+
+    assert result.value == "ok"
+    assert len(worker.calls) == 2
+    assert [event.status for event in ledger.events() if hasattr(event, "status")] == [
+        "HARD_TIMEOUT",
+        "SUCCESS",
+    ]
+    ledger.close()
+
+
 def test_transient_transport_retries_once_per_worker_attempt(tmp_path: Path) -> None:
     worker = QueueWorker(
         WorkerFailure(retryable=True, error_class="transport", error_code="UNAVAILABLE", provider_request_id="p-1"),
@@ -211,6 +230,86 @@ def test_fingerprint_excludes_secret_paths_and_attempt_metadata(tmp_path: Path) 
     assert "secret-key" not in repr(ProviderConfig(provider="fake", model="model-a", api_key="secret-key"))
 
 
+def test_fingerprint_excludes_endpoint_local_roots_and_redacts_endpoint_parts(
+    tmp_path: Path,
+) -> None:
+    request_one = make_request(
+        payload={"prompt": "safe", "nested": {"path": str(tmp_path / "one")}}
+    )
+    request_two = make_request(
+        payload={"prompt": "safe", "nested": {"path": str(tmp_path / "two")}}
+    )
+    config_one = ProviderConfig(
+        provider="fake",
+        model="model-a",
+        endpoint="https://user:secret@example.test/v1?token=private",
+    )
+    config_two = ProviderConfig(
+        provider="fake",
+        model="model-a",
+        endpoint="https://other:changed@example.test/v2?token=different",
+    )
+
+    assert request_fingerprint(request_one, config_one, Answer) == request_fingerprint(
+        request_two, config_two, Answer
+    )
+    assert "secret" not in repr(config_one)
+    assert "private" not in repr(config_one)
+    assert "secret" not in repr(config_one.sanitized())
+    assert "private" not in repr(config_one.sanitized())
+
+
+def test_request_secret_fields_are_rejected_before_attempt_started(tmp_path: Path) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    request = make_request(payload={"prompt": "safe", "nested": {"token": "secret"}})
+
+    with pytest.raises(ValueError, match="secret field"):
+        gateway.invoke_structured(request, Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert ledger.events() == []
+    ledger.close()
+
+
+def test_fingerprint_binds_image_bytes_and_excludes_local_attempt_metadata(
+    tmp_path: Path,
+) -> None:
+    image = b"image-bytes"
+    first = make_request(
+        operation_kind="image_evaluation",
+        payload={
+            "prompt": "inspect",
+            "nested": {"arbitrary_local": str(tmp_path / "first")},
+            "attempt_number": 1,
+            "timestamp": "2026-08-20T00:00:00Z",
+            "image_mime_types": ("image/png",),
+        },
+    ).with_payload(
+        {
+            "prompt": "inspect",
+            "nested": {"arbitrary_local": str(tmp_path / "first")},
+            "attempt_number": 1,
+            "timestamp": "2026-08-20T00:00:00Z",
+            "image_mime_types": ("image/png",),
+        },
+        image_inputs=(image,),
+    )
+    second = first.with_payload(
+        {
+            "prompt": "inspect",
+            "nested": {"arbitrary_local": str(tmp_path / "second")},
+            "attempt_number": 99,
+            "timestamp": "2026-08-21T00:00:00Z",
+            "image_mime_types": ("image/png",),
+        },
+        image_inputs=(image,),
+    )
+    config = ProviderConfig(provider="fake", model="model-a")
+    assert request_fingerprint(first, config, Answer) == request_fingerprint(second, config, Answer)
+
+    changed = second.with_payload(dict(second.payload), image_inputs=(b"different",))
+    assert request_fingerprint(first, config, Answer) != request_fingerprint(changed, config, Answer)
+
+
 def test_reusable_structured_result_is_revalidated_without_new_attempt(tmp_path: Path) -> None:
     worker = QueueWorker(success())
     gateway, ledger = make_gateway(tmp_path, worker=worker)
@@ -226,6 +325,65 @@ def test_reusable_structured_result_is_revalidated_without_new_attempt(tmp_path:
     ledger.close()
 
 
+@pytest.mark.parametrize("validated_contract_sha256", [None, "0" * 64])
+def test_structured_reuse_requires_schema_contract_and_canonical_bytes(
+    tmp_path: Path,
+    validated_contract_sha256: str | None,
+) -> None:
+    worker = QueueWorker(success())
+    gateway, ledger = make_gateway(tmp_path, worker=worker)
+    request = make_request()
+    fingerprint = request_fingerprint(
+        request.with_payload({**request.payload, "response_schema": Answer.model_json_schema()}),
+        gateway.provider_config,
+        Answer,
+    )
+    content = b'{ "value": "ok" }'
+    result_ref = "reuse.json"
+    result_root = ledger.result_root
+    assert result_root is not None
+    result_root.mkdir(parents=True, exist_ok=True)
+    (result_root / result_ref).write_bytes(content)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        ledger,
+        "reusable_result",
+        lambda _fingerprint: ReusableResult(
+            attempt_id="old",
+            request_fingerprint=fingerprint,
+            result_ref=result_ref,
+            result_sha256=hashlib.sha256(content).hexdigest(),
+            content=content,
+            validated_contract_sha256=validated_contract_sha256,
+        ),
+    )
+    try:
+        result = gateway.invoke_structured(request, Answer, InvocationPolicy(deadline_seconds=2))
+    finally:
+        monkeypatch.undo()
+
+    assert result.value == "ok"
+    assert len(worker.calls) == 1
+    ledger.close()
+
+
+def test_structured_success_records_schema_validation_contract_hash(
+    tmp_path: Path,
+) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    latest = ledger.latest()
+    assert latest is not None
+    assert latest.validated_contract_sha256 == hashlib.sha256(
+        __import__("json").dumps(
+            Answer.model_json_schema(), ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    assert latest.validated_contract_sha256 != latest.sanitized_result_sha256
+    ledger.close()
+
+
 def test_image_generation_validates_and_persists_immutable_bytes(tmp_path: Path) -> None:
     image_buffer = io.BytesIO()
     Image.new("RGB", (2, 2), color=(255, 0, 0)).save(image_buffer, format="PNG")
@@ -236,6 +394,17 @@ def test_image_generation_validates_and_persists_immutable_bytes(tmp_path: Path)
     assert result.data.startswith(b"\x89PNG")
     assert result.sha256 == hashlib.sha256(result.data).hexdigest()
     assert ledger.latest().status == "SUCCESS"
+    assert ledger.latest().validated_contract_sha256 == IMAGE_VALIDATION_CONTRACT_SHA256
+    reused = gateway.generate_image(
+        make_request(
+            operation_kind="image_generation",
+            payload={"prompt": "red", "width": 2, "height": 2},
+        ),
+        InvocationPolicy(deadline_seconds=2),
+    )
+    assert reused.reused is True
+    assert reused.data == result.data
+    assert len(worker.calls) == 1
     ledger.close()
 
 
@@ -247,4 +416,173 @@ def test_missing_evaluate_image_fails_before_attempt(tmp_path: Path) -> None:
         gateway.evaluate_images(request, Answer, InvocationPolicy(deadline_seconds=2))
     assert ledger.events() == []
     assert not worker.calls
+    ledger.close()
+
+
+def test_direct_evaluate_image_bytes_are_validated_before_attempt(tmp_path: Path) -> None:
+    worker = QueueWorker(success())
+    gateway, ledger = make_gateway(tmp_path, worker=worker)
+    request = make_request(
+        operation_kind="image_evaluation",
+        payload={"prompt": "inspect", "image_mime_types": ("image/png",)},
+    ).with_payload(
+        {"prompt": "inspect", "image_mime_types": ("image/png",)},
+        image_inputs=(b"not-an-image",),
+    )
+
+    with pytest.raises(VisualInvocationError, match="input"):
+        gateway.evaluate_images(request, Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert ledger.events() == []
+    assert not worker.calls
+    ledger.close()
+
+
+@pytest.mark.parametrize("symlink_name", ["v4", "structured"])
+def test_result_store_rejects_symlinked_result_directory_without_outside_write(
+    tmp_path: Path,
+    symlink_name: str,
+) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    root = ledger.result_root
+    assert root is not None
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    root.mkdir(parents=True, exist_ok=True)
+    if symlink_name == "v4":
+        (root / "v4").symlink_to(outside, target_is_directory=True)
+    else:
+        (root / "v4").mkdir(parents=True, exist_ok=True)
+        (root / "v4" / symlink_name).symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(VisualInvocationError, match="result_store"):
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert list(outside.iterdir()) == []
+    assert ledger.latest() is not None
+    assert ledger.latest().status == "TRANSPORT_FATAL"
+    ledger.close()
+
+
+def test_attempt_order_is_start_worker_persist_finish(tmp_path: Path) -> None:
+    events: list[str] = []
+    worker = QueueWorker(success())
+    gateway, ledger = make_gateway(tmp_path, worker=worker)
+    original_persist = gateway._persist_result
+
+    def persist(kind: str, attempt_id: str, data: bytes) -> tuple[str, str]:
+        assert ledger.latest() is not None and ledger.latest().status == "RUNNING"
+        events.append("persist")
+        result = original_persist(kind, attempt_id, data)
+        assert ledger.latest() is not None and ledger.latest().status == "RUNNING"
+        return result
+
+    original_invoke = worker.invoke_once
+
+    def invoke(*args: Any, **kwargs: Any) -> Any:
+        assert ledger.latest() is not None and ledger.latest().status == "RUNNING"
+        events.append("worker")
+        return original_invoke(*args, **kwargs)
+
+    worker.invoke_once = invoke  # type: ignore[method-assign]
+    gateway._persist_result = persist  # type: ignore[method-assign]
+    gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert events == ["worker", "persist"]
+    assert ledger.latest() is not None and ledger.latest().status == "SUCCESS"
+    ledger.close()
+
+
+def test_process_start_failure_finishes_started_attempt_without_secret_leak(tmp_path: Path) -> None:
+    class FailingWorker:
+        def invoke_once(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("process start body SECRET")
+
+    gateway, ledger = make_gateway(tmp_path, worker=FailingWorker())
+    with pytest.raises(VisualInvocationError, match="TRANSPORT_FATAL") as error_info:
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert "SECRET" not in str(error_info.value)
+    assert ledger.latest() is not None and ledger.latest().status == "TRANSPORT_FATAL"
+    ledger.close()
+
+
+def test_result_store_failure_finishes_started_attempt_without_secret_leak(tmp_path: Path) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+
+    def fail_persist(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError("result body SECRET")
+
+    gateway._persist_result = fail_persist  # type: ignore[method-assign]
+    with pytest.raises(VisualInvocationError, match="result_store") as error_info:
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert "SECRET" not in str(error_info.value)
+    assert ledger.latest() is not None and ledger.latest().status == "TRANSPORT_FATAL"
+    ledger.close()
+
+
+def test_crash_leaves_open_attempt_for_reconciliation(tmp_path: Path) -> None:
+    class CrashingWorker:
+        def invoke_once(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise KeyboardInterrupt("provider traceback SECRET")
+
+    gateway, ledger = make_gateway(tmp_path, worker=CrashingWorker())
+    with pytest.raises(KeyboardInterrupt):
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert ledger.latest() is not None and ledger.latest().status == "RUNNING"
+    ledger.close()
+
+
+def test_success_finish_failure_is_reconciled_without_duplicate_terminal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    original_finish = ledger.finish
+    calls = 0
+
+    def fail_once(attempt_id: str, **kwargs: Any) -> Any:
+        nonlocal calls
+        if kwargs.get("status") == "SUCCESS" and calls == 0:
+            calls += 1
+            raise RuntimeError("ambiguous finish provider body SECRET")
+        calls += 1
+        return original_finish(attempt_id, **kwargs)
+
+    monkeypatch.setattr(ledger, "finish", fail_once)
+    result = gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert result.value == "ok"
+    assert calls == 2
+    latest = ledger.latest()
+    assert latest is not None and latest.status == "SUCCESS"
+    assert len([event for event in ledger.events() if type(event).__name__ == "AttemptFinished"]) == 1
+    ledger.close()
+
+
+def test_ambiguous_finish_state_keeps_reconciliation_evidence_without_double_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    calls = 0
+
+    def fail_finish(_attempt_id: str, **_kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("finish body SECRET")
+
+    monkeypatch.setattr(ledger, "finish", fail_finish)
+    monkeypatch.setattr(ledger, "projection", lambda _attempt_id: (_ for _ in ()).throw(RuntimeError("ledger unavailable")))
+    with pytest.raises(VisualInvocationError, match="ledger") as error_info:
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert calls == 1
+    assert "SECRET" not in str(error_info.value)
+    monkeypatch.undo()
+    latest = ledger.latest()
+    assert latest is not None and latest.status == "RUNNING"
+    assert list((ledger.result_root / "v4" / "structured").iterdir())  # type: ignore[operator]
     ledger.close()

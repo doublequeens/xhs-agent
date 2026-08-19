@@ -6,14 +6,16 @@ import hashlib
 import io
 import json
 import mimetypes
+import ntpath
 import os
 import random
-import tempfile
+import stat
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Generic, Mapping, TypeVar
+from uuid import uuid4
 
 from PIL import Image
 from pydantic import BaseModel, ValidationError
@@ -54,12 +56,28 @@ _SECRET_KEYS = frozenset(
         "api_key",
         "apikey",
         "authorization",
+        "auth",
+        "client_secret",
+        "credential_id",
         "token",
+        "access_token",
+        "refresh_token",
         "secret",
+        "secret_key",
         "password",
         "credential",
+        "cookie",
+        "cookies",
     }
 )
+_ATTEMPT_METADATA_KEYS = frozenset(
+    {"timestamp", "started_at", "deadline_at", "attempt_number", "retry_count"}
+)
+_LOCAL_PATH_KEYS = frozenset({"image_paths", "absolute_path", "local_root", "result_root"})
+_IMAGE_VALIDATION_CONTRACT_VERSION = "llm_scene_v4.image_validation_contract.v1"
+IMAGE_VALIDATION_CONTRACT_SHA256 = hashlib.sha256(
+    _IMAGE_VALIDATION_CONTRACT_VERSION.encode("utf-8")
+).hexdigest()
 
 
 class VisualInvocationError(RuntimeError):
@@ -140,19 +158,46 @@ def _safe_fingerprint_value(value: Any, *, key: str | None = None) -> Any:
         result: dict[str, Any] = {}
         for raw_key, item in value.items():
             key_text = str(raw_key)
-            if key_text.lower().replace("-", "_") in _SECRET_KEYS:
+            normalized_key = key_text.lower().replace("-", "_")
+            if normalized_key in _SECRET_KEYS:
                 continue
-            if key_text.lower() in {"timestamp", "started_at", "deadline_at", "attempt_number", "retry_count"}:
+            if normalized_key in _ATTEMPT_METADATA_KEYS:
                 continue
-            if key_text in {"image_paths", "absolute_path", "local_root", "result_root"}:
+            if normalized_key in _LOCAL_PATH_KEYS:
                 continue
             result[key_text] = _safe_fingerprint_value(item, key=key_text)
         return result
     if isinstance(value, (list, tuple)):
         return [_safe_fingerprint_value(item) for item in value]
-    if isinstance(value, (str, int, float, bool)) or value is None:
+    if isinstance(value, str):
+        # A local path can occur under an arbitrary application-specific key;
+        # key-name filtering alone is therefore insufficient.  ``ntpath``
+        # covers Windows paths when fingerprints are produced on another OS.
+        if os.path.isabs(value) or ntpath.isabs(value):
+            return "<local-path>"
+        return value
+    if isinstance(value, (int, float, bool)) or value is None:
         return value
     return str(value)
+
+
+def _find_secret_field(value: Any) -> str | None:
+    """Find a secret-bearing request key without inspecting its value."""
+
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            key_text = str(raw_key)
+            if key_text.lower().replace("-", "_") in _SECRET_KEYS:
+                return key_text
+            found = _find_secret_field(item)
+            if found is not None:
+                return found
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            found = _find_secret_field(item)
+            if found is not None:
+                return found
+    return None
 
 
 def response_model_schema_hash(response_model: type[BaseModel]) -> str:
@@ -172,7 +217,6 @@ def request_fingerprint(
     content = {
         "provider": provider_config.provider,
         "model": provider_config.model,
-        "endpoint": provider_config.endpoint,
         "operation_kind": request.operation_kind,
         "payload": _safe_fingerprint_value(request.payload),
         "image_inputs": [
@@ -278,7 +322,7 @@ def _safe_error_class(value: Any) -> str:
     if not isinstance(value, str):
         return "worker"
     value = value.strip().lower()
-    allowed = {"transport", "provider", "request", "worker", "input", "result_store", "candidate_budget"}
+    allowed = {"transport", "provider", "request", "worker", "input", "result_store", "candidate_budget", "ledger"}
     if value in allowed:
         return value
     return "worker"
@@ -346,12 +390,13 @@ class VisualLLMGateway:
 
         reusable = self.ledger.reusable_result(fingerprint)
         if reusable is not None:
-            try:
-                value = self._value_from_bytes(reusable.content, response_model)
-            except (VisualInvocationError, ValueError, TypeError):
-                value = None
-            if value is not None:
-                return value
+            if reusable.validated_contract_sha256 == schema_sha256:
+                try:
+                    value = self._value_from_bytes(reusable.content, response_model)
+                except (VisualInvocationError, ValueError, TypeError):
+                    value = None
+                if value is not None:
+                    return value
 
         def parse(envelope: WorkerSuccess) -> tuple[T, bytes] | _ParseFailure:
             if envelope.response_text is None:
@@ -388,7 +433,12 @@ class VisualLLMGateway:
         reusable = self.ledger.reusable_result(fingerprint)
         if reusable is not None:
             mime_type = _mime_from_ref(reusable.result_ref)
-            if mime_type and _valid_image_bytes(reusable.content, mime_type):
+            if (
+                reusable.validated_contract_sha256 == IMAGE_VALIDATION_CONTRACT_SHA256
+                and mime_type
+                and hashlib.sha256(reusable.content).hexdigest() == reusable.result_sha256
+                and _valid_image_bytes(reusable.content, mime_type)
+            ):
                 return GeneratedImageResult(
                     data=reusable.content,
                     mime_type=mime_type,
@@ -423,7 +473,7 @@ class VisualLLMGateway:
             policy=effective_policy,
             parse_success=parse,
             result_kind="image",
-            schema_sha256=None,
+            schema_sha256=IMAGE_VALIDATION_CONTRACT_SHA256,
         )
         assert isinstance(result, GeneratedImageResult)
         return result
@@ -434,6 +484,7 @@ class VisualLLMGateway:
         response_model: type[T],
         policy: InvocationPolicy | None = None,
     ) -> T:
+        self._validate_request(request)
         normalized = self._load_image_inputs(request)
         return self.invoke_structured(normalized, response_model, policy)
 
@@ -458,8 +509,12 @@ class VisualLLMGateway:
     def _validate_request(request: InvocationRequest) -> None:
         if not isinstance(request, InvocationRequest):
             raise TypeError("request must be an InvocationRequest")
+        secret_field = _find_secret_field(request.payload)
+        if secret_field is not None:
+            raise ValueError(f"request payload contains secret field {secret_field!r}")
 
     def _load_image_inputs(self, request: InvocationRequest) -> InvocationRequest:
+        self._validate_request(request)
         paths = request.payload.get("image_paths", ())
         if paths is None:
             paths = ()
@@ -468,7 +523,18 @@ class VisualLLMGateway:
         if not paths:
             if not request.image_inputs:
                 raise VisualInvocationError("TRANSPORT_FATAL", error_class="input")
+            raw_mime_types = request.payload.get("image_mime_types", ())
+            if not isinstance(raw_mime_types, (list, tuple)) or len(raw_mime_types) != len(request.image_inputs):
+                raise VisualInvocationError("TRANSPORT_FATAL", error_class="input")
+            for data, mime_type in zip(request.image_inputs, raw_mime_types, strict=True):
+                if not isinstance(mime_type, str) or not _valid_image_bytes(data, mime_type):
+                    raise VisualInvocationError("CONTENT_CONTRACT_VIOLATION", error_class="input") from None
             return request
+        if request.image_inputs:
+            # Do not silently discard a second source of bytes.  Callers must
+            # choose either path-backed inputs or direct bytes so every input
+            # is validated and fingerprinted exactly once.
+            raise VisualInvocationError("TRANSPORT_FATAL", error_class="input")
         contents: list[bytes] = []
         mime_types: list[str] = []
         for raw_path in paths:
@@ -586,21 +652,25 @@ class VisualLLMGateway:
                             value, result_bytes = parsed
                             try:
                                 result_ref, result_sha = self._persist_result(result_kind, started.attempt_id, result_bytes)
-                                contract_sha = hashlib.sha256(result_bytes).hexdigest()
-                                self.ledger.finish(
+                            except Exception:
+                                terminal_status = "TRANSPORT_FATAL"
+                                last_error = VisualInvocationError(terminal_status, error_class="result_store", attempt_number=attempt_number)
+                            else:
+                                # Persistence and the terminal ledger append
+                                # are deliberately separate.  If the append
+                                # acknowledgement is ambiguous, the helper
+                                # inspects the durable projection before making
+                                # one bounded, state-appropriate retry.
+                                self._finish_success_with_reconciliation(
                                     started.attempt_id,
-                                    status="SUCCESS",
+                                    attempt_number=attempt_number,
                                     provider_request_id=provider_request_id,
                                     latency_ms=max(0.0, (self.monotonic() - attempt_started_mono) * 1000),
                                     token_usage=token_usage,
                                     sanitized_result_ref=result_ref,
                                     sanitized_result_sha256=result_sha,
-                                    validated_contract_sha256=contract_sha,
+                                    validated_contract_sha256=schema_sha256,
                                 )
-                            except Exception:
-                                terminal_status = "TRANSPORT_FATAL"
-                                last_error = VisualInvocationError(terminal_status, error_class="result_store", attempt_number=attempt_number)
-                            else:
                                 if isinstance(value, GeneratedImageResult):
                                     value = GeneratedImageResult(
                                         data=value.data,
@@ -626,19 +696,15 @@ class VisualLLMGateway:
                                 return value
             finally:
                 if terminal_status is not None:
-                    try:
-                        self.ledger.finish(
-                            started.attempt_id,
-                            status=terminal_status,
-                            error_class=(last_error.error_class if last_error is not None else terminal_status),
-                            provider_request_id=provider_request_id,
-                            latency_ms=max(0.0, (self.monotonic() - attempt_started_mono) * 1000),
-                            token_usage=token_usage,
-                        )
-                    except Exception:
-                        # The attempt is already started; surface a redacted
-                        # gateway failure rather than leaving a false open state.
-                        raise VisualInvocationError("TRANSPORT_FATAL", error_class="ledger", attempt_number=attempt_number) from None
+                    self._finish_terminal_with_reconciliation(
+                        started.attempt_id,
+                        attempt_number=attempt_number,
+                        status=terminal_status,
+                        error_class=(last_error.error_class if last_error is not None else terminal_status),
+                        provider_request_id=provider_request_id,
+                        latency_ms=max(0.0, (self.monotonic() - attempt_started_mono) * 1000),
+                        token_usage=token_usage,
+                    )
 
             if last_error is None:
                 last_error = VisualInvocationError("TRANSPORT_FATAL", attempt_number=attempt_number)
@@ -666,7 +732,7 @@ class VisualLLMGateway:
                     original_fingerprint=fingerprint,
                 )
                 continue
-            if terminal_status == "TRANSPORT_RETRYABLE" and attempts < policy.max_attempts:
+            if terminal_status in {"TRANSPORT_RETRYABLE", "HARD_TIMEOUT"} and attempts < policy.max_attempts:
                 remaining = deadline_mono - self.monotonic()
                 if remaining <= 0:
                     raise last_error
@@ -686,6 +752,87 @@ class VisualLLMGateway:
         if last_error is not None:
             raise last_error
         raise VisualInvocationError("TRANSPORT_FATAL")
+
+    def _finish_success_with_reconciliation(
+        self,
+        attempt_id: str,
+        *,
+        attempt_number: int,
+        provider_request_id: str | None,
+        latency_ms: float,
+        token_usage: dict[str, int] | None,
+        sanitized_result_ref: str,
+        sanitized_result_sha256: str,
+        validated_contract_sha256: str | None,
+    ) -> None:
+        """Append one SUCCESS terminal, resolving an ambiguous append safely.
+
+        SQLite append acknowledgement can be lost after the durable insert.  A
+        projection check distinguishes that case from an open attempt.  Only
+        an observed open attempt is eligible for one bounded retry; if the
+        state cannot be read, the attempt remains available to the ledger's
+        recovery/reconciliation path and a redacted ledger error is raised.
+        """
+
+        finish_kwargs = {
+            "status": "SUCCESS",
+            "provider_request_id": provider_request_id,
+            "latency_ms": latency_ms,
+            "token_usage": token_usage,
+            "sanitized_result_ref": sanitized_result_ref,
+            "sanitized_result_sha256": sanitized_result_sha256,
+            "validated_contract_sha256": validated_contract_sha256,
+        }
+        self._finish_terminal_with_reconciliation(
+            attempt_id,
+            attempt_number=attempt_number,
+            **finish_kwargs,
+        )
+
+    def _finish_terminal_with_reconciliation(
+        self,
+        attempt_id: str,
+        *,
+        attempt_number: int,
+        status: str,
+        **finish_kwargs: Any,
+    ) -> None:
+        """Append one terminal event, retrying only an observed open state."""
+
+        finish_kwargs = {"status": status, **finish_kwargs}
+        try:
+            self.ledger.finish(attempt_id, **finish_kwargs)
+            return
+        except Exception:
+            projection = self._safe_projection(attempt_id, attempt_number)
+            if projection.status == status:
+                return
+            if projection.status != "RUNNING":
+                raise VisualInvocationError(
+                    "TRANSPORT_FATAL", error_class="ledger", attempt_number=attempt_number
+                ) from None
+
+        try:
+            self.ledger.finish(attempt_id, **finish_kwargs)
+            return
+        except Exception:
+            projection = self._safe_projection(attempt_id, attempt_number)
+            if projection.status == status:
+                return
+            # Keep the open attempt and persisted artifact for explicit
+            # reconciliation.  A blind third append could create a duplicate
+            # terminal if the second failure was also post-commit.
+            raise VisualInvocationError(
+                "TRANSPORT_FATAL", error_class="ledger", attempt_number=attempt_number
+            ) from None
+
+    def _safe_projection(self, attempt_id: str, attempt_number: int) -> Any:
+        try:
+            return self.ledger.projection(attempt_id)
+        except Exception:
+            raise VisualInvocationError(
+                "TRANSPORT_FATAL", error_class="ledger", attempt_number=attempt_number
+            ) from None
 
     def _invoke_worker(self, request: InvocationRequest, timeout_seconds: float) -> WorkerSuccess | WorkerFailure:
         worker = self.worker
@@ -707,39 +854,148 @@ class VisualLLMGateway:
             raise RuntimeError("result_root is required")
         if not isinstance(data, bytes):
             raise TypeError("result bytes required")
+        if kind not in {"structured", "image"}:
+            raise ValueError("unsupported result kind")
         suffix = ".json" if kind == "structured" else _extension_for_mime(data)
         relative = Path("v4") / kind / f"{attempt_id}{suffix}"
-        directory = root / relative.parent
-        directory.mkdir(parents=True, exist_ok=True)
-        destination = root / relative
-        temporary: Path | None = None
         digest = hashlib.sha256(data).hexdigest()
+        root_fd: int | None = None
+        v4_fd: int | None = None
+        kind_fd: int | None = None
+        temporary_name: str | None = None
+        primary_error: BaseException | None = None
+        cleanup_errors: list[BaseException] = []
         try:
-            with tempfile.NamedTemporaryFile(mode="wb", dir=directory, prefix=".result-", suffix=".tmp", delete=False) as handle:
-                temporary = Path(handle.name)
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-            temporary = None
-            directory_fd = os.open(directory, os.O_RDONLY)
+            # The final root component is opened without following a symlink;
+            # child directories are then resolved only through directory file
+            # descriptors.  This keeps v4/kind containment intact even when a
+            # pre-existing path component is hostile.
+            root_fd = self._open_result_root(root)
+            v4_fd = self._open_result_directory(root_fd, "v4")
+            kind_fd = self._open_result_directory(v4_fd, kind)
+
+            temporary_name = f".result-{uuid4().hex}.tmp"
+            temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | self._no_follow_flag() | self._close_on_exec_flag()
+            temp_fd = os.open(temporary_name, temp_flags, 0o600, dir_fd=kind_fd)
             try:
-                os.fsync(directory_fd)
+                offset = 0
+                while offset < len(data):
+                    written = os.write(temp_fd, data[offset:])
+                    if written <= 0:
+                        raise OSError("result write made no progress")
+                    offset += written
+                os.fsync(temp_fd)
             finally:
-                os.close(directory_fd)
+                os.close(temp_fd)
+
+            os.replace(
+                temporary_name,
+                f"{attempt_id}{suffix}",
+                src_dir_fd=kind_fd,
+                dst_dir_fd=kind_fd,
+            )
+            temporary_name = None
+            # Sync the containing directory and its parents so the rename is
+            # durable before the ledger SUCCESS event is appended.
+            os.fsync(kind_fd)
+            os.fsync(v4_fd)
+            os.fsync(root_fd)
+        except BaseException as exc:
+            primary_error = exc
         finally:
-            if temporary is not None:
+            if temporary_name is not None and kind_fd is not None:
                 try:
-                    temporary.unlink()
-                except OSError:
+                    os.unlink(temporary_name, dir_fd=kind_fd)
+                except FileNotFoundError:
                     pass
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
+            for descriptor in (kind_fd, v4_fd, root_fd):
+                if descriptor is not None:
+                    try:
+                        os.close(descriptor)
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
+        if primary_error is not None or cleanup_errors:
+            # Do not expose OS exception text, absolute paths, or symlink
+            # targets through the parent-side error boundary.
+            if primary_error is not None and cleanup_errors:
+                raise RuntimeError("result store operation and cleanup failed") from None
+            if primary_error is not None:
+                raise RuntimeError("result store operation failed") from None
+            raise RuntimeError("result store cleanup failed") from None
         return relative.as_posix(), digest
+
+    @staticmethod
+    def _no_follow_flag() -> int:
+        return int(getattr(os, "O_NOFOLLOW", 0))
+
+    @staticmethod
+    def _close_on_exec_flag() -> int:
+        return int(getattr(os, "O_CLOEXEC", 0))
+
+    @classmethod
+    def _directory_open_flags(cls) -> int:
+        return os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | cls._no_follow_flag() | cls._close_on_exec_flag()
+
+    @classmethod
+    def _open_result_root(cls, root: Path) -> int:
+        """Create/open an absolute root by descriptor-relative components."""
+
+        absolute = Path(os.path.abspath(os.fspath(root)))
+        components = absolute.parts
+        if not components or components[0] != os.sep:
+            raise OSError("result root must be absolute")
+        descriptor = os.open(os.sep, cls._directory_open_flags())
+        try:
+            for component in components[1:]:
+                try:
+                    os.mkdir(component, 0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+                next_descriptor = os.open(
+                    component,
+                    cls._directory_open_flags(),
+                    dir_fd=descriptor,
+                )
+                os.close(descriptor)
+                descriptor = next_descriptor
+            return descriptor
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+
+    @classmethod
+    def _open_result_directory(cls, parent_fd: int, name: str) -> int:
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        descriptor = os.open(name, cls._directory_open_flags(), dir_fd=parent_fd)
+        try:
+            if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError("result path is not a directory")
+            return descriptor
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
 
     @staticmethod
     def _value_from_bytes(data: bytes, response_model: type[T]) -> T:
         try:
-            payload = json.loads(data.decode("utf-8"))
-            return response_model.model_validate(payload)
+            parsed = _strict_parse(data.decode("utf-8"), response_model)
+            if isinstance(parsed, _ParseFailure):
+                raise ValueError(parsed.issue_code)
+            canonical = _canonical_model_bytes(parsed)
+            if canonical != data:
+                raise ValueError("non-canonical result bytes")
+            return parsed
         except (UnicodeDecodeError, json.JSONDecodeError, ValidationError, TypeError, ValueError):
             raise VisualInvocationError("SCHEMA_INVALID", error_class="reuse_validation") from None
 
