@@ -60,8 +60,8 @@ The failures were the expected v4 false-export transitions projecting to
 
 ## Verification
 
-- `pytest -q tests/test_main.py tests/integration/test_workflow_version_selection.py tests/integration/test_legacy_editorial_resume.py` — 78 passed.
-- `pytest -q tests/test_main.py tests/test_graph.py tests/test_run_registry.py tests/integration/test_legacy_editorial_resume.py tests/integration/test_workflow_version_selection.py` — 116 passed.
+- `pytest -q tests/test_main.py tests/integration/test_workflow_version_selection.py tests/integration/test_legacy_editorial_resume.py` — 85 passed, 2 warnings.
+- `pytest -q tests/test_main.py tests/test_graph.py tests/test_run_registry.py tests/integration/test_legacy_editorial_resume.py tests/integration/test_workflow_version_selection.py` — 123 passed, 2 warnings.
 - Review follow-up focused suites — 123 passed.
 - `pytest -q` — 1,326 passed, 2 expected live-AI tests skipped.
 - `python main.py --help` — succeeded without importing the absent `src.graph_v4`.
