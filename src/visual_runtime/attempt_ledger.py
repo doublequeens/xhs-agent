@@ -47,6 +47,10 @@ class AttemptLedgerError(RuntimeError):
     """Contextual error raised for invalid ledger state or durable I/O."""
 
 
+class _StaleResultVerificationError(AttemptLedgerError):
+    """Result-file failure that makes a candidate ineligible for reuse."""
+
+
 @dataclass(frozen=True)
 class ReusableResult:
     """A successful result whose path and bytes were verified at lookup time."""
@@ -134,8 +138,16 @@ class AttemptLedger:
     def __enter__(self) -> "AttemptLedger":
         return self
 
-    def __exit__(self, _exc_type, _exc, _traceback) -> None:
-        self.close()
+    def __exit__(self, _exc_type, exc, _traceback) -> bool:
+        cleanup_error = self._close_connection_quietly()
+        if cleanup_error is None:
+            return False
+        if exc is not None:
+            exc.add_note(f"ledger cleanup failed: {cleanup_error}")
+            return False
+        raise AttemptLedgerError(
+            f"could not close ledger {self.path}: {cleanup_error}"
+        ) from cleanup_error
 
     def _close_connection_quietly(self) -> BaseException | None:
         connection = self._connection
@@ -311,8 +323,38 @@ class AttemptLedger:
             rows,
             has_identity_columns=has_identity_columns,
         )
-        temporary_table = "visual_attempt_events__migrating"
-        connection.execute(f"DROP TABLE IF EXISTS {temporary_table}")
+        maximum_sequence = validated_rows[-1][0] if validated_rows else 0
+        sequence_row = connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?",
+            ("visual_attempt_events",),
+        ).fetchone()
+        if sequence_row is None:
+            legacy_high_water = 0
+        else:
+            raw_high_water = sequence_row[0]
+            if (
+                isinstance(raw_high_water, bool)
+                or not isinstance(raw_high_water, int)
+                or raw_high_water < 0
+            ):
+                raise AttemptLedgerError(
+                    "invalid sqlite_sequence high-water for visual_attempt_events"
+                )
+            legacy_high_water = raw_high_water
+        if legacy_high_water < maximum_sequence:
+            raise AttemptLedgerError(
+                "sqlite_sequence high-water is below the maximum event sequence"
+            )
+
+        temporary_table = f"visual_attempt_events__migrating_{uuid4().hex}"
+        collision = connection.execute(
+            "SELECT type FROM sqlite_master WHERE name = ?",
+            (temporary_table,),
+        ).fetchone()
+        if collision is not None:
+            raise AttemptLedgerError(
+                f"migration temporary table name is already in use: {temporary_table}"
+            )
         connection.execute(
             f"""
             CREATE TABLE {temporary_table} (
@@ -338,6 +380,22 @@ class AttemptLedger:
         connection.execute(
             f"ALTER TABLE {temporary_table} RENAME TO visual_attempt_events"
         )
+        target_high_water = max(legacy_high_water, maximum_sequence)
+        if target_high_water:
+            sequence_row = connection.execute(
+                "SELECT seq FROM sqlite_sequence WHERE name = ?",
+                ("visual_attempt_events",),
+            ).fetchone()
+            if sequence_row is None:
+                connection.execute(
+                    "INSERT INTO sqlite_sequence(name, seq) VALUES (?, ?)",
+                    ("visual_attempt_events", target_high_water),
+                )
+            else:
+                connection.execute(
+                    "UPDATE sqlite_sequence SET seq = ? WHERE name = ?",
+                    (target_high_water, "visual_attempt_events"),
+                )
 
     def _create_schema(self) -> None:
         connection = self._require_connection()
@@ -1078,7 +1136,9 @@ class AttemptLedger:
             content = b"".join(chunks)
             actual_sha256 = hashlib.sha256(content).hexdigest()
             if not _SHA256_RE.fullmatch(expected_sha256) or actual_sha256 != expected_sha256:
-                raise AttemptLedgerError("result reference sha256 does not match bytes")
+                raise _StaleResultVerificationError(
+                    "result reference sha256 does not match bytes"
+                )
             verified_result = normalized, content
         except BaseException as exc:
             primary_error = exc
@@ -1106,8 +1166,14 @@ class AttemptLedger:
             return self._read_verified_result(reference, expected_sha256)
         except AttemptLedgerError:
             raise
-        except (OSError, ValueError) as exc:
-            raise AttemptLedgerError(f"could not verify result reference {reference}: {exc}") from exc
+        except OSError as exc:
+            raise _StaleResultVerificationError(
+                f"could not verify result reference {reference}: {exc}"
+            ) from exc
+        except ValueError as exc:
+            raise AttemptLedgerError(
+                f"could not verify result reference {reference}: {exc}"
+            ) from exc
 
     def reusable_result(self, request_fingerprint: str) -> ReusableResult | None:
         if not _SHA256_RE.fullmatch(request_fingerprint):
@@ -1131,15 +1197,10 @@ class AttemptLedger:
             ) from exc
         for row in rows:
             attempt_id = str(row[1])
-            try:
-                projection = self._project_events(
-                    attempt_id,
-                    self._events_for_attempt(attempt_id),
-                )
-            except AttemptLedgerError:
-                # Corrupt candidates are never trusted and cannot expand this
-                # bounded lookup into an unbounded history scan.
-                continue
+            projection = self._project_events(
+                attempt_id,
+                self._events_for_attempt(attempt_id),
+            )
             if projection.status != "SUCCESS":
                 continue
             if (
@@ -1152,7 +1213,7 @@ class AttemptLedger:
                     projection.sanitized_result_ref,
                     projection.sanitized_result_sha256,
                 )
-            except AttemptLedgerError:
+            except _StaleResultVerificationError:
                 # A stale or tampered artifact is never trusted. A previous
                 # valid success with the same fingerprint may still be used.
                 continue

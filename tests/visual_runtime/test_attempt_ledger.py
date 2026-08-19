@@ -114,6 +114,11 @@ def create_legacy_ledger(
             )
         else:
             start = starts[event.attempt_id]
+            identity_values = (
+                (None, None, None)
+                if shape == "nullable-column"
+                else (start.run_id, start.candidate_id, start.request_fingerprint)
+            )
             connection.execute(
                 "INSERT INTO visual_attempt_events "
                 "(sequence, attempt_id, event_kind, payload_json, run_id, candidate_id, "
@@ -123,9 +128,7 @@ def create_legacy_ledger(
                     event.attempt_id,
                     type(event).__name__,
                     payload_json,
-                    start.run_id,
-                    start.candidate_id,
-                    start.request_fingerprint,
+                    *identity_values,
                 ),
             )
     connection.commit()
@@ -415,6 +418,16 @@ def test_legacy_ledger_migrates_without_changing_history_and_remains_usable(
         assert columns["run_id"] == 1
         assert columns["candidate_id"] == 1
         assert columns["request_fingerprint"] == 1
+        identity_rows = ledger.connection.execute(
+            "SELECT sequence, run_id, candidate_id, request_fingerprint "
+            "FROM visual_attempt_events ORDER BY sequence"
+        ).fetchall()
+        assert [tuple(row) for row in identity_rows] == [
+            (1, "run-1", "candidate-1", "a" * 64),
+            (2, "run-1", "candidate-1", "a" * 64),
+            (3, "run-1", "candidate-1", "b" * 64),
+            (4, "run-1", "candidate-1", "c" * 64),
+        ]
         assert ledger.consumed_attempts("run-1", "candidate-1") == 3
 
         reusable = ledger.reusable_result("a" * 64)
@@ -428,6 +441,78 @@ def test_legacy_ledger_migrates_without_changing_history_and_remains_usable(
             reconcile_after_migration.attempt_id
         ]
         assert reconciled[0].sequence == 6
+    finally:
+        ledger.close()
+
+
+def test_legacy_migration_preserves_unrelated_reserved_name_table(tmp_path: Path):
+    database = tmp_path / "shared.sqlite"
+    started = make_attempt().model_copy(update={"attempt_id": "legacy-start"})
+    before = create_legacy_ledger(
+        database,
+        shape="four-column",
+        rows=[(1, started)],
+    )
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "CREATE TABLE visual_attempt_events__migrating "
+            "(marker TEXT NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO visual_attempt_events__migrating (marker) VALUES (?)",
+            ("unrelated-row",),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    ledger = AttemptLedger(database)
+    try:
+        after = ledger.connection.execute(
+            "SELECT sequence, event_kind, payload_json "
+            "FROM visual_attempt_events ORDER BY sequence"
+        ).fetchall()
+        assert [tuple(row) for row in after] == before
+        assert [tuple(row) for row in ledger.connection.execute(
+            "SELECT marker FROM visual_attempt_events__migrating"
+        ).fetchall()] == [("unrelated-row",)]
+    finally:
+        ledger.close()
+
+
+def test_legacy_migration_preserves_sqlite_sequence_high_water(tmp_path: Path):
+    database = tmp_path / "high-water.sqlite"
+    started = make_attempt().model_copy(update={"attempt_id": "legacy-start"})
+    before = create_legacy_ledger(
+        database,
+        shape="four-column",
+        rows=[(1, started)],
+    )
+    connection = sqlite3.connect(database)
+    try:
+        connection.execute(
+            "UPDATE sqlite_sequence SET seq = ? WHERE name = ?",
+            (50, "visual_attempt_events"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    ledger = AttemptLedger(database)
+    try:
+        assert [tuple(row) for row in ledger.connection.execute(
+            "SELECT sequence, event_kind, payload_json "
+            "FROM visual_attempt_events ORDER BY sequence"
+        ).fetchall()] == before
+        assert ledger.connection.execute(
+            "SELECT seq FROM sqlite_sequence WHERE name = ?",
+            ("visual_attempt_events",),
+        ).fetchone()[0] == 50
+        next_started = ledger.start(
+            make_attempt(attempt_number=2).model_copy(update={"attempt_id": "next"})
+        )
+        assert next_started.sequence == 51
     finally:
         ledger.close()
 
@@ -976,6 +1061,69 @@ def test_failure_result_is_never_reused(tmp_path: Path):
         ledger.close()
 
 
+def test_reusable_result_propagates_corrupt_matching_candidate(
+    tmp_path: Path,
+):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        started = ledger.start(make_attempt())
+        invalid_finished = AttemptFinished(
+            attempt_id=started.attempt_id,
+            completed_at=started.started_at - timedelta(seconds=1),
+            status="SUCCESS",
+        )
+        ledger.connection.execute(
+            "INSERT INTO visual_attempt_events "
+            "(attempt_id, event_kind, payload_json, run_id, candidate_id, "
+            "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                invalid_finished.attempt_id,
+                "AttemptFinished",
+                legacy_payload(invalid_finished),
+                started.run_id,
+                started.candidate_id,
+                started.request_fingerprint,
+            ),
+        )
+        ledger.connection.commit()
+        with pytest.raises(AttemptLedgerError, match="completed_at"):
+            ledger.reusable_result("f" * 64)
+    finally:
+        ledger.close()
+
+
+def test_reusable_result_propagates_descriptor_cleanup_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"verified")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    started = ledger.start(make_attempt())
+    ledger.finish(
+        started.attempt_id,
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(b"verified"),
+    )
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def fail_first_close(fd: int):
+        close_calls.append(fd)
+        if len(close_calls) == 1:
+            raise OSError("close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(ledger_module.os, "close", fail_first_close)
+    try:
+        with pytest.raises(AttemptLedgerError, match="close"):
+            ledger.reusable_result("f" * 64)
+    finally:
+        ledger.close()
+
+
 def test_scoped_queries_ignore_unrelated_malformed_history(tmp_path: Path):
     database = tmp_path / "agent_runs.sqlite"
     result_root = tmp_path / "results"
@@ -1210,6 +1358,45 @@ def test_constructor_cleanup_failure_does_not_mask_initialization_error(
         assert "close failed" in notes or "close failed" in str(error.value)
     finally:
         real_connection.close()
+
+
+def test_context_manager_preserves_body_exception_when_close_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    original_close = ledger._close_connection_quietly
+    monkeypatch.setattr(
+        ledger,
+        "_close_connection_quietly",
+        lambda: sqlite3.OperationalError("close failed"),
+    )
+    try:
+        with pytest.raises(ValueError, match="body failed") as error:
+            with ledger:
+                raise ValueError("body failed")
+        assert "close failed" in "\n".join(getattr(error.value, "__notes__", []))
+    finally:
+        monkeypatch.setattr(ledger, "_close_connection_quietly", original_close)
+        ledger.close()
+
+
+def test_context_manager_reports_cleanup_only_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    original_close = ledger._close_connection_quietly
+    monkeypatch.setattr(
+        ledger,
+        "_close_connection_quietly",
+        lambda: sqlite3.OperationalError("close failed"),
+    )
+    try:
+        with pytest.raises(AttemptLedgerError, match="close failed"):
+            with ledger:
+                pass
+    finally:
+        monkeypatch.setattr(ledger, "_close_connection_quietly", original_close)
+        ledger.close()
 
 
 def test_concurrent_wal_writers_have_strict_global_sequences_and_no_loss(tmp_path: Path):
