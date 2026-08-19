@@ -98,6 +98,40 @@ def _has_visible_text_edits(previous: dict, current: dict) -> bool:
     return has_visible_publish_copy_edits(previous, current)
 
 
+def _build_risk_context(state: Mapping[str, Any], publish_package: Mapping[str, Any]) -> dict:
+    """Expose the policy context needed for an informed human decision."""
+    domain_context = state.get("domain_context") or {}
+    return {
+        "domain": _value(publish_package, "domain"),
+        "subdomain": _value(publish_package, "subdomain"),
+        "content_intent": _value(publish_package, "content_intent"),
+        "risk_level": _value(publish_package, "risk_level"),
+        "risk_flags": list(_value(publish_package, "risk_flags", []) or []),
+        "profile_version": _value(publish_package, "profile_version")
+        or _value(domain_context, "profile_version"),
+    }
+
+
+def _matched_policy_rules(state: Mapping[str, Any]) -> list[Any]:
+    """Serialize the R2 compliance audit's matched policy rules."""
+    r2_output = state.get("r2_output")
+    audit = _value(r2_output, "compliance_audit", {})
+    rules = list(_value(audit, "matched_policy_rules", []) or [])
+    return [_json_value(rule) for rule in rules]
+
+
+def _serialized_evidence_items(state: Mapping[str, Any]) -> list[dict]:
+    """Flatten evidence briefs into JSON-ready items for Human Review."""
+    serialized = []
+    for topic_id, brief in (state.get("evidence_briefs") or {}).items():
+        for item in list(_value(brief, "items", []) or []):
+            payload = _json_value(item)
+            if not isinstance(payload, Mapping):
+                payload = {"value": payload}
+            serialized.append({"topic_id": topic_id, **dict(payload)})
+    return serialized
+
+
 def _validate_approval_asset_gate(state: Mapping[str, Any]) -> None:
     """Forbid approving a security-rejected or unresolved required asset."""
     asset_manifest = state.get("asset_manifest")
@@ -151,6 +185,10 @@ def _visual_direction_summary(direction_plan: Any) -> dict | None:
 def _review_artifacts(state: Mapping[str, Any], publish_package: dict) -> dict:
     return {
         "publish_package": publish_package,
+        "final_policy_issues": list(state.get("final_policy_issues") or []),
+        "risk_context": _build_risk_context(state, publish_package),
+        "matched_policy_rules": _matched_policy_rules(state),
+        "evidence_items": _serialized_evidence_items(state),
         "render_manifest": _json_value(state.get("render_manifest")),
         "asset_manifest": _json_value(state.get("asset_manifest")),
         "visual_critique": _json_value(state.get("visual_critique")),
