@@ -56,6 +56,86 @@ def sha256_bytes(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def legacy_payload(event: AttemptStarted | AttemptFinished | AttemptReconciled) -> str:
+    return canonical_json(event.model_dump(mode="json", exclude={"sequence"}))
+
+
+def create_legacy_ledger(
+    database: Path,
+    *,
+    shape: str,
+    rows: list[tuple[int, AttemptStarted | AttemptFinished | AttemptReconciled]],
+) -> list[tuple[int, str, str]]:
+    connection = sqlite3.connect(database)
+    if shape == "four-column":
+        connection.execute(
+            """
+            CREATE TABLE visual_attempt_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id TEXT NOT NULL,
+                event_kind TEXT NOT NULL CHECK (
+                    event_kind IN ('AttemptStarted', 'AttemptFinished', 'AttemptReconciled')
+                ),
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+    elif shape == "nullable-column":
+        connection.execute(
+            """
+            CREATE TABLE visual_attempt_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT CHECK (sequence > 0),
+                attempt_id TEXT NOT NULL,
+                event_kind TEXT NOT NULL CHECK (
+                    event_kind IN ('AttemptStarted', 'AttemptFinished', 'AttemptReconciled')
+                ),
+                payload_json TEXT NOT NULL,
+                run_id TEXT,
+                candidate_id TEXT,
+                request_fingerprint TEXT
+            )
+            """
+        )
+    else:
+        raise AssertionError(f"unknown legacy shape: {shape}")
+
+    starts = {
+        event.attempt_id: event
+        for _, event in rows
+        if isinstance(event, AttemptStarted)
+    }
+    for sequence, event in rows:
+        payload_json = legacy_payload(event)
+        if shape == "four-column":
+            connection.execute(
+                "INSERT INTO visual_attempt_events "
+                "(sequence, attempt_id, event_kind, payload_json) VALUES (?, ?, ?, ?)",
+                (sequence, event.attempt_id, type(event).__name__, payload_json),
+            )
+        else:
+            start = starts[event.attempt_id]
+            connection.execute(
+                "INSERT INTO visual_attempt_events "
+                "(sequence, attempt_id, event_kind, payload_json, run_id, candidate_id, "
+                "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    sequence,
+                    event.attempt_id,
+                    type(event).__name__,
+                    payload_json,
+                    start.run_id,
+                    start.candidate_id,
+                    start.request_fingerprint,
+                ),
+            )
+    connection.commit()
+    snapshot = connection.execute(
+        "SELECT sequence, event_kind, payload_json FROM visual_attempt_events ORDER BY sequence"
+    ).fetchall()
+    connection.close()
+    return snapshot
+
+
 def test_attempt_events_are_append_only(tmp_path: Path):
     ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
     try:
@@ -187,12 +267,228 @@ def test_external_explicit_sequence_cannot_replace_or_insert_history(tmp_path: P
         ledger.close()
 
 
+def test_hardened_identity_columns_are_not_null_and_insert_identity_is_bound_to_payload(
+    tmp_path: Path,
+):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        columns = {
+            row[1]: row[3]
+            for row in ledger.connection.execute(
+                "PRAGMA table_info(visual_attempt_events)"
+            )
+        }
+        assert columns["run_id"] == 1
+        assert columns["candidate_id"] == 1
+        assert columns["request_fingerprint"] == 1
+        started = make_attempt().model_copy(update={"attempt_id": "identity-start"})
+        with pytest.raises(sqlite3.IntegrityError, match="identity"):
+            ledger.connection.execute(
+                "INSERT INTO visual_attempt_events "
+                "(attempt_id, event_kind, payload_json, run_id, candidate_id, "
+                "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    started.attempt_id,
+                    "AttemptStarted",
+                    legacy_payload(started),
+                    "wrong-run",
+                    started.candidate_id,
+                    started.request_fingerprint,
+                ),
+            )
+        assert ledger.connection.execute(
+            "SELECT COUNT(*) FROM visual_attempt_events"
+        ).fetchone()[0] == 0
+    finally:
+        ledger.close()
+
+
+def test_terminal_identity_must_match_existing_start(tmp_path: Path):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        started = ledger.start(make_attempt())
+        finished = AttemptFinished(
+            attempt_id=started.attempt_id,
+            completed_at=started.started_at + timedelta(seconds=1),
+            status="SUCCESS",
+        )
+        with pytest.raises(sqlite3.IntegrityError, match="identity"):
+            ledger.connection.execute(
+                "INSERT INTO visual_attempt_events "
+                "(attempt_id, event_kind, payload_json, run_id, candidate_id, "
+                "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    finished.attempt_id,
+                    "AttemptFinished",
+                    legacy_payload(finished),
+                    "wrong-run",
+                    started.candidate_id,
+                    started.request_fingerprint,
+                ),
+            )
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_upgraded_table_rejects_negative_and_replace_sequence_values(tmp_path: Path):
+    database = tmp_path / "upgraded.sqlite"
+    started = make_attempt().model_copy(update={"attempt_id": "legacy-sequence"})
+    create_legacy_ledger(database, shape="four-column", rows=[(1, started)])
+    ledger = AttemptLedger(database)
+    try:
+        for sequence in (-1, started.sequence or 1, 999):
+            with pytest.raises(sqlite3.IntegrityError):
+                ledger.connection.execute(
+                    "INSERT OR REPLACE INTO visual_attempt_events "
+                    "(sequence, attempt_id, event_kind, payload_json, run_id, candidate_id, "
+                    "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        sequence,
+                        started.attempt_id,
+                        "AttemptStarted",
+                        legacy_payload(started),
+                        started.run_id,
+                        started.candidate_id,
+                        started.request_fingerprint,
+                    ),
+                )
+        assert ledger.events(started.attempt_id)[0].attempt_id == started.attempt_id
+    finally:
+        ledger.close()
+
+
 def test_ledger_uses_full_synchronous_durability(tmp_path: Path):
     ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
     try:
         assert ledger.connection.execute("PRAGMA synchronous").fetchone()[0] == 2
     finally:
         ledger.close()
+
+
+@pytest.mark.parametrize("shape", ["four-column", "nullable-column"])
+def test_legacy_ledger_migrates_without_changing_history_and_remains_usable(
+    tmp_path: Path, shape: str
+):
+    database = tmp_path / f"{shape}.sqlite"
+    result_root = tmp_path / f"{shape}-results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"legacy-success")
+    success = make_attempt(request_fingerprint="a" * 64).model_copy(
+        update={"attempt_id": "legacy-success"}
+    )
+    success_finished = AttemptFinished(
+        attempt_id=success.attempt_id,
+        completed_at=success.started_at + timedelta(seconds=1),
+        status="SUCCESS",
+        sanitized_result_ref="result.json",
+        sanitized_result_sha256=sha256_bytes(result_file.read_bytes()),
+    )
+    finish_after_migration = make_attempt(
+        request_fingerprint="b" * 64
+    ).model_copy(update={"attempt_id": "legacy-finish"})
+    reconcile_after_migration = make_attempt(
+        request_fingerprint="c" * 64
+    ).model_copy(update={"attempt_id": "legacy-reconcile"})
+    rows = [
+        (1, success),
+        (2, success_finished),
+        (3, finish_after_migration),
+        (4, reconcile_after_migration),
+    ]
+    before = create_legacy_ledger(database, shape=shape, rows=rows)
+
+    ledger = AttemptLedger(database, result_root=result_root)
+    try:
+        after_migration = ledger.connection.execute(
+            "SELECT sequence, event_kind, payload_json "
+            "FROM visual_attempt_events ORDER BY sequence"
+        ).fetchall()
+        assert [tuple(row) for row in after_migration] == before
+        columns = {
+            row[1]: row[3]
+            for row in ledger.connection.execute(
+                "PRAGMA table_info(visual_attempt_events)"
+            )
+        }
+        assert columns["run_id"] == 1
+        assert columns["candidate_id"] == 1
+        assert columns["request_fingerprint"] == 1
+        assert ledger.consumed_attempts("run-1", "candidate-1") == 3
+
+        reusable = ledger.reusable_result("a" * 64)
+        assert reusable is not None
+        assert reusable.content == b"legacy-success"
+
+        finished = ledger.finish(finish_after_migration.attempt_id, status="SUCCESS")
+        assert finished.sequence == 5
+        reconciled = ledger.reconcile_open_attempts(run_id="run-1")
+        assert [event.attempt_id for event in reconciled] == [
+            reconcile_after_migration.attempt_id
+        ]
+        assert reconciled[0].sequence == 6
+    finally:
+        ledger.close()
+
+
+@pytest.mark.parametrize("corruption", ["malformed-payload", "nonpositive-sequence"])
+def test_corrupt_legacy_migration_fails_without_partial_schema_or_data_mutation(
+    tmp_path: Path, corruption: str
+):
+    database = tmp_path / f"corrupt-{corruption}.sqlite"
+    started = make_attempt().model_copy(update={"attempt_id": "legacy-corrupt"})
+    if corruption == "malformed-payload":
+        rows = [(1, started)]
+        create_legacy_ledger(database, shape="four-column", rows=rows)
+        connection = sqlite3.connect(database)
+        connection.execute(
+            "UPDATE visual_attempt_events SET payload_json = ?",
+            ("{}",),
+        )
+        connection.commit()
+        connection.close()
+        expected_rows = [(1, "AttemptStarted", "{}")]
+    else:
+        connection = sqlite3.connect(database)
+        connection.execute(
+            """
+            CREATE TABLE visual_attempt_events (
+                sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+                attempt_id TEXT NOT NULL,
+                event_kind TEXT NOT NULL CHECK (
+                    event_kind IN ('AttemptStarted', 'AttemptFinished', 'AttemptReconciled')
+                ),
+                payload_json TEXT NOT NULL
+            )
+            """
+        )
+        connection.execute(
+            "INSERT INTO visual_attempt_events "
+            "(sequence, attempt_id, event_kind, payload_json) VALUES (?, ?, ?, ?)",
+            (-1, started.attempt_id, "AttemptStarted", legacy_payload(started)),
+        )
+        connection.commit()
+        connection.close()
+        expected_rows = [(-1, "AttemptStarted", legacy_payload(started))]
+
+    with pytest.raises(AttemptLedgerError):
+        AttemptLedger(database)
+
+    connection = sqlite3.connect(database)
+    try:
+        columns = [row[1] for row in connection.execute("PRAGMA table_info(visual_attempt_events)")]
+        rows_after = connection.execute(
+            "SELECT sequence, event_kind, payload_json "
+            "FROM visual_attempt_events ORDER BY sequence"
+        ).fetchall()
+        migration_tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE name LIKE 'visual_attempt_events__migrating%'")
+        assert columns == ["sequence", "attempt_id", "event_kind", "payload_json"]
+        assert rows_after == expected_rows
+        assert migration_tables.fetchone() is None
+    finally:
+        connection.close()
 
 
 def test_persisted_payload_is_canonical_json_and_sequence_is_global(tmp_path: Path):
@@ -520,6 +816,146 @@ def test_tampered_or_missing_result_is_not_reusable(tmp_path: Path):
         ledger.close()
 
 
+def test_reusable_result_scan_is_bounded_and_fails_closed_after_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"original")
+    result_hash = sha256_bytes(result_file.read_bytes())
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    try:
+        for index in range(AttemptLedger.MAX_REUSABLE_RESULT_CANDIDATES + 5):
+            started = ledger.start(
+                make_attempt(
+                    attempt_number=index + 1,
+                    request_fingerprint="d" * 64,
+                )
+            )
+            ledger.finish(
+                started.attempt_id,
+                status="SUCCESS",
+                sanitized_result_ref="result.json",
+                sanitized_result_sha256=result_hash,
+            )
+        result_file.write_bytes(b"tampered")
+        replay_calls = 0
+        original_events_for_attempt = ledger._events_for_attempt
+
+        def counted_events_for_attempt(attempt_id: str):
+            nonlocal replay_calls
+            replay_calls += 1
+            return original_events_for_attempt(attempt_id)
+
+        monkeypatch.setattr(ledger, "_events_for_attempt", counted_events_for_attempt)
+        assert ledger.reusable_result("d" * 64) is None
+        assert replay_calls == AttemptLedger.MAX_REUSABLE_RESULT_CANDIDATES
+    finally:
+        ledger.close()
+
+
+def test_result_descriptor_cleanup_attempts_all_fds_without_masking_primary_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"actual")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def fail_first_close(fd: int):
+        close_calls.append(fd)
+        if len(close_calls) == 1:
+            raise OSError("close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(ledger_module.os, "close", fail_first_close)
+    try:
+        started = ledger.start(make_attempt())
+        with pytest.raises(AttemptLedgerError, match="sha256") as error:
+            ledger.finish(
+                started.attempt_id,
+                status="SUCCESS",
+                sanitized_result_ref="result.json",
+                sanitized_result_sha256=sha256_bytes(b"expected"),
+            )
+        assert len(close_calls) >= 2
+        assert "close failed" not in str(error.value)
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_result_descriptor_cleanup_only_failure_is_contextual_and_no_append(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    result_root.mkdir()
+    result_file = result_root / "result.json"
+    result_file.write_bytes(b"actual")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def fail_first_close(fd: int):
+        close_calls.append(fd)
+        if len(close_calls) == 1:
+            raise OSError("close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(ledger_module.os, "close", fail_first_close)
+    try:
+        started = ledger.start(make_attempt())
+        with pytest.raises(AttemptLedgerError, match="close"):
+            ledger.finish(
+                started.attempt_id,
+                status="SUCCESS",
+                sanitized_result_ref="result.json",
+                sanitized_result_sha256=sha256_bytes(b"actual"),
+            )
+        assert len(close_calls) >= 2
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
+def test_intermediate_descriptor_cleanup_does_not_drop_next_directory_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    result_root = tmp_path / "results"
+    nested = result_root / "nested" / "deeper"
+    nested.mkdir(parents=True)
+    result_file = nested / "result.json"
+    result_file.write_bytes(b"actual")
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=result_root)
+    real_close = os.close
+    close_calls: list[int] = []
+
+    def fail_first_close(fd: int):
+        close_calls.append(fd)
+        if len(close_calls) == 1:
+            raise OSError("intermediate close failed")
+        real_close(fd)
+
+    monkeypatch.setattr(ledger_module.os, "close", fail_first_close)
+    try:
+        started = ledger.start(make_attempt())
+        with pytest.raises(AttemptLedgerError, match="close"):
+            ledger.finish(
+                started.attempt_id,
+                status="SUCCESS",
+                sanitized_result_ref="nested/deeper/result.json",
+                sanitized_result_sha256=sha256_bytes(b"actual"),
+            )
+        assert len(close_calls) >= 4
+        assert ledger.events(started.attempt_id) == [started]
+    finally:
+        ledger.close()
+
+
 def test_failure_result_is_never_reused(tmp_path: Path):
     result_root = tmp_path / "results"
     result_root.mkdir()
@@ -559,6 +995,9 @@ def test_scoped_queries_ignore_unrelated_malformed_history(tmp_path: Path):
         other = make_attempt(
             candidate_id="other-candidate", request_fingerprint="e" * 64
         ).model_copy(update={"run_id": "other-run"})
+        ledger.connection.execute(
+            "DROP TRIGGER visual_attempt_events_start_identity"
+        )
         ledger.connection.execute(
             "INSERT INTO visual_attempt_events "
             "(attempt_id, event_kind, payload_json, run_id, candidate_id, request_fingerprint) "
@@ -605,6 +1044,37 @@ def test_scoped_query_indexes_cover_run_candidate_and_fingerprint(tmp_path: Path
         ).fetchall()
         assert any("idx_visual_attempt_events_run_candidate" in row[3] for row in run_plan)
         assert any("idx_visual_attempt_events_fingerprint" in row[3] for row in fingerprint_plan)
+    finally:
+        ledger.close()
+
+
+def test_reconcile_replays_terminal_rows_before_deciding_which_starts_are_open(
+    tmp_path: Path,
+):
+    ledger = AttemptLedger(tmp_path / "agent_runs.sqlite")
+    try:
+        started = ledger.start(make_attempt())
+        invalid_finished = AttemptFinished(
+            attempt_id=started.attempt_id,
+            completed_at=started.started_at - timedelta(seconds=1),
+            status="SUCCESS",
+        )
+        ledger.connection.execute(
+            "INSERT INTO visual_attempt_events "
+            "(attempt_id, event_kind, payload_json, run_id, candidate_id, "
+            "request_fingerprint) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                invalid_finished.attempt_id,
+                "AttemptFinished",
+                legacy_payload(invalid_finished),
+                started.run_id,
+                started.candidate_id,
+                started.request_fingerprint,
+            ),
+        )
+        ledger.connection.commit()
+        with pytest.raises(AttemptLedgerError, match="completed_at"):
+            ledger.reconcile_open_attempts(run_id="run-1")
     finally:
         ledger.close()
 
@@ -712,6 +1182,36 @@ def test_result_root_resolution_errors_are_translated(
         AttemptLedger(tmp_path / "agent_runs.sqlite", result_root=tmp_path / "results")
 
 
+def test_constructor_cleanup_failure_does_not_mask_initialization_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    real_connection = sqlite3.connect(":memory:")
+
+    class ConnectionProxy:
+        row_factory = None
+
+        def execute(self, *args, **kwargs):
+            return real_connection.execute(*args, **kwargs)
+
+        def close(self):
+            raise sqlite3.OperationalError("close failed")
+
+    proxy = ConnectionProxy()
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", lambda *args, **kwargs: proxy)
+
+    def fail_schema(self):
+        raise sqlite3.OperationalError("schema failed")
+
+    monkeypatch.setattr(AttemptLedger, "_create_schema", fail_schema)
+    try:
+        with pytest.raises(AttemptLedgerError, match="schema failed") as error:
+            AttemptLedger(tmp_path / "agent_runs.sqlite")
+        notes = "\n".join(getattr(error.value, "__notes__", []))
+        assert "close failed" in notes or "close failed" in str(error.value)
+    finally:
+        real_connection.close()
+
+
 def test_concurrent_wal_writers_have_strict_global_sequences_and_no_loss(tmp_path: Path):
     database = tmp_path / "agent_runs.sqlite"
     total = 24
@@ -781,10 +1281,12 @@ def test_replay_rejects_malformed_payload_with_context(tmp_path: Path):
     ledger.close()
     connection = sqlite3.connect(database)
     try:
+        connection.execute("DROP TRIGGER visual_attempt_events_start_identity")
         connection.execute(
-            "INSERT INTO visual_attempt_events(attempt_id, event_kind, payload_json) "
-            "VALUES (?, ?, ?)",
-            ("corrupt", "AttemptStarted", "{not-json"),
+            "INSERT INTO visual_attempt_events "
+            "(attempt_id, event_kind, payload_json, run_id, candidate_id, request_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            ("corrupt", "AttemptStarted", "{not-json", "run", "candidate", "f" * 64),
         )
         connection.commit()
     finally:
@@ -804,12 +1306,22 @@ def test_replay_rejects_payload_with_unknown_fields(tmp_path: Path):
     ledger.close()
     connection = sqlite3.connect(database)
     try:
-        payload = make_attempt().model_dump(mode="json", exclude={"sequence"})
+        payload = make_attempt().model_copy(update={"attempt_id": "corrupt"}).model_dump(
+            mode="json", exclude={"sequence"}
+        )
         payload["unexpected"] = "tampered"
         connection.execute(
-            "INSERT INTO visual_attempt_events(attempt_id, event_kind, payload_json) "
-            "VALUES (?, ?, ?)",
-            ("corrupt", "AttemptStarted", json.dumps(payload)),
+            "INSERT INTO visual_attempt_events "
+            "(attempt_id, event_kind, payload_json, run_id, candidate_id, request_fingerprint) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                payload["attempt_id"],
+                "AttemptStarted",
+                canonical_json(payload),
+                payload["run_id"],
+                payload["candidate_id"],
+                payload["request_fingerprint"],
+            ),
         )
         connection.commit()
     finally:
