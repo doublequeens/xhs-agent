@@ -18,19 +18,48 @@ def _narrative_plan() -> dict:
     ).model_dump(mode="json")
 
 
+def _content_contract() -> dict:
+    return {
+        "audience": "23–35 岁、通勤、有基础护肤和底妆需求的女性",
+        "trigger_situation": "早高峰通勤前",
+        "decision_problem": "底妆是否会斑驳",
+        "first_screen_promise": "通勤前底妆判断清单",
+        "screenshot_asset": "三步判断清单",
+        "proof_asset": "产品质地实拍",
+        "visual_mode": "text_plus_real_proof",
+        "content_job": "save_and_check",
+        "primary_visual_family": "saveable_reference",
+        "primary_visual_subject": "checklist",
+        "proof_mode": "product_texture",
+        "recommended_frame_count": 6,
+    }
+
+
+def _trend() -> dict:
+    contract = _content_contract()
+    return {
+        "topic_id": "tp_001",
+        "topic": "通勤前底妆判断",
+        "target_group": contract["audience"],
+        "core_pain": contract["decision_problem"],
+        "content_contract": contract,
+    }
+
+
 def _novelty_check_results() -> NoveltyCheckResults:
+    contract = _content_contract()
     return NoveltyCheckResults(
         novelty_results=[
             {
                 "topic_id": "tp_001",
-                "topic": "健康生活习惯",
-                "target_group": "上班族",
-                "core_pain": "难坚持",
+                "topic": "通勤前底妆判断",
+                "target_group": contract["audience"],
+                "core_pain": contract["decision_problem"],
                 "angle_id": "ag_001",
-                "angle": "微习惯清单",
-                "opening_hook": "先从一分钟开始",
-                "value_promise": "降低执行门槛",
-                "suggested_structure": "场景、步骤、清单",
+                "angle": "通勤前底妆判断清单",
+                "opening_hook": "早高峰通勤前先判断底妆状态",
+                "value_promise": "用三步判断清单选择补妆方式",
+                "suggested_structure": "场景、判断、清单",
                 "narrative_plan": _narrative_plan(),
                 "decision": "keep",
                 "novelty_score": 0.9,
@@ -54,6 +83,7 @@ def _novelty_check_results() -> NoveltyCheckResults:
 
 
 def _valid_score():
+    contract = _content_contract()
     return {
         "total_score": 8.5,
         "breakdown": {
@@ -72,14 +102,14 @@ def _valid_score():
         "novelty_score": 0.9,
         "max_similarity": 0.1,
         "topic_id": "tp_001",
-        "topic": "健康生活习惯",
+        "topic": "通勤前底妆判断",
         "angle_id": "ag_001",
-        "angle": "微习惯清单",
-        "target_group": "上班族",
-        "core_pain": "难坚持",
-        "opening_hook": "先从一分钟开始",
-        "value_promise": "降低执行门槛",
-        "suggested_structure": "场景、步骤、清单",
+        "angle": "通勤前底妆判断清单",
+        "target_group": contract["audience"],
+        "core_pain": contract["decision_problem"],
+        "opening_hook": "早高峰通勤前先判断底妆状态",
+        "value_promise": "用三步判断清单选择补妆方式",
+        "suggested_structure": "场景、判断、清单",
         "narrative_plan": _narrative_plan(),
     }
 
@@ -99,25 +129,7 @@ def test_virality_scorer_receives_content_contract(monkeypatch):
     result = module.virality_scorer_node(
         {
             "novelty_check_results": _novelty_check_results(),
-            "trends": [
-                {
-                    "topic_id": "tp_001",
-                    "content_contract": {
-                        "audience": "23–35 岁、通勤、有基础护肤和底妆需求的女性",
-                        "trigger_situation": "早高峰通勤前",
-                        "decision_problem": "底妆是否会斑驳",
-                        "first_screen_promise": "通勤前底妆判断清单",
-                        "screenshot_asset": "三步判断清单",
-                        "proof_asset": "产品质地实拍",
-                        "visual_mode": "text_plus_real_proof",
-                        "content_job": "save_and_check",
-                        "primary_visual_family": "saveable_reference",
-                        "primary_visual_subject": "checklist",
-                        "proof_mode": "product_texture",
-                        "recommended_frame_count": 6,
-                    },
-                }
-            ],
+            "trends": [_trend()],
             "domain_context": {
                 "domain": "beauty",
                 "profile_version": "beauty-v1",
@@ -128,8 +140,9 @@ def test_virality_scorer_receives_content_contract(monkeypatch):
 
     assert result["scores"][0].topic_id == "tp_001"
     sent = fake_model.last_messages[-1].content
-    assert '"first_screen_promise"' in sent
-    assert '"screenshot_asset"' in sent
+    assert '"audience": "23–35 岁、通勤、有基础护肤和底妆需求的女性"' in sent
+    assert '"first_screen_promise": "通勤前底妆判断清单"' in sent
+    assert '"proof_mode": "product_texture"' in sent
 
 
 def test_virality_scorer_retries_schema_errors_with_model_feedback(monkeypatch):
@@ -150,14 +163,12 @@ def test_virality_scorer_retries_schema_errors_with_model_feedback(monkeypatch):
     result = module.virality_scorer_node(
         {
             "novelty_check_results": _novelty_check_results(),
-            "domain_context": {
-                "domain": "healthy_lifestyle",
-                "profile_version": "healthy-lifestyle-v1",
-            },
+            "trends": [_trend()],
+            "domain_context": {"domain": "beauty", "profile_version": "beauty-v1"},
             "content_policy": {},
         }
     )
 
     assert len(model.calls) == 2
-    assert result["scores"][0].suggested_structure == "场景、步骤、清单"
+    assert result["scores"][0].suggested_structure == "场景、判断、清单"
     assert "suggested_structure" in model.calls[1][-1].content
