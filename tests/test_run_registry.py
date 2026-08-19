@@ -227,7 +227,10 @@ def test_v4_fatal_and_exhausted_are_not_ordinary_resumable(registry):
     registry.create_run(
         "waiting", workflow_version="llm_scene_v4", execution_state="WAITING_HUMAN"
     )
-    assert [run.thread_id for run in registry.list_resumable()] == ["waiting", "retry"]
+    registry.create_run("running", workflow_version="llm_scene_v4", execution_state="RUNNING")
+    assert {
+        run.thread_id for run in registry.list_resumable()
+    } == {"waiting", "retry", "running"}
 
 
 def test_v3_resumability_still_uses_legacy_status_projection(registry):
@@ -281,6 +284,74 @@ def test_execution_state_updates_atomically_project_legacy_status(registry):
         "awaiting_review",
         "WAITING_HUMAN",
     )
+
+
+@pytest.mark.parametrize(
+    ("execution_state", "differing_status"),
+    [
+        ("FAILED_FATAL", "running"),
+        ("INTERRUPTED_EXHAUSTED", "awaiting_review"),
+    ],
+)
+def test_v4_differing_status_only_update_rejects_without_partial_write(
+    registry, execution_state, differing_status
+):
+    created = registry.create_run(
+        f"status-only-update-{execution_state}",
+        workflow_version="llm_scene_v4",
+        execution_state=execution_state,
+    )
+    before = registry.get_by_thread_id(created.thread_id)
+
+    with pytest.raises(RunRegistryError, match="execution_state"):
+        registry.update_run(
+            created.thread_id,
+            status=differing_status,
+            title="must not be written",
+        )
+
+    assert registry.get_by_thread_id(created.thread_id) == before
+
+
+@pytest.mark.parametrize("execution_state", ["FAILED_FATAL", "INTERRUPTED_EXHAUSTED"])
+def test_v4_matching_projected_status_is_a_status_only_noop(registry, execution_state):
+    created = registry.create_run(
+        f"status-only-noop-{execution_state}",
+        workflow_version="llm_scene_v4",
+        execution_state=execution_state,
+    )
+
+    updated = registry.update_run(created.thread_id, status="interrupted")
+
+    assert updated.status == "interrupted"
+    assert updated.execution_state == execution_state
+
+
+@pytest.mark.parametrize(
+    ("execution_state", "differing_status"),
+    [
+        ("FAILED_FATAL", "running"),
+        ("INTERRUPTED_EXHAUSTED", "awaiting_review"),
+    ],
+)
+def test_v4_differing_status_only_upsert_rejects_without_partial_write(
+    registry, execution_state, differing_status
+):
+    created = registry.create_run(
+        f"status-only-upsert-{execution_state}",
+        workflow_version="llm_scene_v4",
+        execution_state=execution_state,
+    )
+    before = registry.get_by_thread_id(created.thread_id)
+
+    with pytest.raises(RunRegistryError, match="execution_state"):
+        registry.upsert_run(
+            created.thread_id,
+            status=differing_status,
+            title="must not be written",
+        )
+
+    assert registry.get_by_thread_id(created.thread_id) == before
 
 
 def test_update_rejects_conflicting_status_and_execution_state_without_partial_write(registry):
@@ -350,6 +421,50 @@ def test_persisted_enum_corruption_is_rejected_at_registry_boundary(registry):
 
     with pytest.raises(RunRegistryError, match="execution_state"):
         registry.get_by_thread_id("corrupt")
+
+
+def test_resumable_listing_validates_only_rows_it_returns(registry):
+    registry.create_run(
+        "corrupt-excluded", workflow_version="llm_scene_v4", execution_state="FAILED_FATAL"
+    )
+    registry.create_run(
+        "valid-resumable", workflow_version="llm_scene_v4", execution_state="RUNNING"
+    )
+    registry._connection.execute(
+        "UPDATE agent_runs SET execution_state = ? WHERE thread_id = ?",
+        ("NOT_A_STATE", "corrupt-excluded"),
+    )
+
+    assert [run.thread_id for run in registry.list_resumable()] == ["valid-resumable"]
+    with pytest.raises(RunRegistryError, match="execution_state"):
+        registry.list_recent()
+
+
+def test_additive_migration_adds_workflow_execution_updated_index_and_preserves_legacy_indexes(
+    tmp_path,
+):
+    path = create_legacy_registry(tmp_path)
+    registry = RunRegistry(path)
+    try:
+        indexes = {}
+        for row in registry._connection.execute("PRAGMA index_list(agent_runs)"):
+            index_name = row[1]
+            indexes[index_name] = [
+                index_row[2]
+                for index_row in registry._connection.execute(
+                    f"PRAGMA index_info('{index_name}')"
+                )
+            ]
+
+        assert "idx_agent_runs_status_updated_at" in indexes
+        assert "idx_agent_runs_workflow_version_execution_state_updated_at" in indexes
+        assert indexes["idx_agent_runs_workflow_version_execution_state_updated_at"] == [
+            "workflow_version",
+            "execution_state",
+            "updated_at",
+        ]
+    finally:
+        registry.close()
 
 
 def test_public_workflow_projection_constants_are_available():

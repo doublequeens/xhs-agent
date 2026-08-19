@@ -17,6 +17,13 @@ Implemented a strictly additive `agent_runs` migration and public run-registry A
   `RunRegistryError` at the registry boundary.
 - The legacy SQLite `status` CHECK remains unchanged, and a deterministic pre-v4 SQL
   fixture covers migration/resume compatibility.
+- v4 status-only updates are accepted only when the supplied status equals the current
+  legacy projection; all v4 state transitions require an explicit `execution_state`.
+- Resumable queries validate returned rows at the public boundary, while initialization
+  performs the one-time full-row validation. A composite
+  `workflow_version/execution_state/updated_at` index is added after migration without
+  replacing the legacy indexes.
+- The public surface keeps only `RunMode` and the canonical projection map names.
 
 ## TDD evidence
 
@@ -29,7 +36,9 @@ Implemented a strictly additive `agent_runs` migration and public run-registry A
 ## Verification
 
 - `pytest -q tests/test_run_registry.py tests/memory/test_migrations.py` — 46 passed.
-- `pytest -q` — 1300 passed, 2 skipped (live Gemini tests opt-in).
+- Review regression cycle: the new tests first produced 48 passed / 6 failed, then the
+  focused suite passed with 54 tests.
+- `pytest -q` — 1308 passed, 2 skipped (live Gemini tests opt-in).
 - `python -m compileall -q src main.py` — passed.
 - `git diff --check` — passed.
 

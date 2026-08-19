@@ -11,7 +11,6 @@ RUN_STATUSES = ("running", "interrupted", "awaiting_review", "completed")
 RESUMABLE_STATUSES = ("running", "interrupted", "awaiting_review")
 WorkflowVersion = Literal["llm_scene_v3", "llm_scene_v4"]
 RunMode = Literal["production", "shadow"]
-WorkflowMode = RunMode
 ExecutionState = Literal[
     "RUNNING",
     "WAITING_HUMAN",
@@ -22,7 +21,6 @@ ExecutionState = Literal[
 ]
 WORKFLOW_VERSIONS = ("llm_scene_v3", "llm_scene_v4")
 RUN_MODES = ("production", "shadow")
-WORKFLOW_MODES = RUN_MODES
 EXECUTION_STATES = (
     "RUNNING",
     "WAITING_HUMAN",
@@ -45,8 +43,6 @@ LEGACY_STATUS_TO_EXECUTION = {
     "interrupted": "INTERRUPTED_RETRYABLE",
     "completed": "COMPLETED",
 }
-EXECUTION_STATE_TO_LEGACY_STATUS = EXECUTION_TO_LEGACY_STATUS
-LEGACY_STATUS_TO_EXECUTION_STATE = LEGACY_STATUS_TO_EXECUTION
 V4_RESUMABLE_EXECUTION_STATES = (
     "RUNNING",
     "WAITING_HUMAN",
@@ -146,6 +142,13 @@ class RunRegistry:
                     """
                 )
                 self._migrate_additive_columns()
+                self._connection.execute(
+                    """
+                    CREATE INDEX IF NOT EXISTS
+                    idx_agent_runs_workflow_version_execution_state_updated_at
+                    ON agent_runs(workflow_version, execution_state, updated_at DESC)
+                    """
+                )
             self._validate_all_rows()
         except RunRegistryError:
             if hasattr(self, "_connection"):
@@ -437,7 +440,6 @@ class RunRegistry:
     def _list_runs(
         self, query: str, parameters: tuple[object, ...], limit: int | None
     ) -> list[AgentRun]:
-        self._validate_all_rows()
         if limit is not None:
             query += " LIMIT ?"
             parameters += (limit,)
@@ -556,13 +558,11 @@ class RunRegistry:
             )
         if status_supplied:
             status_value = cast(RunStatus, status)
-            # A v4 fatal/exhausted state shares the legacy ``interrupted``
-            # projection. A status-only compatibility update must not erase
-            # that authoritative state unless the projection actually changes.
-            if (
-                existing.workflow_version == "llm_scene_v4"
-                and status_value == existing.status
-            ):
+            if existing.workflow_version == "llm_scene_v4":
+                if status_value != existing.status:
+                    raise RunRegistryError(
+                        "v4 status-only transition requires execution_state"
+                    )
                 return status_value, existing.execution_state, True
             return status_value, cast(ExecutionState, LEGACY_STATUS_TO_EXECUTION[status]), True
         return existing.status, existing.execution_state, False
