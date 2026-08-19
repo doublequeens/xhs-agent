@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import errno
 import hashlib
 import io
 import json
@@ -10,6 +9,7 @@ import mimetypes
 import ntpath
 import os
 import random
+import re
 import stat
 import time
 from dataclasses import dataclass
@@ -74,8 +74,7 @@ _SECRET_KEYS = frozenset(
 _ATTEMPT_METADATA_KEYS = frozenset(
     {"timestamp", "started_at", "deadline_at", "attempt_number", "retry_count"}
 )
-_LOCAL_PATH_KEYS = frozenset({"image_paths", "absolute_path", "local_root", "result_root"})
-_PATH_BEARING_KEYS = frozenset(
+_PATH_BEARING_TOKENS = frozenset(
     {
         "path",
         "paths",
@@ -88,19 +87,13 @@ _PATH_BEARING_KEYS = frozenset(
         "file",
         "files",
         "local",
-        "local_path",
-        "local_paths",
-        "file_path",
-        "file_paths",
-        "directory_path",
-        "directory_paths",
-        "root_path",
-        "root_paths",
-        "asset_path",
-        "asset_paths",
-        *_LOCAL_PATH_KEYS,
+        "workspace",
+        "cache",
+        "location",
     }
 )
+_INPUT_OUTPUT_TOKENS = frozenset({"input", "inputs", "output", "outputs"})
+_KEY_TOKEN_RE = re.compile(r"[A-Z]+(?=[A-Z][a-z]|$)|[A-Z]?[a-z]+|[0-9]+")
 _IMAGE_VALIDATION_CONTRACT_VERSION = "llm_scene_v4.image_validation_contract.v1"
 IMAGE_VALIDATION_CONTRACT_SHA256 = hashlib.sha256(
     _IMAGE_VALIDATION_CONTRACT_VERSION.encode("utf-8")
@@ -173,6 +166,56 @@ def _canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
+def _key_tokens(value: str) -> tuple[str, ...]:
+    """Split snake/kebab/camel application keys into stable lowercase tokens."""
+
+    tokens: list[str] = []
+    for component in re.split(r"[-_\s]+", value):
+        tokens.extend(match.group(0).lower() for match in _KEY_TOKEN_RE.finditer(component))
+    return tuple(tokens)
+
+
+def _is_path_bearing_key(value: str) -> bool:
+    """Recognize explicit path metadata without classifying bare input/output."""
+
+    tokens = _key_tokens(value)
+    if any(token in _PATH_BEARING_TOKENS for token in tokens):
+        return True
+    return any(token in _INPUT_OUTPUT_TOKENS for token in tokens) and any(
+        token in _PATH_BEARING_TOKENS for token in tokens
+    )
+
+
+class _ResultStoreError(RuntimeError):
+    """Sanitized result-store failure retaining primary/cleanup facts."""
+
+    def __init__(
+        self,
+        *,
+        primary_code: str | None = None,
+        cleanup_codes: tuple[str, ...] = (),
+    ) -> None:
+        self.primary_code = primary_code
+        self.cleanup_codes = tuple(cleanup_codes)
+        self.has_primary_failure = primary_code is not None
+        self.has_cleanup_failure = bool(self.cleanup_codes)
+        if self.has_primary_failure and self.has_cleanup_failure:
+            self.public_code = "RESULT_STORE_PRIMARY_AND_CLEANUP"
+        elif self.has_primary_failure:
+            self.public_code = "RESULT_STORE_PRIMARY"
+        else:
+            self.public_code = "RESULT_STORE_CLEANUP"
+        super().__init__(self.public_code)
+
+    def with_cleanup(self, cleanup_codes: list[str]) -> "_ResultStoreError":
+        if not cleanup_codes:
+            return self
+        return _ResultStoreError(
+            primary_code=self.primary_code,
+            cleanup_codes=self.cleanup_codes + tuple(cleanup_codes),
+        )
+
+
 def _safe_fingerprint_value(
     value: Any,
     *,
@@ -182,8 +225,12 @@ def _safe_fingerprint_value(
     if key is not None and key.lower().replace("-", "_") in _SECRET_KEYS:
         return "<redacted>"
     if isinstance(value, Path):
-        # Absolute local roots are never fingerprint material.
-        return "<local-path>"
+        if value.is_absolute():
+            # Absolute local roots are never fingerprint material.
+            return "<local-path>"
+        # Relative paths are content identity and use a platform-independent
+        # representation without consulting the current working directory.
+        return value.as_posix()
     if isinstance(value, bytes):
         return {"sha256": hashlib.sha256(value).hexdigest(), "size": len(value)}
     if isinstance(value, Mapping):
@@ -198,7 +245,7 @@ def _safe_fingerprint_value(
             result[key_text] = _safe_fingerprint_value(
                 item,
                 key=key_text,
-                path_context=path_context or normalized_key in _PATH_BEARING_KEYS,
+                path_context=path_context or _is_path_bearing_key(key_text),
             )
         return result
     if isinstance(value, (list, tuple)):
@@ -212,8 +259,7 @@ def _safe_fingerprint_value(
         # ``ntpath`` covers Windows paths when fingerprints are produced on
         # another OS.  Slash-prefixed prompt/content text remains semantic
         # request data.
-        normalized_key = key.lower().replace("-", "_") if key is not None else ""
-        if (path_context or normalized_key in _PATH_BEARING_KEYS) and (
+        if path_context and (
             os.path.isabs(value) or ntpath.isabs(value)
         ):
             return "<local-path>"
@@ -694,9 +740,18 @@ class VisualLLMGateway:
                             value, result_bytes = parsed
                             try:
                                 result_ref, result_sha = self._persist_result(result_kind, started.attempt_id, result_bytes)
-                            except Exception:
+                            except Exception as exc:
                                 terminal_status = "TRANSPORT_FATAL"
-                                last_error = VisualInvocationError(terminal_status, error_class="result_store", attempt_number=attempt_number)
+                                last_error = VisualInvocationError(
+                                    terminal_status,
+                                    error_class="result_store",
+                                    error_code=(
+                                        exc.public_code
+                                        if isinstance(exc, _ResultStoreError)
+                                        else None
+                                    ),
+                                    attempt_number=attempt_number,
+                                )
                             else:
                                 # Persistence and the terminal ledger append
                                 # are deliberately separate.  If the append
@@ -904,8 +959,8 @@ class VisualLLMGateway:
         owned_fds: dict[int, str] = {}
         kind_fd: int | None = None
         temporary_name: str | None = None
-        primary_error: BaseException | None = None
-        cleanup_errors: list[BaseException] = []
+        primary_error: _ResultStoreError | None = None
+        cleanup_errors: list[str] = []
         try:
             # The final root component is opened without following a symlink;
             # child directories are then resolved only through directory file
@@ -922,6 +977,8 @@ class VisualLLMGateway:
             temp_flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | self._no_follow_flag() | self._close_on_exec_flag()
             temp_fd = os.open(temporary_name, temp_flags, 0o600, dir_fd=kind_fd)
             owned_fds[temp_fd] = "result-temporary"
+            write_failed = False
+            close_errors: list[str] = []
             try:
                 offset = 0
                 while offset < len(data):
@@ -930,10 +987,15 @@ class VisualLLMGateway:
                         raise OSError("result write made no progress")
                     offset += written
                 os.fsync(temp_fd)
+            except BaseException:
+                write_failed = True
             finally:
                 close_errors = self._close_owned_fd(owned_fds, temp_fd)
-                if close_errors:
-                    raise RuntimeError("result temporary cleanup failed") from None
+            if write_failed or close_errors:
+                raise _ResultStoreError(
+                    primary_code="temporary_write" if write_failed else None,
+                    cleanup_codes=tuple(close_errors),
+                ) from None
 
             os.replace(
                 temporary_name,
@@ -947,26 +1009,24 @@ class VisualLLMGateway:
             os.fsync(kind_fd)
             os.fsync(v4_fd)
             os.fsync(root_fd)
-        except BaseException as exc:
+        except _ResultStoreError as exc:
             primary_error = exc
+        except BaseException:
+            primary_error = _ResultStoreError(primary_code="operation")
         finally:
             if temporary_name is not None and kind_fd is not None:
                 try:
                     os.unlink(temporary_name, dir_fd=kind_fd)
                 except FileNotFoundError:
                     pass
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
+                except BaseException:
+                    cleanup_errors.append("result-temporary-unlink")
             for descriptor in tuple(owned_fds):
                 cleanup_errors.extend(self._close_owned_fd(owned_fds, descriptor))
-        if primary_error is not None or cleanup_errors:
-            # Do not expose OS exception text, absolute paths, or symlink
-            # targets through the parent-side error boundary.
-            if primary_error is not None and cleanup_errors:
-                raise RuntimeError("result store operation and cleanup failed") from None
-            if primary_error is not None:
-                raise RuntimeError("result store operation failed") from None
-            raise RuntimeError("result store cleanup failed") from None
+        if primary_error is not None:
+            raise primary_error.with_cleanup(cleanup_errors) from None
+        if cleanup_errors:
+            raise _ResultStoreError(cleanup_codes=tuple(cleanup_errors)) from None
         return relative.as_posix(), digest
 
     @staticmethod
@@ -982,51 +1042,22 @@ class VisualLLMGateway:
         return os.O_RDONLY | int(getattr(os, "O_DIRECTORY", 0)) | cls._no_follow_flag() | cls._close_on_exec_flag()
 
     @classmethod
-    def _close_fd_bounded(
-        cls,
-        descriptor: int,
-        *,
-        max_attempts: int = 2,
-    ) -> tuple[list[BaseException], bool]:
-        """Close one owned fd, checking EBADF before a bounded second try."""
+    def _close_owned_fd(cls, owned_fds: dict[int, str], descriptor: int) -> list[str]:
+        """Release ownership before one best-effort close, never retrying an fd."""
 
-        errors: list[BaseException] = []
-        for _attempt in range(max_attempts):
-            try:
-                os.close(descriptor)
-                return errors, False
-            except BaseException as exc:
-                errors.append(exc)
-                try:
-                    os.fstat(descriptor)
-                except OSError as state_error:
-                    if state_error.errno == errno.EBADF:
-                        return errors, False
-                    errors.append(state_error)
-                    return errors, True
-                except BaseException as state_error:
-                    errors.append(state_error)
-                    return errors, True
+        label = owned_fds.pop(descriptor, "result-fd")
         try:
-            os.fstat(descriptor)
-        except OSError as state_error:
-            if state_error.errno == errno.EBADF:
-                return errors, False
-            errors.append(state_error)
-        except BaseException as state_error:
-            errors.append(state_error)
-        return errors, True
+            os.close(descriptor)
+        except BaseException:
+            # A failed close may have released and reused the numeric fd in
+            # another thread.  Ownership is gone and the number is never
+            # inspected or touched again by this cleanup path.
+            return [f"{label}.close"]
+        return []
 
     @classmethod
-    def _close_owned_fd(cls, owned_fds: dict[int, str], descriptor: int) -> list[BaseException]:
-        errors, still_open = cls._close_fd_bounded(descriptor)
-        if not still_open:
-            owned_fds.pop(descriptor, None)
-        return errors
-
-    @classmethod
-    def _cleanup_owned_fds(cls, owned_fds: dict[int, str]) -> list[BaseException]:
-        errors: list[BaseException] = []
+    def _cleanup_owned_fds(cls, owned_fds: dict[int, str]) -> list[str]:
+        errors: list[str] = []
         for descriptor in tuple(owned_fds):
             errors.extend(cls._close_owned_fd(owned_fds, descriptor))
         return errors
@@ -1038,7 +1069,7 @@ class VisualLLMGateway:
         absolute = Path(os.path.abspath(os.fspath(root)))
         components = absolute.parts
         if not components or components[0] != os.sep:
-            raise OSError("result root must be absolute")
+            raise _ResultStoreError(primary_code="root_absolute") from None
         owned_fds: dict[int, str] = {}
         try:
             descriptor = os.open(os.sep, cls._directory_open_flags())
@@ -1056,15 +1087,22 @@ class VisualLLMGateway:
                 owned_fds[next_descriptor] = "result-root-component"
                 close_errors = cls._close_owned_fd(owned_fds, descriptor)
                 if close_errors:
-                    raise RuntimeError("result root descriptor cleanup failed") from None
+                    raise _ResultStoreError(
+                        primary_code="root_descriptor_close",
+                        cleanup_codes=tuple(close_errors),
+                    ) from None
                 descriptor = next_descriptor
             owned_fds.pop(descriptor, None)
             return descriptor
+        except _ResultStoreError as exc:
+            cleanup_errors = cls._cleanup_owned_fds(owned_fds)
+            raise exc.with_cleanup(cleanup_errors) from None
         except BaseException:
             cleanup_errors = cls._cleanup_owned_fds(owned_fds)
-            if cleanup_errors:
-                raise RuntimeError("result root descriptor cleanup failed") from None
-            raise RuntimeError("result root open failed") from None
+            raise _ResultStoreError(
+                primary_code="root_open",
+                cleanup_codes=tuple(cleanup_errors),
+            ) from None
 
     @classmethod
     def _open_result_directory(cls, parent_fd: int, name: str) -> int:
@@ -1072,17 +1110,27 @@ class VisualLLMGateway:
             os.mkdir(name, 0o700, dir_fd=parent_fd)
         except FileExistsError:
             pass
-        descriptor = os.open(name, cls._directory_open_flags(), dir_fd=parent_fd)
+        except BaseException:
+            raise _ResultStoreError(primary_code="directory_create") from None
+        try:
+            descriptor = os.open(name, cls._directory_open_flags(), dir_fd=parent_fd)
+        except BaseException:
+            raise _ResultStoreError(primary_code="directory_open") from None
+        owned_fds = {descriptor: "result-directory"}
         try:
             if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
-                raise OSError("result path is not a directory")
+                raise _ResultStoreError(primary_code="directory_validation") from None
+            owned_fds.pop(descriptor, None)
             return descriptor
-        except BaseException:
-            owned_fds = {descriptor: "result-directory"}
+        except _ResultStoreError as exc:
             cleanup_errors = cls._cleanup_owned_fds(owned_fds)
-            if cleanup_errors:
-                raise RuntimeError("result directory cleanup failed") from None
-            raise RuntimeError("result path is not a directory") from None
+            raise exc.with_cleanup(cleanup_errors) from None
+        except BaseException:
+            cleanup_errors = cls._cleanup_owned_fds(owned_fds)
+            raise _ResultStoreError(
+                primary_code="directory_validation",
+                cleanup_codes=tuple(cleanup_errors),
+            ) from None
 
     @staticmethod
     def _value_from_bytes(data: bytes, response_model: type[T]) -> T:

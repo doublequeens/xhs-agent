@@ -185,3 +185,64 @@ cleanup warnings emitted by
 `tests/metrics_collector/test_launchd.py::test_plist_mode_is_0600_under_restrictive_umask`;
 the round-2 spawned-worker proofs no longer use `fork` and add no fork
 deprecation warnings.
+
+## Fix round 3: scoped re-review after 89bf105
+
+### TDD evidence
+
+The round-3 regression tests were added before the corresponding fixes. The
+required red command was:
+
+```text
+pytest -q tests/visual_ai/test_gateway.py tests/visual_ai/test_v4_worker.py tests/visual_ai/test_factory.py tests/visual_ai/test_gemini_adapter.py tests/models/test_guard.py
+```
+
+It failed as expected with:
+
+```text
+6 failed, 93 passed, 2 warnings in 5.49s
+```
+
+The failures covered relative `Path` identity, application-specific
+camelCase/path metadata keys, bare `input` content semantics, numeric-fd
+reuse after a post-close exception, and preservation of simultaneous primary
+result-store and cleanup failures.
+
+### Changes
+
+- Fingerprints now redact only absolute `Path` values; relative `Path` values
+  participate as stable POSIX strings. A tokenized snake/kebab/camel key
+  predicate recognizes explicit path metadata such as `arbitrary_local`,
+  `workspaceLocation`, `cacheDir`, and `sourceFilePath`, while bare `input`
+  and `output` remain semantic content keys. The code documents that string
+  classification depends on explicit key semantics rather than claiming a
+  perfect distinction for unknown strings.
+- Descriptor ownership is released before every single `os.close` call. A
+  close exception records a sanitized cleanup marker and never performs
+  `fstat` or a retry against the numeric descriptor, preventing accidental
+  closure of a reused fd. Injected ordinary close failures remain fatal and
+  redacted; tests close any intentionally retained injected fd themselves.
+- Added structured internal result-store failures retaining primary and
+  cleanup flags/codes. Root traversal, directory validation, temporary-file,
+  and final directory cleanup failures remain contextual and are exposed only
+  through stable redacted result-store error codes; terminal ledger status is
+  still `TRANSPORT_FATAL`.
+
+### GREEN verification
+
+```text
+pytest -q tests/visual_ai/test_gateway.py tests/visual_ai/test_v4_worker.py tests/visual_ai/test_factory.py tests/visual_ai/test_gemini_adapter.py tests/models/test_guard.py
+99 passed, 2 warnings in 5.47s
+
+pytest -q
+1458 passed, 2 skipped, 2 warnings in 32.44s
+
+python -m compileall -q src main.py
+git diff --check
+```
+
+The two live Gemini tests remained skipped by their documented opt-in guard.
+The two remaining warnings are the pre-existing pytest temporary-directory
+cleanup warnings emitted by
+`tests/metrics_collector/test_launchd.py::test_plist_mode_is_0600_under_restrictive_umask`;
+fork deprecation warnings remain absent.

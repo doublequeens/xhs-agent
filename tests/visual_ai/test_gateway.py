@@ -270,6 +270,50 @@ def test_fingerprint_keeps_slash_prefixed_prompt_and_content_semantics() -> None
     )
 
 
+def test_fingerprint_path_values_distinguish_relative_paths_but_not_absolute_roots(
+    tmp_path: Path,
+) -> None:
+    config = ProviderConfig(provider="fake", model="model-a")
+    absolute_one = make_request(payload={"resource": Path(tmp_path / "one")})
+    absolute_two = make_request(payload={"resource": Path(tmp_path / "two")})
+    relative_one = make_request(payload={"resource": Path("assets/one")})
+    relative_two = make_request(payload={"resource": Path("assets/two")})
+
+    assert request_fingerprint(absolute_one, config, Answer) == request_fingerprint(
+        absolute_two, config, Answer
+    )
+    assert request_fingerprint(relative_one, config, Answer) != request_fingerprint(
+        relative_two, config, Answer
+    )
+
+
+@pytest.mark.parametrize(
+    "path_key",
+    ["arbitrary_local", "workspaceLocation", "cacheDir", "sourceFilePath"],
+)
+def test_fingerprint_excludes_absolute_application_path_metadata(
+    tmp_path: Path,
+    path_key: str,
+) -> None:
+    config = ProviderConfig(provider="fake", model="model-a")
+    first = make_request(payload={path_key: str(tmp_path / "one")})
+    second = make_request(payload={path_key: str(tmp_path / "two")})
+
+    assert request_fingerprint(first, config, Answer) == request_fingerprint(
+        second, config, Answer
+    )
+
+
+def test_fingerprint_keeps_bare_input_slash_prefixed_content_semantic() -> None:
+    config = ProviderConfig(provider="fake", model="model-a")
+    first = make_request(payload={"input": "/skin/a"})
+    second = make_request(payload={"input": "/skin/b"})
+
+    assert request_fingerprint(first, config, Answer) != request_fingerprint(
+        second, config, Answer
+    )
+
+
 def test_request_secret_fields_are_rejected_before_attempt_started(tmp_path: Path) -> None:
     gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
     request = make_request(payload={"prompt": "safe", "nested": {"token": "secret"}})
@@ -475,7 +519,7 @@ def test_result_store_rejects_symlinked_result_directory_without_outside_write(
     ledger.close()
 
 
-def test_result_root_traversal_close_failure_is_bounded_and_redacted(
+def test_result_root_traversal_close_failure_is_fatal_and_redacted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -508,12 +552,16 @@ def test_result_root_traversal_close_failure_is_bounded_and_redacted(
         gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
 
     assert root_fd is not None
-    with pytest.raises(OSError):
+    try:
         real_fstat(root_fd)
+    except OSError:
+        pass
+    else:
+        real_close(root_fd)
     ledger.close()
 
 
-def test_result_temp_fd_close_failure_is_bounded_without_leak(
+def test_result_temp_fd_close_failure_is_fatal_and_redacted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -546,12 +594,16 @@ def test_result_temp_fd_close_failure_is_bounded_without_leak(
         gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
 
     assert temp_fd is not None
-    with pytest.raises(OSError):
+    try:
         real_fstat(temp_fd)
+    except OSError:
+        pass
+    else:
+        real_close(temp_fd)
     ledger.close()
 
 
-def test_result_kind_final_close_failure_is_bounded_without_outside_write(
+def test_result_kind_final_close_failure_is_fatal_and_redacted(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -584,8 +636,101 @@ def test_result_kind_final_close_failure_is_bounded_without_outside_write(
         gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
 
     assert kind_fd is not None
-    with pytest.raises(OSError):
+    try:
         real_fstat(kind_fd)
+    except OSError:
+        pass
+    else:
+        real_close(kind_fd)
+    ledger.close()
+
+
+def test_result_store_close_failure_does_not_close_reused_numeric_fd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.visual_ai.gateway as gateway_module
+
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    real_open = os.open
+    real_close = os.close
+    real_fstat = os.fstat
+    kind_fd: int | None = None
+    sentinel_fd: int | None = None
+    triggered = False
+    sentinel_path = tmp_path / "sentinel"
+    sentinel_path.write_bytes(b"sentinel")
+
+    def capture_open(path: Any, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal kind_fd
+        descriptor = real_open(path, flags, *args, **kwargs)
+        if path == "structured" and kind_fd is None:
+            kind_fd = descriptor
+        return descriptor
+
+    def close_with_reuse(descriptor: int) -> None:
+        nonlocal sentinel_fd, triggered
+        if descriptor == kind_fd and not triggered:
+            real_close(descriptor)
+            sentinel_fd = real_open(sentinel_path, os.O_RDONLY)
+            triggered = True
+            raise OSError("injected post-close failure")
+        real_close(descriptor)
+
+    monkeypatch.setattr(gateway_module.os, "open", capture_open)
+    monkeypatch.setattr(gateway_module.os, "close", close_with_reuse)
+    with pytest.raises(VisualInvocationError, match="result_store"):
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert kind_fd is not None
+    assert sentinel_fd is not None
+    real_fstat(sentinel_fd)
+    real_close(sentinel_fd)
+    ledger.close()
+
+
+def test_result_store_preserves_primary_and_cleanup_failure_codes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.visual_ai.gateway as gateway_module
+
+    gateway, ledger = make_gateway(tmp_path, worker=QueueWorker(success()))
+    real_close = os.close
+    root_fd: int | None = None
+
+    def capture_root(root: Path) -> int:
+        nonlocal root_fd
+        descriptor = gateway_module.VisualLLMGateway._open_result_root(root)
+        root_fd = descriptor
+        return descriptor
+
+    def fail_root_close(descriptor: int) -> None:
+        if descriptor == root_fd:
+            raise OSError("injected cleanup failure")
+        real_close(descriptor)
+
+    def fail_directory(_parent_fd: int, _name: str) -> int:
+        raise OSError("injected directory validation failure")
+
+    monkeypatch.setattr(gateway_module.os, "close", fail_root_close)
+    gateway._open_result_root = capture_root  # type: ignore[method-assign]
+    gateway._open_result_directory = fail_directory  # type: ignore[method-assign]
+
+    with pytest.raises(VisualInvocationError) as error_info:
+        gateway.invoke_structured(make_request(), Answer, InvocationPolicy(deadline_seconds=2))
+
+    assert error_info.value.status == "TRANSPORT_FATAL"
+    assert error_info.value.error_class == "result_store"
+    assert error_info.value.error_code == "RESULT_STORE_PRIMARY_AND_CLEANUP"
+    assert ledger.latest() is not None and ledger.latest().status == "TRANSPORT_FATAL"
+    if root_fd is not None:
+        try:
+            os.fstat(root_fd)
+        except OSError:
+            pass
+        else:
+            real_close(root_fd)
     ledger.close()
 
 
