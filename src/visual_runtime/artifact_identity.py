@@ -600,7 +600,12 @@ def _open_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> Iterator[i
 
 
 def _descriptor_path(fd: int) -> Path:
-    """Return a pathname that resolves to a caller-owned pinned descriptor."""
+    """Return a pathname for synchronous use while the caller-owned fd is open.
+
+    The returned path is valid only during the current synchronous consumer
+    call.  Callers must not retain it or use it from an asynchronous task after
+    ownership of ``fd`` has been transferred/closed.
+    """
 
     for prefix in (Path("/proc/self/fd"), Path("/dev/fd")):
         if prefix.is_dir():

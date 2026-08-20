@@ -193,7 +193,11 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _MIME_RE = re.compile(r"^image/[a-z0-9.+-]+$")
 
 
-def _validated_generated_image(value: object) -> _ValidatedGeneratedImage:
+def _validated_generated_image(
+    value: object,
+    *,
+    strict_provenance: bool,
+) -> _ValidatedGeneratedImage:
     """Normalize provider output before touching any metadata attribute."""
 
     if not isinstance(value, GeneratedImage):
@@ -208,7 +212,7 @@ def _validated_generated_image(value: object) -> _ValidatedGeneratedImage:
         response_sha256 = value.response_sha256
         generated_at = value.generated_at
         provenance = value.internal_provenance
-    except BaseException as error:
+    except Exception as error:
         raise AssetResolutionError("generation provider returned malformed image metadata") from error
     if not isinstance(path, Path):
         raise AssetResolutionError("generated image path is invalid")
@@ -221,17 +225,33 @@ def _validated_generated_image(value: object) -> _ValidatedGeneratedImage:
         or not model.strip()
     ):
         raise AssetResolutionError("generated provider identity or MIME is invalid")
+    if type(sha256) is not str or _SHA256_RE.fullmatch(sha256) is None:
+        raise AssetResolutionError("generated image sha256 is invalid")
     for field_name, digest in (
-        ("sha256", sha256),
         ("prompt_sha256", prompt_sha256),
         ("response_sha256", response_sha256),
     ):
-        if type(digest) is not str or _SHA256_RE.fullmatch(digest) is None:
+        if type(digest) is not str or (
+            strict_provenance and _SHA256_RE.fullmatch(digest) is None
+        ) or (
+            not strict_provenance
+            and digest
+            and _SHA256_RE.fullmatch(digest) is None
+        ):
             raise AssetResolutionError(f"generated image {field_name} is invalid")
-    if type(generated_at) is not str or not generated_at.strip():
+    if type(generated_at) is not str or (strict_provenance and not generated_at.strip()):
         raise AssetResolutionError("generated image timestamp is invalid")
+    if strict_provenance:
+        try:
+            parsed_timestamp = datetime.fromisoformat(generated_at)
+        except ValueError as error:
+            raise AssetResolutionError("generated image timestamp is invalid") from error
+        if parsed_timestamp.tzinfo is None or parsed_timestamp.utcoffset() is None:
+            raise AssetResolutionError("generated image timestamp must include timezone")
     if type(provenance) is not dict or any(
-        type(key) is not str or type(item) is not str or not item.strip()
+        type(key) is not str
+        or type(item) is not str
+        or (strict_provenance and not item.strip())
         for key, item in provenance.items()
     ):
         raise AssetResolutionError("generated image provenance is invalid")
@@ -667,6 +687,7 @@ def _resolve_via_generation(
     run_id: str,
     transaction_id: str,
     replace_existing: bool,
+    strict_provenance: bool,
 ) -> AssetManifestItem:
     # A provider receives a fresh exclusive staging subtree, never the final
     # generated directory.  Final bytes are published by the resolver.
@@ -688,7 +709,10 @@ def _resolve_via_generation(
         except Exception as error:
             raise AssetResolutionError(f"generation provider failed: {error}") from error
         _assert_lease(transaction_lease)
-        validated = _validated_generated_image(generated)
+        validated = _validated_generated_image(
+            generated,
+            strict_provenance=strict_provenance,
+        )
 
         generated_path = validated.path
         generated_parts = _path_relative_to(generated_path, staging_path)
@@ -697,8 +721,16 @@ def _resolve_via_generation(
         except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
             raise AssetResolutionError("generated image is not a stable regular staging file") from error
         _assert_lease(transaction_lease)
+        if strict_provenance and validated.prompt_sha256 != request.prompt_sha256:
+            raise AssetResolutionError(
+                "generated provider prompt hash does not match the request"
+            )
         if validated.sha256 != staged.sha256:
             raise AssetResolutionError("generated provider byte hash does not match output")
+        if strict_provenance and validated.response_sha256 != staged.sha256:
+            raise AssetResolutionError(
+                "generated provider response hash does not match staging bytes"
+            )
         normalized, extension, raster_width, raster_height = _decode_raster(staged.raw)
         sha256 = hashlib.sha256(normalized).hexdigest()
         final_parts = (
@@ -783,6 +815,7 @@ def _attempt_source(
     run_id: str,
     transaction_id: str,
     replace_existing: bool,
+    strict_provenance: bool,
 ) -> AssetManifestItem:
     if source == "search":
         if search_provider is None:
@@ -809,6 +842,7 @@ def _attempt_source(
             run_id=run_id,
             transaction_id=transaction_id,
             replace_existing=replace_existing,
+            strict_provenance=strict_provenance,
         )
     raise AssetResolutionError(f"unsupported source kind: {source}")
 
@@ -824,6 +858,7 @@ def _preferred_then_fallback(
     run_id: str,
     transaction_id: str,
     replace_existing: bool,
+    strict_provenance: bool,
 ) -> tuple[AssetManifestItem | None, tuple[str, ...]]:
     errors: list[str] = []
     try:
@@ -842,6 +877,7 @@ def _preferred_then_fallback(
             run_id=run_id,
             transaction_id=transaction_id,
             replace_existing=replace_existing,
+            strict_provenance=strict_provenance,
         )
         return item, ()
     except AssetResolutionError as error:
@@ -860,6 +896,7 @@ def _preferred_then_fallback(
                 run_id=run_id,
                 transaction_id=transaction_id,
                 replace_existing=replace_existing,
+                strict_provenance=strict_provenance,
             )
             return item, ()
         except AssetResolutionError as error:
@@ -891,6 +928,7 @@ def _run_resolution(
     search_provider: object | None,
     generation_provider: object | None,
     replace_existing: bool,
+    strict_provenance: bool,
 ) -> AssetResolutionResult:
     items: list[AssetManifestItem] = []
     unresolved: list[UnresolvedOptionalAsset] = []
@@ -905,6 +943,7 @@ def _run_resolution(
                 run_id=run_id,
                 transaction_id=transaction_id,
                 replace_existing=replace_existing,
+                strict_provenance=strict_provenance,
             )
         if item is not None:
             items.append(item)
@@ -1023,6 +1062,7 @@ def resolve_asset_directives(
                 search_provider=search_provider,
                 generation_provider=generation_provider,
                 replace_existing=artifact_paths is None,
+                strict_provenance=artifact_paths is not None,
             )
         except (AssetResolutionError, VisualProductionInterrupted):
             raise

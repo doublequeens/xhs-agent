@@ -302,3 +302,77 @@ exit 0
   warnings; no network/provider construction occurred with the live flag
   unset.  No data, outputs, schemas, graph, publishing, or AgentState files
   were changed.
+
+## Fix round 3: provenance binding and v3 compatibility
+
+### Status
+
+`DONE_WITH_CONCERNS` — the two Important provenance findings and the two
+low-risk review minors are addressed in the Task 9 files.  Live provider
+smokes remain opt-in and were not enabled.
+
+### Finding mapping
+
+- `_validated_generated_image` now receives an explicit
+  `strict_provenance` mode.  The resolver sets it only from
+  `artifact_paths is not None`, so v4 cannot accidentally inherit legacy
+  permissiveness from metadata contents.  Strict v4 timestamps must parse as
+  aware ISO-8601 datetimes; naive, empty, and malformed values fail closed.
+- In strict v4 mode, `prompt_sha256` must equal the current
+  `ImageGenerationRequest.prompt_sha256`, while `response_sha256` and the
+  provider `sha256` must equal the SHA-256 of the resolver's pinned staging
+  bytes.  The exact internal provenance map is checked before final
+  publication/manifest approval.
+- Legacy v3 retains its frozen `GeneratedImage` defaults: empty
+  `prompt_sha256`, `response_sha256`, and `generated_at` are accepted.  It
+  still validates path/MIME/provider/model, requires a valid declared
+  `sha256`, and compares that digest to the pinned staging bytes.  A repeated
+  legacy resolution with default-empty provenance remains successful.
+- Metadata property access now catches `Exception`, preserving cancellation,
+  `KeyboardInterrupt`, and `SystemExit` semantics.  `_descriptor_path` now
+  documents that its fd-backed pathname is synchronous-call-only and must not
+  be retained or used after fd ownership closes.
+
+### RED-GREEN evidence
+
+The new v4 provenance and v3 compatibility tests were run before the round-3
+implementation:
+
+```text
+pytest -q tests/nodes/v4/test_assets.py::test_v4_generated_provenance_binding_failure_is_required_vpi_with_journal tests/asset_resolver/test_v4_resolution.py::test_legacy_generated_image_accepts_default_empty_provenance_on_reentry
+5 failed
+```
+
+After explicit mode propagation, aware timestamp validation, request/staging
+hash binding, and legacy default handling:
+
+```text
+pytest -q tests/nodes/v4/test_assets.py::test_v4_generated_provenance_binding_failure_is_required_vpi_with_journal tests/asset_resolver/test_v4_resolution.py::test_legacy_generated_image_accepts_default_empty_provenance_on_reentry
+5 passed, 2 warnings
+```
+
+### Verification
+
+```text
+pytest -q tests/visual_runtime/test_artifact_identity.py tests/asset_resolver/test_v4_resolution.py tests/asset_resolver/test_live_providers.py tests/nodes/v4/test_assets.py tests/asset_resolver tests/nodes/test_asset_resolver.py tests/nodes/v4/test_authoring.py tests/nodes/v4/test_content.py tests/nodes/v4/test_semantic.py tests/visual_design/v4/test_authoring_qa.py tests/schemas/v4/test_direction.py
+115 passed, 1 skipped, 3 warnings
+
+pytest -q --disable-warnings
+1585 passed, 3 skipped, 4 warnings
+
+python -m compileall -q src main.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+### Self-review and concerns
+
+- Strictness is an explicit resolver-mode argument threaded through the shared
+  generation path; it is not inferred from field emptiness or provider names.
+- Provenance checks happen before resolver-owned final publication and before
+  any approved manifest item is built.  Required failures therefore retain the
+  existing journal/VPI path; optional failures remain unresolved.
+- The only remaining concerns are the intentionally disabled live provider
+  calls and the existing macOS temporary-directory/Pydantic warnings.

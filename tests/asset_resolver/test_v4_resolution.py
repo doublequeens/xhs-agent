@@ -299,3 +299,66 @@ def test_legacy_transaction_reentry_replaces_final_after_existing_journal(tmp_pa
     assert second.manifest.items[0].sha256 == first.manifest.items[0].sha256
     assert final_path.read_bytes() == original
     assert (root / "tx-1" / "recovery.json").read_text(encoding="utf-8") == "stale recovery"
+
+
+def test_legacy_generated_image_accepts_default_empty_provenance_on_reentry(tmp_path: Path):
+    class LegacyDefaultProvider:
+        def generate(self, request, transaction_dir):
+            transaction_dir.mkdir(parents=True, exist_ok=True)
+            output = BytesIO()
+            Image.new("RGB", (300, 400), (180, 130, 120)).save(output, format="PNG")
+            raw = output.getvalue()
+            path = transaction_dir / "generated.png"
+            path.write_bytes(raw)
+            return GeneratedImage(
+                path=path,
+                mime_type="image/png",
+                sha256=hashlib.sha256(raw).hexdigest(),
+                provider="legacy",
+                model="offline-test",
+            )
+
+    class SafeChecker:
+        def check(self, path, directive):
+            from src.asset_resolver.resolver import AssetSafetyDecision
+
+            return AssetSafetyDecision(approved=True)
+
+    directive = AssetDirective(
+        directive_id="asset-default-provenance",
+        page_id="page-1",
+        role="texture",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt="texture",
+        orientation="portrait",
+        min_width=300,
+        min_height=400,
+    )
+    root = tmp_path / "transactions"
+    first = resolve_asset_directives(
+        directives=(directive,),
+        run_id="run-1",
+        transaction_root=root,
+        transaction_id="tx-default",
+        generation_provider=LegacyDefaultProvider(),
+        safety_checker=SafeChecker(),
+    )
+    second = resolve_asset_directives(
+        directives=(directive,),
+        run_id="run-1",
+        transaction_root=root,
+        transaction_id="tx-default",
+        generation_provider=LegacyDefaultProvider(),
+        safety_checker=SafeChecker(),
+    )
+
+    assert first.manifest.items[0].sha256 == second.manifest.items[0].sha256
+    assert second.manifest.items[0].internal_provenance == {
+        "provider": "legacy",
+        "model": "offline-test",
+        "prompt_sha256": "",
+        "response_sha256": "",
+        "generated_at": "",
+    }

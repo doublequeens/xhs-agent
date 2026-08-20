@@ -111,6 +111,16 @@ class GenerationProvider:
         )
 
 
+class V4ProvenanceGenerationProvider(GenerationProvider):
+    def __init__(self, **updates):
+        super().__init__()
+        self.updates = updates
+
+    def generate(self, request, transaction_dir):
+        generated = super().generate(request, transaction_dir)
+        return replace(generated, **self.updates)
+
+
 class SafeChecker:
     def check(self, path, directive):
         return AssetSafetyDecision(approved=True)
@@ -255,6 +265,32 @@ def test_generated_safety_mutation_cannot_leave_stale_manifest_hash(tmp_path: Pa
             safety_checker=MutatingSafetyChecker(),
             base_root=tmp_path,
         )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        pytest.param({"prompt_sha256": "0" * 64}, id="wrong-prompt-hash"),
+        pytest.param({"response_sha256": "0" * 64}, id="wrong-response-hash"),
+        pytest.param({"generated_at": "not-a-timestamp"}, id="invalid-timestamp"),
+        pytest.param({"generated_at": "2026-08-20T00:00:00"}, id="naive-timestamp"),
+    ],
+)
+def test_v4_generated_provenance_binding_failure_is_required_vpi_with_journal(
+    tmp_path: Path, updates: dict[str, str]
+):
+    from src.nodes.v4.assets import asset_resolver_node
+
+    with pytest.raises(VisualProductionInterrupted) as exc_info:
+        asset_resolver_node(
+            _authored_state(required=True),
+            generation_provider=V4ProvenanceGenerationProvider(**updates),
+            safety_checker=SafeChecker(),
+            base_root=tmp_path,
+        )
+
+    assert all("AttributeError" not in error and "TypeError" not in error for error in exc_info.value.errors)
+    assert (tmp_path / "run-1" / "candidate-1" / "revision-1" / "assets" / "recovery.json").is_file()
 
 
 class MalformedProvenanceGeneratedImage(GeneratedImage):
