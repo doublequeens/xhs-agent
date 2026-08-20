@@ -25,7 +25,7 @@ def _asset_boxes(context: CompilerContextV4, start_y: float) -> list[ImageElemen
     height = (available_height - gap * (rows - 1)) / rows
     if height < 120 or width < 120:
         raise LayoutCompilationError(
-            "ASSET_ASPECT_MISMATCH",
+            "DENSITY_EXCEEDED",
             page_id=context.page_id,
             region_id="support",
             evidence="asset support region is too small",
@@ -33,22 +33,34 @@ def _asset_boxes(context: CompilerContextV4, start_y: float) -> list[ImageElemen
     elements: list[ImageElement] = []
     for index, placement in enumerate(placements):
         row, column = divmod(index, columns)
+        region_id = placement.region_id
+        if region_id == "accent":
+            region_x = SAFE_MARGIN_V4 + context.width - 240.0
+            region_width = 240.0
+        else:
+            region_x = SAFE_MARGIN_V4
+            region_width = context.width
+        region_gap = 24.0
+        region_columns = 1 if region_id == "accent" else columns
+        region_width = (
+            (region_width - region_gap * (region_columns - 1)) / region_columns
+        )
         elements.append(
             context.image_element(
                 placement.directive_id,
-                x=SAFE_MARGIN_V4 + column * (width + gap),
+                x=region_x + column * (region_width + region_gap),
                 y=start_y + row * (height + gap),
-                width=width,
+                width=region_width,
                 height=height,
-                region_id="support",
+                region_id=region_id,
             )
         )
     return elements
 
 
 def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]:
-    refs = tuple(item.fragment_ref for item in context.program.fragment_placements)
-    if not refs:
+    placements = tuple(sorted(context.program.fragment_placements, key=lambda item: item.order))
+    if not placements:
         raise LayoutCompilationError(
             "CONTENT_OVERFLOW",
             page_id=context.page_id,
@@ -57,21 +69,37 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
         )
     asset_start = 1080.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
     elements: list[SceneElement] = []
-    hero_height = 430.0 if len(refs) > 1 else 520.0
-    elements.append(
-        context.text_element(
-            refs[0],
-            x=SAFE_MARGIN_V4,
-            y=100.0,
-            width=context.width,
-            height=hero_height,
-            region_id="hero",
-            align="left",
-        )
-    )
-    support_refs = refs[1:]
+    by_region: dict[str, list[str]] = {"hero": [], "support": [], "accent": []}
+    for placement in placements:
+        by_region.setdefault(placement.region_id, []).append(placement.fragment_ref)
+    hero_refs = by_region.get("hero", [])
+    support_refs = by_region.get("support", [])
+    accent_refs = by_region.get("accent", [])
+    if hero_refs:
+        hero_height = 430.0 if support_refs or accent_refs else 520.0
+        slot = hero_height / len(hero_refs)
+        if slot < 96:
+            raise LayoutCompilationError(
+                "DENSITY_EXCEEDED",
+                page_id=context.page_id,
+                region_id="hero",
+                evidence=f"hero_slot={slot:.3f}; minimum=96.000",
+            )
+        for index, ref in enumerate(hero_refs):
+            elements.append(
+                context.text_element(
+                    ref,
+                    x=SAFE_MARGIN_V4,
+                    y=100.0 + index * slot,
+                    width=context.width,
+                    height=slot - 16.0 if len(hero_refs) > 1 else hero_height,
+                    region_id="hero",
+                    align="left",
+                )
+            )
     if support_refs:
-        support_top = 600.0
+        support_top = 600.0 if not hero_refs else 650.0
+        support_width = context.width - 264.0 if accent_refs else context.width
         support_height = asset_start - support_top - 24.0
         slot = support_height / len(support_refs)
         if slot < 72.0:
@@ -87,13 +115,35 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
                     ref,
                     x=SAFE_MARGIN_V4,
                     y=support_top + index * slot,
-                    width=context.width,
+                    width=support_width,
                     height=slot - 16.0,
                     region_id="support",
                 )
             )
+    if accent_refs:
+        accent_top = 600.0 if not hero_refs else 650.0
+        accent_height = min(180.0, (asset_start - accent_top - 24.0) / len(accent_refs))
+        for index, ref in enumerate(accent_refs):
+            elements.append(
+                context.text_element(
+                    ref,
+                    x=SAFE_MARGIN_V4 + context.width - 240.0,
+                    y=accent_top + index * accent_height,
+                    width=240.0,
+                    height=accent_height - 16.0,
+                    region_id="accent",
+                    align="center",
+                )
+            )
     elements.extend(_asset_boxes(context, asset_start + 24.0 if context.program.asset_placements else asset_start))
-    return tuple(elements)
+    text_by_ref = {
+        element.content_ref: element
+        for element in elements
+        if getattr(element, "kind", None) == "text"
+    }
+    ordered_text = [text_by_ref[item.fragment_ref] for item in placements]
+    ordered_assets = [element for element in elements if getattr(element, "kind", None) == "image"]
+    return tuple([*ordered_text, *ordered_assets])
 
 
 __all__ = ["solve_editorial_hero"]

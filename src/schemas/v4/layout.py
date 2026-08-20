@@ -9,6 +9,7 @@ v4 stages.
 from __future__ import annotations
 
 import re
+import math
 from types import MappingProxyType
 from typing import Literal
 
@@ -29,7 +30,7 @@ from src.schemas.v4.direction import (
     NarrativeTaskKindV4,
     TemplateFamilyV4,
 )
-from src.schemas.scene_graph import PageScene
+from src.schemas.scene_graph import Box, ImageElement, LineElement, PageScene, TextElement
 from src.schemas.visual_style import deep_freeze, deep_thaw
 
 
@@ -716,6 +717,54 @@ class LayoutProgramV4(_FrozenLayoutV4):
         return self.asset_placements
 
 
+class TextMeasurementEvidenceV4(_FrozenLayoutV4):
+    """Non-visible measurement evidence consumed by the future CSS adapter."""
+
+    fragment_ref: StrictStr = Field(min_length=1)
+    font_role: Literal["display", "heading", "body", "caption"]
+    font_sha256: StrictStr
+    font_size_px: float = Field(gt=0)
+    line_count: StrictInt = Field(ge=1)
+    break_offsets: tuple[StrictInt, ...] = ()
+    measurement_sha256: StrictStr
+
+    @field_validator("font_sha256", "measurement_sha256")
+    @classmethod
+    def validate_evidence_hash(cls, value: str, info) -> str:
+        return _validate_hash(value, info.field_name)
+
+    @field_validator("font_size_px")
+    @classmethod
+    def validate_font_size(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("text measurement font size must be finite and positive")
+        return value
+
+    @field_validator("break_offsets")
+    @classmethod
+    def validate_break_offsets(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if any(offset < 0 for offset in value):
+            raise ValueError("text measurement break offsets must be non-negative")
+        if tuple(value) != tuple(sorted(value)):
+            raise ValueError("text measurement break offsets must be ordered")
+        return value
+
+
+class AssetBindingEvidenceV4(_FrozenLayoutV4):
+    """Exact asset binding facts without path/provider/provenance data."""
+
+    directive_id: StrictStr = Field(min_length=1)
+    asset_id: StrictStr = Field(min_length=1)
+    asset_sha256: StrictStr
+    orientation: Literal["any", "portrait", "landscape", "square"]
+    fit: Literal["cover", "contain"]
+
+    @field_validator("asset_sha256")
+    @classmethod
+    def validate_asset_hash(cls, value: str) -> str:
+        return _validate_hash(value, "asset_sha256")
+
+
 class CompilerProvenanceV4(_FrozenLayoutV4):
     """Auditable deterministic compiler inputs without machine-local data.
 
@@ -724,19 +773,85 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
     boundaries and cannot enter this durable scene contract.
     """
 
-    compiler_version: StrictStr = "v4-layout-compiler-1"
+    compiler_version: StrictStr = "v4-layout-compiler-2"
     grammar_id: ImplementedGrammarIDV4
+    template_family: TemplateFamilyV4
     program_sha256: StrictStr
+    content_atom_set_sha256: StrictStr
+    semantic_content_model_sha256: StrictStr
+    page_brief_sha256: StrictStr
+    page_brief_set_sha256: StrictStr | None = None
+    visual_direction_plan_sha256: StrictStr | None = None
+    asset_manifest_sha256: StrictStr
+    family_tokens_sha256: StrictStr
     font_sha256_by_role: dict[StrictStr, StrictStr]
+    candidate_id: StrictStr
+    revision: StrictInt = Field(ge=0)
+    run_id: StrictStr | None = None
     canvas_width: StrictInt = 1080
     canvas_height: StrictInt = 1440
     safe_margin_px: StrictInt = 80
+    min_body_font_px: StrictInt = Field(default=24, ge=24)
+    min_display_font_px: StrictInt = Field(default=32, ge=32)
+    text_wrap_policy: StrictStr = "pre-wrap-grapheme-anywhere-v1"
+    contrast_policy_version: StrictStr = "wcag-semantic-ink-v1"
+    accessibility_ink: StrictStr = "#111111"
+    text_measurement_evidence: dict[StrictStr, TextMeasurementEvidenceV4] = {}
+    asset_binding_evidence: dict[StrictStr, AssetBindingEvidenceV4] = {}
     canonical_sha256: StrictStr
 
-    @field_validator("program_sha256", "canonical_sha256")
+    @field_validator(
+        "program_sha256",
+        "content_atom_set_sha256",
+        "semantic_content_model_sha256",
+        "page_brief_sha256",
+        "asset_manifest_sha256",
+        "family_tokens_sha256",
+        "canonical_sha256",
+    )
     @classmethod
     def validate_provenance_hash(cls, value: str, info) -> str:
         return _validate_hash(value, info.field_name)
+
+    @field_validator("page_brief_set_sha256", "visual_direction_plan_sha256")
+    @classmethod
+    def validate_optional_provenance_hash(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
+        return _validate_hash(value, info.field_name)
+
+    @field_validator("compiler_version")
+    @classmethod
+    def validate_compiler_version(cls, value: str) -> str:
+        if value != "v4-layout-compiler-2":
+            raise ValueError("v4 compiler version is not canonical")
+        return value
+
+    @field_validator("text_wrap_policy")
+    @classmethod
+    def validate_wrap_policy(cls, value: str) -> str:
+        if value != "pre-wrap-grapheme-anywhere-v1":
+            raise ValueError("v4 text wrap policy is not canonical")
+        return value
+
+    @field_validator("accessibility_ink")
+    @classmethod
+    def validate_accessibility_ink(cls, value: str) -> str:
+        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
+            raise ValueError("v4 accessibility ink must be a six-digit color")
+        return value.upper()
+
+    @field_validator("candidate_id")
+    @classmethod
+    def validate_candidate_id(cls, value: str) -> str:
+        return _validate_identifier(value, "candidate_id")
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_run_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return _validate_identifier(value, "run_id")
 
     @field_validator("font_sha256_by_role")
     @classmethod
@@ -748,16 +863,56 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
             _validate_hash(digest, f"font_sha256_by_role[{role}]")
         return value
 
+    @field_validator("text_measurement_evidence")
+    @classmethod
+    def validate_text_evidence(cls, value: dict[str, TextMeasurementEvidenceV4]):
+        checked = {
+            key: TextMeasurementEvidenceV4.model_validate(item.model_dump(mode="python"))
+            for key, item in value.items()
+        }
+        if any(key != item.fragment_ref for key, item in checked.items()):
+            raise ValueError("text measurement evidence keys must match fragment refs")
+        return checked
+
+    @field_validator("asset_binding_evidence")
+    @classmethod
+    def validate_asset_evidence(cls, value: dict[str, AssetBindingEvidenceV4]):
+        checked = {
+            key: AssetBindingEvidenceV4.model_validate(item.model_dump(mode="python"))
+            for key, item in value.items()
+        }
+        if any(key != item.directive_id for key, item in checked.items()):
+            raise ValueError("asset binding evidence keys must match directive IDs")
+        return checked
+
     @field_serializer("font_sha256_by_role")
     def serialize_font_hashes(self, value):
         return deep_thaw(value)
 
     @model_validator(mode="after")
     def validate_provenance(self) -> "CompilerProvenanceV4":
+        if self.template_family not in {"pink_red", "deep_teal", "soft_pink", "coral_impact", "green_catalog", "white_quote"}:
+            raise ValueError("compiler provenance family is not canonical")
         if self.canvas_width != 1080 or self.canvas_height != 1440:
             raise ValueError("v4 compiler provenance canvas must be exactly 1080x1440")
         if self.safe_margin_px != 80:
             raise ValueError("v4 compiler provenance safe margin is fixed at 80px")
+        if self.min_body_font_px < 24 or self.min_display_font_px < 32:
+            raise ValueError("compiler provenance minimum font floors are below policy")
+        try:
+            from src.visual_design.v4.typography import resolve_font_file_v4
+
+            current_fonts = {
+                role: resolve_font_file_v4(self.template_family, role).sha256
+                for role in ("display", "heading", "body", "caption")
+            }
+        except Exception as exc:
+            raise ValueError("current checked-in font registry is unavailable") from None
+        if dict(self.font_sha256_by_role) != current_fonts:
+            raise ValueError("compiler provenance font hashes do not match current registry")
+        for key, evidence in self.text_measurement_evidence.items():
+            if self.font_sha256_by_role[evidence.font_role] != evidence.font_sha256:
+                raise ValueError("text measurement evidence font hash is not provenance-bound")
         object.__setattr__(
             self,
             "font_sha256_by_role",
@@ -802,8 +957,107 @@ class CompiledPageV4(_FrozenLayoutV4):
             raise ValueError("compiled page grammar does not match compiler provenance")
         if self.layout_program.canonical_sha256 != self.compiler_provenance.program_sha256:
             raise ValueError("compiler provenance is bound to a different layout program")
+        try:
+            PageScene.model_validate(self.scene.model_dump(mode="python"))
+        except Exception:
+            raise ValueError("compiled page scene is stale or invalid") from None
         if self.scene.page_id != self.page_id or self.scene.sequence != self.sequence:
             raise ValueError("compiled page scene identity does not match page identity")
+        if self.compiler_provenance.template_family != self.layout_program.template_family:
+            raise ValueError("compiler provenance family does not match layout program")
+        if self.compiler_provenance.family_tokens_sha256 != self.layout_program.family_tokens_sha256:
+            raise ValueError("compiler provenance family token hash does not match layout program")
+        if self.compiler_provenance.page_brief_sha256 != self.layout_program.page_brief_sha256:
+            raise ValueError("compiler provenance page brief hash does not match layout program")
+
+        def _safe_number(value: object) -> bool:
+            return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+        def _safe_box(element) -> tuple[float, float, float, float]:
+            box = element.box
+            values = (box.x, box.y, box.width, box.height)
+            if not all(_safe_number(value) for value in values) or box.width <= 0 or box.height <= 0:
+                raise ValueError("compiled page contains non-finite or non-positive geometry")
+            margin = self.compiler_provenance.safe_margin_px
+            if (
+                box.x < margin
+                or box.y < margin
+                or box.x + box.width > self.compiler_provenance.canvas_width - margin
+                or box.y + box.height > self.compiler_provenance.canvas_height - margin
+            ):
+                raise ValueError("compiled page geometry exceeds compiler safe margin")
+            return float(box.x), float(box.y), float(box.width), float(box.height)
+
+        boxes: list[tuple[str, tuple[float, float, float, float], tuple[str, ...]]] = []
+        element_ids = [element.element_id for element in self.scene.elements]
+        if len(element_ids) != len(set(element_ids)):
+            raise ValueError("compiled page scene element IDs must be unique")
+        text_refs: list[str] = []
+        image_refs: list[str] = []
+        for element in self.scene.elements:
+            if isinstance(element, LineElement):
+                for endpoint in (element.start, element.end):
+                    if (
+                        len(endpoint) != 2
+                        or not all(_safe_number(value) for value in endpoint)
+                        or endpoint[0] < self.compiler_provenance.safe_margin_px
+                        or endpoint[1] < self.compiler_provenance.safe_margin_px
+                        or endpoint[0] > self.compiler_provenance.canvas_width - self.compiler_provenance.safe_margin_px
+                        or endpoint[1] > self.compiler_provenance.canvas_height - self.compiler_provenance.safe_margin_px
+                    ):
+                        raise ValueError("compiled page line endpoint exceeds compiler safe margin")
+                if not _safe_number(element.width) or element.width <= 0:
+                    raise ValueError("compiled page line width is non-finite or non-positive")
+                continue
+            box = _safe_box(element)
+            boxes.append((element.element_id, box, tuple(element.intentional_overlap_with)))
+            if isinstance(element, TextElement):
+                text_refs.append(element.content_ref)
+                floor = (
+                    self.compiler_provenance.min_display_font_px
+                    if element.style.font_role in {"display", "heading"}
+                    else self.compiler_provenance.min_body_font_px
+                )
+                if element.style.font_size < floor:
+                    raise ValueError("compiled page text font size is below provenance floor")
+                evidence = self.compiler_provenance.text_measurement_evidence.get(element.content_ref)
+                if evidence is None:
+                    raise ValueError("compiled page text has no measurement evidence")
+                try:
+                    from src.visual_design.v4.typography import resolve_font_file_v4
+
+                    nominal_weight = resolve_font_file_v4(
+                        self.compiler_provenance.template_family,
+                        element.style.font_role,
+                    ).nominal_weight
+                except Exception:
+                    raise ValueError("compiled page text font registry is unavailable") from None
+                if element.style.weight != nominal_weight:
+                    raise ValueError("compiled page text weight does not match measured font face")
+            elif isinstance(element, ImageElement):
+                image_refs.append(element.asset_ref)
+        expected_text_refs = tuple(item.fragment_ref for item in self.layout_program.fragment_placements)
+        if tuple(text_refs) != expected_text_refs or len(text_refs) != len(set(text_refs)):
+            raise ValueError("compiled page text refs do not exactly match layout program placements")
+        expected_directives = tuple(item.directive_id for item in self.layout_program.asset_placements)
+        evidence = self.compiler_provenance.asset_binding_evidence
+        if set(evidence) != set(expected_directives):
+            raise ValueError("compiled page asset binding evidence is incomplete")
+        if len(image_refs) != len(set(image_refs)) or len(image_refs) != len(expected_directives):
+            raise ValueError("compiled page asset placements are not exact-once")
+        for directive_id, asset_ref in zip(expected_directives, image_refs):
+            if evidence[directive_id].asset_id != asset_ref:
+                raise ValueError("compiled page asset evidence does not match scene assets")
+        for left_index, (left_id, left_box, left_allowed) in enumerate(boxes):
+            for right_id, right_box, right_allowed in boxes[left_index + 1 :]:
+                intersects = (
+                    left_box[0] < right_box[0] + right_box[2]
+                    and left_box[0] + left_box[2] > right_box[0]
+                    and left_box[1] < right_box[1] + right_box[3]
+                    and left_box[1] + left_box[3] > right_box[1]
+                )
+                if intersects and right_id not in left_allowed and left_id not in right_allowed:
+                    raise ValueError("compiled page contains an unintended element overlap")
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         expected = canonical_sha256_v4(payload)
         if self.canonical_sha256 != expected:
@@ -834,7 +1088,10 @@ class CarouselDesignPlanV4(_FrozenLayoutV4):
     page_brief_set_sha256: StrictStr
     asset_manifest_sha256: StrictStr
     family_tokens_sha256: StrictStr
+    candidate_id: StrictStr
     revision: StrictInt = Field(ge=0)
+    run_id: StrictStr | None = None
+    visual_direction_plan_sha256: StrictStr | None = None
     pages: tuple[CompiledPageV4, ...] = Field(min_length=5, max_length=18)
     canonical_sha256: StrictStr
 
@@ -842,13 +1099,21 @@ class CarouselDesignPlanV4(_FrozenLayoutV4):
         "content_atom_set_sha256",
         "semantic_content_model_sha256",
         "page_brief_set_sha256",
+        "visual_direction_plan_sha256",
         "asset_manifest_sha256",
         "family_tokens_sha256",
         "canonical_sha256",
     )
     @classmethod
     def validate_plan_hashes(cls, value: str, info) -> str:
+        if value is None:
+            return value
         return _validate_hash(value, info.field_name)
+
+    @field_validator("candidate_id")
+    @classmethod
+    def validate_plan_candidate(cls, value: str) -> str:
+        return _validate_identifier(value, "candidate_id")
 
     @model_validator(mode="after")
     def validate_plan_identity_and_hash(self) -> "CarouselDesignPlanV4":
@@ -859,6 +1124,30 @@ class CarouselDesignPlanV4(_FrozenLayoutV4):
             raise ValueError("v4 design plan page IDs must be unique")
         if [page.sequence for page in self.pages] != list(range(1, len(self.pages) + 1)):
             raise ValueError("v4 design plan page sequences must be contiguous from 1")
+        if any(page.compiler_provenance.candidate_id != self.candidate_id for page in self.pages):
+            raise ValueError("v4 design plan pages mix candidate identities")
+        if any(page.compiler_provenance.revision != self.revision for page in self.pages):
+            raise ValueError("v4 design plan pages mix revisions")
+        if any(page.compiler_provenance.run_id != self.run_id for page in self.pages):
+            raise ValueError("v4 design plan pages mix run identities")
+        if any(
+            page.compiler_provenance.visual_direction_plan_sha256
+            != self.visual_direction_plan_sha256
+            for page in self.pages
+        ):
+            raise ValueError("v4 design plan pages mix visual direction plans")
+        for page in self.pages:
+            provenance = page.compiler_provenance
+            if provenance.content_atom_set_sha256 != self.content_atom_set_sha256:
+                raise ValueError("v4 design plan content atom hash is not page-bound")
+            if provenance.semantic_content_model_sha256 != self.semantic_content_model_sha256:
+                raise ValueError("v4 design plan semantic hash is not page-bound")
+            if provenance.page_brief_set_sha256 != self.page_brief_set_sha256:
+                raise ValueError("v4 design plan page brief set hash is not page-bound")
+            if provenance.asset_manifest_sha256 != self.asset_manifest_sha256:
+                raise ValueError("v4 design plan asset manifest hash is not page-bound")
+            if provenance.family_tokens_sha256 != self.family_tokens_sha256:
+                raise ValueError("v4 design plan family token hash is not page-bound")
         program_families = {
             page.layout_program.family_tokens_sha256 for page in self.pages
         }
@@ -904,6 +1193,7 @@ __all__ = [
     "CarouselDesignPlanV4",
     "CompiledPage",
     "CompiledPageV4",
+    "AssetBindingEvidenceV4",
     "CompilerProvenance",
     "CompilerProvenanceV4",
     "FamilyTokens",
@@ -927,4 +1217,5 @@ __all__ = [
     "EmphasisRuleV4",
     "ResponsiveConstraintV4",
     "TypographyRolesV4",
+    "TextMeasurementEvidenceV4",
 ]

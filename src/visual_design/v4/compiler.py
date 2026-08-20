@@ -28,17 +28,24 @@ from src.schemas.scene_graph import (
     TextStyle,
 )
 from src.schemas.v4.content import ContentAtomSetV4, canonical_sha256_v4
-from src.schemas.v4.direction import PageBriefV4, TemplateFamilyV4
+from src.schemas.v4.direction import PageBriefV4, TemplateFamilyV4, VisualDirectionPlanV4
 from src.schemas.v4.layout import (
+    AssetBindingEvidenceV4,
     CarouselDesignPlanV4,
     CompilerProvenanceV4,
     CompiledPageV4,
     FamilyTokensV4,
     LayoutProgramV4,
+    TextMeasurementEvidenceV4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4, SemanticFragmentV4
-from src.visual_design.v4.tokens import get_family_tokens
-from src.visual_design.v4.typography import TextMeasurementV4, measure_text_v4, resolve_font_file_v4
+from src.visual_design.v4.tokens import get_family_tokens, resolve_semantic_colors_v4
+from src.visual_design.v4.typography import (
+    TEXT_WRAP_POLICY_V4,
+    TextMeasurementV4,
+    measure_text_v4,
+    resolve_font_file_v4,
+)
 
 
 CANVAS_WIDTH_V4: Final[int] = 1080
@@ -46,6 +53,10 @@ CANVAS_HEIGHT_V4: Final[int] = 1440
 SAFE_MARGIN_V4: Final[int] = 80
 MIN_BODY_FONT_PX_V4: Final[int] = 24
 MIN_DISPLAY_FONT_PX_V4: Final[int] = 32
+COMPILER_VERSION_V4: Final[str] = "v4-layout-compiler-2"
+CONTRAST_POLICY_VERSION_V4: Final[str] = "wcag-semantic-ink-v1"
+ACCESSIBILITY_INK_V4: Final[tuple[str, str]] = ("#111111", "#FFFFFF")
+ASSET_CROP_THRESHOLD_V4: Final[float] = 3.0
 COMPILATION_ERROR_CODES_V4 = (
     "CONTENT_OVERFLOW",
     "DENSITY_EXCEEDED",
@@ -108,6 +119,10 @@ class LayoutCompilerInputsV4(BaseModel):
     semantic_content_model: SemanticContentModelV4
     content_atom_set: ContentAtomSetV4
     asset_manifest: AssetManifest
+    candidate_id: str = Field(min_length=1)
+    revision: StrictInt = Field(ge=0)
+    run_id: str | None = None
+    visual_direction_plan: VisualDirectionPlanV4 | None = None
     family_tokens: FamilyTokensV4 | None = None
     min_body_font_px: StrictInt = Field(default=MIN_BODY_FONT_PX_V4, ge=MIN_BODY_FONT_PX_V4)
     min_display_font_px: StrictInt = Field(
@@ -115,6 +130,13 @@ class LayoutCompilerInputsV4(BaseModel):
         ge=MIN_DISPLAY_FONT_PX_V4,
     )
     safe_margin_px: StrictInt = Field(default=SAFE_MARGIN_V4, ge=SAFE_MARGIN_V4)
+
+    @field_validator("candidate_id")
+    @classmethod
+    def validate_candidate_id(cls, value: str) -> str:
+        if not value.strip() or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:-]*", value):
+            raise ValueError("v4 candidate_id must be a structural identifier")
+        return value
 
     @field_validator("safe_margin_px")
     @classmethod
@@ -139,8 +161,8 @@ def _coerce_program(value: LayoutProgramV4 | dict) -> LayoutProgramV4:
     try:
         program = LayoutProgramV4.model_validate(_tupleize(raw))
         program.validate_integrity()
-    except Exception as exc:
-        raise ValueError("layout program is stale or has an invalid canonical hash") from exc
+    except Exception:
+        raise ValueError("layout program is stale or has an invalid canonical hash") from None
     return program
 
 
@@ -172,8 +194,8 @@ def _coerce_inputs(value: LayoutCompilerInputsV4 | dict) -> LayoutCompilerInputs
         AssetManifest.model_validate(inputs.asset_manifest.model_dump(mode="python"))
         if inputs.family_tokens is not None:
             inputs.family_tokens.validate_integrity()
-    except Exception as exc:
-        raise ValueError(f"layout compiler inputs are stale or invalid: {exc}") from exc
+    except Exception:
+        raise ValueError("layout compiler inputs are stale or invalid") from None
     return inputs
 
 
@@ -207,6 +229,8 @@ class CompilerContextV4:
     assets_by_directive: dict[str, AssetManifestItem]
     directives_by_id: dict[str, object]
     used_boxes: list[_PlacedBox]
+    text_measurement_evidence: dict[str, TextMeasurementEvidenceV4]
+    asset_binding_evidence: dict[str, AssetBindingEvidenceV4]
     element_counter: int = 0
 
     @property
@@ -227,7 +251,37 @@ class CompilerContextV4:
 
     @property
     def palette_primary(self) -> str:
-        return self.tokens.palette[0]
+        return self.resolve_color("accent")
+
+    @staticmethod
+    def _luminance(color: str) -> float:
+        channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+        linear = [
+            channel / 12.92
+            if channel <= 0.04045
+            else ((channel + 0.055) / 1.055) ** 2.4
+            for channel in channels
+        ]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    @classmethod
+    def _contrast_ratio(cls, foreground: str, background: str) -> float:
+        brighter, darker = sorted(
+            (cls._luminance(foreground), cls._luminance(background)),
+            reverse=True,
+        )
+        return (brighter + 0.05) / (darker + 0.05)
+
+    def resolve_color(self, semantic_role: str) -> str:
+        try:
+            return resolve_semantic_colors_v4(self.tokens)[semantic_role]
+        except (KeyError, ValueError):
+            threshold = 3.0 if semantic_role in {"display", "heading", "accent"} else 4.5
+            raise LayoutCompilationError(
+                "TYPOGRAPHY_CONSTRAINT_CONFLICT",
+                page_id=self.page_id,
+                evidence=f"contrast ratio below threshold={threshold:.2f}",
+            ) from None
 
     def fragment_text(self, ref: str) -> str:
         fragment = self.fragments.get(ref)
@@ -298,7 +352,7 @@ class CompilerContextV4:
                 and y + height > previous.y
             ):
                 raise LayoutCompilationError(
-                    "UNBALANCED_REGIONS",
+                    "CONTENT_OVERFLOW",
                     page_id=self.page_id,
                     region_id=region_id,
                     ref=ref,
@@ -350,15 +404,23 @@ class CompilerContextV4:
             except ValueError as exc:
                 if "grapheme cluster" in str(exc) or "width" in str(exc):
                     raise LayoutCompilationError(
-                        "TYPOGRAPHY_CONSTRAINT_CONFLICT",
+                        "CONTENT_OVERFLOW",
                         page_id=self.page_id,
                         region_id=region_id,
                         ref=ref,
                         evidence="unbreakable grapheme exceeds text region",
-                    ) from exc
+                    ) from None
                 raise
             if measurement.height_px <= max_height:
                 return size, measurement
+        if not self._font_ladder(role):
+            raise LayoutCompilationError(
+                "TYPOGRAPHY_CONSTRAINT_CONFLICT",
+                page_id=self.page_id,
+                region_id=region_id,
+                ref=ref,
+                evidence="minimum font floor has no legal face size",
+            )
         raise LayoutCompilationError(
             "DENSITY_EXCEEDED",
             page_id=self.page_id,
@@ -379,7 +441,7 @@ class CompilerContextV4:
         align: str = "left",
     ) -> TextElement:
         role = self.role_for_fragment(ref)
-        size, _measurement = self.fit_text(
+        size, measurement = self.fit_text(
             ref,
             width=width,
             max_height=height,
@@ -395,7 +457,16 @@ class CompilerContextV4:
             region_id=region_id,
             ref=ref,
         )
-        weight = 800 if role == "display" else 700 if role == "heading" else 500
+        weight = measurement.font_nominal_weight
+        self.text_measurement_evidence[ref] = TextMeasurementEvidenceV4(
+            fragment_ref=ref,
+            font_role=role,
+            font_sha256=measurement.font_sha256,
+            font_size_px=measurement.font_size_px,
+            line_count=measurement.line_count,
+            break_offsets=measurement.break_offsets,
+            measurement_sha256=measurement.measurement_sha256,
+        )
         return TextElement(
             element_id=element_id,
             layer=20,
@@ -405,7 +476,7 @@ class CompilerContextV4:
                 font_role=role,
                 font_size=float(size),
                 line_height=1.15 if role in {"display", "heading"} else 1.25,
-                color=self.palette_primary,
+                color=self.resolve_color(role),
                 align=align,  # type: ignore[arg-type]
                 weight=weight,
             ),
@@ -456,6 +527,15 @@ class CompilerContextV4:
                 ref=directive_id,
                 evidence="approved asset aspect ratio is not square-compatible",
             )
+        crop_factor = max(asset_ratio / box_ratio, box_ratio / asset_ratio)
+        if crop_factor > ASSET_CROP_THRESHOLD_V4:
+            raise LayoutCompilationError(
+                "ASSET_ASPECT_MISMATCH",
+                page_id=self.page_id,
+                region_id=region_id,
+                ref=directive_id,
+                evidence=f"crop_factor={crop_factor:.3f}; threshold={ASSET_CROP_THRESHOLD_V4:.3f}",
+            )
         element_id = self._next_id("image", directive_id)
         box = self._safe_box(
             x=x,
@@ -467,6 +547,13 @@ class CompilerContextV4:
             ref=directive_id,
         )
         focal = asset.subject_focal_point
+        self.asset_binding_evidence[directive_id] = AssetBindingEvidenceV4(
+            directive_id=directive_id,
+            asset_id=asset.asset_id,
+            asset_sha256=asset.sha256,
+            orientation=orientation,
+            fit="cover",
+        )
         return ImageElement(
             element_id=element_id,
             layer=10,
@@ -487,8 +574,8 @@ def _validate_boundary(
     inputs.content_atom_set.validate_integrity()
     try:
         manifest = AssetManifest.model_validate(inputs.asset_manifest.model_dump(mode="python"))
-    except Exception as exc:
-        raise ValueError("asset manifest is stale or invalid") from exc
+    except Exception:
+        raise ValueError("asset manifest is stale or invalid") from None
     if inputs.semantic_content_model.content_atom_set_sha256 != inputs.content_atom_set.canonical_sha256:
         raise ValueError("semantic model is bound to a different content atom set")
     try:
@@ -502,10 +589,12 @@ def _validate_boundary(
         raise ValueError("layout program page brief hash does not match exact page brief")
     if checked_program.beat_ref != brief.beat_ref:
         raise ValueError("layout program beat binding does not match exact page brief")
+    if checked_program.density_target != brief.density_budget:
+        raise ValueError("layout program density target does not match exact page brief")
     try:
         tokens = get_family_tokens(checked_program.template_family)
-    except Exception as exc:
-        raise ValueError("layout program family is not canonical") from exc
+    except Exception:
+        raise ValueError("layout program family is not canonical") from None
     if checked_program.family_tokens_sha256 != tokens.canonical_sha256:
         raise ValueError("layout program family token hash is stale")
     if inputs.family_tokens is not None:
@@ -513,6 +602,87 @@ def _validate_boundary(
             raise ValueError("compiler inputs family token ID does not match program")
         if inputs.family_tokens.canonical_sha256 != tokens.canonical_sha256:
             raise ValueError("compiler inputs family token hash is stale")
+    if inputs.visual_direction_plan is not None:
+        plan = inputs.visual_direction_plan
+        try:
+            plan.validate_integrity()
+        except Exception:
+            raise ValueError("visual direction plan is stale or invalid") from None
+        durable_page_set = plan.page_brief_set
+        if durable_page_set.content_atom_set_sha256 is None or durable_page_set.semantic_content_model_sha256 is None:
+            raise ValueError("durable page brief set must bind atom and semantic hashes")
+        if plan.content_atom_set_sha256 != inputs.content_atom_set.canonical_sha256:
+            raise ValueError("visual direction plan atom hash does not match compiler inputs")
+        if plan.semantic_content_model_sha256 != inputs.semantic_content_model.canonical_sha256:
+            raise ValueError("visual direction plan semantic hash does not match compiler inputs")
+        if plan.template_family != checked_program.template_family:
+            raise ValueError("visual direction plan family does not match layout program")
+        if plan.narrative_sha256 != checked_program.carousel_narrative_sha256:
+            raise ValueError("layout program narrative hash does not match visual direction plan")
+        if plan.page_brief_set_sha256 != durable_page_set.canonical_sha256:
+            raise ValueError("visual direction plan page brief hash is stale")
+        if durable_page_set.content_atom_set_sha256 != plan.content_atom_set_sha256:
+            raise ValueError("durable page brief set atom hash does not match visual direction plan")
+        if durable_page_set.semantic_content_model_sha256 != plan.semantic_content_model_sha256:
+            raise ValueError("durable page brief set semantic hash does not match visual direction plan")
+        plan_brief = next((item for item in durable_page_set.pages if item.page_id == checked_program.page_id), None)
+        if plan_brief is None or plan_brief.canonical_sha256 != inputs.page_brief.canonical_sha256:
+            raise ValueError("compiler page brief is not the exact visual direction plan brief")
+
+    from src.visual_design.v4.grammars import get_grammar
+
+    grammar = get_grammar(checked_program.grammar_id)
+    expected_regions = tuple(
+        (item.region_id, item.role, index)
+        for index, item in enumerate(grammar.region_roles)
+    )
+    actual_regions = tuple(
+        (item.region_id, item.role, item.order)
+        for item in checked_program.regions
+    )
+    if actual_regions != expected_regions:
+        raise ValueError("layout program regions do not exactly match canonical grammar")
+    expected_axes = tuple(
+        (axis.axis_id, axis.orientation, tuple(axis.region_ids))
+        for axis in grammar.alignment_axes
+    )
+    actual_axes = tuple(
+        (axis.axis_id, axis.orientation, tuple(axis.region_ids))
+        for axis in checked_program.alignment_axes
+    )
+    if actual_axes != expected_axes:
+        raise ValueError("layout program alignment axes do not exactly match canonical grammar")
+    expected_constraints = tuple(
+        (constraint.constraint_id, constraint.kind, tuple(constraint.region_ids), tuple(constraint.axis_ids), constraint.behavior)
+        for constraint in grammar.constraints
+    )
+    actual_constraints = tuple(
+        (constraint.constraint_id, constraint.kind, tuple(constraint.region_ids), tuple(constraint.axis_ids), constraint.behavior)
+        for constraint in checked_program.responsive_constraints
+    )
+    if actual_constraints != expected_constraints:
+        raise ValueError("layout program responsive constraints do not exactly match canonical grammar")
+    if checked_program.grammar_id == "editorial_hero" and checked_program.fragment_placements[0].region_id == "accent":
+        raise LayoutCompilationError(
+            "UNBALANCED_REGIONS",
+            page_id=checked_program.page_id,
+            region_id="accent",
+            ref=checked_program.fragment_placements[0].fragment_ref,
+            evidence="primary_focus_region_count=0",
+        )
+    region_counts: dict[str, int] = {}
+    for placement in checked_program.fragment_placements:
+        region_counts[placement.region_id] = region_counts.get(placement.region_id, 0) + 1
+    if checked_program.grammar_id == "comparison_grid":
+        left_count = region_counts.get("left", 0)
+        right_count = region_counts.get("right", 0)
+        if (left_count or right_count) and left_count != right_count:
+            raise LayoutCompilationError(
+                "UNBALANCED_REGIONS",
+                page_id=checked_program.page_id,
+                region_id="left" if left_count < right_count else "right",
+                evidence=f"left_count={left_count}; right_count={right_count}",
+            )
     brief_fragment_refs = tuple(brief.fragment_refs)
     program_fragment_refs = tuple(item.fragment_ref for item in checked_program.fragment_placements)
     if len(set(brief_fragment_refs)) != len(brief_fragment_refs):
@@ -572,15 +742,42 @@ def _font_hashes(family: TemplateFamilyV4) -> dict[str, str]:
     }
 
 
-def _make_provenance(program: LayoutProgramV4, hashes: dict[str, str]) -> CompilerProvenanceV4:
+def _make_provenance(
+    program: LayoutProgramV4,
+    inputs: LayoutCompilerInputsV4,
+    hashes: dict[str, str],
+    *,
+    text_measurement_evidence: dict[str, TextMeasurementEvidenceV4],
+    asset_binding_evidence: dict[str, AssetBindingEvidenceV4],
+) -> CompilerProvenanceV4:
+    asset_manifest_hash = canonical_sha256_v3(inputs.asset_manifest)
+    plan = inputs.visual_direction_plan
     payload = {
-        "compiler_version": "v4-layout-compiler-1",
+        "compiler_version": COMPILER_VERSION_V4,
         "grammar_id": program.grammar_id,
+        "template_family": program.template_family,
         "program_sha256": program.canonical_sha256,
+        "content_atom_set_sha256": inputs.content_atom_set.canonical_sha256,
+        "semantic_content_model_sha256": inputs.semantic_content_model.canonical_sha256,
+        "page_brief_sha256": inputs.page_brief.canonical_sha256,
+        "page_brief_set_sha256": plan.page_brief_set_sha256 if plan is not None else None,
+        "visual_direction_plan_sha256": plan.canonical_sha256 if plan is not None else None,
+        "asset_manifest_sha256": asset_manifest_hash,
+        "family_tokens_sha256": program.family_tokens_sha256,
         "font_sha256_by_role": hashes,
+        "candidate_id": inputs.candidate_id,
+        "revision": inputs.revision,
+        "run_id": inputs.run_id,
         "canvas_width": CANVAS_WIDTH_V4,
         "canvas_height": CANVAS_HEIGHT_V4,
         "safe_margin_px": SAFE_MARGIN_V4,
+        "min_body_font_px": inputs.min_body_font_px,
+        "min_display_font_px": inputs.min_display_font_px,
+        "text_wrap_policy": TEXT_WRAP_POLICY_V4,
+        "contrast_policy_version": CONTRAST_POLICY_VERSION_V4,
+        "accessibility_ink": ACCESSIBILITY_INK_V4[0],
+        "text_measurement_evidence": text_measurement_evidence,
+        "asset_binding_evidence": asset_binding_evidence,
     }
     return CompilerProvenanceV4(
         **payload,
@@ -627,6 +824,8 @@ def compile_layout(
         assets_by_directive=assets_by_directive,
         directives_by_id=directives_by_id,
         used_boxes=[],
+        text_measurement_evidence={},
+        asset_binding_evidence={},
     )
     # Import only after the validated context exists so each grammar module is
     # a separate deterministic dispatch target and cannot bypass the boundary.
@@ -647,6 +846,20 @@ def compile_layout(
     expected_assets = set(assets_by_directive[item.directive_id].asset_id for item in checked_program.asset_placements)
     if asset_refs != expected_assets:
         raise ValueError("compiled scene asset references do not match approved placements")
+    if checked_program.density_target == "high":
+        occupied = sum(
+            element.box.width * element.box.height
+            for element in elements
+            if hasattr(element, "box")
+        )
+        inner_area = float((CANVAS_WIDTH_V4 - 2 * SAFE_MARGIN_V4) * (CANVAS_HEIGHT_V4 - 2 * SAFE_MARGIN_V4))
+        occupied_ratio = occupied / inner_area
+        if occupied_ratio < 0.45:
+            raise LayoutCompilationError(
+                "INSUFFICIENT_WHITESPACE",
+                page_id=checked_program.page_id,
+                evidence=f"occupied_ratio={occupied_ratio:.3f}; required=0.450",
+            )
     scene = PageScene(
         page_id=checked_program.page_id,
         sequence=checked_inputs.page_brief.sequence,
@@ -654,7 +867,13 @@ def compile_layout(
         elements=elements,
     )
     hashes = _font_hashes(checked_program.template_family)
-    provenance = _make_provenance(checked_program, hashes)
+    provenance = _make_provenance(
+        checked_program,
+        checked_inputs,
+        hashes,
+        text_measurement_evidence=context.text_measurement_evidence,
+        asset_binding_evidence=context.asset_binding_evidence,
+    )
     return _make_compiled_page(checked_program, scene, provenance)
 
 

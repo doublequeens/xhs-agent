@@ -25,7 +25,7 @@ def _assets(context: CompilerContextV4, start_y: float) -> list[ImageElement]:
     height = (available - gap * (rows - 1)) / rows
     if height < 120:
         raise LayoutCompilationError(
-            "ASSET_ASPECT_MISMATCH",
+            "DENSITY_EXCEEDED",
             page_id=context.page_id,
             region_id="support",
             evidence="comparison asset region is too small",
@@ -33,22 +33,30 @@ def _assets(context: CompilerContextV4, start_y: float) -> list[ImageElement]:
     result: list[ImageElement] = []
     for index, placement in enumerate(placements):
         row, column = divmod(index, columns)
+        region_id = placement.region_id
+        if region_id in {"left", "right"}:
+            region_width = (context.width - gap) / 2
+            region_x = SAFE_MARGIN_V4 if region_id == "left" else SAFE_MARGIN_V4 + region_width + gap
+            column = 0
+        else:
+            region_width = width
+            region_x = SAFE_MARGIN_V4
         result.append(
             context.image_element(
                 placement.directive_id,
-                x=SAFE_MARGIN_V4 + column * (width + gap),
+                x=region_x + column * (region_width + gap),
                 y=start_y + row * (height + gap),
-                width=width,
+                width=region_width,
                 height=height,
-                region_id="support",
+                region_id=region_id,
             )
         )
     return result
 
 
 def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...]:
-    refs = tuple(item.fragment_ref for item in context.program.fragment_placements)
-    if not refs:
+    placements = tuple(sorted(context.program.fragment_placements, key=lambda item: item.order))
+    if not placements:
         raise LayoutCompilationError(
             "CONTENT_OVERFLOW",
             page_id=context.page_id,
@@ -56,22 +64,34 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
             evidence="comparison grammar has no text placements",
         )
     asset_start = 1100.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
-    elements: list[SceneElement] = [
-        context.text_element(
-            refs[0],
-            x=SAFE_MARGIN_V4,
-            y=100.0,
-            width=context.width,
-            height=180.0,
-            region_id="heading",
-        )
-    ]
-    comparison_refs = refs[1:]
+    by_region: dict[str, list[str]] = {"heading": [], "left": [], "right": [], "support": []}
+    for placement in placements:
+        by_region.setdefault(placement.region_id, []).append(placement.fragment_ref)
+    elements: list[SceneElement] = []
+    heading_refs = by_region.get("heading", [])
+    if heading_refs:
+        heading_slot = 180.0 / len(heading_refs)
+        for index, ref in enumerate(heading_refs):
+            elements.append(
+                context.text_element(
+                    ref,
+                    x=SAFE_MARGIN_V4,
+                    y=100.0 + index * heading_slot,
+                    width=context.width,
+                    height=heading_slot - 12.0 if len(heading_refs) > 1 else heading_slot,
+                    region_id="heading",
+                )
+            )
+    comparison_refs = by_region.get("left", []) + by_region.get("right", [])
     if comparison_refs:
-        rows = math.ceil(len(comparison_refs) / 2)
+        rows = max(
+            math.ceil(len(by_region.get("left", [])) / 1),
+            math.ceil(len(by_region.get("right", [])) / 1),
+            1,
+        )
         gap = 32.0
         grid_top = 340.0
-        grid_height = asset_start - grid_top - 24.0
+        grid_height = min(640.0, asset_start - grid_top - 24.0)
         row_height = (grid_height - gap * (rows - 1)) / rows
         if row_height < 88:
             raise LayoutCompilationError(
@@ -81,25 +101,62 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
                 evidence="comparison rows cannot retain minimum readable density",
             )
         column_width = (context.width - gap) / 2
-        for index, ref in enumerate(comparison_refs):
-            row, column = divmod(index, 2)
-            if index == len(comparison_refs) - 1 and len(comparison_refs) % 2:
-                x, width = SAFE_MARGIN_V4, context.width
-            else:
-                x, width = SAFE_MARGIN_V4 + column * (column_width + gap), column_width
+        for index, ref in enumerate(by_region.get("left", [])):
             elements.append(
                 context.text_element(
                     ref,
-                    x=x,
-                    y=grid_top + row * (row_height + gap),
-                    width=width,
+                    x=SAFE_MARGIN_V4,
+                    y=grid_top + index * (row_height + gap),
+                    width=column_width,
                     height=row_height,
-                    region_id="comparison",
+                    region_id="left",
                     align="left",
                 )
             )
+        for index, ref in enumerate(by_region.get("right", [])):
+            elements.append(
+                context.text_element(
+                    ref,
+                    x=SAFE_MARGIN_V4 + column_width + gap,
+                    y=grid_top + index * (row_height + gap),
+                    width=column_width,
+                    height=row_height,
+                    region_id="right",
+                    align="left",
+                )
+            )
+    support_refs = by_region.get("support", [])
+    if support_refs:
+        support_top = 1020.0
+        support_height = asset_start - support_top - 24.0
+        slot = support_height / len(support_refs)
+        if slot < 72.0:
+            raise LayoutCompilationError(
+                "INSUFFICIENT_WHITESPACE",
+                page_id=context.page_id,
+                region_id="support",
+                evidence=f"support_slot={slot:.3f}; minimum=72.000",
+            )
+        for index, ref in enumerate(support_refs):
+            elements.append(
+                context.text_element(
+                    ref,
+                    x=SAFE_MARGIN_V4,
+                    y=support_top + index * slot,
+                    width=context.width,
+                    height=slot - 12.0,
+                    region_id="support",
+                )
+            )
     elements.extend(_assets(context, asset_start + 24.0 if context.program.asset_placements else asset_start))
-    return tuple(elements)
+    text_by_ref = {
+        element.content_ref: element
+        for element in elements
+        if getattr(element, "kind", None) == "text"
+    }
+    ordered_text = [text_by_ref[item.fragment_ref] for item in placements]
+    ordered_assets = [element for element in elements if getattr(element, "kind", None) == "image"]
+    return tuple([*ordered_text, *ordered_assets])
 
 
 __all__ = ["solve_comparison_grid"]

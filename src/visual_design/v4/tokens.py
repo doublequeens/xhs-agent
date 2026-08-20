@@ -22,6 +22,10 @@ from src.schemas.v4.layout import (
 from src.visual_design.style_registry import load_style_registry
 
 
+SEMANTIC_COLOR_POLICY_VERSION_V4 = "wcag-semantic-ink-v1"
+UNIVERSAL_ACCESSIBILITY_INK_V4 = ("#111111", "#FFFFFF")
+
+
 def _from_profile(profile) -> FamilyTokensV4:
     payload = {
         "family": profile.family,
@@ -81,10 +85,60 @@ def load_family_tokens() -> MappingProxyType[str, FamilyTokensV4]:
     return FAMILY_TOKENS
 
 
+def _relative_luminance(color: str) -> float:
+    channels = [int(color[index : index + 2], 16) / 255 for index in (1, 3, 5)]
+    linear = [
+        channel / 12.92
+        if channel <= 0.04045
+        else ((channel + 0.055) / 1.055) ** 2.4
+        for channel in channels
+    ]
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+
+def semantic_contrast_ratio_v4(foreground: str, background: str) -> float:
+    brighter, darker = sorted(
+        (_relative_luminance(foreground), _relative_luminance(background)),
+        reverse=True,
+    )
+    return (brighter + 0.05) / (darker + 0.05)
+
+
+def resolve_semantic_colors_v4(tokens: FamilyTokensV4) -> MappingProxyType[str, str]:
+    """Resolve deterministic background/body/display/accent semantic inks."""
+
+    background = tokens.palette[-1]
+    candidates = (*tokens.palette[1::-1], *UNIVERSAL_ACCESSIBILITY_INK_V4)
+
+    def choose(threshold: float) -> str:
+        for candidate in candidates:
+            if semantic_contrast_ratio_v4(candidate, background) >= threshold:
+                return candidate
+        raise ValueError("no deterministic semantic foreground satisfies contrast policy")
+
+    body = choose(4.5)
+    display = choose(3.0)
+    accent = choose(3.0)
+    return MappingProxyType(
+        {
+            "background": background,
+            "body": body,
+            "display": display,
+            "heading": display,
+            "caption": body,
+            "accent": accent,
+        }
+    )
+
+
 __all__ = [
     "FAMILY_TOKENS",
     "FAMILY_TOKEN_REGISTRY",
     "TOKENS",
     "get_family_tokens",
     "load_family_tokens",
+    "SEMANTIC_COLOR_POLICY_VERSION_V4",
+    "UNIVERSAL_ACCESSIBILITY_INK_V4",
+    "resolve_semantic_colors_v4",
+    "semantic_contrast_ratio_v4",
 ]

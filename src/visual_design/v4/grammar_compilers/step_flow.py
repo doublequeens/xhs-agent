@@ -25,7 +25,7 @@ def _assets(context: CompilerContextV4, start_y: float) -> list[ImageElement]:
     height = (available - gap * (rows - 1)) / rows
     if height < 120:
         raise LayoutCompilationError(
-            "ASSET_ASPECT_MISMATCH",
+            "DENSITY_EXCEEDED",
             page_id=context.page_id,
             region_id="support",
             evidence="step support asset region is too small",
@@ -33,22 +33,30 @@ def _assets(context: CompilerContextV4, start_y: float) -> list[ImageElement]:
     result: list[ImageElement] = []
     for index, placement in enumerate(placements):
         row, column = divmod(index, columns)
+        region_id = placement.region_id
+        if region_id == "sequence":
+            region_x = SAFE_MARGIN_V4 + 76.0
+            region_width = context.width - 76.0
+            column = 0
+        else:
+            region_x = SAFE_MARGIN_V4
+            region_width = width
         result.append(
             context.image_element(
                 placement.directive_id,
-                x=SAFE_MARGIN_V4 + column * (width + gap),
+                x=region_x + column * (region_width + gap),
                 y=start_y + row * (height + gap),
-                width=width,
+                width=region_width,
                 height=height,
-                region_id="support",
+                region_id=region_id,
             )
         )
     return result
 
 
 def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
-    refs = tuple(item.fragment_ref for item in context.program.fragment_placements)
-    if not refs:
+    placements = tuple(sorted(context.program.fragment_placements, key=lambda item: item.order))
+    if not placements:
         raise LayoutCompilationError(
             "CONTENT_OVERFLOW",
             page_id=context.page_id,
@@ -56,17 +64,23 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
             evidence="step grammar has no text placements",
         )
     asset_start = 1110.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
-    elements: list[SceneElement] = [
-        context.text_element(
-            refs[0],
-            x=SAFE_MARGIN_V4,
-            y=100.0,
-            width=context.width,
-            height=170.0,
-            region_id="heading",
+    by_region: dict[str, list[str]] = {"heading": [], "sequence": [], "support": []}
+    for placement in placements:
+        by_region.setdefault(placement.region_id, []).append(placement.fragment_ref)
+    elements: list[SceneElement] = []
+    heading_refs = by_region.get("heading", [])
+    for index, ref in enumerate(heading_refs):
+        elements.append(
+            context.text_element(
+                ref,
+                x=SAFE_MARGIN_V4,
+                y=100.0 + index * 170.0,
+                width=context.width,
+                height=170.0,
+                region_id="heading",
+            )
         )
-    ]
-    steps = refs[1:]
+    steps = by_region.get("sequence", [])
     if steps:
         flow_top = 330.0
         flow_height = asset_start - flow_top - 24.0
@@ -109,8 +123,51 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
                     region_id="sequence",
                 )
             )
+    support_refs = by_region.get("support", [])
+    if support_refs:
+        support_top = 1000.0
+        support_height = asset_start - support_top - 24.0
+        support_slot = support_height / len(support_refs)
+        if support_slot < 72.0:
+            raise LayoutCompilationError(
+                "INSUFFICIENT_WHITESPACE",
+                page_id=context.page_id,
+                region_id="support",
+                evidence=f"support_slot={support_slot:.3f}; minimum=72.000",
+            )
+        for index, ref in enumerate(support_refs):
+            elements.append(
+                context.text_element(
+                    ref,
+                    x=SAFE_MARGIN_V4,
+                    y=support_top + index * support_slot,
+                    width=context.width,
+                    height=support_slot - 12.0,
+                    region_id="support",
+                )
+            )
     elements.extend(_assets(context, asset_start + 24.0 if context.program.asset_placements else asset_start))
-    return tuple(elements)
+    by_ref = {
+        element.content_ref: element
+        for element in elements
+        if getattr(element, "kind", None) == "text"
+    }
+    ordered: list[SceneElement] = []
+    for placement in placements:
+        if placement.region_id == "sequence":
+            ordered.extend(
+                element
+                for element in elements
+                if getattr(element, "content_ref", None) == placement.fragment_ref
+                or (
+                    getattr(element, "kind", None) == "icon"
+                    and element.element_id.endswith(f"-{placement.fragment_ref}-1")
+                )
+            )
+        else:
+            ordered.append(by_ref[placement.fragment_ref])
+    ordered.extend(element for element in elements if getattr(element, "kind", None) == "image")
+    return tuple(ordered)
 
 
 __all__ = ["solve_step_flow"]

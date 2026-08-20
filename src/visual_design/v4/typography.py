@@ -9,6 +9,7 @@ and Pillow/FreeType performs the measurement locally.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -45,6 +46,16 @@ CANONICAL_FONT_SHA256_V4: Mapping[str, str] = MappingProxyType(
         "LXGW WenKai": "39ad71264b588165b469e35e6afb162a378dacd1f95348160240ba9038ac3009",
     }
 )
+CANONICAL_FONT_NOMINAL_WEIGHTS_V4: Mapping[str, int] = MappingProxyType(
+    {
+        "Alibaba PuHuiTi Heavy": 900,
+        "HarmonyOS Sans Black": 900,
+        "HarmonyOS Sans Bold": 700,
+        "HarmonyOS Sans": 400,
+        "LXGW WenKai": 400,
+    }
+)
+TEXT_WRAP_POLICY_V4: Final[str] = "pre-wrap-grapheme-anywhere-v1"
 
 
 @dataclass(frozen=True)
@@ -55,6 +66,7 @@ class ResolvedFontV4:
     role: str
     path: Path
     sha256: str
+    nominal_weight: int
 
 
 @dataclass(frozen=True)
@@ -77,6 +89,12 @@ class TextMeasurementV4:
     line_height: float
     max_width_px: float
     font_sha256: str
+    font_nominal_weight: int
+    advance_width_px: float
+    ink_width_px: float
+    ink_height_px: float
+    break_offsets: tuple[int, ...]
+    measurement_sha256: str
 
     @property
     def wrapped_text(self) -> str:
@@ -87,6 +105,10 @@ class TextMeasurementV4:
     @property
     def font_byte_sha256(self) -> str:
         return self.font_sha256
+
+    @property
+    def wrap_policy(self) -> str:
+        return TEXT_WRAP_POLICY_V4
 
 
 def _finite_positive(value: object, field_name: str) -> float:
@@ -140,11 +162,15 @@ def resolve_font_file_v4(family: str, role: str) -> ResolvedFontV4:
     expected_digest = CANONICAL_FONT_SHA256_V4.get(family_name)
     if expected_digest is None or digest != expected_digest:
         raise ValueError("checked-in v4 font bytes do not match the canonical font revision")
+    nominal_weight = CANONICAL_FONT_NOMINAL_WEIGHTS_V4.get(family_name)
+    if nominal_weight is None:
+        raise ValueError("checked-in v4 font weight is not registered")
     return ResolvedFontV4(
         family_name=family_name,
         role=role,
         path=path,
         sha256=digest,
+        nominal_weight=nominal_weight,
     )
 
 
@@ -171,6 +197,29 @@ def _text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
     return width
 
 
+def _text_ink_extents(
+    font: ImageFont.FreeTypeFont,
+    text: str,
+) -> tuple[float, float]:
+    """Return ink width/height, retaining negative bearings and marks."""
+
+    try:
+        left, top, right, bottom = font.getbbox(text)
+        width = max(0.0, float(right - left))
+        height = max(0.0, float(bottom - top))
+    except (AttributeError, OSError, ValueError) as exc:
+        raise ValueError("Pillow/FreeType failed to measure ink extents") from exc
+    if not math.isfinite(width) or not math.isfinite(height):
+        raise ValueError("Pillow/FreeType returned invalid ink extents")
+    return width, height
+
+
+def _text_extent(font: ImageFont.FreeTypeFont, text: str) -> float:
+    """Measure the conservative horizontal extent used for wrapping."""
+
+    return max(_text_width(font, text), _text_ink_extents(font, text)[0])
+
+
 def _explicit_lines(text: str) -> tuple[tuple[str, ...], int]:
     # Keep CRLF as one delimiter for geometry while preserving ``text`` in the
     # returned measurement object.  A trailing delimiter deliberately creates
@@ -189,7 +238,7 @@ def _wrap_graphemes(
     if not clusters:
         return ("",), (0.0,)
 
-    cluster_widths = tuple(_text_width(font, cluster) for cluster in clusters)
+    cluster_widths = tuple(_text_extent(font, cluster) for cluster in clusters)
     for cluster, width in zip(clusters, cluster_widths):
         if width > max_width_px:
             raise ValueError(
@@ -201,16 +250,16 @@ def _wrap_graphemes(
     current = ""
     for cluster in clusters:
         candidate = current + cluster
-        candidate_width = _text_width(font, candidate)
+        candidate_width = _text_extent(font, candidate)
         if current and candidate_width > max_width_px:
             lines.append(current)
-            widths.append(_text_width(font, current))
+            widths.append(_text_extent(font, current))
             current = cluster
         else:
             current = candidate
     if current or not lines:
         lines.append(current)
-        widths.append(_text_width(font, current))
+        widths.append(_text_extent(font, current))
     return tuple(lines), tuple(widths)
 
 
@@ -246,18 +295,64 @@ def measure_text_v4(
         widths.extend(wrapped_widths)
 
     line_count = len(lines)
+    try:
+        ascent, descent = font.getmetrics()
+    except (AttributeError, OSError, ValueError) as exc:
+        raise ValueError("Pillow/FreeType failed to measure font metrics") from exc
+    line_ink_widths: list[float] = []
+    line_ink_heights: list[float] = []
+    for line in lines:
+        ink_width, ink_height = _text_ink_extents(font, line)
+        line_ink_widths.append(ink_width)
+        line_ink_heights.append(ink_height)
+    advance_width = max(
+        (_text_width(font, line) for line in lines),
+        default=0.0,
+    )
+    ink_width = max([advance_width, *line_ink_widths])
+    line_box_height = max(float(ascent + descent), max(line_ink_heights, default=0.0))
+    ink_height = float(line_count) * line_box_height
+    break_offsets: list[int] = []
+    cursor = 0
+    for line in lines[:-1]:
+        cursor += len(line)
+        break_offsets.append(cursor)
+    measurement_payload = {
+        "break_offsets": tuple(break_offsets),
+        "font_nominal_weight": resolved.nominal_weight,
+        "font_sha256": resolved.sha256,
+        "font_size_px": font_size,
+        "ink_height_px": ink_height,
+        "ink_width_px": ink_width,
+        "line_count": line_count,
+        "line_height": line_height_value,
+        "line_widths_px": tuple(widths),
+        "max_width_px": max_width,
+    }
+    measurement_sha256 = hashlib.sha256(
+        json.dumps(measurement_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     return TextMeasurementV4(
         text=text,
         lines=tuple(lines),
         line_widths_px=tuple(widths),
-        width_px=max(widths, default=0.0),
-        height_px=float(line_count) * font_size * line_height_value,
+        width_px=ink_width,
+        height_px=max(
+            float(line_count) * font_size * line_height_value,
+            ink_height,
+        ),
         line_count=line_count,
         explicit_newline_count=newline_count,
         font_size_px=font_size,
         line_height=line_height_value,
         max_width_px=max_width,
         font_sha256=resolved.sha256,
+        font_nominal_weight=resolved.nominal_weight,
+        advance_width_px=advance_width,
+        ink_width_px=ink_width,
+        ink_height_px=ink_height,
+        break_offsets=tuple(break_offsets),
+        measurement_sha256=measurement_sha256,
     )
 
 
@@ -273,11 +368,13 @@ ResolvedFont = ResolvedFontV4
 __all__ = [
     "CANONICAL_FONT_FILES_V4",
     "CANONICAL_FONT_SHA256_V4",
+    "CANONICAL_FONT_NOMINAL_WEIGHTS_V4",
     "FONT_ROOT",
     "REPOSITORY_ROOT",
     "ResolvedFontV4",
     "ResolvedFont",
     "TextMeasurementV4",
+    "TEXT_WRAP_POLICY_V4",
     "TypographyMeasurement",
     "TypographyMeasurementV4",
     "measure_text",
