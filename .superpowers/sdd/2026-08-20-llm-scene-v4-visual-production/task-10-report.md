@@ -148,3 +148,39 @@ beat selection.
 The four full-suite warnings remain the two existing Pydantic serializer
 warnings and two pytest temporary-directory cleanup warnings.  Task 11
 compiler integration remains outside this task's ownership.
+
+## Fix round 3
+
+The final narrow review found that a character-only allowlist still admitted
+semantic provider/provenance payloads such as `provider pexels provenance ai`
+and `javascript alert`.  The shared style-token validator now normalizes word
+tokens and rejects generic provider/provenance terms, known provider names,
+AI/script/DOM terms, normalized local-path terms, and common `on*` event
+handler tokens.  Word-boundary matching preserves canonical names such as
+`Alibaba PuHuiTi`; all six current style-registry families remain valid.
+
+### RED/GREEN proof
+
+The new no-punctuation, correctly rehashed token regressions failed before the
+semantic-token guard:
+
+```text
+pytest -q tests/visual_design/v4/test_grammars.py -k semantic_style_tokens
+4 failed, 19 deselected
+```
+
+After adding the normalized forbidden-token set, those regressions passed:
+`12 passed, 11 deselected` for the focused style-token selection and `49
+passed` for the complete Task 10 focus.
+
+### Fix round 3 verification
+
+- Focused Task 10 plus style registry: `52 passed, 2 warnings`.
+- Adjacent v4 direction/authoring/QA regressions: `30 passed`.
+- Full offline suite: `1634 passed, 3 skipped, 4 warnings`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
+The four full-suite warnings remain the existing two Pydantic serializer
+warnings and two pytest temporary-directory cleanup warnings.  Task 11
+compiler integration remains outside this task's ownership.

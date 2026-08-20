@@ -45,6 +45,66 @@ ABSTRACT_RADII_V4 = ("none", "sm", "md", "lg", "pill")
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _STYLE_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+(?:[ -][A-Za-z0-9]+)*$")
+_FORBIDDEN_STYLE_TOKENS = frozenset(
+    {
+        "provider",
+        "provenance",
+        "pexels",
+        "unsplash",
+        "gemini",
+        "ai",
+        "openai",
+        "javascript",
+        "script",
+        "document",
+        "innerhtml",
+        "dom",
+        "html",
+        "css",
+        "localpath",
+    }
+)
+_EVENT_HANDLER_TOKENS = frozenset(
+    {
+        "onclick",
+        "ondblclick",
+        "onmousedown",
+        "onmouseup",
+        "onmousemove",
+        "onmouseover",
+        "onmouseout",
+        "onmouseenter",
+        "onmouseleave",
+        "onwheel",
+        "onkeydown",
+        "onkeypress",
+        "onkeyup",
+        "oninput",
+        "onchange",
+        "onsubmit",
+        "onfocus",
+        "onblur",
+        "onload",
+        "onerror",
+        "onabort",
+        "onbeforeinput",
+        "oncopy",
+        "oncut",
+        "onpaste",
+        "oncontextmenu",
+        "ondrag",
+        "ondragstart",
+        "ondragend",
+        "ondrop",
+        "ontouchstart",
+        "ontouchend",
+        "onpointerdown",
+        "onpointerup",
+        "onanimationstart",
+        "onanimationend",
+        "ontransitionend",
+    }
+)
 
 
 def _validate_hash(value: str, field_name: str) -> str:
@@ -76,6 +136,14 @@ def _validate_style_text(value: str, field_name: str) -> str:
         raise ValueError(
             f"{field_name} must be allowlisted structural/style-token text"
         )
+    tokens = tuple(re.findall(r"[a-z0-9]+", value.lower()))
+    collapsed = "".join(tokens)
+    if (
+        any(token in _FORBIDDEN_STYLE_TOKENS for token in tokens)
+        or any(token in _EVENT_HANDLER_TOKENS for token in tokens)
+        or "localpath" in collapsed
+    ):
+        raise ValueError(f"{field_name} contains a forbidden semantic style token")
     return value
 
 
