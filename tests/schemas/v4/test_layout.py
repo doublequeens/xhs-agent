@@ -9,6 +9,7 @@ from src.schemas.v4.layout import (
     GrammarRegionV4,
     LayoutProgramV4,
 )
+from src.visual_design.v4.tokens import get_family_tokens
 
 
 def test_layout_contracts_are_frozen_and_extra_forbid() -> None:
@@ -21,8 +22,8 @@ def test_layout_contracts_are_frozen_and_extra_forbid() -> None:
         CompositionGrammarV4.model_validate(
             {
                 "grammar_id": "custom",
-                "allowed_page_roles": ("opening",),
-                "allowed_narrative_roles": ("hook",),
+                "allowed_page_roles": ("body",),
+                "allowed_narrative_roles": ("context",),
                 "region_roles": (
                     {"region_id": "hero", "role": "primary"},
                 ),
@@ -39,8 +40,8 @@ def test_grammar_rejects_dangling_region_relationships() -> None:
     with pytest.raises(ValidationError, match="unknown region"):
         CompositionGrammarV4(
             grammar_id="custom",
-            allowed_page_roles=("opening",),
-            allowed_narrative_roles=("hook",),
+            allowed_page_roles=("body",),
+            allowed_narrative_roles=("context",),
             region_roles=(GrammarRegionV4(region_id="hero", role="primary"),),
             relationships=(
                 {
@@ -65,6 +66,7 @@ def test_layout_program_revalidates_tampered_canonical_hash() -> None:
         "page_brief_sha256": "1" * 64,
         "grammar_id": "editorial_hero",
         "template_family": "pink_red",
+        "family_tokens_sha256": get_family_tokens("pink_red").canonical_sha256,
         "regions": (
             {"region_id": "hero", "role": "primary", "order": 0},
         ),
@@ -90,3 +92,45 @@ def test_layout_program_revalidates_tampered_canonical_hash() -> None:
     tampered = program.model_copy(update={"canonical_sha256": "0" * 64})
     with pytest.raises(ValidationError, match="canonical sha256"):
         tampered.validate_integrity()
+
+
+def test_family_token_hash_is_required_and_tampering_is_rejected() -> None:
+    tokens = get_family_tokens("pink_red")
+    payload = tokens.model_dump(mode="python")
+    payload["canonical_sha256"] = "0" * 64
+    with pytest.raises(ValidationError, match="canonical sha256"):
+        type(tokens).model_validate(payload)
+
+
+def test_layout_program_requires_a_current_family_token_hash() -> None:
+    tokens = get_family_tokens("pink_red")
+    payload = {
+        "page_id": "page-1",
+        "page_brief_sha256": "1" * 64,
+        "grammar_id": "editorial_hero",
+        "template_family": "pink_red",
+        "family_tokens_sha256": "1" * 64,
+        "regions": (
+            {"region_id": "hero", "role": "primary", "order": 0},
+        ),
+        "fragment_placements": (
+            {
+                "fragment_ref": "fragment-1",
+                "region_id": "hero",
+                "order": 0,
+                "alignment_axis_ids": (),
+                "emphasis_rule_ids": (),
+            },
+        ),
+        "asset_placements": (),
+        "emphasis_rules": (),
+        "alignment_axes": (),
+        "density_target": "low",
+        "responsive_constraints": (),
+    }
+    with pytest.raises(ValidationError, match="family token"):
+        LayoutProgramV4(
+            **payload,
+            canonical_sha256=canonical_sha256_v4(payload),
+        )
+    assert tokens.canonical_sha256 != "1" * 64

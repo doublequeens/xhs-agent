@@ -9,6 +9,7 @@ v4 stages.
 from __future__ import annotations
 
 import re
+from types import MappingProxyType
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
@@ -16,12 +17,30 @@ from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_v
 from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.direction import (
     DensityLevelV4,
+    NarrativeTaskKindV4,
     TemplateFamilyV4,
 )
 
 
 GRAMMAR_IDS_V4 = ("editorial_hero", "comparison_grid", "step_flow")
 ImplementedGrammarIDV4 = Literal["editorial_hero", "comparison_grid", "step_flow"]
+PAGE_ROLES_V4 = ("cover", "body", "closing")
+PageRoleV4 = Literal["cover", "body", "closing"]
+TASK_KIND_TO_PAGE_ROLE_V4 = MappingProxyType(
+    {
+        "cover_hook": "cover",
+        "context": "body",
+        "diagnosis": "body",
+        "step": "body",
+        "comparison": "body",
+        "checklist": "body",
+        "evidence": "body",
+        "summary": "closing",
+        "closing": "closing",
+    }
+)
+ABSTRACT_SPACING_SCALE_V4 = ("none", "xs", "sm", "md", "lg", "xl", "xxl")
+ABSTRACT_RADII_V4 = ("none", "sm", "md", "lg", "pill")
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
@@ -57,7 +76,26 @@ def _validate_descriptions(values: tuple[str, ...], field_name: str) -> tuple[st
     if any(
         token in value.lower()
         for value in values
-        for token in ("<", ">", "http:", "https:", "file://", "../")
+        for token in (
+            "<",
+            ">",
+            "http:",
+            "https:",
+            "file://",
+            "../",
+            "/",
+            "\\",
+            "javascript:",
+            "eval(",
+            "exec(",
+            "lambda ",
+            "function ",
+            "def ",
+            "import ",
+            "subprocess",
+            "os.system",
+            "__",
+        )
     ):
         raise ValueError(f"{field_name} must not contain markup or paths")
     return tuple(values)
@@ -132,6 +170,7 @@ class FamilyTokensV4(_FrozenLayoutV4):
     whitespace_envelope: OrderedEnvelopeV4
     density_envelope: OrderedEnvelopeV4
     composition_principles: tuple[StrictStr, ...] = Field(min_length=1)
+    canonical_sha256: StrictStr
 
     @field_validator("palette")
     @classmethod
@@ -143,14 +182,40 @@ class FamilyTokensV4(_FrozenLayoutV4):
                 raise ValueError("palette entries must be six-digit hex colors")
         return tuple(value)
 
-    @field_validator("spacing_scale", "radii", "composition_principles")
+    @field_validator("spacing_scale", "radii")
     @classmethod
     def validate_token_names(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
-        if info.field_name in {"spacing_scale", "radii"}:
-            return _validate_identifiers(value, info.field_name)
-        if any(not item.strip() for item in value):
-            raise ValueError(f"{info.field_name} must not contain empty entries")
+        allowed = (
+            ABSTRACT_SPACING_SCALE_V4
+            if info.field_name == "spacing_scale"
+            else ABSTRACT_RADII_V4
+        )
+        _validate_identifiers(value, info.field_name)
+        if any(item not in allowed for item in value):
+            raise ValueError(f"{info.field_name} contains an unknown abstract token")
         return tuple(value)
+
+    @field_validator("composition_principles")
+    @classmethod
+    def validate_principles(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _validate_descriptions(value, "composition_principles")
+
+    @field_validator("canonical_sha256")
+    @classmethod
+    def validate_canonical_shape(cls, value: str) -> str:
+        return _validate_hash(value, "canonical_sha256")
+
+    @model_validator(mode="after")
+    def validate_canonical_hash(self) -> "FamilyTokensV4":
+        expected = canonical_sha256_v4(
+            self.model_dump(mode="json", exclude={"canonical_sha256"})
+        )
+        if self.canonical_sha256 != expected:
+            raise ValueError("family token canonical sha256 does not match payload")
+        return self
+
+    def validate_integrity(self) -> None:
+        type(self).model_validate(self.model_dump(mode="python"))
 
     @property
     def typography_roles(self) -> TypographyRolesV4:
@@ -242,8 +307,8 @@ class CompositionGrammarV4(_FrozenLayoutV4):
     """Family-neutral composition language, not a render-ready template."""
 
     grammar_id: StrictStr = Field(min_length=1)
-    allowed_page_roles: tuple[StrictStr, ...] = Field(min_length=1)
-    allowed_narrative_roles: tuple[StrictStr, ...] = Field(min_length=1)
+    allowed_page_roles: tuple[PageRoleV4, ...] = Field(min_length=1)
+    allowed_narrative_roles: tuple[NarrativeTaskKindV4, ...] = Field(min_length=1)
     region_roles: tuple[GrammarRegionV4, ...] = Field(min_length=1)
     relationships: tuple[GrammarRelationshipV4, ...] = Field(min_length=1)
     alignment_axes: tuple[GrammarAlignmentAxisV4, ...] = Field(min_length=1)
@@ -425,7 +490,8 @@ class LayoutProgramV4(_FrozenLayoutV4):
     page_id: StrictStr = Field(min_length=1)
     page_brief_sha256: StrictStr
     grammar_id: ImplementedGrammarIDV4
-    template_family: TemplateFamilyV4 | None = None
+    template_family: TemplateFamilyV4
+    family_tokens_sha256: StrictStr
     regions: tuple[LayoutRegionV4, ...] = Field(min_length=1)
     fragment_placements: tuple[FragmentPlacementV4, ...] = Field(min_length=1)
     asset_placements: tuple[AssetPlacementV4, ...] = ()
@@ -440,7 +506,7 @@ class LayoutProgramV4(_FrozenLayoutV4):
     def validate_page_id(cls, value: str) -> str:
         return _validate_identifier(value, "page_id")
 
-    @field_validator("page_brief_sha256", "canonical_sha256")
+    @field_validator("page_brief_sha256", "family_tokens_sha256", "canonical_sha256")
     @classmethod
     def validate_hash_shape(cls, value: str, info) -> str:
         return _validate_hash(value, info.field_name)
@@ -452,6 +518,18 @@ class LayoutProgramV4(_FrozenLayoutV4):
         # normal constructor validators.
         for model in (*self.regions, *self.fragment_placements, *self.asset_placements, *self.emphasis_rules, *self.alignment_axes, *self.responsive_constraints):
             type(model).model_validate(model.model_dump(mode="python"))
+
+        # The registry is the only family-token authority.  Resolve it at the
+        # integrity boundary rather than accepting a caller-supplied token
+        # payload or a self-consistent but stale digest.
+        try:
+            from src.visual_design.v4.tokens import get_family_tokens
+
+            current_tokens = get_family_tokens(self.template_family)
+        except Exception as exc:
+            raise ValueError("layout program family token registry is unavailable") from exc
+        if self.family_tokens_sha256 != current_tokens.canonical_sha256:
+            raise ValueError("layout program family token hash does not match current family tokens")
 
         region_ids = tuple(region.region_id for region in self.regions)
         if len(set(region_ids)) != len(region_ids):
@@ -504,6 +582,19 @@ class LayoutProgramV4(_FrozenLayoutV4):
             for rule_id in placement.emphasis_rule_ids
         ):
             raise ValueError("layout program fragment references an unknown emphasis rule")
+        placements_by_fragment = {
+            placement.fragment_ref: set(placement.emphasis_rule_ids)
+            for placement in self.fragment_placements
+        }
+        for rule in self.emphasis_rules:
+            for fragment_ref in rule.target_fragment_refs:
+                if rule.rule_id not in placements_by_fragment.get(fragment_ref, set()):
+                    raise ValueError("layout program emphasis rule is not reverse-bound to its fragment")
+        for placement in self.fragment_placements:
+            for rule_id in placement.emphasis_rule_ids:
+                rule = next(rule for rule in self.emphasis_rules if rule.rule_id == rule_id)
+                if placement.fragment_ref not in rule.target_fragment_refs:
+                    raise ValueError("layout program fragment reverse-binds an unrelated emphasis rule")
         if any(
             axis_id not in axis_set
             for placement in (*self.fragment_placements, *self.asset_placements)
@@ -535,7 +626,7 @@ class LayoutProgramV4(_FrozenLayoutV4):
         type(self).model_validate(self.model_dump(mode="python"))
 
     @property
-    def family(self) -> TemplateFamilyV4 | None:
+    def family(self) -> TemplateFamilyV4:
         return self.template_family
 
     @property
@@ -556,6 +647,8 @@ LayoutProgram = LayoutProgramV4
 
 __all__ = [
     "AlignmentOrientationV4",
+    "ABSTRACT_RADII_V4",
+    "ABSTRACT_SPACING_SCALE_V4",
     "AssetPlacementV4",
     "CompositionGrammar",
     "CompositionGrammarV4",
@@ -574,6 +667,9 @@ __all__ = [
     "LayoutRegionV4",
     "MotifRulesV4",
     "OrderedEnvelopeV4",
+    "PAGE_ROLES_V4",
+    "PageRoleV4",
+    "TASK_KIND_TO_PAGE_ROLE_V4",
     "EmphasisRuleV4",
     "ResponsiveConstraintV4",
     "TypographyRolesV4",

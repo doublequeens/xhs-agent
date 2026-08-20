@@ -10,34 +10,48 @@ from __future__ import annotations
 
 from types import MappingProxyType
 
-from src.schemas.v4.layout import FamilyTokensV4, MotifRulesV4, OrderedEnvelopeV4, TypographyRolesV4
+from src.schemas.v4.content import canonical_sha256_v4
+from src.schemas.v4.layout import (
+    ABSTRACT_RADII_V4,
+    ABSTRACT_SPACING_SCALE_V4,
+    FamilyTokensV4,
+    MotifRulesV4,
+    OrderedEnvelopeV4,
+    TypographyRolesV4,
+)
 from src.visual_design.style_registry import load_style_registry
 
 
-_ABSTRACT_SPACING_SCALE = ("none", "xs", "sm", "md", "lg", "xl", "xxl")
-_ABSTRACT_RADII = ("none", "sm", "md", "lg", "pill")
-
-
 def _from_profile(profile) -> FamilyTokensV4:
-    return FamilyTokensV4(
-        family=profile.family,
-        palette=profile.palette,
-        font_roles=TypographyRolesV4.model_validate(profile.font_roles),
-        spacing_scale=_ABSTRACT_SPACING_SCALE,
-        radii=_ABSTRACT_RADII,
-        motif_rules=MotifRulesV4(
+    payload = {
+        "family": profile.family,
+        "palette": profile.palette,
+        "font_roles": TypographyRolesV4.model_validate(profile.font_roles),
+        "spacing_scale": ABSTRACT_SPACING_SCALE_V4,
+        "radii": ABSTRACT_RADII_V4,
+        "motif_rules": MotifRulesV4(
             allowed=profile.allowed_motifs,
             prohibited=profile.prohibited_patterns,
         ),
-        whitespace_envelope=OrderedEnvelopeV4(
+        "whitespace_envelope": OrderedEnvelopeV4(
             low=profile.whitespace_range[0],
             high=profile.whitespace_range[1],
         ),
-        density_envelope=OrderedEnvelopeV4(
+        "density_envelope": OrderedEnvelopeV4(
             low=profile.density_range[0],
             high=profile.density_range[1],
         ),
-        composition_principles=profile.composition_principles,
+        "composition_principles": profile.composition_principles,
+    }
+    # Build the digest from the fully normalized model payload so every
+    # canonical registry entry has one deterministic revision identity.
+    normalized = FamilyTokensV4.model_construct(
+        **payload,
+        canonical_sha256="0" * 64,
+    ).model_dump(mode="json", exclude={"canonical_sha256"})
+    return FamilyTokensV4(
+        **payload,
+        canonical_sha256=canonical_sha256_v4(normalized),
     )
 
 

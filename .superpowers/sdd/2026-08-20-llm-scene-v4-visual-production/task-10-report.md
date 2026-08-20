@@ -61,3 +61,46 @@ cleanup warnings. No warning originated from the Task 10 modules.
   has no fallback.
 - The compiler/typography measurement layer remains intentionally unimplemented
   for Task 11; this task only supplies its structural input boundary.
+
+## Fix round 1
+
+Independent review identified three fail-open boundaries: caller-supplied
+family-token payloads and density envelopes, free-form page/narrative role
+compatibility, and visual-priority emphasis binding.  It also required
+recursive nested-payload scans and durable beat checks.
+
+### RED/GREEN proof
+
+The review regression suite was run before the fix:
+
+```text
+pytest -q tests/schemas/v4/test_layout.py tests/visual_design/v4/test_grammars.py tests/nodes/v4/test_composition.py
+20 failed, 8 passed
+```
+
+The failures covered the missing canonical family-token hash, missing required
+family/beat API, stale role matrices, absent family density enforcement, and
+ignored visual-priority order.  Additional RED checks caught stale beat
+sequences and recomputed-hash path payloads before their respective guards were
+added.
+
+After the fix, the focused suite passed: `32 passed`.  The implementation now
+resolves only a required family ID through the read-only canonical registry,
+binds and revalidates `family_tokens_sha256`, applies `.25/.50/.75` density
+targets against both grammar and family envelopes, derives controlled page
+roles from typed narrative duties, and emits reverse-bound emphasis rules in
+durable `visual_priority` order.  Grammar, token, and program tests recursively
+scan nested serialized keys and values for render/provider/path/copy payloads.
+
+### Fix round 1 verification
+
+- Focused Task 10 plus style registry: `35 passed, 2 warnings`.
+- Adjacent v4 direction/authoring/QA regressions: `30 passed`.
+- Full offline suite: `1617 passed, 3 skipped, 4 warnings`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
+The four full-suite warnings remain the existing two Pydantic serializer
+warnings and two pytest temporary-directory cleanup warnings; none originates
+from the Task 10 modules.  Task 11 compiler integration remains outside this
+task's ownership.

@@ -71,8 +71,8 @@ def _grammar(
 
 EDITORIAL_HERO = _grammar(
     "editorial_hero",
-    page_roles=("opening", "hero", "hook", "cover", "context", "summary", "closing"),
-    narrative_roles=("cover_hook", "opening", "hook", "context", "summary", "closing"),
+    page_roles=("cover", "body", "closing"),
+    narrative_roles=("cover_hook", "context", "summary", "closing"),
     regions=(
         ("hero", "primary"),
         ("support", "supporting"),
@@ -94,8 +94,8 @@ EDITORIAL_HERO = _grammar(
 
 COMPARISON_GRID = _grammar(
     "comparison_grid",
-    page_roles=("comparison", "diagnosis", "evidence", "context", "summary"),
-    narrative_roles=("comparison", "diagnosis", "evidence", "context"),
+    page_roles=("body",),
+    narrative_roles=("diagnosis", "comparison", "evidence"),
     regions=(
         ("heading", "primary"),
         ("left", "comparison_primary"),
@@ -119,8 +119,8 @@ COMPARISON_GRID = _grammar(
 
 STEP_FLOW = _grammar(
     "step_flow",
-    page_roles=("step", "process", "method", "routine", "tutorial", "context", "closing"),
-    narrative_roles=("step", "process", "method", "routine", "tutorial", "context"),
+    page_roles=("body",),
+    narrative_roles=("step", "checklist"),
     regions=(
         ("heading", "primary"),
         ("sequence", "ordered_steps"),

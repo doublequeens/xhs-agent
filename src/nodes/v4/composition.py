@@ -6,16 +6,16 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.schemas.v4.content import canonical_sha256_v4
-from src.schemas.v4.direction import PageBriefV4
+from src.schemas.v4.direction import NarrativeBeatV4, PageBriefV4, TemplateFamilyV4
 from src.schemas.v4.layout import (
     AssetPlacementV4,
     EmphasisRuleV4,
-    FamilyTokensV4,
     FragmentPlacementV4,
     LayoutAlignmentAxisV4,
     LayoutProgramV4,
     LayoutRegionV4,
     ResponsiveConstraintV4,
+    TASK_KIND_TO_PAGE_ROLE_V4,
 )
 from src.visual_design.v4.grammars import get_grammar
 from src.visual_design.v4.tokens import get_family_tokens
@@ -43,31 +43,16 @@ def _checked_page_brief(value: PageBriefV4 | Mapping[str, Any]) -> PageBriefV4:
     return checked
 
 
-def _checked_family_tokens(
-    family_tokens: FamilyTokensV4 | Mapping[str, Any] | str | None,
-    family: str | None,
-) -> FamilyTokensV4 | None:
-    selected: FamilyTokensV4 | None = None
-    if family_tokens is not None:
-        if isinstance(family_tokens, str):
-            selected = get_family_tokens(family_tokens)
-        elif isinstance(family_tokens, FamilyTokensV4):
-            selected = FamilyTokensV4.model_validate(
-                family_tokens.model_dump(mode="python")
-            )
-        elif isinstance(family_tokens, Mapping):
-            try:
-                selected = FamilyTokensV4.model_validate(family_tokens)
-            except Exception as exc:
-                raise ValueError("family tokens are invalid") from exc
-        else:
-            raise ValueError("family tokens must be a family ID or FamilyTokensV4")
-    if family is not None:
-        named = get_family_tokens(family)
-        if selected is not None and selected.family != named.family:
-            raise ValueError("family tokens and family argument are incompatible")
-        selected = named
-    return selected
+def _checked_narrative_beat(
+    value: NarrativeBeatV4 | Mapping[str, Any],
+) -> NarrativeBeatV4:
+    raw = value.model_dump(mode="python") if isinstance(value, NarrativeBeatV4) else _tupleize(value)
+    if not isinstance(raw, Mapping):
+        raise ValueError("build_layout_program requires a persisted NarrativeBeatV4")
+    try:
+        return NarrativeBeatV4.model_validate(raw)
+    except Exception as exc:
+        raise ValueError("narrative beat is invalid") from exc
 
 
 def _support_region_id(region_ids: tuple[str, ...], roles: Mapping[str, str]) -> str:
@@ -80,9 +65,9 @@ def _support_region_id(region_ids: tuple[str, ...], roles: Mapping[str, str]) ->
 def build_layout_program(
     page_brief: PageBriefV4 | Mapping[str, Any],
     grammar_id: str,
-    family_tokens: FamilyTokensV4 | Mapping[str, Any] | str | None = None,
     *,
-    family: str | None = None,
+    family: TemplateFamilyV4,
+    narrative_beat: NarrativeBeatV4 | Mapping[str, Any],
 ) -> LayoutProgramV4:
     """Build a hash-bound structural program without rendering or provider calls.
 
@@ -92,23 +77,44 @@ def build_layout_program(
     """
 
     page = _checked_page_brief(page_brief)
+    beat = _checked_narrative_beat(narrative_beat)
+    if beat.beat_id != page.beat_ref:
+        raise ValueError("narrative beat beat_id does not match page brief beat_ref")
+    if beat.sequence != page.sequence:
+        raise ValueError("narrative beat sequence does not match page brief sequence")
+    if tuple(beat.fragment_refs) != tuple(page.fragment_refs):
+        raise ValueError("narrative beat fragment_refs do not match page brief fragment_refs")
     if grammar_id not in page.preferred_compositions:
         raise ValueError(
             f"grammar {grammar_id!r} is not present in page brief preferred compositions"
         )
     grammar = get_grammar(grammar_id)
-    allowed_roles = set(grammar.allowed_page_roles) | set(grammar.allowed_narrative_roles)
-    if page.narrative_role not in allowed_roles:
+    if beat.task_kind not in grammar.allowed_narrative_roles:
         raise ValueError(
-            f"page narrative role {page.narrative_role!r} is incompatible with grammar {grammar_id!r}"
+            f"narrative beat task_kind {beat.task_kind!r} is incompatible with grammar {grammar_id!r}"
         )
-    selected_family = _checked_family_tokens(family_tokens, family)
+    page_role = TASK_KIND_TO_PAGE_ROLE_V4.get(beat.task_kind)
+    if page_role is None or page_role not in grammar.allowed_page_roles:
+        raise ValueError(
+            f"derived page role {page_role!r} is incompatible with grammar {grammar_id!r}"
+        )
+    if not isinstance(family, str):
+        raise ValueError("family must be an approved template family ID")
+    selected_family = get_family_tokens(family)
 
     target_values = {"low": 0.25, "medium": 0.5, "high": 0.75}
     density_value = target_values[page.density_budget]
     if not grammar.density_range.low <= density_value <= grammar.density_range.high:
         raise ValueError(
             f"density target {page.density_budget!r} is outside grammar {grammar_id!r} density range"
+        )
+    if not (
+        selected_family.density_envelope.low
+        <= density_value
+        <= selected_family.density_envelope.high
+    ):
+        raise ValueError(
+            f"density target {page.density_budget!r} is outside family {family!r} density envelope"
         )
 
     region_roles = {region.region_id: region.role for region in grammar.region_roles}
@@ -121,11 +127,32 @@ def build_layout_program(
     fragment_refs = tuple(page.fragment_refs)
     if len(set(fragment_refs)) != len(fragment_refs):
         raise ValueError("page brief fragment references must be unique for composition")
+    visual_priority = tuple(page.visual_priority)
+    if (
+        not visual_priority
+        or len(set(visual_priority)) != len(visual_priority)
+        or any(fragment_ref not in set(fragment_refs) for fragment_ref in visual_priority)
+    ):
+        raise ValueError("visual_priority must be unique and page-local fragment references")
+    emphasis_rules = tuple(
+        EmphasisRuleV4(
+            rule_id=f"emphasis-{index}",
+            kind="primary_focus" if index == 0 else "secondary_focus",
+            target_fragment_refs=(fragment_ref,),
+            priority=index,
+        )
+        for index, fragment_ref in enumerate(visual_priority)
+    )
+    emphasis_by_fragment = {
+        fragment_ref: (f"emphasis-{index}",)
+        for index, fragment_ref in enumerate(visual_priority)
+    }
     fragment_placements = tuple(
         FragmentPlacementV4(
             fragment_ref=fragment_ref,
             region_id=region_ids[index % len(region_ids)],
             order=index,
+            emphasis_rule_ids=emphasis_by_fragment.get(fragment_ref, ()),
         )
         for index, fragment_ref in enumerate(fragment_refs)
     )
@@ -150,14 +177,6 @@ def build_layout_program(
         for index, directive in enumerate(directives)
     )
 
-    emphasis_rules = (
-        EmphasisRuleV4(
-            rule_id="primary-focus",
-            kind="primary_focus",
-            target_fragment_refs=(fragment_refs[0],),
-            priority=0,
-        ),
-    )
     alignment_axes = tuple(
         LayoutAlignmentAxisV4(
             axis_id=axis.axis_id,
@@ -180,7 +199,8 @@ def build_layout_program(
         "page_id": page.page_id,
         "page_brief_sha256": page.canonical_sha256,
         "grammar_id": grammar.grammar_id,
-        "template_family": selected_family.family if selected_family is not None else None,
+        "template_family": selected_family.family,
+        "family_tokens_sha256": selected_family.canonical_sha256,
         "regions": regions,
         "fragment_placements": fragment_placements,
         "asset_placements": asset_placements,
