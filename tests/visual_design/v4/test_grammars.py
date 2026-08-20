@@ -172,6 +172,36 @@ def test_semantic_style_tokens_are_rejected_without_punctuation_even_with_hash(
         FamilyTokensV4.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("composition_principles", "pro-vider pex-els prove-nance a-i"),
+        ("motif_rules.allowed", "d-om h-tml c-ss"),
+        ("motif_rules.prohibited", "scr-ipt inner-html"),
+        ("font_roles.display", "on-click owned"),
+        ("font_roles.caption", "local path"),
+    ),
+)
+def test_hyphenated_semantic_style_tokens_are_rejected_with_recomputed_hash(
+    field: str,
+    value: str,
+) -> None:
+    payload = FAMILY_TOKENS["pink_red"].model_dump(mode="python")
+    if field == "composition_principles":
+        payload[field] = (value,)
+    elif field.startswith("motif_rules."):
+        motif_field = field.split(".", 1)[1]
+        payload["motif_rules"][motif_field] = (value,)
+    else:
+        font_field = field.split(".", 1)[1]
+        payload["font_roles"][font_field] = value
+    payload["canonical_sha256"] = canonical_sha256_v4(
+        {key: item for key, item in payload.items() if key != "canonical_sha256"}
+    )
+    with pytest.raises(ValidationError, match="forbidden|semantic|token|path"):
+        FamilyTokensV4.model_validate(payload)
+
+
 def test_grammar_roles_are_typed_and_family_neutral() -> None:
     assert GRAMMARS["editorial_hero"].allowed_page_roles == ("cover", "body", "closing")
     assert GRAMMARS["editorial_hero"].allowed_narrative_roles == (

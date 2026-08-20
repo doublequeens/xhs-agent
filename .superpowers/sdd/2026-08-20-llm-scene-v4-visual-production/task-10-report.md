@@ -184,3 +184,38 @@ passed` for the complete Task 10 focus.
 The four full-suite warnings remain the existing two Pydantic serializer
 warnings and two pytest temporary-directory cleanup warnings.  Task 11
 compiler integration remains outside this task's ownership.
+
+## Fix round 4
+
+The final normalization review closed hyphenated semantic-token bypasses.  The
+validator now preserves space-delimited word boundaries, removes only
+internal allowed hyphens from each word before comparing forbidden semantic or
+event-handler tokens, and retains the explicit adjacent `local path` check.
+It does not collapse unrelated words, and existing case, underscore, and
+Unicode behavior remains governed by the prior character allowlist.
+
+### RED/GREEN proof
+
+The new correctly rehashed hyphen-bypass regressions failed before the
+word-level normalization:
+
+```text
+pytest -q tests/visual_design/v4/test_grammars.py -k hyphenated_semantic
+3 failed, 2 passed, 23 deselected
+```
+
+After the narrow normalization change, all bypass and retained-path cases
+passed: `5 passed, 23 deselected`.  Canonical six-family style phrases remain
+valid through the style-registry regression.
+
+### Fix round 4 verification
+
+- Focused Task 10 plus style registry: `57 passed, 2 warnings`.
+- Adjacent v4 direction/authoring/QA regressions: `30 passed`.
+- Full offline suite: `1639 passed, 3 skipped, 4 warnings`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
+The four full-suite warnings remain the existing two Pydantic serializer
+warnings and two pytest temporary-directory cleanup warnings.  Task 11
+compiler integration remains outside this task's ownership.

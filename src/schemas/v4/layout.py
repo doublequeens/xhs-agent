@@ -136,12 +136,15 @@ def _validate_style_text(value: str, field_name: str) -> str:
         raise ValueError(
             f"{field_name} must be allowlisted structural/style-token text"
         )
-    tokens = tuple(re.findall(r"[a-z0-9]+", value.lower()))
-    collapsed = "".join(tokens)
+    words = tuple(value.lower().split())
+    normalized_words = tuple(word.replace("-", "") for word in words)
     if (
-        any(token in _FORBIDDEN_STYLE_TOKENS for token in tokens)
-        or any(token in _EVENT_HANDLER_TOKENS for token in tokens)
-        or "localpath" in collapsed
+        any(word in _FORBIDDEN_STYLE_TOKENS for word in normalized_words)
+        or any(word in _EVENT_HANDLER_TOKENS for word in normalized_words)
+        or any(
+            left == "local" and right == "path"
+            for left, right in zip(normalized_words, normalized_words[1:])
+        )
     ):
         raise ValueError(f"{field_name} contains a forbidden semantic style token")
     return value
