@@ -86,7 +86,7 @@ def draft_for(atom_set_value: ContentAtomSetV4 | None = None) -> SemanticModelin
                 "source_atom_id": "atom-0",
                 "start": 2,
                 "end": len(text),
-                "semantic_role": "note",
+                "semantic_role": "step",
                 "parent_fragment_id": "fragment-0",
                 "sequence_index": 1,
             },
@@ -130,6 +130,38 @@ def test_semantic_node_rebuilds_visible_text_locally_from_persisted_atoms():
     assert result["semantic_qa_result"].passed is True
     assert result["current_node"] == "V4_SEMANTIC_MODELING"
     assert result["semantic_route"] == "visual_authoring"
+
+
+def test_semantic_node_revalidates_tampered_persisted_atom_before_gateway():
+    atoms = atom_set()
+    tampered_atom = atoms.atoms[0].model_copy(update={"text": "篡改可见文案"})
+    tampered_atoms = atoms.model_copy(update={"atoms": (tampered_atom,)})
+    gateway = FakeGateway(draft_for(atoms), [])
+
+    with pytest.raises(ValueError, match="content_atom_set"):
+        semantic_modeling_node(state_for(tampered_atoms), gateway=gateway)
+
+    assert gateway.calls == []
+
+
+def test_semantic_node_revalidates_tampered_content_lock_before_gateway():
+    gateway = FakeGateway(draft_for(), [])
+    state = state_for()
+    state["content_lock"] = state["content_lock"].model_copy(update={"title": "篡改"})
+
+    with pytest.raises(ValueError, match="content_lock"):
+        semantic_modeling_node(state, gateway=gateway)
+
+    assert gateway.calls == []
+
+
+def test_semantic_node_revalidates_tampered_gateway_draft_instance():
+    draft = draft_for()
+    tampered = draft.model_copy(update={"fragments": ({"bad": "draft"},)})
+    gateway = FakeGateway(tampered, [])
+
+    with pytest.raises(ValueError, match="draft"):
+        semantic_modeling_node(state_for(), gateway=gateway)
 
 
 def test_semantic_node_request_has_fail_closed_identity_and_content_sentinel():
@@ -177,6 +209,20 @@ def test_semantic_route_is_a_hard_gate_for_the_next_authoring_boundary():
     gateway = FakeGateway(draft_for(atoms), [])
     result = semantic_modeling_node(state_for(atoms), gateway=gateway)
 
-    assert route_after_semantic_qa(result) == "visual_authoring"
+    assert route_after_semantic_qa({**state_for(atoms), **result}) == "visual_authoring"
     failed = {**result, "semantic_qa_result": {"passed": False}}
     assert route_after_semantic_qa(failed) == "semantic_modeling"
+
+
+def test_semantic_route_rejects_self_consistent_qa_from_an_old_revision():
+    atoms = atom_set()
+    gateway = FakeGateway(draft_for(atoms), [])
+    result = semantic_modeling_node(state_for(atoms), gateway=gateway)
+    changed_atoms = atom_set("更换后的锁定文案")
+
+    stale_state = {
+        **result,
+        **state_for(changed_atoms),
+    }
+
+    assert route_after_semantic_qa(stale_state) == "semantic_modeling"

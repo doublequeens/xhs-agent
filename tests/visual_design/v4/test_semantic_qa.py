@@ -40,6 +40,29 @@ def atomized_table() -> tuple[ContentAtomSetV4, object, object]:
     )
 
 
+def atomized_structured() -> tuple[ContentAtomSetV4, object, object]:
+    package = deepcopy(TABLE_PACKAGE)
+    package["content"] = "1. 做第一步\n- 勾选这一项\n普通说明"
+    atomized = content_atomizer_node({"publish_package": package})
+    locked = content_lock_builder_node({**atomized, "publish_package": package})
+    return (
+        locked["content_atom_set"],
+        locked["content_lock"],
+        locked["visible_copy_projection"],
+    )
+
+
+_SEMANTIC_ROLE_FOR_SOURCE = {
+    "title": "title",
+    "cover": "cover",
+    "heading": "heading",
+    "paragraph": "paragraph",
+    "step": "step",
+    "list_item": "checklist_item",
+    "quote": "quote",
+    "table_header": "table_header",
+    "table_cell": "table_cell",
+}
 def model_for_atoms(
     atom_set: ContentAtomSetV4,
     *,
@@ -71,7 +94,9 @@ def model_for_atoms(
             start=start,
             end=end,
             exact_text=exact_texts[index],
-            semantic_role="step",
+            semantic_role=_SEMANTIC_ROLE_FOR_SOURCE[
+                next(atom.role for atom in atom_set.atoms if atom.atom_id == source_ids[index])
+            ],
             parent_fragment_id=(parent_fragment_id if index == 0 else None),
             sequence_index=index,
         )
@@ -97,7 +122,7 @@ def table_model(atom_set: ContentAtomSetV4, projection: object) -> SemanticConte
             start=0,
             end=len(atom.text),
             exact_text=atom.text,
-            semantic_role="heading" if index < 2 else "paragraph",
+            semantic_role=_SEMANTIC_ROLE_FOR_SOURCE[atom.role],
             sequence_index=index,
         )
         for index, atom in enumerate(atom_set.atoms)
@@ -114,18 +139,41 @@ def table_model(atom_set: ContentAtomSetV4, projection: object) -> SemanticConte
         for fragment in fragments
         if fragment.source_atom_id in table_atom_ids
     )
-    groups = (
+    width = len(projection.table_groups[0].rows[0])
+    header_ids = table_ids[:width]
+    row_ids = [
+        table_ids[offset : offset + width]
+        for offset in range(width, len(table_ids), width)
+    ]
+    groups = [
+        SemanticGroupV4(
+            group_id="table-header-0",
+            group_kind="table_header",
+            fragment_ids=header_ids,
+            ordering=0,
+        )
+    ]
+    for index, row in enumerate(row_ids):
+        groups.append(
+            SemanticGroupV4(
+                group_id=f"table-row-{index}",
+                group_kind="table_row",
+                fragment_ids=row,
+                ordering=index + 1,
+            )
+        )
+    groups.append(
         SemanticGroupV4(
             group_id="table-0",
             group_kind="table",
             fragment_ids=table_ids,
-            ordering=0,
-        ),
+            ordering=len(groups),
+        )
     )
     payload = {
         "content_atom_set_sha256": atom_set.canonical_sha256,
         "fragments": fragments,
-        "groups": groups,
+        "groups": tuple(groups),
     }
     return SemanticContentModelV4(
         **payload,
@@ -258,6 +306,31 @@ def test_semantic_qa_rejects_hash_and_lock_mismatch():
     assert "HASH_BINDING_MISMATCH" in {issue.code for issue in result.issues}
 
 
+def test_semantic_qa_prioritizes_visible_mutation_before_stale_model_hash():
+    atom_set, _, _ = atomized_table()
+    model = model_for_atoms(atom_set)
+    fragments = list(model.fragments)
+    fragments[0] = fragments[0].model_copy(update={"exact_text": "改写后的文字"})
+    stale_model = model.model_copy(update={"fragments": tuple(fragments)})
+
+    result = evaluate_semantic_model(atom_set, stale_model)
+
+    assert result.passed is False
+    assert result.issues[0].code == "VISIBLE_TEXT_MUTATED"
+
+
+def test_semantic_qa_returns_deterministic_failure_for_tampered_nested_model():
+    atom_set, _, _ = atomized_table()
+    model = model_for_atoms(atom_set)
+    tampered = model.model_copy(update={"fragments": ({"bad": "fragment"},)})
+
+    result = evaluate_semantic_model(atom_set, tampered)
+
+    assert result.passed is False
+    assert result.issues
+    assert all(issue.code == "HASH_BINDING_MISMATCH" for issue in result.issues)
+
+
 def test_semantic_qa_preserves_table_header_and_row_cell_order():
     atom_set, _, projection = atomized_table()
     valid = evaluate_semantic_model(
@@ -275,6 +348,87 @@ def test_semantic_qa_preserves_table_header_and_row_cell_order():
     assert "TABLE_RELATION_LOST" in {
         issue.code for issue in missing_table_group.issues
     }
+
+
+def test_semantic_qa_rejects_table_source_role_mutation_and_missing_row_boundary():
+    atom_set, _, projection = atomized_table()
+    valid = table_model(atom_set, projection)
+    fragments = list(valid.fragments)
+    table_fragment_index = next(
+        index
+        for index, fragment in enumerate(fragments)
+        if fragment.source_atom_id == projection.table_groups[0].unit_ids[0]
+    )
+    fragments[table_fragment_index] = fragments[table_fragment_index].model_copy(
+        update={"semantic_role": "heading"}
+    )
+    wrong_role = recanonicalize(valid, fragments=tuple(fragments))
+    missing_row = recanonicalize(
+        valid,
+        groups=tuple(group for group in valid.groups if group.group_kind != "table_row"),
+    )
+
+    wrong_codes = {
+        issue.code for issue in evaluate_semantic_model(atom_set, wrong_role, projection=projection).issues
+    }
+    missing_codes = {
+        issue.code for issue in evaluate_semantic_model(atom_set, missing_row, projection=projection).issues
+    }
+    assert "SOURCE_ROLE_MISMATCH" in wrong_codes
+    assert "TABLE_RELATION_LOST" in missing_codes
+
+
+def test_semantic_qa_requires_step_and_checklist_groups():
+    atom_set, _, _ = atomized_structured()
+    ungrouped = model_for_atoms(atom_set)
+    fragments = ungrouped.fragments
+    required_groups = (
+        SemanticGroupV4(
+            group_id="steps",
+            group_kind="steps",
+            fragment_ids=tuple(
+                fragment.fragment_id
+                for fragment in fragments
+                if fragment.semantic_role == "step"
+            ),
+            ordering=0,
+        ),
+        SemanticGroupV4(
+            group_id="checklist",
+            group_kind="checklist",
+            fragment_ids=tuple(
+                fragment.fragment_id
+                for fragment in fragments
+                if fragment.semantic_role == "checklist_item"
+            ),
+            ordering=1,
+        ),
+    )
+    grouped = recanonicalize(ungrouped, groups=required_groups)
+
+    missing_codes = {issue.code for issue in evaluate_semantic_model(atom_set, ungrouped).issues}
+    assert "STEP_RELATION_LOST" in missing_codes
+    assert "CHECKLIST_RELATION_LOST" in missing_codes
+    assert evaluate_semantic_model(atom_set, grouped).passed is True
+
+
+def test_semantic_qa_requires_paired_comparison_label_and_value():
+    atom_set, _, _ = atomized_structured()
+    fragments = list(model_for_atoms(atom_set).fragments)
+    comparison_indexes = [
+        index
+        for index, fragment in enumerate(fragments)
+        if fragment.semantic_role == "paragraph"
+    ]
+    assert len(comparison_indexes) >= 1
+    label_index = comparison_indexes[0]
+    fragments[label_index] = fragments[label_index].model_copy(
+        update={"semantic_role": "comparison_label"}
+    )
+    orphan = recanonicalize(model_for_atoms(atom_set), fragments=tuple(fragments))
+
+    orphan_codes = {issue.code for issue in evaluate_semantic_model(atom_set, orphan).issues}
+    assert "COMPARISON_RELATION_LOST" in orphan_codes
 
 
 def test_semantic_qa_rejects_parent_cycles_and_unordered_groups():

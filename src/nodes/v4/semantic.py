@@ -34,13 +34,33 @@ def _required_identity(state: Mapping[str, Any], field_name: str) -> str:
 
 def _coerce(value: Any, model_type: type[Any], field_name: str) -> Any:
     if isinstance(value, model_type):
-        return value
-    if isinstance(value, Mapping):
         try:
-            return model_type.model_validate(value)
+            # ``model_copy(update=...)`` bypasses Pydantic validators.  Always
+            # cross the persisted-contract boundary through a fresh payload.
+            value = value.model_dump(mode="python")
         except Exception as exc:
             raise ValueError(f"semantic_modeling persisted {field_name} is invalid") from exc
-    raise ValueError(f"semantic_modeling requires persisted {field_name}")
+    if not isinstance(value, Mapping):
+        raise ValueError(f"semantic_modeling requires persisted {field_name}")
+    try:
+        checked = model_type.model_validate(value)
+        if model_type is ContentLock:
+            expected = canonical_sha256_v4(
+                checked.model_dump(mode="json", exclude={"canonical_sha256"})
+            )
+            if checked.canonical_sha256 != expected:
+                raise ValueError("content lock canonical hash does not match payload")
+        return checked
+    except Exception as exc:
+        raise ValueError(f"semantic_modeling persisted {field_name} is invalid") from exc
+
+
+def _revalidate_draft(value: Any) -> SemanticModelingDraftV4:
+    try:
+        payload = value.model_dump(mode="python") if isinstance(value, SemanticModelingDraftV4) else value
+        return SemanticModelingDraftV4.model_validate(payload)
+    except Exception as exc:
+        raise ValueError("semantic_modeling gateway draft is invalid") from exc
 
 
 def _load_prompt() -> str:
@@ -183,6 +203,13 @@ def semantic_modeling_node(
         raise ValueError(
             "semantic_modeling requires persisted visible_copy_projection for table content"
         )
+    if lock.content_atom_set_sha256 != atom_set.canonical_sha256:
+        raise ValueError("semantic_modeling content_lock is bound to a different content_atom_set")
+    if projection is not None:
+        try:
+            atom_set.validate_projection(projection)
+        except Exception as exc:
+            raise ValueError("semantic_modeling persisted content projection is invalid") from exc
 
     gateway = gateway if gateway is not None else state.get("visual_llm_gateway")
     if gateway is None or not callable(getattr(gateway, "invoke_structured", None)):
@@ -206,8 +233,7 @@ def semantic_modeling_node(
         draft = gateway.invoke_structured(request, SemanticModelingDraftV4)
     else:
         draft = gateway.invoke_structured(request, SemanticModelingDraftV4, policy)
-    if not isinstance(draft, SemanticModelingDraftV4):
-        draft = SemanticModelingDraftV4.model_validate(draft)
+    draft = _revalidate_draft(draft)
 
     model = _build_model(atom_set, draft)
     qa_result = evaluate_semantic_model(
@@ -218,6 +244,9 @@ def semantic_modeling_node(
     )
     route = _NEXT_ROUTE if qa_result.passed else _FAIL_ROUTE
     return {
+        "content_atom_set": atom_set,
+        "content_lock": lock,
+        "visible_copy_projection": projection,
         "semantic_content_model": model,
         "semantic_model": model,
         "semantic_qa_result": qa_result,
@@ -227,24 +256,54 @@ def semantic_modeling_node(
 
 
 def route_after_semantic_qa(state: Mapping[str, Any]) -> str:
-    """Route only a passed Q0 result into the next authoring boundary."""
+    """Route only a fresh, current-contract Q0 result into authoring.
 
-    raw = state.get("semantic_qa_result")
-    if isinstance(raw, SemanticQAResultV4):
-        try:
-            raw.validate_integrity()
-        except Exception:
+    A self-consistent result from an older atom/model revision is not enough:
+    route validation recomputes Q0 over the contracts in the current state and
+    compares the persisted result byte-for-byte at the model level.
+    """
+
+    try:
+        if not isinstance(state, Mapping):
             return _FAIL_ROUTE
-        passed = raw.passed
-    elif isinstance(raw, Mapping):
-        try:
-            checked = SemanticQAResultV4.model_validate(raw)
-        except Exception:
+        atom_set = _coerce(state.get("content_atom_set"), ContentAtomSetV4, "content_atom_set")
+        lock = _coerce(state.get("content_lock"), ContentLock, "content_lock")
+        model_value = state.get("semantic_content_model", state.get("semantic_model"))
+        model = _coerce(model_value, SemanticContentModelV4, "semantic_content_model")
+        projection_value = state.get("visible_copy_projection")
+        projection = (
+            _coerce(projection_value, VisibleCopyProjectionV4, "visible_copy_projection")
+            if projection_value is not None
+            else None
+        )
+        if projection is None and any(
+            atom.role in {"table_header", "table_cell"} for atom in atom_set.atoms
+        ):
             return _FAIL_ROUTE
-        passed = checked.passed
-    else:
-        raise ValueError("route_after_semantic_qa requires semantic_qa_result")
-    return _NEXT_ROUTE if passed else _FAIL_ROUTE
+        if lock.content_atom_set_sha256 != atom_set.canonical_sha256:
+            return _FAIL_ROUTE
+        if projection is not None:
+            atom_set.validate_projection(projection)
+
+        persisted_value = state.get("semantic_qa_result")
+        if isinstance(persisted_value, SemanticQAResultV4):
+            persisted_payload = persisted_value.model_dump(mode="python")
+        elif isinstance(persisted_value, Mapping):
+            persisted_payload = persisted_value
+        else:
+            return _FAIL_ROUTE
+        persisted = SemanticQAResultV4.model_validate(persisted_payload)
+        fresh = evaluate_semantic_model(
+            atom_set,
+            model,
+            content_lock=lock,
+            projection=projection,
+        )
+        if not fresh.passed or persisted != fresh:
+            return _FAIL_ROUTE
+        return _NEXT_ROUTE
+    except Exception:
+        return _FAIL_ROUTE
 
 
 __all__ = ["route_after_semantic_qa", "semantic_modeling_node"]
