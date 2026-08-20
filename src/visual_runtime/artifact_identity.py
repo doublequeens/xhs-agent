@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
+import sys
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -117,15 +118,38 @@ def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
 
 
 def _canonical_open_path(path: Path) -> Path:
-    """Return a lexical absolute spelling; user symlinks are never resolved."""
+    """Return a lexical spelling, permitting only macOS's fixed ``/var`` alias."""
 
-    return _lexical_absolute(path)
+    lexical = _lexical_absolute(path)
+    if sys.platform != "darwin":
+        return lexical
+    var = Path("/var")
+    try:
+        relative = lexical.relative_to(var)
+    except ValueError:
+        return lexical
+    try:
+        link_target = var.readlink()
+        var_info = var.lstat()
+        private_var = Path("/private/var")
+        private_info = private_var.lstat()
+    except OSError:
+        return lexical
+    if (
+        not stat.S_ISLNK(var_info.st_mode)
+        or link_target not in {Path("private/var"), private_var}
+        or stat.S_ISLNK(private_info.st_mode)
+        or not stat.S_ISDIR(private_info.st_mode)
+    ):
+        return lexical
+    return private_var / relative
 
 
 def _check_existing_chain(path: Path, *, require_directory: bool = False) -> None:
     """Reject user-controlled symlinks in every existing path component."""
 
-    current = _lexical_absolute(path)
+    canonical = _canonical_open_path(path)
+    current = canonical
     while True:
         try:
             info = current.lstat()
@@ -138,7 +162,7 @@ def _check_existing_chain(path: Path, *, require_directory: bool = False) -> Non
             raise ArtifactIdentityError(f"cannot inspect artifact path {current}") from error
         if stat.S_ISLNK(info.st_mode):
             raise ArtifactIdentityError(f"artifact path contains symlink: {current}")
-        if require_directory and current == _lexical_absolute(path) and not stat.S_ISDIR(info.st_mode):
+        if require_directory and current == canonical and not stat.S_ISDIR(info.st_mode):
             raise ArtifactIdentityError(f"artifact path is not a directory: {current}")
         if current.parent == current:
             break
@@ -149,7 +173,7 @@ def _snapshot_existing_chain(path: Path) -> dict[Path, tuple[int, int] | None]:
     """Capture existing directory identities before descriptor traversal."""
 
     snapshot: dict[Path, tuple[int, int] | None] = {}
-    current = _lexical_absolute(path)
+    current = _canonical_open_path(path)
     components: list[Path] = []
     while True:
         components.append(current)
@@ -171,7 +195,7 @@ def _snapshot_existing_chain(path: Path) -> dict[Path, tuple[int, int] | None]:
 
 
 def _assert_contained(path: Path, base_root: Path) -> None:
-    base = _lexical_absolute(base_root)
+    base = _canonical_open_path(_lexical_absolute(base_root))
     candidate = _lexical_absolute(path)
     try:
         candidate.relative_to(base)
@@ -191,7 +215,7 @@ def resolve_artifact_paths(
 
     if not isinstance(identity, ArtifactIdentity):
         raise ArtifactIdentityError("identity must be an ArtifactIdentity")
-    base = _lexical_absolute(base_root)
+    base = _canonical_open_path(_lexical_absolute(base_root))
     _check_existing_chain(base, require_directory=True)
     if base.exists() and not base.is_dir():
         raise ArtifactIdentityError("artifact base root is not a directory")
@@ -446,14 +470,6 @@ def revalidate_artifact_paths(paths: ArtifactPaths) -> ArtifactPaths:
         return replace(expected, trusted_base_identity=lease.base_identity)
 
 
-def _close_file_for_error(fd: int | None, primary: BaseException | None) -> None:
-    error = _close_fd_once(fd)
-    if error is not None and primary is not None:
-        _attach_cleanup_error(primary, error)
-    elif error is not None:
-        raise ArtifactBindingError("file descriptor close failed") from error
-
-
 def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnapshot:
     if not relative_parts:
         raise ArtifactBindingError("file path must contain a leaf")
@@ -467,6 +483,7 @@ def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnaps
             current_fd = child_fd
         leaf = _safe_name(relative_parts[-1], "file name")
         file_fd: int | None = os.open(leaf, os.O_RDONLY | _NOFOLLOW, dir_fd=current_fd)
+        body_primary: BaseException | None = None
         try:
             before = os.fstat(file_fd)
             if not stat.S_ISREG(before.st_mode):
@@ -490,16 +507,25 @@ def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnaps
             raw = b"".join(chunks)
             if len(raw) != after.st_size:
                 raise ArtifactBindingError("file size changed during read")
-            return _FileSnapshot(
+            snapshot = _FileSnapshot(
                 raw=raw,
                 sha256=hashlib.sha256(raw).hexdigest(),
                 size=len(raw),
                 identity=(after.st_dev, after.st_ino),
             )
+            return snapshot
+        except BaseException as error:
+            body_primary = error
+            raise
         finally:
             owned = file_fd
             file_fd = None
-            _close_file_for_error(owned, None)
+            close_error = _close_fd_once(owned)
+            if close_error is not None:
+                if body_primary is not None:
+                    _attach_cleanup_error(body_primary, close_error)
+                else:
+                    raise ArtifactBindingError("file descriptor close failed") from close_error
     except BaseException as primary:
         for index in range(len(transient) - 1, -1, -1):
             owned = transient[index]
@@ -522,12 +548,74 @@ def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnaps
             raise ArtifactBindingError("directory descriptor close failed") from close_errors[0]
 
 
+@contextmanager
+def _open_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> Iterator[int]:
+    """Yield one regular file descriptor opened below a pinned directory."""
+
+    if not relative_parts:
+        raise ArtifactBindingError("file path must contain a leaf")
+    transient: list[int | None] = []
+    current_fd = parent_fd
+    file_fd: int | None = None
+    body_primary: BaseException | None = None
+    cleanup_errors: list[OSError] = []
+    try:
+        for component in relative_parts[:-1]:
+            _safe_name(component)
+            child_fd = _open_child_directory(current_fd, component, create=False)
+            transient.append(child_fd)
+            current_fd = child_fd
+        leaf = _safe_name(relative_parts[-1], "file name")
+        file_fd = os.open(leaf, os.O_RDONLY | _NOFOLLOW, dir_fd=current_fd)
+        opened = os.fstat(file_fd)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ArtifactBindingError("file is not regular")
+        entry = os.stat(leaf, dir_fd=current_fd, follow_symlinks=False)
+        if (entry.st_dev, entry.st_ino) != (opened.st_dev, opened.st_ino):
+            raise ArtifactBindingError("file directory entry changed during open")
+        yield file_fd
+    except BaseException as error:
+        body_primary = error
+        raise
+    finally:
+        owned = file_fd
+        file_fd = None
+        close_error = _close_fd_once(owned)
+        if close_error is not None:
+            if body_primary is not None:
+                _attach_cleanup_error(body_primary, close_error)
+            else:
+                cleanup_errors.append(close_error)
+        for index in range(len(transient) - 1, -1, -1):
+            owned = transient[index]
+            transient[index] = None
+            error = _close_fd_once(owned)
+            if error is not None:
+                if body_primary is not None:
+                    _attach_cleanup_error(body_primary, error)
+                else:
+                    cleanup_errors.append(error)
+        if body_primary is None and cleanup_errors:
+            raise ArtifactBindingError("file descriptor close failed") from cleanup_errors[0]
+
+
+def _descriptor_path(fd: int) -> Path:
+    """Return a pathname that resolves to a caller-owned pinned descriptor."""
+
+    for prefix in (Path("/proc/self/fd"), Path("/dev/fd")):
+        if prefix.is_dir():
+            return prefix / str(fd)
+    raise ArtifactBindingError("platform has no descriptor pathname")
+
+
 def _atomic_write_at(
     parent_fd: int,
     relative_parts: tuple[str, ...],
     content: bytes,
+    *,
+    replace_existing: bool = False,
 ) -> None:
-    """Publish bytes below a pinned directory without replacing a target."""
+    """Publish bytes below a pinned directory with an explicit replace policy."""
 
     if not relative_parts:
         raise ArtifactBindingError("artifact path must contain a leaf")
@@ -561,17 +649,25 @@ def _atomic_write_at(
         close_error = _close_fd_once(owned)
         if close_error is not None:
             raise ArtifactBindingError("temporary artifact close failed") from close_error
-        try:
-            os.link(
+        if replace_existing:
+            os.replace(
                 temporary_name,
                 leaf,
                 src_dir_fd=current_fd,
                 dst_dir_fd=current_fd,
-                follow_symlinks=False,
             )
-        except FileExistsError as error:
-            raise ArtifactBindingError("artifact destination already exists") from error
-        os.unlink(temporary_name, dir_fd=current_fd)
+        else:
+            try:
+                os.link(
+                    temporary_name,
+                    leaf,
+                    src_dir_fd=current_fd,
+                    dst_dir_fd=current_fd,
+                    follow_symlinks=False,
+                )
+            except FileExistsError as error:
+                raise ArtifactBindingError("artifact destination already exists") from error
+            os.unlink(temporary_name, dir_fd=current_fd)
         temporary_name = None
         os.fsync(current_fd)
         if current_fd != parent_fd:

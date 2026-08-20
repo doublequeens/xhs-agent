@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import stat
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,6 +33,8 @@ from src.visual_runtime.artifact_identity import (
     _DirectoryLease,
     _atomic_write_at,
     _create_staging_directory,
+    _descriptor_path,
+    _open_file_at,
     _open_absolute_directory,
     _pin_artifact_paths,
     _read_file_at,
@@ -101,9 +102,16 @@ def _publish_bytes(
     lease: _DirectoryLease,
     relative_parts: tuple[str, ...],
     content: bytes,
+    *,
+    replace_existing: bool = False,
 ) -> None:
     try:
-        _atomic_write_at(lease.fd, relative_parts, content)
+        _atomic_write_at(
+            lease.fd,
+            relative_parts,
+            content,
+            replace_existing=replace_existing,
+        )
     except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
         raise AssetResolutionError("asset publication failed") from error
     _assert_lease(lease)
@@ -121,62 +129,132 @@ class AssetSafetyDecision:
 class DefaultAssetSafetyChecker:
     """Raster/MIME checks over an identity-pinned descriptor."""
 
-    def check(self, path: Path, directive: AssetDirective) -> AssetSafetyDecision:
-        nofollow = getattr(os, "O_NOFOLLOW", 0)
-        descriptor: int | None = None
-        decision: AssetSafetyDecision | None = None
-        close_error: OSError | None = None
+    def check_bytes(self, raw: bytes, directive: AssetDirective) -> AssetSafetyDecision:
+        if type(raw) is not bytes:
+            return AssetSafetyDecision(
+                approved=False,
+                reason="safety checker received invalid immutable bytes",
+            )
         try:
-            before = path.lstat()
-            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-                decision = AssetSafetyDecision(
+            with Image.open(BytesIO(raw)) as image:
+                image.verify()
+        except (OSError, ValueError) as error:
+            return AssetSafetyDecision(
+                approved=False,
+                unwanted_text=False,
+                reason=f"image raster decode failed: {error}",
+            )
+        return AssetSafetyDecision(approved=True, unwanted_text=False)
+
+    def check(self, path: Path, directive: AssetDirective) -> AssetSafetyDecision:
+        """Compatibility wrapper that still reads through descriptor primitives."""
+
+        lease: _DirectoryLease | None = None
+        try:
+            source = Path(path)
+            lease = _open_absolute_directory(source.parent, create=False)
+            snapshot = _read_file_at(lease.fd, (source.name,))
+            close_error = lease.close()
+            lease = None
+            if close_error is not None:
+                return AssetSafetyDecision(
                     approved=False,
-                    unwanted_text=False,
-                    reason="image is not a regular non-symlink file",
+                    reason=f"image descriptor close failed: {close_error}",
                 )
-            else:
-                descriptor = os.open(path, os.O_RDONLY | nofollow)
-                opened = os.fstat(descriptor)
-                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                    decision = AssetSafetyDecision(
-                        approved=False,
-                        unwanted_text=False,
-                        reason="image identity changed during safety check",
-                    )
-                else:
-                    try:
-                        with os.fdopen(os.dup(descriptor), "rb") as stream:
-                            with Image.open(stream) as image:
-                                image.verify()
-                    except (OSError, ValueError) as error:
-                        decision = AssetSafetyDecision(
-                            approved=False,
-                            unwanted_text=False,
-                            reason=f"image raster decode failed: {error}",
-                        )
-                    else:
-                        decision = AssetSafetyDecision(approved=True, unwanted_text=False)
-        except OSError as error:
-            decision = AssetSafetyDecision(
+        except (ArtifactBindingError, ArtifactIdentityError, OSError, TypeError, ValueError) as error:
+            if lease is not None:
+                lease.close()
+            return AssetSafetyDecision(
                 approved=False,
                 unwanted_text=False,
                 reason=f"image safety check failed: {error}",
             )
         finally:
-            owned = descriptor
-            descriptor = None
-            close_error = _close_owned(owned)
-        if close_error is not None:
-            return AssetSafetyDecision(
-                approved=False,
-                unwanted_text=False,
-                reason=f"image descriptor close failed: {close_error}",
-            )
-        return decision or AssetSafetyDecision(
-            approved=False,
-            unwanted_text=False,
-            reason="image safety check failed",
-        )
+            if lease is not None:
+                lease.close()
+        raw = snapshot.raw
+        return self.check_bytes(raw, directive)
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedGeneratedImage:
+    path: Path
+    mime_type: str
+    sha256: str
+    provider: str
+    model: str
+    prompt_sha256: str
+    response_sha256: str
+    generated_at: str
+    internal_provenance: dict[str, str]
+
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_MIME_RE = re.compile(r"^image/[a-z0-9.+-]+$")
+
+
+def _validated_generated_image(value: object) -> _ValidatedGeneratedImage:
+    """Normalize provider output before touching any metadata attribute."""
+
+    if not isinstance(value, GeneratedImage):
+        raise AssetResolutionError("generation provider returned a non-GeneratedImage result")
+    try:
+        path = value.path
+        mime_type = value.mime_type
+        sha256 = value.sha256
+        provider = value.provider
+        model = value.model
+        prompt_sha256 = value.prompt_sha256
+        response_sha256 = value.response_sha256
+        generated_at = value.generated_at
+        provenance = value.internal_provenance
+    except BaseException as error:
+        raise AssetResolutionError("generation provider returned malformed image metadata") from error
+    if not isinstance(path, Path):
+        raise AssetResolutionError("generated image path is invalid")
+    if (
+        type(mime_type) is not str
+        or _MIME_RE.fullmatch(mime_type) is None
+        or type(provider) is not str
+        or not provider.strip()
+        or type(model) is not str
+        or not model.strip()
+    ):
+        raise AssetResolutionError("generated provider identity or MIME is invalid")
+    for field_name, digest in (
+        ("sha256", sha256),
+        ("prompt_sha256", prompt_sha256),
+        ("response_sha256", response_sha256),
+    ):
+        if type(digest) is not str or _SHA256_RE.fullmatch(digest) is None:
+            raise AssetResolutionError(f"generated image {field_name} is invalid")
+    if type(generated_at) is not str or not generated_at.strip():
+        raise AssetResolutionError("generated image timestamp is invalid")
+    if type(provenance) is not dict or any(
+        type(key) is not str or type(item) is not str or not item.strip()
+        for key, item in provenance.items()
+    ):
+        raise AssetResolutionError("generated image provenance is invalid")
+    expected_provenance = {
+        "provider": provider,
+        "model": model,
+        "prompt_sha256": prompt_sha256,
+        "response_sha256": response_sha256,
+        "generated_at": generated_at,
+    }
+    if provenance != expected_provenance:
+        raise AssetResolutionError("generated image provenance is invalid")
+    return _ValidatedGeneratedImage(
+        path=path,
+        mime_type=mime_type,
+        sha256=sha256,
+        provider=provider,
+        model=model,
+        prompt_sha256=prompt_sha256,
+        response_sha256=response_sha256,
+        generated_at=generated_at,
+        internal_provenance=dict(provenance),
+    )
 
 
 def _directive_rejection_message(field_name: str) -> str:
@@ -307,6 +385,7 @@ def _persist_recovery_journal(
     transaction_id: str,
     run_id: str,
     errors: tuple[str, ...],
+    replace_existing: bool,
 ) -> None:
     payload = {
         "status": "interrupted",
@@ -319,7 +398,12 @@ def _persist_recovery_journal(
     content = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    _publish_bytes(transaction_lease, ("recovery.json",), content)
+    _publish_bytes(
+        transaction_lease,
+        ("recovery.json",),
+        content,
+        replace_existing=replace_existing,
+    )
 
 
 def _directive_search_query(directive: AssetDirective) -> str:
@@ -376,6 +460,65 @@ def _final_snapshot(
     return snapshot
 
 
+def _run_safety_check(
+    checker: object,
+    *,
+    lease: _DirectoryLease,
+    relative_parts: tuple[str, ...],
+    snapshot: object,
+    directive: AssetDirective,
+) -> AssetSafetyDecision:
+    """Run safety against immutable bytes or a pathname bound to a pinned fd."""
+
+    try:
+        check_bytes = getattr(checker, "check_bytes", None)
+    except Exception as error:
+        raise AssetResolutionError("asset safety checker interface is invalid") from error
+    if callable(check_bytes):
+        try:
+            decision = check_bytes(snapshot.raw, directive)
+        except Exception as error:
+            raise AssetResolutionError(f"asset safety checker failed: {error}") from error
+    else:
+        try:
+            check_path = getattr(checker, "check")
+        except Exception as error:
+            raise AssetResolutionError("asset safety checker interface is invalid") from error
+        if not callable(check_path):
+            raise AssetResolutionError("asset safety checker interface is invalid")
+        checker_error: BaseException | None = None
+        close_error: OSError | None = None
+        duplicate_fd: int | None = None
+        try:
+            with _open_file_at(lease.fd, relative_parts) as pinned_fd:
+                try:
+                    duplicate_fd = os.dup(pinned_fd)
+                    decision = check_path(_descriptor_path(duplicate_fd), directive)
+                except BaseException as error:
+                    checker_error = error
+                finally:
+                    owned = duplicate_fd
+                    duplicate_fd = None
+                    close_error = _close_owned(owned, checker_error)
+        except BaseException as error:
+            if checker_error is None:
+                checker_error = error
+            else:
+                checker_error.add_note(f"safety checker cleanup failed: {error}")
+        if checker_error is not None:
+            raise AssetResolutionError(
+                f"asset safety checker failed: {checker_error}"
+            ) from checker_error
+        if close_error is not None:
+            raise AssetResolutionError("asset safety checker descriptor close failed") from close_error
+    if not isinstance(decision, AssetSafetyDecision):
+        raise AssetResolutionError("asset safety checker returned an invalid decision")
+    safety_error = _safety_error(decision)
+    if safety_error is not None:
+        raise safety_error
+    return decision
+
+
 def _resolve_via_search(
     directive: AssetDirective,
     *,
@@ -385,6 +528,7 @@ def _resolve_via_search(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    replace_existing: bool,
 ) -> AssetManifestItem:
     name = getattr(search_provider, "name", "search")
     try:
@@ -432,7 +576,12 @@ def _resolve_via_search(
         f"{_safe_component(asset_id)}-{sha256[:16]}{extension}"
     )
     relative_parts = ("search", leaf)
-    _publish_bytes(transaction_lease, relative_parts, normalized)
+    _publish_bytes(
+        transaction_lease,
+        relative_parts,
+        normalized,
+        replace_existing=replace_existing,
+    )
     destination = transaction_dir.joinpath(*relative_parts)
     before = _final_snapshot(
         transaction_lease,
@@ -440,13 +589,13 @@ def _resolve_via_search(
         relative_parts,
         path_label="search asset",
     )
-    try:
-        decision = safety_checker.check(destination, directive)
-    except Exception as error:
-        raise AssetResolutionError(f"asset safety checker failed: {error}") from error
-    safety_error = _safety_error(decision)
-    if safety_error is not None:
-        raise safety_error
+    _run_safety_check(
+        safety_checker,
+        lease=transaction_lease,
+        relative_parts=relative_parts,
+        snapshot=before,
+        directive=directive,
+    )
     after = _final_snapshot(
         transaction_lease,
         transaction_dir,
@@ -517,6 +666,7 @@ def _resolve_via_generation(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    replace_existing: bool,
 ) -> AssetManifestItem:
     # A provider receives a fresh exclusive staging subtree, never the final
     # generated directory.  Final bytes are published by the resolver.
@@ -538,26 +688,16 @@ def _resolve_via_generation(
         except Exception as error:
             raise AssetResolutionError(f"generation provider failed: {error}") from error
         _assert_lease(transaction_lease)
-        if not isinstance(generated, GeneratedImage):
-            raise AssetResolutionError("generation provider returned a non-GeneratedImage result")
-        if (
-            type(generated.provider) is not str
-            or not generated.provider.strip()
-            or type(generated.model) is not str
-            or not generated.model.strip()
-            or type(generated.mime_type) is not str
-            or not generated.mime_type.startswith("image/")
-        ):
-            raise AssetResolutionError("generated provider identity or MIME is invalid")
+        validated = _validated_generated_image(generated)
 
-        generated_path = Path(generated.path)
+        generated_path = validated.path
         generated_parts = _path_relative_to(generated_path, staging_path)
         try:
             staged = _read_file_at(staging_fd, generated_parts)
         except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
             raise AssetResolutionError("generated image is not a stable regular staging file") from error
         _assert_lease(transaction_lease)
-        if generated.sha256.lower() != staged.sha256:
+        if validated.sha256 != staged.sha256:
             raise AssetResolutionError("generated provider byte hash does not match output")
         normalized, extension, raster_width, raster_height = _decode_raster(staged.raw)
         sha256 = hashlib.sha256(normalized).hexdigest()
@@ -565,7 +705,12 @@ def _resolve_via_generation(
             "generated",
             f"{_safe_component(directive.directive_id)}-{sha256[:16]}{extension}",
         )
-        _publish_bytes(transaction_lease, final_parts, normalized)
+        _publish_bytes(
+            transaction_lease,
+            final_parts,
+            normalized,
+            replace_existing=replace_existing,
+        )
         destination = transaction_dir.joinpath(*final_parts)
         before = _final_snapshot(
             transaction_lease,
@@ -573,13 +718,13 @@ def _resolve_via_generation(
             final_parts,
             path_label="generated asset",
         )
-        try:
-            decision = safety_checker.check(destination, directive)
-        except Exception as error:
-            raise AssetResolutionError(f"asset safety checker failed: {error}") from error
-        safety_error = _safety_error(decision)
-        if safety_error is not None:
-            raise safety_error
+        _run_safety_check(
+            safety_checker,
+            lease=transaction_lease,
+            relative_parts=final_parts,
+            snapshot=before,
+            directive=directive,
+        )
         after = _final_snapshot(
             transaction_lease,
             transaction_dir,
@@ -592,13 +737,13 @@ def _resolve_via_generation(
             before.identity,
         ):
             raise AssetResolutionError("generated asset changed during safety validation")
-        provenance = dict(generated.internal_provenance)
+        provenance = validated.internal_provenance
         return AssetManifestItem(
             asset_id=f"generated-{directive.directive_id}",
             directive_id=directive.directive_id,
             page_id=directive.page_id,
             source_kind="generated",
-            provider=generated.provider,
+            provider=validated.provider,
             license="internal-generated",
             local_path=str(destination),
             width=raster_width,
@@ -637,6 +782,7 @@ def _attempt_source(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    replace_existing: bool,
 ) -> AssetManifestItem:
     if source == "search":
         if search_provider is None:
@@ -649,6 +795,7 @@ def _attempt_source(
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
+            replace_existing=replace_existing,
         )
     if source == "generate":
         if generation_provider is None:
@@ -661,6 +808,7 @@ def _attempt_source(
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
+            replace_existing=replace_existing,
         )
     raise AssetResolutionError(f"unsupported source kind: {source}")
 
@@ -675,6 +823,7 @@ def _preferred_then_fallback(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    replace_existing: bool,
 ) -> tuple[AssetManifestItem | None, tuple[str, ...]]:
     errors: list[str] = []
     try:
@@ -692,6 +841,7 @@ def _preferred_then_fallback(
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
+            replace_existing=replace_existing,
         )
         return item, ()
     except AssetResolutionError as error:
@@ -709,6 +859,7 @@ def _preferred_then_fallback(
                 safety_checker=safety_checker,
                 run_id=run_id,
                 transaction_id=transaction_id,
+                replace_existing=replace_existing,
             )
             return item, ()
         except AssetResolutionError as error:
@@ -739,6 +890,7 @@ def _run_resolution(
     checker: object,
     search_provider: object | None,
     generation_provider: object | None,
+    replace_existing: bool,
 ) -> AssetResolutionResult:
     items: list[AssetManifestItem] = []
     unresolved: list[UnresolvedOptionalAsset] = []
@@ -752,6 +904,7 @@ def _run_resolution(
                 safety_checker=checker,
                 run_id=run_id,
                 transaction_id=transaction_id,
+                replace_existing=replace_existing,
             )
         if item is not None:
             items.append(item)
@@ -764,6 +917,7 @@ def _run_resolution(
                         transaction_id=transaction_id,
                         run_id=run_id,
                         errors=errors,
+                        replace_existing=replace_existing,
                     )
             except Exception as journal_error:
                 raise VisualProductionInterrupted(
@@ -868,6 +1022,7 @@ def resolve_asset_directives(
                 checker=checker,
                 search_provider=search_provider,
                 generation_provider=generation_provider,
+                replace_existing=artifact_paths is None,
             )
         except (AssetResolutionError, VisualProductionInterrupted):
             raise

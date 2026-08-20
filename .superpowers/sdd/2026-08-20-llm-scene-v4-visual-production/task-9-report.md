@@ -205,3 +205,100 @@ two macOS pytest temporary-directory cleanup warnings.
   local paths are copied into provider-visible prompts or AI provenance.
 - External live smoke remains intentionally unrun because the gate was not
   enabled; this is not an offline-test failure.
+
+## Fix round 2: independent security review closure
+
+### Status
+
+`DONE_WITH_CONCERNS` — all five Important findings are addressed in the
+Task 9 source and test files.  Live provider calls remain intentionally
+skipped; the remaining test warnings are pre-existing macOS/Pydantic output.
+
+### Finding mapping
+
+- Safety validation now prefers a narrow `check_bytes` contract.  The default
+  checker verifies the resolver's immutable snapshot bytes, never reopening a
+  validated pathname.  Existing `check(path, directive)` checkers are adapted
+  through `_open_file_at` and a duplicated `/proc/self/fd` or `/dev/fd` path
+  held only while the checker runs; final descriptor-relative reread still
+  verifies inode, size, and hash after the check.  The ancestor-swap test
+  proves a legacy checker cannot observe the outside replacement bytes.
+- `_read_file_at` captures the body/regular-file/read primary before closing
+  the owned fd, transfers ownership to `None`, and records close failure as a
+  note on that primary.  Close attempts do not retry or reuse a numeric fd;
+  the regression injects a read failure plus close failure and preserves the
+  read exception as the cause.
+- Canonicalization accepts only the actual macOS `/var -> /private/var`
+  system alias, then performs all no-follow checks on `/private/var`.  Other
+  symlinked roots remain rejected; the platform-conditional regression covers
+  both behaviors.
+- `_atomic_write_at` now has an explicit descriptor-relative
+  `replace_existing` mode.  Only legacy `transaction_root + transaction_id`
+  resolution enables it, preserving v3 reentry and recovery-journal updates;
+  explicit v4 `ArtifactPaths` retains exclusive no-overwrite publication.  A
+  same-transaction legacy run succeeds twice even with an existing journal,
+  while the v4 collision regression remains fail-closed.
+- Generated provider outputs are normalized by `_validated_generated_image`
+  before any metadata attribute is used.  Path, lowercase SHA-256 fields,
+  provider/model, MIME, timestamp, and exact internal provenance are checked;
+  malformed `None`, non-string, and provenance results become
+  `AssetResolutionError`, enter the required recovery journal, and surface as
+  `VisualProductionInterrupted` rather than raw `AttributeError`/`TypeError`.
+
+### RED-GREEN evidence
+
+The new attack regressions were run before the round-2 implementation:
+
+```text
+pytest -q tests/visual_runtime/test_artifact_identity.py::test_read_primary_error_survives_file_close_error tests/nodes/v4/test_assets.py::test_safety_checker_legacy_path_adapter_reads_pinned_bytes_during_ancestor_swap tests/nodes/v4/test_assets.py::test_malformed_generated_image_is_normalized_to_required_vpi_with_journal tests/asset_resolver/test_v4_resolution.py::test_legacy_transaction_reentry_replaces_final_after_existing_journal
+6 failed, 2 passed
+```
+
+After the shared primitive, safety adapter, legacy mode, and metadata
+validator changes:
+
+```text
+pytest -q tests/visual_runtime/test_artifact_identity.py::test_read_primary_error_survives_file_close_error tests/nodes/v4/test_assets.py::test_safety_checker_legacy_path_adapter_reads_pinned_bytes_during_ancestor_swap tests/nodes/v4/test_assets.py::test_malformed_generated_image_is_normalized_to_required_vpi_with_journal tests/asset_resolver/test_v4_resolution.py::test_legacy_transaction_reentry_replaces_final_after_existing_journal
+8 passed, 2 warnings
+```
+
+### Verification
+
+```text
+pytest -q tests/visual_runtime/test_artifact_identity.py tests/asset_resolver/test_v4_resolution.py tests/asset_resolver/test_live_providers.py tests/nodes/v4/test_assets.py
+45 passed, 1 skipped, 2 warnings
+
+pytest -q tests/asset_resolver tests/nodes/test_asset_resolver.py
+23 passed, 1 skipped, 2 warnings
+
+pytest -q tests/nodes/v4/test_authoring.py tests/nodes/v4/test_content.py tests/nodes/v4/test_semantic.py tests/visual_design/v4/test_authoring_qa.py tests/schemas/v4/test_direction.py
+55 passed, 1 warning
+
+pytest -q
+1580 passed, 3 skipped, 4 warnings
+
+python -m compileall -q src main.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+### Self-review and concerns
+
+- Legacy/v4 behavior still branches only at transaction-handle mode selection;
+  source selection, staging, descriptor reads, safety, final publication,
+  journal, and evidence use the shared resolver path.  The v4 flag cannot be
+  accidentally enabled by passing a bare directory.
+- Every new fd has one owner: the pinned file fd, checker duplicate, temp fd,
+  and transient directory fds are set to `None` before their only close.  A
+  close error is attached to the active primary and never causes a numeric fd
+  retry.
+- The default resolver safety path does not call the compatibility
+  `DefaultAssetSafetyChecker.check(Path, ...)`; it calls `check_bytes`.  The
+  compatibility method remains for direct legacy callers, while external
+  resolver checkers receive only immutable bytes or a pinned descriptor path.
+- Full offline verification has three opt-in live skips and four existing
+  warnings; no network/provider construction occurred with the live flag
+  unset.  No data, outputs, schemas, graph, publishing, or AgentState files
+  were changed.

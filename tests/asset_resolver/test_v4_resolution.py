@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from src.asset_resolver.v4 import adapt_asset_directive_v4
 from src.asset_resolver.resolver import AssetResolutionError, resolve_asset_directives
 from src.schemas.v4.direction import AssetDirectiveV4
 from src.schemas.visual_director import AssetDirective
+from src.visual_ai.protocols import GeneratedImage
 from src.visual_design.model_retry import VisualProductionInterrupted
 from src.visual_runtime.artifact_identity import (
     ArtifactIdentity,
@@ -229,3 +233,69 @@ def test_required_journal_close_failure_preserves_primary_errors(tmp_path: Path,
     )
     assert isinstance(exc_info.value.__cause__, AssetResolutionError)
     assert len(calls) == len(set(calls))
+
+
+def test_legacy_transaction_reentry_replaces_final_after_existing_journal(tmp_path: Path):
+    class Provider:
+        def generate(self, request, transaction_dir):
+            transaction_dir.mkdir(parents=True, exist_ok=True)
+            output = BytesIO()
+            Image.new("RGB", (300, 400), (180, 130, 120)).save(output, format="PNG")
+            raw = output.getvalue()
+            path = transaction_dir / "generated.png"
+            path.write_bytes(raw)
+            digest = hashlib.sha256(raw).hexdigest()
+            return GeneratedImage(
+                path=path,
+                mime_type="image/png",
+                sha256=digest,
+                provider="gemini",
+                model="offline-test",
+                prompt_sha256=request.prompt_sha256,
+                response_sha256=digest,
+                generated_at="2026-08-20T00:00:00+00:00",
+            )
+
+    class SafeChecker:
+        def check(self, path, directive):
+            from src.asset_resolver.resolver import AssetSafetyDecision
+
+            return AssetSafetyDecision(approved=True)
+
+    directive = AssetDirective(
+        directive_id="asset-1",
+        page_id="page-1",
+        role="texture",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt="texture",
+        orientation="portrait",
+        min_width=300,
+        min_height=400,
+    )
+    root = tmp_path / "transactions"
+    first = resolve_asset_directives(
+        directives=(directive,),
+        run_id="run-1",
+        transaction_root=root,
+        transaction_id="tx-1",
+        generation_provider=Provider(),
+        safety_checker=SafeChecker(),
+    )
+    final_path = Path(first.manifest.items[0].local_path)
+    original = final_path.read_bytes()
+    (root / "tx-1" / "recovery.json").write_text("stale recovery", encoding="utf-8")
+
+    second = resolve_asset_directives(
+        directives=(directive,),
+        run_id="run-1",
+        transaction_root=root,
+        transaction_id="tx-1",
+        generation_provider=Provider(),
+        safety_checker=SafeChecker(),
+    )
+
+    assert second.manifest.items[0].sha256 == first.manifest.items[0].sha256
+    assert final_path.read_bytes() == original
+    assert (root / "tx-1" / "recovery.json").read_text(encoding="utf-8") == "stale recovery"

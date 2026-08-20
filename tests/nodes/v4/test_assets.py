@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 
@@ -115,6 +116,49 @@ class SafeChecker:
         return AssetSafetyDecision(approved=True)
 
 
+class AncestorSwappingChecker:
+    def __init__(self, final_dir: Path, outside_dir: Path):
+        self.final_dir = final_dir
+        self.outside_dir = outside_dir
+        self.seen: bytes | None = None
+
+    def check(self, path, directive):
+        leaf = self.final_dir / Path(path).name
+        self.outside_dir.mkdir(parents=True, exist_ok=True)
+        (self.outside_dir / leaf.name).write_bytes(b"outside-bytes")
+        moved = self.final_dir.with_name(self.final_dir.name + "-moved")
+        self.final_dir.rename(moved)
+        self.final_dir.symlink_to(self.outside_dir, target_is_directory=True)
+        try:
+            self.seen = Path(path).read_bytes()
+        finally:
+            self.final_dir.unlink()
+            moved.rename(self.final_dir)
+        return AssetSafetyDecision(approved=True)
+
+
+def test_safety_checker_legacy_path_adapter_reads_pinned_bytes_during_ancestor_swap(
+    tmp_path: Path,
+):
+    from src.nodes.v4.assets import asset_resolver_node
+
+    checker = AncestorSwappingChecker(
+        tmp_path / "run-1" / "candidate-1" / "revision-1" / "assets" / "generated",
+        tmp_path / "outside",
+    )
+    result = asset_resolver_node(
+        _authored_state(),
+        generation_provider=GenerationProvider(),
+        safety_checker=checker,
+        base_root=tmp_path,
+    )
+
+    final_path = Path(result["asset_manifest"].items[0].local_path)
+    assert checker.seen == final_path.read_bytes()
+    assert checker.seen != b"outside-bytes"
+    assert result["asset_manifest"].items[0].security_status == "approved"
+
+
 class StagingAwareGenerationProvider(GenerationProvider):
     def generate(self, request, transaction_dir):
         assert ".staging" in transaction_dir.name
@@ -211,6 +255,51 @@ def test_generated_safety_mutation_cannot_leave_stale_manifest_hash(tmp_path: Pa
             safety_checker=MutatingSafetyChecker(),
             base_root=tmp_path,
         )
+
+
+class MalformedProvenanceGeneratedImage(GeneratedImage):
+    @property
+    def internal_provenance(self):
+        return None
+
+
+class MalformedGenerationProvider(GenerationProvider):
+    def __init__(self, field: str):
+        super().__init__()
+        self.field = field
+
+    def generate(self, request, transaction_dir):
+        generated = super().generate(request, transaction_dir)
+        if self.field == "provenance":
+            return MalformedProvenanceGeneratedImage(
+                path=generated.path,
+                mime_type=generated.mime_type,
+                sha256=generated.sha256,
+                provider=generated.provider,
+                model=generated.model,
+                prompt_sha256=generated.prompt_sha256,
+                response_sha256=generated.response_sha256,
+                generated_at=generated.generated_at,
+            )
+        return replace(generated, **{self.field: None})
+
+
+@pytest.mark.parametrize("field", ["path", "sha256", "provider", "mime_type", "provenance"])
+def test_malformed_generated_image_is_normalized_to_required_vpi_with_journal(
+    tmp_path: Path, field: str
+):
+    from src.nodes.v4.assets import asset_resolver_node
+
+    with pytest.raises(VisualProductionInterrupted) as exc_info:
+        asset_resolver_node(
+            _authored_state(required=True),
+            generation_provider=MalformedGenerationProvider(field),
+            safety_checker=SafeChecker(),
+            base_root=tmp_path,
+        )
+
+    assert all("AttributeError" not in error and "TypeError" not in error for error in exc_info.value.errors)
+    assert (tmp_path / "run-1" / "candidate-1" / "revision-1" / "assets" / "recovery.json").is_file()
 
 
 def test_generated_final_collision_never_overwrites_existing_revision_asset(tmp_path: Path):
