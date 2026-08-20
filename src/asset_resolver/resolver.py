@@ -39,13 +39,111 @@ class AssetResolutionError(RuntimeError):
     """Raised when a visual asset directive cannot be resolved."""
 
 
+def _check_no_follow_chain(path: Path) -> None:
+    """Reject symlinks in every existing component of a transaction path."""
+
+    current = path
+    while True:
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            if current.parent == current:
+                break
+            current = current.parent
+            continue
+        except OSError as error:
+            raise AssetResolutionError(f"cannot inspect transaction path: {current}") from error
+        trusted_darwin_var = (
+            current == Path("/var")
+            and Path("/private/var").is_dir()
+            and current.resolve(strict=False) == Path("/private/var")
+        )
+        if stat.S_ISLNK(info.st_mode) and not trusted_darwin_var:
+            raise AssetResolutionError(f"transaction path contains symlink: {current}")
+        if current.parent == current:
+            break
+        current = current.parent
+
+
+def _secure_mkdir(path: Path) -> None:
+    """Create a directory without following an existing symlink."""
+
+    _check_no_follow_chain(path)
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        try:
+            path.mkdir(mode=0o700)
+        except FileExistsError:
+            _check_no_follow_chain(path)
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+                raise AssetResolutionError(f"transaction directory collision: {path}")
+        except OSError as error:
+            raise AssetResolutionError(f"cannot create transaction directory: {path}") from error
+        return
+    except OSError as error:
+        raise AssetResolutionError(f"cannot inspect transaction directory: {path}") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise AssetResolutionError(f"transaction directory collision: {path}")
+
+
+def _secure_mkdirs(path: Path) -> None:
+    """Create missing directory components one at a time."""
+
+    missing: list[Path] = []
+    current = path
+    while True:
+        try:
+            current.lstat()
+            break
+        except FileNotFoundError:
+            missing.append(current)
+            if current.parent == current:
+                break
+            current = current.parent
+    for item in reversed(missing):
+        _secure_mkdir(item)
+
+
+def _validate_transaction_directory(path: Path, *, create: bool) -> Path:
+    """Validate an explicit v4 asset root and optionally establish it."""
+
+    directory = Path(path).absolute()
+    _check_no_follow_chain(directory)
+    if create and not directory.exists():
+        _secure_mkdirs(directory)
+    _check_no_follow_chain(directory)
+    try:
+        info = directory.lstat()
+    except OSError as error:
+        raise AssetResolutionError("explicit transaction directory is unavailable") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise AssetResolutionError("explicit transaction directory must be a regular directory")
+    try:
+        directory.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise AssetResolutionError("explicit transaction directory containment failed") from error
+    return directory
+
+
+def _path_contained(path: Path, root: Path) -> bool:
+    try:
+        path.absolute().relative_to(root.absolute())
+        _check_no_follow_chain(path.absolute())
+        path.absolute().resolve(strict=False).relative_to(root.absolute().resolve(strict=False))
+    except (OSError, RuntimeError, ValueError, AssetResolutionError):
+        return False
+    return True
+
+
 def _safe_component(value: str) -> str:
     sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-.")
     return sanitized or "asset"
 
 
-def _atomic_write_bytes(path: Path, content: bytes) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _atomic_write_bytes(path: Path, content: bytes, *, replace_existing: bool = True) -> None:
+    _secure_mkdirs(path.parent)
     descriptor, temporary_name = tempfile.mkstemp(
         dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
     )
@@ -54,10 +152,26 @@ def _atomic_write_bytes(path: Path, content: bytes) -> None:
             handle.write(content)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary_name, path)
+        if replace_existing:
+            os.replace(temporary_name, path)
+        else:
+            try:
+                os.link(temporary_name, path, follow_symlinks=False)
+            except FileExistsError as error:
+                raise AssetResolutionError("artifact destination already exists") from error
+            except OSError as error:
+                raise AssetResolutionError("artifact destination could not be published") from error
+            os.unlink(temporary_name)
+            temporary_name = None
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
     finally:
         try:
-            os.unlink(temporary_name)
+            if temporary_name is not None:
+                os.unlink(temporary_name)
         except FileNotFoundError:
             pass
 
@@ -100,8 +214,12 @@ class DefaultAssetSafetyChecker:
                     reason="image identity changed during safety check",
                 )
             try:
-                with Image.open(path) as image:
-                    image.verify()
+                # Decode through a duplicate of the already identity-checked
+                # descriptor; reopening ``path`` would reintroduce a swap
+                # window between no-follow validation and raster inspection.
+                with os.fdopen(os.dup(descriptor), "rb") as stream:
+                    with Image.open(stream) as image:
+                        image.verify()
             except (OSError, ValueError) as error:
                 return AssetSafetyDecision(
                     approved=False,
@@ -217,6 +335,13 @@ def _nofollow_read(path: Path) -> tuple[bytes, tuple[int, int]]:
         chunks: list[bytes] = []
         while chunk := os.read(descriptor, 1024 * 1024):
             chunks.append(chunk)
+        after_fd = os.fstat(descriptor)
+        after_path = path.lstat()
+        if (after_fd.st_dev, after_fd.st_ino) != (before.st_dev, before.st_ino) or (
+            after_path.st_dev,
+            after_path.st_ino,
+        ) != (before.st_dev, before.st_ino):
+            raise AssetResolutionError("generated image identity changed during read")
         return b"".join(chunks), (opened.st_dev, opened.st_ino)
     except OSError as error:
         raise AssetResolutionError("generated image is unreadable") from error
@@ -226,15 +351,27 @@ def _nofollow_read(path: Path) -> tuple[bytes, tuple[int, int]]:
 
 
 def _transaction_dir(transaction_root: Path, transaction_id: str) -> Path:
-    root = Path(transaction_root).resolve()
-    if not root.exists():
-        root.mkdir(parents=True, exist_ok=True)
+    if type(transaction_id) is not str or not transaction_id:
+        raise AssetResolutionError("transaction_id must be a non-empty string")
+    root = Path(transaction_root).absolute()
+    _secure_mkdirs(root)
     directory = root / transaction_id
-    if directory.exists() or directory.is_symlink():
-        if not directory.is_dir() or directory.is_symlink():
-            raise AssetResolutionError("transaction id collides with a non-directory")
-    else:
-        directory.mkdir(parents=True, exist_ok=True)
+    try:
+        directory.relative_to(root)
+    except ValueError as error:
+        raise AssetResolutionError("transaction id escapes transaction root") from error
+    _secure_mkdirs(directory)
+    _check_no_follow_chain(directory)
+    try:
+        info = directory.lstat()
+    except OSError as error:
+        raise AssetResolutionError("transaction directory is unavailable") from error
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+        raise AssetResolutionError("transaction id collides with a non-directory")
+    try:
+        directory.resolve(strict=True).relative_to(root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError) as error:
+        raise AssetResolutionError("transaction directory escapes transaction root") from error
     return directory
 
 
@@ -244,6 +381,7 @@ def _persist_recovery_journal(
     transaction_id: str,
     run_id: str,
     errors: tuple[str, ...],
+    immutable_transaction: bool = False,
 ) -> None:
     payload = {
         "status": "interrupted",
@@ -257,7 +395,11 @@ def _persist_recovery_journal(
     content = (
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     ).encode("utf-8")
-    _atomic_write_bytes(journal_path, content)
+    _atomic_write_bytes(
+        journal_path,
+        content,
+        replace_existing=not immutable_transaction,
+    )
 
 
 def _directive_search_query(directive: AssetDirective) -> str:
@@ -296,6 +438,7 @@ def _resolve_via_search(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    immutable_transaction: bool = False,
 ) -> AssetManifestItem:
     name = getattr(search_provider, "name", "search")
     try:
@@ -342,9 +485,13 @@ def _resolve_via_search(
     asset_id = f"{selected.provider}-{selected.provider_asset_id}"
     relative_path = Path("search") / f"{_safe_component(directive.directive_id)}-{_safe_component(asset_id)}{extension}"
     destination = transaction_dir / relative_path
-    if not destination.resolve().is_relative_to(transaction_dir.resolve()):
+    if not _path_contained(destination, transaction_dir):
         raise AssetResolutionError("search asset destination escapes the transaction dir")
-    _atomic_write_bytes(destination, normalized)
+    _atomic_write_bytes(
+        destination,
+        normalized,
+        replace_existing=not immutable_transaction,
+    )
 
     decision = safety_checker.check(destination, directive)
     if not decision.approved:
@@ -388,9 +535,12 @@ def _resolve_via_generation(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    immutable_transaction: bool = False,
 ) -> AssetManifestItem:
     generation_dir = transaction_dir / "generated"
-    generation_dir.mkdir(parents=True, exist_ok=True)
+    if immutable_transaction and generation_dir.exists():
+        raise AssetResolutionError("generated asset directory already exists in immutable revision")
+    _secure_mkdirs(generation_dir)
     request = _generation_request(
         directive,
         width=directive.min_width,
@@ -405,7 +555,11 @@ def _resolve_via_generation(
         raise AssetResolutionError("generation provider returned a non-GeneratedImage result")
 
     generated_path = Path(generated.path)
-    # Containment + no-follow: read actual bytes from the regular file only.
+    # Containment is checked before reading provider output, and bytes are
+    # then read through a no-follow descriptor so the provider cannot smuggle
+    # a path outside the transaction into the manifest.
+    if not _path_contained(generated_path, transaction_dir):
+        raise AssetResolutionError("generated image escapes the transaction directory")
     raw, _identity = _nofollow_read(generated_path)
     try:
         resolved = generated_path.resolve(strict=True)
@@ -468,6 +622,7 @@ def _attempt_source(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    immutable_transaction: bool = False,
 ) -> AssetManifestItem:
     if source == "search":
         if search_provider is None:
@@ -479,6 +634,7 @@ def _attempt_source(
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
+            immutable_transaction=immutable_transaction,
         )
     if source == "generate":
         if generation_provider is None:
@@ -490,6 +646,7 @@ def _attempt_source(
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
+            immutable_transaction=immutable_transaction,
         )
     raise AssetResolutionError(f"unsupported source kind: {source}")
 
@@ -503,11 +660,15 @@ def _preferred_then_fallback(
     safety_checker: object,
     run_id: str,
     transaction_id: str,
+    immutable_transaction: bool = False,
 ) -> tuple[AssetManifestItem | None, tuple[str, ...]]:
     """Resolve a directive; return (item-or-None, error-tuple)."""
 
-    primary = _select_primary_source(directive)
     errors: list[str] = []
+    try:
+        primary = _select_primary_source(directive)
+    except AssetResolutionError as error:
+        return None, (str(error),)
     try:
         item = _attempt_source(
             primary,
@@ -518,6 +679,7 @@ def _preferred_then_fallback(
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
+            immutable_transaction=immutable_transaction,
         )
         return item, ()
     except AssetResolutionError as error:
@@ -535,6 +697,7 @@ def _preferred_then_fallback(
                 safety_checker=safety_checker,
                 run_id=run_id,
                 transaction_id=transaction_id,
+                immutable_transaction=immutable_transaction,
             )
             return item, ()
         except AssetResolutionError as fallback_error:
@@ -559,12 +722,13 @@ def _select_primary_source(directive: AssetDirective) -> str:
 def resolve_asset_directives(
     *,
     directives: Iterable[AssetDirective],
-    transaction_root: Path,
     run_id: str,
-    transaction_id: str,
+    transaction_root: Path | None = None,
+    transaction_id: str | None = None,
     search_provider: object | None = None,
     generation_provider: object | None = None,
     safety_checker: object | None = None,
+    transaction_directory: Path | None = None,
 ) -> AssetResolutionResult:
     """Resolve visual asset directives into a hash-bound manifest.
 
@@ -576,7 +740,27 @@ def resolve_asset_directives(
     """
 
     checker = safety_checker if safety_checker is not None else DefaultAssetSafetyChecker()
-    transaction_dir = _transaction_dir(transaction_root, transaction_id)
+    explicit_directory = transaction_directory is not None
+    if explicit_directory:
+        if transaction_root is not None:
+            raise AssetResolutionError(
+                "transaction_directory is mutually exclusive with transaction_root"
+            )
+        if transaction_id is None or type(transaction_id) is not str or not transaction_id:
+            raise AssetResolutionError(
+                "transaction_directory mode requires a non-empty transaction_id"
+            )
+        transaction_dir = _validate_transaction_directory(
+            Path(transaction_directory), create=True
+        )
+    else:
+        if transaction_root is None or transaction_id is None:
+            raise AssetResolutionError(
+                "v3 resolver mode requires transaction_root and transaction_id"
+            )
+        transaction_dir = _transaction_dir(transaction_root, transaction_id)
+    resolved_transaction_id = transaction_id
+    assert resolved_transaction_id is not None
     items: list[AssetManifestItem] = []
     unresolved: list[UnresolvedOptionalAsset] = []
 
@@ -588,7 +772,8 @@ def resolve_asset_directives(
             transaction_dir=transaction_dir,
             safety_checker=checker,
             run_id=run_id,
-            transaction_id=transaction_id,
+            transaction_id=resolved_transaction_id,
+            immutable_transaction=explicit_directory,
         )
         if item is not None:
             items.append(item)
@@ -597,9 +782,10 @@ def resolve_asset_directives(
             try:
                 _persist_recovery_journal(
                     transaction_dir,
-                    transaction_id=transaction_id,
+                    transaction_id=resolved_transaction_id,
                     run_id=run_id,
                     errors=errors,
+                    immutable_transaction=explicit_directory,
                 )
             except Exception as journal_error:
                 # The persistence-and-assets contract requires recovery
@@ -626,8 +812,8 @@ def resolve_asset_directives(
 
     evidence = AssetTransactionEvidence(
         run_id=run_id,
-        transaction_id=transaction_id,
-        transaction_root=str(transaction_dir.resolve()),
+        transaction_id=resolved_transaction_id,
+        transaction_root=str(transaction_dir),
         journal_path=str(transaction_dir / "recovery.json"),
         status="complete",
         resolved_directive_ids=tuple(item.directive_id for item in items),
