@@ -111,6 +111,38 @@ def test_family_tokens_reject_nested_principle_payloads_even_with_recomputed_has
         FamilyTokensV4.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("composition_principles", "display:grid;color:red"),
+        ("motif_rules.allowed", "document.body.innerHTML='owned'"),
+        ("motif_rules.prohibited", "provider=pexels provenance=ai"),
+        ("font_roles.display", "onclick=owned()"),
+        ("font_roles.heading", "<script>alert(1)</script>"),
+        ("font_roles.body", "https://evil.example/font"),
+        ("font_roles.caption", "/tmp/font.ttf"),
+    ),
+)
+def test_all_family_style_text_uses_an_allowlist_even_with_recomputed_hash(
+    field: str,
+    value: str,
+) -> None:
+    payload = FAMILY_TOKENS["pink_red"].model_dump(mode="python")
+    if field == "composition_principles":
+        payload[field] = (value,)
+    elif field.startswith("motif_rules."):
+        motif_field = field.split(".", 1)[1]
+        payload["motif_rules"][motif_field] = (value,)
+    else:
+        font_field = field.split(".", 1)[1]
+        payload["font_roles"][font_field] = value
+    payload["canonical_sha256"] = canonical_sha256_v4(
+        {key: item for key, item in payload.items() if key != "canonical_sha256"}
+    )
+    with pytest.raises(ValidationError, match="allowlist|style|font|token"):
+        FamilyTokensV4.model_validate(payload)
+
+
 def test_grammar_roles_are_typed_and_family_neutral() -> None:
     assert GRAMMARS["editorial_hero"].allowed_page_roles == ("cover", "body", "closing")
     assert GRAMMARS["editorial_hero"].allowed_narrative_roles == (

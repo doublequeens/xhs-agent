@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.schemas.v4.content import canonical_sha256_v4
-from src.schemas.v4.direction import NarrativeBeatV4, PageBriefV4, TemplateFamilyV4
+from src.schemas.v4.direction import CarouselNarrativeV4, PageBriefV4, TemplateFamilyV4
 from src.schemas.v4.layout import (
     AssetPlacementV4,
     EmphasisRuleV4,
@@ -43,16 +43,22 @@ def _checked_page_brief(value: PageBriefV4 | Mapping[str, Any]) -> PageBriefV4:
     return checked
 
 
-def _checked_narrative_beat(
-    value: NarrativeBeatV4 | Mapping[str, Any],
-) -> NarrativeBeatV4:
-    raw = value.model_dump(mode="python") if isinstance(value, NarrativeBeatV4) else _tupleize(value)
+def _checked_narrative(
+    value: CarouselNarrativeV4 | Mapping[str, Any],
+) -> CarouselNarrativeV4:
+    raw = (
+        value.model_dump(mode="python")
+        if isinstance(value, CarouselNarrativeV4)
+        else _tupleize(value)
+    )
     if not isinstance(raw, Mapping):
-        raise ValueError("build_layout_program requires a persisted NarrativeBeatV4")
+        raise ValueError("build_layout_program requires a persisted CarouselNarrativeV4")
     try:
-        return NarrativeBeatV4.model_validate(raw)
+        checked = CarouselNarrativeV4.model_validate(raw)
+        checked.validate_integrity()
     except Exception as exc:
-        raise ValueError("narrative beat is invalid") from exc
+        raise ValueError("carousel narrative is stale or has an invalid canonical hash") from exc
+    return checked
 
 
 def _support_region_id(region_ids: tuple[str, ...], roles: Mapping[str, str]) -> str:
@@ -67,7 +73,7 @@ def build_layout_program(
     grammar_id: str,
     *,
     family: TemplateFamilyV4,
-    narrative_beat: NarrativeBeatV4 | Mapping[str, Any],
+    narrative: CarouselNarrativeV4 | Mapping[str, Any],
 ) -> LayoutProgramV4:
     """Build a hash-bound structural program without rendering or provider calls.
 
@@ -77,9 +83,18 @@ def build_layout_program(
     """
 
     page = _checked_page_brief(page_brief)
-    beat = _checked_narrative_beat(narrative_beat)
-    if beat.beat_id != page.beat_ref:
-        raise ValueError("narrative beat beat_id does not match page brief beat_ref")
+    checked_narrative = _checked_narrative(narrative)
+    if not isinstance(family, str):
+        raise ValueError("family must be an approved template family ID")
+    selected_family = get_family_tokens(family)
+    if checked_narrative.template_family != selected_family.family:
+        raise ValueError("carousel narrative template_family does not match family")
+    matching_beats = tuple(
+        beat for beat in checked_narrative.beats if beat.beat_id == page.beat_ref
+    )
+    if len(matching_beats) != 1:
+        raise ValueError("page brief beat_ref must resolve to exactly one narrative beat")
+    beat = matching_beats[0]
     if beat.sequence != page.sequence:
         raise ValueError("narrative beat sequence does not match page brief sequence")
     if tuple(beat.fragment_refs) != tuple(page.fragment_refs):
@@ -98,10 +113,6 @@ def build_layout_program(
         raise ValueError(
             f"derived page role {page_role!r} is incompatible with grammar {grammar_id!r}"
         )
-    if not isinstance(family, str):
-        raise ValueError("family must be an approved template family ID")
-    selected_family = get_family_tokens(family)
-
     target_values = {"low": 0.25, "medium": 0.5, "high": 0.75}
     density_value = target_values[page.density_budget]
     if not grammar.density_range.low <= density_value <= grammar.density_range.high:
@@ -201,6 +212,9 @@ def build_layout_program(
         "grammar_id": grammar.grammar_id,
         "template_family": selected_family.family,
         "family_tokens_sha256": selected_family.canonical_sha256,
+        "carousel_narrative_sha256": checked_narrative.canonical_sha256,
+        "beat_ref": beat.beat_id,
+        "beat_task_kind": beat.task_kind,
         "regions": regions,
         "fragment_placements": fragment_placements,
         "asset_placements": asset_placements,

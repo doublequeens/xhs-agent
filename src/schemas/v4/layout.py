@@ -44,6 +44,7 @@ ABSTRACT_RADII_V4 = ("none", "sm", "md", "lg", "pill")
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
+_STYLE_TOKEN_RE = re.compile(r"^[A-Za-z0-9]+(?:[ -][A-Za-z0-9]+)*$")
 
 
 def _validate_hash(value: str, field_name: str) -> str:
@@ -70,35 +71,18 @@ def _validate_identifiers(values: tuple[str, ...], field_name: str) -> tuple[str
     return tuple(values)
 
 
+def _validate_style_text(value: str, field_name: str) -> str:
+    if not value.strip() or not _STYLE_TOKEN_RE.fullmatch(value):
+        raise ValueError(
+            f"{field_name} must be allowlisted structural/style-token text"
+        )
+    return value
+
+
 def _validate_descriptions(values: tuple[str, ...], field_name: str) -> tuple[str, ...]:
     if not values or any(not value.strip() for value in values):
         raise ValueError(f"{field_name} must not contain empty entries")
-    if any(
-        token in value.lower()
-        for value in values
-        for token in (
-            "<",
-            ">",
-            "http:",
-            "https:",
-            "file://",
-            "../",
-            "/",
-            "\\",
-            "javascript:",
-            "eval(",
-            "exec(",
-            "lambda ",
-            "function ",
-            "def ",
-            "import ",
-            "subprocess",
-            "os.system",
-            "__",
-        )
-    ):
-        raise ValueError(f"{field_name} must not contain markup or paths")
-    return tuple(values)
+    return tuple(_validate_style_text(value, field_name) for value in values)
 
 
 class _FrozenLayoutV4(BaseModel):
@@ -139,11 +123,7 @@ class TypographyRolesV4(_FrozenLayoutV4):
     @field_validator("display", "heading", "body", "caption")
     @classmethod
     def validate_font_role(cls, value: str, info) -> str:
-        # Font family names may contain spaces, but must not carry markup or a
-        # filesystem/provider reference.
-        if any(token in value.lower() for token in ("<", ">", "http:", "https:", "/", "\\")):
-            raise ValueError(f"{info.field_name} must be a font role name, not markup or a path")
-        return value
+        return _validate_style_text(value, info.field_name)
 
 
 class MotifRulesV4(_FrozenLayoutV4):
@@ -492,6 +472,9 @@ class LayoutProgramV4(_FrozenLayoutV4):
     grammar_id: ImplementedGrammarIDV4
     template_family: TemplateFamilyV4
     family_tokens_sha256: StrictStr
+    carousel_narrative_sha256: StrictStr
+    beat_ref: StrictStr
+    beat_task_kind: NarrativeTaskKindV4
     regions: tuple[LayoutRegionV4, ...] = Field(min_length=1)
     fragment_placements: tuple[FragmentPlacementV4, ...] = Field(min_length=1)
     asset_placements: tuple[AssetPlacementV4, ...] = ()
@@ -506,10 +489,20 @@ class LayoutProgramV4(_FrozenLayoutV4):
     def validate_page_id(cls, value: str) -> str:
         return _validate_identifier(value, "page_id")
 
-    @field_validator("page_brief_sha256", "family_tokens_sha256", "canonical_sha256")
+    @field_validator(
+        "page_brief_sha256",
+        "family_tokens_sha256",
+        "carousel_narrative_sha256",
+        "canonical_sha256",
+    )
     @classmethod
     def validate_hash_shape(cls, value: str, info) -> str:
         return _validate_hash(value, info.field_name)
+
+    @field_validator("beat_ref")
+    @classmethod
+    def validate_beat_ref(cls, value: str) -> str:
+        return _validate_identifier(value, "beat_ref")
 
     @model_validator(mode="after")
     def validate_program_integrity(self) -> "LayoutProgramV4":
@@ -568,6 +561,9 @@ class LayoutProgramV4(_FrozenLayoutV4):
         rule_ids = tuple(rule.rule_id for rule in self.emphasis_rules)
         if len(set(rule_ids)) != len(rule_ids):
             raise ValueError("layout program emphasis rule IDs must be unique")
+        priorities = tuple(rule.priority for rule in self.emphasis_rules)
+        if sorted(priorities) != list(range(len(priorities))):
+            raise ValueError("layout program emphasis rule priority values must be unique and continuous")
         fragment_set = set(fragment_refs)
         if any(
             fragment_ref not in fragment_set

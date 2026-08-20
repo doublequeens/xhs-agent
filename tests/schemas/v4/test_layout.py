@@ -67,6 +67,9 @@ def test_layout_program_revalidates_tampered_canonical_hash() -> None:
         "grammar_id": "editorial_hero",
         "template_family": "pink_red",
         "family_tokens_sha256": get_family_tokens("pink_red").canonical_sha256,
+        "carousel_narrative_sha256": "2" * 64,
+        "beat_ref": "beat-1",
+        "beat_task_kind": "context",
         "regions": (
             {"region_id": "hero", "role": "primary", "order": 0},
         ),
@@ -110,6 +113,9 @@ def test_layout_program_requires_a_current_family_token_hash() -> None:
         "grammar_id": "editorial_hero",
         "template_family": "pink_red",
         "family_tokens_sha256": "1" * 64,
+        "carousel_narrative_sha256": "2" * 64,
+        "beat_ref": "beat-1",
+        "beat_task_kind": "context",
         "regions": (
             {"region_id": "hero", "role": "primary", "order": 0},
         ),
@@ -134,3 +140,51 @@ def test_layout_program_requires_a_current_family_token_hash() -> None:
             canonical_sha256=canonical_sha256_v4(payload),
         )
     assert tokens.canonical_sha256 != "1" * 64
+
+
+def test_layout_program_rejects_duplicate_emphasis_priorities_even_with_valid_hash() -> None:
+    payload = {
+        "page_id": "page-1",
+        "page_brief_sha256": "1" * 64,
+        "grammar_id": "editorial_hero",
+        "template_family": "pink_red",
+        "family_tokens_sha256": get_family_tokens("pink_red").canonical_sha256,
+        "carousel_narrative_sha256": "2" * 64,
+        "beat_ref": "beat-1",
+        "beat_task_kind": "context",
+        "regions": (
+            {"region_id": "hero", "role": "primary", "order": 0},
+        ),
+        "fragment_placements": (
+            {
+                "fragment_ref": "fragment-1",
+                "region_id": "hero",
+                "order": 0,
+                "alignment_axis_ids": (),
+                "emphasis_rule_ids": ("rule-a", "rule-b"),
+            },
+        ),
+        "asset_placements": (),
+        "emphasis_rules": (
+            {
+                "rule_id": "rule-a",
+                "kind": "primary_focus",
+                "target_fragment_refs": ("fragment-1",),
+                "priority": 0,
+            },
+            {
+                "rule_id": "rule-b",
+                "kind": "secondary_focus",
+                "target_fragment_refs": ("fragment-1",),
+                "priority": 0,
+            },
+        ),
+        "alignment_axes": (),
+        "density_target": "low",
+        "responsive_constraints": (),
+    }
+    with pytest.raises(ValidationError, match="priority"):
+        LayoutProgramV4(
+            **payload,
+            canonical_sha256=canonical_sha256_v4(payload),
+        )

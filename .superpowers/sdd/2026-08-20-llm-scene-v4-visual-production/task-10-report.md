@@ -104,3 +104,47 @@ The four full-suite warnings remain the existing two Pydantic serializer
 warnings and two pytest temporary-directory cleanup warnings; none originates
 from the Task 10 modules.  Task 11 compiler integration remains outside this
 task's ownership.
+
+## Fix round 2
+
+The second independent review closed the remaining free-string and narrative
+authority gaps.  Family style descriptions now share one allowlist validator
+for font roles, motifs, and composition principles; the canonical manifest's
+six families remain loadable while CSS, DOM, provider/provenance, event,
+URL, and path payloads fail before hash acceptance.  Composition now accepts
+only a hash-bound `CarouselNarrativeV4` (or persisted mapping), resolves the
+page's unique beat internally, and binds the narrative hash, beat reference,
+and typed task kind into `LayoutProgramV4`.  Emphasis priorities are also
+required to be unique and continuous from zero.
+
+### RED/GREEN proof
+
+The review regression suite was run before the production changes:
+
+```text
+pytest -q tests/schemas/v4/test_layout.py tests/visual_design/v4/test_grammars.py tests/nodes/v4/test_composition.py
+26 failed, 19 passed
+```
+
+The failures covered the old standalone-beat API, missing narrative binding
+fields, free-string payload acceptance, and duplicate emphasis priorities.
+The persisted-narrative fixture was then normalized to the direction contract;
+the production changes were applied only after the expected RED behavior was
+observed.
+
+After the fix, the focused suite passed: `45 passed`.  A recomputed narrative
+hash is treated as a new durable candidate and is persisted in the resulting
+program; an unchanged hash with `model_copy` tampering fails integrity before
+beat selection.
+
+### Fix round 2 verification
+
+- Focused Task 10 plus style registry: `48 passed, 2 warnings`.
+- Adjacent v4 direction/authoring/QA regressions: `30 passed`.
+- Full offline suite: `1630 passed, 3 skipped, 4 warnings`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
+The four full-suite warnings remain the two existing Pydantic serializer
+warnings and two pytest temporary-directory cleanup warnings.  Task 11
+compiler integration remains outside this task's ownership.
