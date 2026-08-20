@@ -14,16 +14,19 @@ from src.schemas.v4.content import (
 )
 from src.schemas.v4.direction import (
     AssetDirectiveV4,
+    AssetDirectiveCandidateV4,
+    AuthoringIssueV4,
     AuthoringQAResultV4,
     CarouselNarrativeDraftV4,
     CarouselNarrativeV4,
     PageBriefDraftV4,
+    PageBriefCandidateV4,
     PageBriefSetDraftV4,
+    PageBriefSetCandidateV4,
     PageBriefSetV4,
     PageBriefV4,
     VisualAuthoringDraftV4,
     VisualDirectionPlanV4,
-    canonical_direction_sha256_v4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4, SemanticQAResultV4
 from src.visual_ai.protocols import InvocationPolicy, InvocationRequest
@@ -163,9 +166,16 @@ def _request_payload(
     }
 
 
-def _asset_from_draft(value: Any) -> AssetDirectiveV4:
+def _asset_candidate_from_draft(value: Any) -> AssetDirectiveCandidateV4:
     draft = value if isinstance(value, dict) else value.model_dump(mode="python")
-    return AssetDirectiveV4.model_validate(draft)
+    return AssetDirectiveCandidateV4.model_validate(draft)
+
+
+def _asset_from_candidate(value: AssetDirectiveCandidateV4) -> AssetDirectiveV4:
+    payload = value.model_dump(mode="python")
+    # Resolution is an asset safety contract, not provider-controlled layout.
+    payload.update(min_width=1080, min_height=1440, resolution=(1080, 1440))
+    return AssetDirectiveV4.model_validate(payload)
 
 
 def _derive_narrative(
@@ -182,24 +192,50 @@ def _derive_narrative(
     )
 
 
-def _derive_page_brief(value: PageBriefDraftV4) -> PageBriefV4:
+def _derive_page_candidate(value: PageBriefDraftV4) -> PageBriefCandidateV4:
     payload = value.model_dump(mode="python")
-    directives = tuple(_asset_from_draft(item) for item in value.asset_directives)
-    payload["asset_directives"] = directives
+    payload["asset_directives"] = tuple(
+        _asset_candidate_from_draft(item) for item in value.asset_directives
+    )
+    return PageBriefCandidateV4.model_validate(payload)
+
+
+def _derive_page_brief(value: PageBriefCandidateV4) -> PageBriefV4:
+    payload = value.model_dump(mode="python")
+    payload["asset_directives"] = tuple(
+        _asset_from_candidate(item) for item in value.asset_directives
+    )
     return PageBriefV4(
         **payload,
         canonical_sha256=canonical_sha256_v4(payload),
     )
 
 
-def _derive_page_brief_set(
+def _derive_page_brief_set_candidate(
     draft: PageBriefSetDraftV4,
     *,
     narrative: CarouselNarrativeV4,
     semantic_model: SemanticContentModelV4,
     atom_set: ContentAtomSetV4,
+) -> PageBriefSetCandidateV4:
+    pages = tuple(_derive_page_candidate(page) for page in draft.pages)
+    return PageBriefSetCandidateV4(
+        page_count=narrative.page_count,
+        pages=pages,
+        template_family=narrative.template_family,
+        content_atom_set_sha256=atom_set.canonical_sha256,
+        semantic_content_model_sha256=semantic_model.canonical_sha256,
+    )
+
+
+def _derive_page_brief_set(
+    candidate: PageBriefSetCandidateV4,
+    *,
+    narrative: CarouselNarrativeV4,
+    semantic_model: SemanticContentModelV4,
+    atom_set: ContentAtomSetV4,
 ) -> PageBriefSetV4:
-    pages = tuple(_derive_page_brief(page) for page in draft.pages)
+    pages = tuple(_derive_page_brief(page) for page in candidate.pages)
     payload = {
         "page_count": narrative.page_count,
         "pages": pages,
@@ -207,14 +243,10 @@ def _derive_page_brief_set(
         "content_atom_set_sha256": atom_set.canonical_sha256,
         "semantic_content_model_sha256": semantic_model.canonical_sha256,
     }
-    canonical_source = PageBriefSetV4.model_construct(
-        **payload,
-        canonical_sha256="0" * 64,
-    )
     return PageBriefSetV4(
         **payload,
-        canonical_sha256=canonical_direction_sha256_v4(
-            canonical_source, exclude_none=True
+        canonical_sha256=canonical_sha256_v4(
+            {key: value for key, value in payload.items() if value is not None}
         ),
     )
 
@@ -241,6 +273,69 @@ def _derive_plan(
         **payload,
         canonical_sha256=canonical_sha256_v4(payload),
     )
+
+
+def _failed_qa(
+    *,
+    atom_set: ContentAtomSetV4,
+    lock: ContentLock,
+    semantic_model: SemanticContentModelV4,
+    narrative: CarouselNarrativeV4 | None = None,
+    candidate: PageBriefSetCandidateV4 | None = None,
+    location: str = "provider_draft",
+) -> AuthoringQAResultV4:
+    issue = AuthoringIssueV4(
+        code="SCHEMA_INVALID",
+        location=location,
+        message="visual authoring candidate failed local contract preflight",
+        evidence="sanitized local schema diagnostic",
+    )
+    payload = {
+        "passed": False,
+        "issues": (issue,),
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "content_lock_sha256": lock.canonical_sha256,
+        "semantic_content_model_sha256": semantic_model.canonical_sha256,
+        "narrative_sha256": getattr(narrative, "canonical_sha256", "0" * 64),
+        "page_brief_set_sha256": "0" * 64,
+        "visual_direction_plan_sha256": "0" * 64,
+        "candidate_sha256": getattr(candidate, "candidate_sha256", "0" * 64),
+    }
+    return AuthoringQAResultV4(
+        **payload,
+        canonical_sha256=canonical_sha256_v4(payload),
+    )
+
+
+def _node_result(
+    *,
+    atom_set: ContentAtomSetV4,
+    lock: ContentLock,
+    semantic_model: SemanticContentModelV4,
+    q0: SemanticQAResultV4,
+    narrative: CarouselNarrativeV4 | None,
+    page_brief_set: PageBriefSetV4 | None,
+    plan: VisualDirectionPlanV4 | None,
+    qa_result: AuthoringQAResultV4,
+) -> dict[str, Any]:
+    route = _NEXT_ROUTE if qa_result.passed else _FAIL_ROUTE
+    return {
+        "content_atom_set": atom_set,
+        "content_lock": lock,
+        "semantic_content_model": semantic_model,
+        "semantic_model": semantic_model,
+        "semantic_qa_result": q0,
+        "narrative": narrative,
+        "carousel_narrative": narrative,
+        "page_brief_set": page_brief_set,
+        "page_briefs": page_brief_set,
+        "visual_direction_plan": plan,
+        "authoring_qa_result": qa_result,
+        "authoring_route": route,
+        "visual_route": route,
+        "route": route,
+        "current_node": _CURRENT_NODE,
+    }
 
 
 def visual_authoring_node(
@@ -288,20 +383,89 @@ def visual_authoring_node(
         draft_value = gateway.invoke_structured(request, VisualAuthoringDraftV4)
     else:
         draft_value = gateway.invoke_structured(request, VisualAuthoringDraftV4, policy)
-    draft = _revalidate_draft(draft_value)
-    narrative = _derive_narrative(draft.narrative, atom_set=atom_set)
-    page_brief_set = _derive_page_brief_set(
-        draft.page_brief_set,
-        narrative=narrative,
-        semantic_model=semantic_model,
-        atom_set=atom_set,
+    try:
+        draft = _revalidate_draft(draft_value)
+        narrative = _derive_narrative(draft.narrative, atom_set=atom_set)
+        candidate = _derive_page_brief_set_candidate(
+            draft.page_brief_set,
+            narrative=narrative,
+            semantic_model=semantic_model,
+            atom_set=atom_set,
+        )
+    except Exception:
+        # A successfully invoked provider can still return a malformed
+        # semantic candidate.  Return a sanitized hard-gate result instead of
+        # allowing a durable-construction ValidationError to escape.
+        qa_result = _failed_qa(
+            atom_set=atom_set,
+            lock=lock,
+            semantic_model=semantic_model,
+        )
+        return _node_result(
+            atom_set=atom_set,
+            lock=lock,
+            semantic_model=semantic_model,
+            q0=_q0,
+            narrative=None,
+            page_brief_set=None,
+            plan=None,
+            qa_result=qa_result,
+        )
+
+    # Q1 evaluates the relaxed candidate first.  Only a passing candidate is
+    # converted into the strict durable page-brief and plan contracts.
+    candidate_qa = evaluate_authoring(
+        candidate,
+        semantic_model,
+        narrative,
+        content_lock=lock,
+        content_atom_set=atom_set,
     )
-    plan = _derive_plan(
-        semantic_model=semantic_model,
-        atom_set=atom_set,
-        narrative=narrative,
-        page_brief_set=page_brief_set,
-    )
+    if not candidate_qa.passed:
+        return _node_result(
+            atom_set=atom_set,
+            lock=lock,
+            semantic_model=semantic_model,
+            q0=_q0,
+            narrative=narrative,
+            page_brief_set=None,
+            plan=None,
+            qa_result=candidate_qa,
+        )
+
+    try:
+        page_brief_set = _derive_page_brief_set(
+            candidate,
+            narrative=narrative,
+            semantic_model=semantic_model,
+            atom_set=atom_set,
+        )
+        plan = _derive_plan(
+            semantic_model=semantic_model,
+            atom_set=atom_set,
+            narrative=narrative,
+            page_brief_set=page_brief_set,
+        )
+    except Exception:
+        qa_result = _failed_qa(
+            atom_set=atom_set,
+            lock=lock,
+            semantic_model=semantic_model,
+            narrative=narrative,
+            candidate=candidate,
+            location="durable_contract",
+        )
+        return _node_result(
+            atom_set=atom_set,
+            lock=lock,
+            semantic_model=semantic_model,
+            q0=_q0,
+            narrative=narrative,
+            page_brief_set=None,
+            plan=None,
+            qa_result=qa_result,
+        )
+
     qa_result = evaluate_authoring(
         page_brief_set,
         semantic_model,
@@ -310,24 +474,16 @@ def visual_authoring_node(
         content_lock=lock,
         content_atom_set=atom_set,
     )
-    route = _NEXT_ROUTE if qa_result.passed else _FAIL_ROUTE
-    return {
-        "content_atom_set": atom_set,
-        "content_lock": lock,
-        "semantic_content_model": semantic_model,
-        "semantic_model": semantic_model,
-        "semantic_qa_result": _q0,
-        "narrative": narrative,
-        "carousel_narrative": narrative,
-        "page_brief_set": page_brief_set,
-        "page_briefs": page_brief_set,
-        "visual_direction_plan": plan,
-        "authoring_qa_result": qa_result,
-        "authoring_route": route,
-        "visual_route": route,
-        "route": route,
-        "current_node": _CURRENT_NODE,
-    }
+    return _node_result(
+        atom_set=atom_set,
+        lock=lock,
+        semantic_model=semantic_model,
+        q0=_q0,
+        narrative=narrative,
+        page_brief_set=page_brief_set,
+        plan=plan,
+        qa_result=qa_result,
+    )
 
 
 def route_after_authoring_qa(state: Mapping[str, Any]) -> str:

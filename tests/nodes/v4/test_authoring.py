@@ -9,7 +9,9 @@ from src.nodes.v4.authoring import route_after_authoring_qa, visual_authoring_no
 from src.schemas.content_lock import ContentLock
 from src.schemas.v4.content import ContentAtomSetV4, ContentAtomV4, canonical_sha256_v4
 from src.schemas.v4.direction import (
+    AssetDirectiveDraftV4,
     CarouselNarrativeDraftV4,
+    NarrativeBeatV4,
     PageBriefDraftV4,
     PageBriefSetDraftV4,
     VisualAuthoringDraftV4,
@@ -91,7 +93,14 @@ def _draft() -> VisualAuthoringDraftV4:
     narrative = CarouselNarrativeDraftV4(
         template_family="pink_red",
         page_count=5,
-        beats=tuple(f"beat-{index}" for index in range(5)),
+        beats=tuple(
+            NarrativeBeatV4(
+                beat_id=f"beat-{index}",
+                sequence=index + 1,
+                task=f"task-{index}",
+            )
+            for index in range(5)
+        ),
         density_curve=("low", "medium", "low", "medium", "low"),
         variation_strategy="alternate compositions",
         continuity_strategy="carry one cue",
@@ -102,6 +111,7 @@ def _draft() -> VisualAuthoringDraftV4:
             page_id=f"page-{index + 1}",
             sequence=index + 1,
             narrative_role=f"role-{index + 1}",
+            beat_ref=f"beat-{index}",
             fragment_refs=(f"fragment-{index}",),
             visual_priority=(f"fragment-{index}",),
             density_budget=("low", "medium", "low", "medium", "low")[index],
@@ -181,6 +191,10 @@ def test_authoring_node_calls_injected_gateway_once_with_stable_identity_and_rou
     assert result["current_node"] == "V4_VISUAL_AUTHORING"
     assert result["authoring_route"] == "asset_resolver"
     assert result["authoring_qa_result"].passed is True
+    plan = result["visual_direction_plan"]
+    assert plan.semantic_content_model is result["semantic_content_model"]
+    assert plan.narrative is result["narrative"]
+    assert plan.page_brief_set is result["page_brief_set"]
 
 
 def test_authoring_node_rejects_stale_passed_q0_before_gateway():
@@ -230,6 +244,62 @@ def test_authoring_node_keeps_unknown_provider_fragment_in_q1_fail_route():
     assert "FRAGMENT_OWNERSHIP_UNKNOWN" in {
         issue.code for issue in result["authoring_qa_result"].issues
     }
+
+
+def test_authoring_node_returns_failed_candidate_for_empty_pages_without_throwing():
+    draft = _draft()
+    pages = list(draft.page_brief_set.pages)
+    for index in range(1, 5):
+        raw = pages[index].model_dump(mode="python")
+        raw["fragment_refs"] = ()
+        raw["visual_priority"] = ()
+        raw["preferred_compositions"] = ()
+        pages[index] = PageBriefDraftV4(**raw)
+    invalid = VisualAuthoringDraftV4(
+        narrative=draft.narrative,
+        page_brief_set=PageBriefSetDraftV4(pages=tuple(pages)),
+    )
+    result = visual_authoring_node(
+        _state(),
+        gateway=RecordingGateway(invalid, []),
+    )
+    assert result["authoring_route"] == "visual_authoring"
+    assert result["page_brief_set"] is None
+    assert result["visual_direction_plan"] is None
+    assert "PAGE_BRIEF_DUTY_EMPTY" in {
+        issue.code for issue in result["authoring_qa_result"].issues
+    }
+
+
+def test_authoring_node_injects_controlled_asset_resolution_after_q1():
+    draft = _draft()
+    pages = list(draft.page_brief_set.pages)
+    raw = pages[0].model_dump(mode="python")
+    raw["asset_directives"] = (
+        AssetDirectiveDraftV4(
+            directive_id="asset-1",
+            page_id="page-1",
+            role="evidence_example",
+            purpose="evidence",
+            supports_fragment_refs=("fragment-0",),
+            required=True,
+            preferred_source="search",
+            query_or_prompt="clean skincare evidence photo",
+            orientation="portrait",
+        ),
+    )
+    pages[0] = PageBriefDraftV4(**raw)
+    draft_with_asset = VisualAuthoringDraftV4(
+        narrative=draft.narrative,
+        page_brief_set=PageBriefSetDraftV4(pages=tuple(pages)),
+    )
+    result = visual_authoring_node(
+        _state(),
+        gateway=RecordingGateway(draft_with_asset, []),
+    )
+    assert result["authoring_qa_result"].passed is True
+    directive = result["page_brief_set"].pages[0].asset_directives[0]
+    assert directive.preferred_resolution == (1080, 1440)
 
 
 def test_authoring_node_propagates_gateway_failure_without_retry_or_fallback():

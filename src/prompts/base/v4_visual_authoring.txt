@@ -16,8 +16,19 @@ composition IDs:
 editorial_hero, comparison_grid, step_flow, diagnostic_matrix, checklist,
 evidence_card, image_annotation, summary_closing
 
-Use asset directives only for semantic asset needs. Their query or prompt must
-not request visible words, AI labels, illustrative labels, or disclaimers in an
-image. The deterministic Q1 gate will reject unknown fragment ownership,
+Return one typed narrative beat (beat_id, sequence, task) for every page and
+set exactly one page beat_ref for each beat. Every page must own at least one
+opaque fragment ID, one visual-priority fragment ID, and one preferred
+composition. A narrative role is an explanation, not a substitute for these
+semantic duties.
+
+Use asset directives only for semantic asset needs. Their controlled role must
+be one of evidence_example, skin_example, texture, object, or decorative; give
+a controlled purpose and supports_fragment_refs containing only fragment IDs
+owned by that page. Do not request or provide min_width, min_height, resolution,
+coordinates, or any other layout geometry: the application injects the fixed
+asset safety minimum after Q1. An asset query or prompt must not request visible
+words, text labels, AI labels, illustrative labels, or disclaimers in an image.
+The deterministic Q1 gate will reject unknown ownership, empty page duties,
 unbalanced density, repeated page signatures, and inconsistent directive
 ownership.

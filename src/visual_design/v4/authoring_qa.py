@@ -11,11 +11,15 @@ from src.schemas.v4.content import ContentAtomSetV4, canonical_sha256_v4
 from src.schemas.v4.direction import (
     AuthoringIssueV4,
     AuthoringQAResultV4,
+    ASSET_PURPOSES_V4,
+    ASSET_ROLES_V4,
     CarouselNarrativeV4,
+    AssetDirectiveCandidateV4,
+    PageBriefCandidateV4,
+    PageBriefSetCandidateV4,
     PageBriefSetV4,
     PageBriefV4,
     VisualDirectionPlanV4,
-    canonical_direction_sha256_v4,
     contains_forbidden_visible_copy,
 )
 from src.schemas.v4.semantic import (
@@ -66,65 +70,69 @@ def _issue(
     )
 
 
-def _revalidate_page(value: Any) -> tuple[PageBriefV4 | None, bool]:
-    raw = _payload(value)
-    if raw is None:
-        return None, False
-    try:
-        checked = PageBriefV4.model_validate(raw)
-        return checked, True
-    except Exception:
-        # A model_copy(update=...) can stale only the enclosing digest.  Parse
-        # all nested fields again and retain a deterministic drift bit.
+def _candidate_page(raw: Any) -> PageBriefCandidateV4 | None:
+    page_payload = _payload(raw)
+    if page_payload is None:
+        return None
+    page_payload = dict(page_payload)
+    page_payload.pop("canonical_sha256", None)
+    directives: list[AssetDirectiveCandidateV4] = []
+    for directive_raw in page_payload.get("asset_directives", ()):
+        directive_payload = _payload(directive_raw)
+        if directive_payload is None:
+            return None
+        directive_payload = dict(directive_payload)
+        # Minimum resolution is injected only while converting a passing
+        # candidate to the durable contract; it is not provider semantics.
+        for key in ("canonical_sha256", "min_width", "min_height", "resolution", "source"):
+            directive_payload.pop(key, None)
         try:
-            repaired = dict(raw)
-            original = repaired.get("canonical_sha256")
-            repaired.pop("canonical_sha256", None)
-            canonical_source = PageBriefV4.model_construct(
-                **repaired,
-                canonical_sha256=_ZERO_SHA256,
-            )
-            expected = canonical_direction_sha256_v4(canonical_source)
-            repaired["canonical_sha256"] = expected
-            checked = PageBriefV4.model_validate(repaired)
-            return checked, original == expected
+            directives.append(AssetDirectiveCandidateV4.model_validate(directive_payload))
         except Exception:
-            return None, False
+            return None
+    page_payload["asset_directives"] = tuple(directives)
+    try:
+        return PageBriefCandidateV4.model_validate(page_payload)
+    except Exception:
+        return None
 
 
-def _coerce_page_brief_set(value: Any) -> tuple[PageBriefSetV4 | None, bool]:
+def _coerce_page_brief_set(
+    value: Any,
+) -> tuple[PageBriefSetV4 | PageBriefSetCandidateV4 | None, bool, bool]:
+    """Revalidate durable data or parse an explicit relaxed candidate DTO.
+
+    The third return value records that the caller supplied a durable model
+    instance which failed revalidation.  It lets Q1 report hash drift without
+    manufacturing a durable object through ``model_construct``.
+    """
+
+    supplied_durable = isinstance(value, PageBriefSetV4)
+    if isinstance(value, PageBriefSetCandidateV4):
+        return value, True, False
     raw = _payload(value)
     if raw is None:
-        return None, False
+        return None, False, supplied_durable
     try:
-        checked = PageBriefSetV4.model_validate(raw)
-        return checked, True
+        return PageBriefSetV4.model_validate(raw), True, supplied_durable
     except Exception:
+        candidate_payload = dict(raw)
+        original_hash = candidate_payload.pop("canonical_sha256", None)
+        page_candidates: list[PageBriefCandidateV4] = []
+        for page_raw in candidate_payload.get("pages", ()):
+            page = _candidate_page(page_raw)
+            if page is None:
+                return None, False, supplied_durable
+            page_candidates.append(page)
+        candidate_payload["pages"] = tuple(page_candidates)
         try:
-            pages: list[PageBriefV4] = []
-            nested_ok = True
-            for page_raw in raw.get("pages", ()):
-                page, page_ok = _revalidate_page(page_raw)
-                if page is None:
-                    return None, False
-                pages.append(page)
-                nested_ok = nested_ok and page_ok
-            repaired = dict(raw)
-            repaired["pages"] = tuple(pages)
-            original = repaired.get("canonical_sha256")
-            repaired.pop("canonical_sha256", None)
-            canonical_source = PageBriefSetV4.model_construct(
-                **repaired,
-                canonical_sha256=_ZERO_SHA256,
-            )
-            expected = canonical_direction_sha256_v4(
-                canonical_source, exclude_none=True
-            )
-            repaired["canonical_sha256"] = expected
-            checked = PageBriefSetV4.model_validate(repaired)
-            return checked, nested_ok and original == expected
+            candidate = PageBriefSetCandidateV4.model_validate(candidate_payload)
         except Exception:
-            return None, False
+            return None, False, supplied_durable
+        # A mapping without a durable digest is a preflight candidate.  A
+        # digest supplied by a model_copy-ed durable object remains a drift.
+        candidate_ok = original_hash is None and not supplied_durable
+        return candidate, candidate_ok, supplied_durable
 
 
 def _coerce_semantic_model(value: Any) -> tuple[SemanticContentModelV4 | None, bool]:
@@ -176,22 +184,11 @@ def _coerce_narrative(value: Any) -> tuple[CarouselNarrativeV4 | None, bool]:
         checked = CarouselNarrativeV4.model_validate(raw)
         return checked, True
     except Exception:
-        try:
-            repaired = dict(raw)
-            original = repaired.get("canonical_sha256")
-            repaired.pop("canonical_sha256", None)
-            canonical_source = CarouselNarrativeV4.model_construct(
-                **repaired,
-                canonical_sha256=_ZERO_SHA256,
-            )
-            expected = canonical_direction_sha256_v4(
-                canonical_source, exclude_none=True
-            )
-            repaired["canonical_sha256"] = expected
-            checked = CarouselNarrativeV4.model_validate(repaired)
-            return checked, original == expected
-        except Exception:
-            return None, False
+        if isinstance(value, CarouselNarrativeV4):
+            # A persisted model_copy can be inspected for deterministic drift
+            # evidence, but it is never rebuilt into a trusted durable model.
+            return value, False
+        return None, False
 
 
 def _coerce_plan(value: Any) -> tuple[VisualDirectionPlanV4 | None, bool]:
@@ -202,20 +199,9 @@ def _coerce_plan(value: Any) -> tuple[VisualDirectionPlanV4 | None, bool]:
         checked = VisualDirectionPlanV4.model_validate(raw)
         return checked, True
     except Exception:
-        try:
-            repaired = dict(raw)
-            # Nested models are parsed afresh by the plan validator.  If only
-            # the top-level digest drifted, this recovers a safe plan while
-            # retaining the false integrity bit for Q1.
-            expected = canonical_sha256_v4(
-                {key: item for key, item in repaired.items() if key != "canonical_sha256"}
-            )
-            original = repaired.get("canonical_sha256")
-            repaired["canonical_sha256"] = expected
-            checked = VisualDirectionPlanV4.model_validate(repaired)
-            return checked, original == expected
-        except Exception:
-            return None, False
+        if isinstance(value, VisualDirectionPlanV4):
+            return value, False
+        return None, False
 
 
 def _coerce_lock(value: Any) -> tuple[ContentLock | None, bool]:
@@ -290,6 +276,7 @@ def _result(
     plan: VisualDirectionPlanV4 | None,
     content_lock: ContentLock | None,
     content_atom_set: ContentAtomSetV4 | None,
+    candidate: PageBriefSetCandidateV4 | None = None,
 ) -> AuthoringQAResultV4:
     payload = {
         "passed": not issues,
@@ -308,6 +295,9 @@ def _result(
         ),
         "visual_direction_plan_sha256": _safe_hash(
             getattr(plan, "canonical_sha256", None)
+        ),
+        "candidate_sha256": _safe_hash(
+            getattr(candidate, "candidate_sha256", None)
         ),
     }
     return AuthoringQAResultV4(
@@ -334,7 +324,8 @@ def evaluate_authoring(
     """
 
     issues: list[AuthoringIssueV4] = []
-    page_set, page_set_ok = _coerce_page_brief_set(page_brief_set)
+    page_set, page_set_ok, page_set_was_durable = _coerce_page_brief_set(page_brief_set)
+    candidate = page_set if isinstance(page_set, PageBriefSetCandidateV4) else None
     model, model_ok = _coerce_semantic_model(semantic_model)
     narrative_obj: CarouselNarrativeV4 | None = None
     narrative_ok = True
@@ -362,7 +353,7 @@ def evaluate_authoring(
                 message="page brief set could not be revalidated",
             ),
         )
-    elif not page_set_ok:
+    elif not page_set_ok and page_set_was_durable:
         _append_unique(
             issues,
             _issue(
@@ -429,6 +420,19 @@ def evaluate_authoring(
     if page_set is not None:
         pages = page_set.pages
         page_ids = [page.page_id for page in pages]
+        page_id_counts = Counter(page_ids)
+        for page_id in sorted(
+            page_id for page_id, count in page_id_counts.items() if not page_id or count > 1
+        ):
+            _append_unique(
+                issues,
+                _issue(
+                    "PAGE_ID_INVALID",
+                    location="page_brief_set.pages.page_id",
+                    message="page IDs must be non-empty and unique",
+                    page_id=page_id or None,
+                ),
+            )
         if page_set.page_count < 5 or page_set.page_count > 18:
             _append_unique(
                 issues,
@@ -503,31 +507,26 @@ def evaluate_authoring(
         duplicated = sorted(fragment_id for fragment_id, count in counts.items() if count > 1)
         unknown = sorted(set(owned_ids) - known_fragment_ids)
         missing = sorted(known_fragment_ids - set(owned_ids))
-        # Duplicate ownership is intentionally a single stable finding.  This
-        # keeps the required duplicate test deterministic even when the
-        # duplicate replaced another page's fragment.
-        if duplicated:
-            for fragment_id in duplicated:
-                _append_unique(
-                    issues,
-                    _issue(
-                        "FRAGMENT_OWNERSHIP_DUPLICATED",
-                        location="page_brief_set.fragment_refs",
-                        message="a semantic fragment is owned by more than one page",
-                        fragment_id=fragment_id,
-                    ),
-                )
-        else:
-            for fragment_id in missing:
-                _append_unique(
-                    issues,
-                    _issue(
-                        "FRAGMENT_OWNERSHIP_MISSING",
-                        location="page_brief_set.fragment_refs",
-                        message="a semantic fragment is not owned by any page",
-                        fragment_id=fragment_id,
-                    ),
-                )
+        for fragment_id in duplicated:
+            _append_unique(
+                issues,
+                _issue(
+                    "FRAGMENT_OWNERSHIP_DUPLICATED",
+                    location="page_brief_set.fragment_refs",
+                    message="a semantic fragment is owned by more than one page",
+                    fragment_id=fragment_id,
+                ),
+            )
+        for fragment_id in missing:
+            _append_unique(
+                issues,
+                _issue(
+                    "FRAGMENT_OWNERSHIP_MISSING",
+                    location="page_brief_set.fragment_refs",
+                    message="a semantic fragment is not owned by any page",
+                    fragment_id=fragment_id,
+                ),
+            )
         for fragment_id in unknown:
             _append_unique(
                 issues,
@@ -538,6 +537,43 @@ def evaluate_authoring(
                     fragment_id=fragment_id,
                 ),
             )
+
+        if narrative_obj is not None:
+            beat_ids = {beat.beat_id for beat in narrative_obj.beats}
+            beat_refs = [getattr(page, "beat_ref", "") for page in pages]
+            beat_counts = Counter(beat_refs)
+            for beat_id in sorted(
+                beat_id for beat_id, count in beat_counts.items() if count > 1
+            ):
+                _append_unique(
+                    issues,
+                    _issue(
+                        "BEAT_OWNERSHIP_DUPLICATED",
+                        location="page_brief_set.beat_ref",
+                        message="a narrative beat must be owned by exactly one page",
+                        fragment_id=beat_id,
+                    ),
+                )
+            for beat_id in sorted(beat_ids - set(beat_refs)):
+                _append_unique(
+                    issues,
+                    _issue(
+                        "BEAT_OWNERSHIP_MISSING",
+                        location="page_brief_set.beat_ref",
+                        message="a narrative beat is not owned by any page",
+                        fragment_id=beat_id,
+                    ),
+                )
+            for beat_id in sorted(set(beat_refs) - beat_ids):
+                _append_unique(
+                    issues,
+                    _issue(
+                        "BEAT_OWNERSHIP_UNKNOWN",
+                        location="page_brief_set.beat_ref",
+                        message="a page references an unknown narrative beat",
+                        fragment_id=beat_id,
+                    ),
+                )
 
         # Family/page-count consistency is checked at every available layer.
         families = []
@@ -625,7 +661,7 @@ def evaluate_authoring(
                         message="plan embeds a different semantic model revision",
                     ),
                 )
-            if plan.page_brief_set.canonical_sha256 != page_set.canonical_sha256:
+            if isinstance(page_set, PageBriefSetV4) and plan.page_brief_set.canonical_sha256 != page_set.canonical_sha256:
                 _append_unique(
                     issues,
                     _issue(
@@ -656,6 +692,30 @@ def evaluate_authoring(
                         page_id=page.page_id,
                     ),
                 )
+            if (
+                not page.fragment_refs
+                or not page.visual_priority
+                or not page.preferred_compositions
+            ):
+                _append_unique(
+                    issues,
+                    _issue(
+                        "PAGE_BRIEF_DUTY_EMPTY",
+                        location=f"pages[{page.sequence}].semantic_duty",
+                        message="each page must own fragments, priority and a composition candidate",
+                        page_id=page.page_id or None,
+                    ),
+                )
+            if _scan_forbidden(_payload(page) or {}):
+                _append_unique(
+                    issues,
+                    _issue(
+                        "FORBIDDEN_VISIBLE_COPY",
+                        location=f"pages[{page.sequence}]",
+                        message="authoring page semantics cannot carry system copy",
+                        page_id=page.page_id or None,
+                    ),
+                )
             local_priority = tuple(
                 fragment_id
                 for fragment_id in page.visual_priority
@@ -683,7 +743,7 @@ def evaluate_authoring(
                     and fragments_by_id[fragment_id].semantic_role != "note"
                 ]
                 priority_roles = [fragment.semantic_role for fragment in local_fragments]
-                if non_note_refs and all(role == "note" for role in priority_roles):
+                if all(role == "note" for role in priority_roles):
                     _append_unique(
                         issues,
                         _issue(
@@ -698,10 +758,7 @@ def evaluate_authoring(
                 previous = pages[index - 1]
                 previous_comp = previous.preferred_compositions[0] if previous.preferred_compositions else None
                 current_comp = page.preferred_compositions[0] if page.preferred_compositions else None
-                shared_compositions = set(previous.preferred_compositions).intersection(
-                    page.preferred_compositions
-                )
-                if shared_compositions:
+                if previous_comp is not None and previous_comp == current_comp:
                     _append_unique(
                         issues,
                         _issue(
@@ -756,32 +813,50 @@ def evaluate_authoring(
                     invalid = directive.required or directive.query_or_prompt is not None
                 else:
                     invalid = directive.query_or_prompt is None
+                role = getattr(directive, "role", "")
+                purpose = getattr(directive, "purpose", "")
                 if (
                     invalid
-                    or not directive.role.strip()
-                    or directive.min_width < 1
-                    or directive.min_height < 1
+                    or role not in ASSET_ROLES_V4
+                    or purpose not in ASSET_PURPOSES_V4
                 ):
                     _append_unique(
                         issues,
                         _issue(
                             "ASSET_DIRECTIVE_MISMATCH",
                             location=f"pages[{page.sequence}].asset_directives[{directive.directive_id}]",
-                            message="asset directive source, role, query and resolution must be coherent",
+                            message="asset directive source, role, purpose and query must be coherent",
                             page_id=page.page_id,
                             directive_id=directive.directive_id,
                         ),
                     )
-                if directive.query_or_prompt and contains_forbidden_visible_copy(
-                    directive.query_or_prompt
-                ):
+                supports = tuple(getattr(directive, "supports_fragment_refs", ()))
+                if not supports:
                     _append_unique(
                         issues,
                         _issue(
-                            "FORBIDDEN_VISIBLE_COPY",
-                            location=f"pages[{page.sequence}].asset_directives[{directive.directive_id}].query_or_prompt",
-                            message="authoring asset prompts cannot request system copy or disclaimers",
+                            "ASSET_DIRECTIVE_FRAGMENT_MISSING",
+                            location=f"pages[{page.sequence}].asset_directives[{directive.directive_id}].supports_fragment_refs",
+                            message="asset directives must support at least one page fragment",
                             page_id=page.page_id,
+                            directive_id=directive.directive_id,
+                        ),
+                    )
+                for fragment_id in supports:
+                    if fragment_id not in known_fragment_ids:
+                        code = "ASSET_DIRECTIVE_FRAGMENT_UNKNOWN"
+                    elif fragment_id not in set(page.fragment_refs):
+                        code = "ASSET_DIRECTIVE_FRAGMENT_CROSS_PAGE"
+                    else:
+                        continue
+                    _append_unique(
+                        issues,
+                        _issue(
+                            code,
+                            location=f"pages[{page.sequence}].asset_directives[{directive.directive_id}].supports_fragment_refs",
+                            message="asset directive support references must belong to the containing page",
+                            page_id=page.page_id,
+                            fragment_id=fragment_id,
                             directive_id=directive.directive_id,
                         ),
                     )
@@ -793,6 +868,15 @@ def evaluate_authoring(
         ]
         directive_counts = Counter(directive_ids)
         for directive_id, count in sorted(directive_counts.items()):
+            if not directive_id:
+                _append_unique(
+                    issues,
+                    _issue(
+                        "ASSET_DIRECTIVE_OWNERSHIP_MISSING",
+                        location="page_brief_set.asset_directives.directive_id",
+                        message="asset directive IDs must be non-empty",
+                    ),
+                )
             if count > 1:
                 _append_unique(
                     issues,
@@ -804,15 +888,6 @@ def evaluate_authoring(
                     ),
                 )
 
-        if _scan_forbidden(_payload(page_brief_set) or {}):
-            _append_unique(
-                issues,
-                _issue(
-                    "FORBIDDEN_VISIBLE_COPY",
-                    location="page_brief_set",
-                    message="authoring contracts cannot carry forbidden system copy",
-                ),
-            )
         if narrative_obj is not None and _scan_forbidden(
             _payload(narrative_obj) or {}
         ):
@@ -856,6 +931,7 @@ def evaluate_authoring(
         plan=plan,
         content_lock=lock,
         content_atom_set=atom_set,
+        candidate=candidate,
     )
 
 

@@ -80,7 +80,48 @@ AssetSourceV4 = Literal[
 ]
 AssetOrientationV4 = Literal["portrait", "landscape", "square", "any"]
 
+# Asset semantics are intentionally finite.  A provider may choose among these
+# roles/purposes, but it cannot smuggle a free-form task or page layout into an
+# asset directive.
+ASSET_ROLES_V4 = (
+    "evidence_example",
+    "skin_example",
+    "texture",
+    "object",
+    "decorative",
+)
+AssetRoleV4 = Literal[
+    "evidence_example",
+    "skin_example",
+    "texture",
+    "object",
+    "decorative",
+]
+ASSET_PURPOSES_V4 = (
+    "evidence",
+    "skin_example",
+    "texture",
+    "object",
+    "decorative",
+    "hero",
+    "annotation",
+    "supporting",
+    "reference",
+)
+AssetPurposeV4 = Literal[
+    "evidence",
+    "skin_example",
+    "texture",
+    "object",
+    "decorative",
+    "hero",
+    "annotation",
+    "supporting",
+    "reference",
+]
+
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_ZERO_SHA256 = "0" * 64
 _FORBIDDEN_SYSTEM_COPY = re.compile(
     r"(?:免责声明|仅供参考|示意图|AI\s*(?:生成|生成的|标注|标签)|人工智能\s*(?:生成|标注))",
     re.IGNORECASE,
@@ -88,7 +129,7 @@ _FORBIDDEN_SYSTEM_COPY = re.compile(
 _VISIBLE_COPY_REQUEST = re.compile(
     r"\b(?:add|include|show|render|overlay|embed|write|display|put|insert)"
     r"[^.]{0,32}\b(?:text|caption|label|word|words)\b|"
-    r"(?:嵌入|添加|加入|写上|显示|叠加|覆盖).{0,16}(?:文字|文本|标签|字样)",
+    r"(?:嵌入|添加|加入|加|写上|显示|叠加|覆盖).{0,16}(?:文字|文本|标签|字样)",
     re.IGNORECASE,
 )
 
@@ -112,6 +153,43 @@ def _non_empty_strings(values: tuple[str, ...], field_name: str) -> tuple[str, .
     if any(not isinstance(value, str) or not value.strip() for value in values):
         raise ValueError(f"{field_name} must contain only non-empty strings")
     return tuple(values)
+
+
+def _validate_asset_query(value: str | None) -> str | None:
+    if value is not None and not value.strip():
+        raise ValueError("query_or_prompt must be non-empty when provided")
+    # Asset prompts may request a text-free image, but must never request
+    # system labels, visible copy, or disclaimers.
+    if value is not None and contains_forbidden_visible_copy(value):
+        raise ValueError("asset query_or_prompt contains forbidden visible copy")
+    return value
+
+
+def _validate_asset_semantics(
+    *,
+    role: str,
+    purpose: str,
+    supports_fragment_refs: tuple[str, ...],
+    preferred_source: AssetSourceV4,
+    fallback_source: AssetSourceV4,
+    required: bool,
+    query_or_prompt: str | None,
+) -> None:
+    if role not in ASSET_ROLES_V4:
+        raise ValueError("asset role is not controlled")
+    if purpose not in ASSET_PURPOSES_V4:
+        raise ValueError("asset purpose is not controlled")
+    _non_empty_strings(supports_fragment_refs, "supports_fragment_refs")
+    _validate_asset_query(query_or_prompt)
+    if preferred_source == "none":
+        if required:
+            raise ValueError("a required asset cannot use source none")
+        if query_or_prompt is not None:
+            raise ValueError("a no-asset directive cannot contain a query or prompt")
+        if fallback_source != "none":
+            raise ValueError("a no-asset directive cannot declare a fallback")
+    elif query_or_prompt is None:
+        raise ValueError("asset directives with a source require query_or_prompt")
 
 
 def canonical_direction_payload_v4(
@@ -147,7 +225,9 @@ class AssetDirectiveV4(_FrozenDirectionV4):
 
     directive_id: StrictStr = Field(min_length=1)
     page_id: StrictStr = Field(min_length=1)
-    role: StrictStr = Field(min_length=1)
+    role: AssetRoleV4
+    purpose: AssetPurposeV4
+    supports_fragment_refs: tuple[StrictStr, ...] = Field(min_length=1)
     required: StrictBool = False
     preferred_source: AssetSourceV4 = "none"
     fallback_source: AssetSourceV4 = "none"
@@ -157,8 +237,8 @@ class AssetDirectiveV4(_FrozenDirectionV4):
     query_or_prompt: StrictStr | None = None
     negative_constraints: tuple[StrictStr, ...] = ()
     orientation: AssetOrientationV4 = "any"
-    min_width: StrictInt = Field(default=1080, ge=1)
-    min_height: StrictInt = Field(default=1440, ge=1)
+    min_width: StrictInt = Field(default=1080, ge=1080)
+    min_height: StrictInt = Field(default=1440, ge=1440)
     resolution: tuple[StrictInt, StrictInt] | None = None
 
     @field_validator("negative_constraints")
@@ -169,13 +249,12 @@ class AssetDirectiveV4(_FrozenDirectionV4):
     @field_validator("query_or_prompt")
     @classmethod
     def validate_query_or_prompt(cls, value: str | None) -> str | None:
-        if value is not None and not value.strip():
-            raise ValueError("query_or_prompt must be non-empty when provided")
-        # Asset prompts may say that an image must be text-free, but may not
-        # request system labels or put visible copy into the image.
-        if value is not None and contains_forbidden_visible_copy(value):
-            raise ValueError("asset query_or_prompt contains forbidden system copy")
-        return value
+        return _validate_asset_query(value)
+
+    @field_validator("supports_fragment_refs")
+    @classmethod
+    def validate_support_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _non_empty_strings(value, "supports_fragment_refs")
 
     @model_validator(mode="after")
     def validate_source_and_resolution(self) -> "AssetDirectiveV4":
@@ -189,22 +268,26 @@ class AssetDirectiveV4(_FrozenDirectionV4):
 
         if self.resolution is not None:
             width, height = self.resolution
-            if type(width) is not int or type(height) is not int or width < 1 or height < 1:
-                raise ValueError("resolution must contain positive integers")
+            if (
+                type(width) is not int
+                or type(height) is not int
+                or width < 1080
+                or height < 1440
+            ):
+                raise ValueError("resolution must meet the 1080x1440 minimum")
             object.__setattr__(self, "min_width", width)
             object.__setattr__(self, "min_height", height)
         else:
             object.__setattr__(self, "resolution", (self.min_width, self.min_height))
-
-        if self.preferred_source == "none":
-            if self.required:
-                raise ValueError("a required asset cannot use source none")
-            if self.query_or_prompt is not None:
-                raise ValueError("a no-asset directive cannot contain a query or prompt")
-            if self.fallback_source != "none":
-                raise ValueError("a no-asset directive cannot declare a fallback")
-        elif self.query_or_prompt is None:
-            raise ValueError("asset directives with a source require query_or_prompt")
+        _validate_asset_semantics(
+            role=self.role,
+            purpose=self.purpose,
+            supports_fragment_refs=self.supports_fragment_refs,
+            preferred_source=self.preferred_source,
+            fallback_source=self.fallback_source,
+            required=self.required,
+            query_or_prompt=self.query_or_prompt,
+        )
         return self
 
     @property
@@ -219,12 +302,27 @@ class AssetDirectiveV4(_FrozenDirectionV4):
         type(self).model_validate(self.model_dump(mode="python"))
 
 
+class NarrativeBeatV4(_FrozenDirectionV4):
+    """A typed narrative duty that exactly one page must own."""
+
+    beat_id: StrictStr = Field(min_length=1)
+    sequence: StrictInt = Field(ge=1)
+    task: StrictStr = Field(min_length=1)
+
+    @field_validator("task")
+    @classmethod
+    def validate_task(cls, value: str) -> str:
+        if contains_forbidden_visible_copy(value):
+            raise ValueError("narrative beat task cannot carry visible copy")
+        return value
+
+
 class CarouselNarrativeV4(_FrozenDirectionV4):
     """The one-family, page-count and rhythm decision for a carousel."""
 
     template_family: TemplateFamilyV4
     page_count: StrictInt = Field(ge=5, le=18)
-    beats: tuple[StrictStr, ...] = ()
+    beats: tuple[NarrativeBeatV4, ...]
     density_curve: tuple[DensityLevelV4, ...] = ()
     variation_strategy: StrictStr = Field(min_length=1)
     continuity_strategy: StrictStr = Field(min_length=1)
@@ -237,11 +335,6 @@ class CarouselNarrativeV4(_FrozenDirectionV4):
     def validate_content_hash(cls, value: str | None) -> str | None:
         return None if value is None else _validate_hash(value, "content_atom_set_sha256")
 
-    @field_validator("beats")
-    @classmethod
-    def validate_beats(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _non_empty_strings(value, "beats")
-
     @field_validator("canonical_sha256")
     @classmethod
     def validate_canonical_shape(cls, value: str) -> str:
@@ -251,6 +344,11 @@ class CarouselNarrativeV4(_FrozenDirectionV4):
     def validate_rhythm_and_hash(self) -> "CarouselNarrativeV4":
         if len(self.beats) != self.page_count:
             raise ValueError("beats length must equal page_count")
+        beat_ids = [beat.beat_id for beat in self.beats]
+        if len(beat_ids) != len(set(beat_ids)):
+            raise ValueError("narrative beat IDs must be unique")
+        if [beat.sequence for beat in self.beats] != list(range(1, self.page_count + 1)):
+            raise ValueError("narrative beat sequences must be continuous and one-based")
         if len(self.density_curve) != self.page_count:
             raise ValueError("density_curve length must equal page_count")
         expected = canonical_direction_sha256_v4(self, exclude_none=True)
@@ -267,11 +365,12 @@ class PageBriefV4(_FrozenDirectionV4):
 
     page_id: StrictStr = Field(min_length=1)
     sequence: StrictInt = Field(ge=1)
-    narrative_role: StrictStr
-    fragment_refs: tuple[StrictStr, ...] = ()
-    visual_priority: tuple[StrictStr, ...] = ()
+    narrative_role: StrictStr = Field(min_length=1)
+    beat_ref: StrictStr = Field(min_length=1)
+    fragment_refs: tuple[StrictStr, ...] = Field(min_length=1)
+    visual_priority: tuple[StrictStr, ...] = Field(min_length=1)
     density_budget: DensityLevelV4
-    preferred_compositions: tuple[CompositionIDV4, ...] = ()
+    preferred_compositions: tuple[CompositionIDV4, ...] = Field(min_length=1)
     forbidden_patterns: tuple[StrictStr, ...] = ()
     asset_directives: tuple[AssetDirectiveV4, ...] = ()
     continuity_with_previous: StrictStr = "none"
@@ -281,6 +380,15 @@ class PageBriefV4(_FrozenDirectionV4):
     @classmethod
     def validate_string_refs(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
         return _non_empty_strings(value, info.field_name)
+
+    @field_validator("narrative_role", "beat_ref")
+    @classmethod
+    def validate_page_task_refs(cls, value: str, info) -> str:
+        if not value.strip():
+            raise ValueError(f"{info.field_name} must be non-empty")
+        if contains_forbidden_visible_copy(value):
+            raise ValueError(f"{info.field_name} cannot carry visible copy")
+        return value
 
     @field_validator("preferred_compositions")
     @classmethod
@@ -317,8 +425,8 @@ class PageBriefV4(_FrozenDirectionV4):
 class PageBriefSetV4(_FrozenDirectionV4):
     """Ordered page briefs, with optional family/hash context for QA."""
 
-    page_count: StrictInt
-    pages: tuple[PageBriefV4, ...]
+    page_count: StrictInt = Field(ge=5, le=18)
+    pages: tuple[PageBriefV4, ...] = Field(min_length=5)
     template_family: TemplateFamilyV4 | None = None
     content_atom_set_sha256: StrictStr | None = None
     semantic_content_model_sha256: StrictStr | None = None
@@ -338,9 +446,13 @@ class PageBriefSetV4(_FrozenDirectionV4):
 
     @model_validator(mode="after")
     def validate_page_identity_and_hash(self) -> "PageBriefSetV4":
+        if self.page_count != len(self.pages):
+            raise ValueError("page_count must equal the number of page briefs")
         page_ids = [page.page_id for page in self.pages]
         if len(page_ids) != len(set(page_ids)):
             raise ValueError("page IDs must be unique")
+        if [page.sequence for page in self.pages] != list(range(1, self.page_count + 1)):
+            raise ValueError("page sequences must be continuous and one-based")
         expected = canonical_direction_sha256_v4(self, exclude_none=True)
         if self.canonical_sha256 != expected:
             raise ValueError("page brief set canonical sha256 does not match payload")
@@ -359,28 +471,78 @@ class PageBriefSetV4(_FrozenDirectionV4):
 
 
 class AssetDirectiveDraftV4(_FrozenDirectionV4):
-    """Provider-side asset semantics; no hashes or resolved paths."""
+    """Provider-side asset semantics; no hashes, paths, or layout dimensions."""
 
     directive_id: StrictStr = Field(min_length=1)
     page_id: StrictStr = Field(min_length=1)
-    role: StrictStr = Field(min_length=1)
+    role: AssetRoleV4
+    purpose: AssetPurposeV4
+    supports_fragment_refs: tuple[StrictStr, ...] = Field(min_length=1)
     required: StrictBool = False
     preferred_source: AssetSourceV4 = "none"
     fallback_source: AssetSourceV4 = "none"
     query_or_prompt: StrictStr | None = None
     negative_constraints: tuple[StrictStr, ...] = ()
     orientation: AssetOrientationV4 = "any"
-    min_width: StrictInt = Field(default=1080, ge=1)
-    min_height: StrictInt = Field(default=1440, ge=1)
-    resolution: tuple[StrictInt, StrictInt] | None = None
+
+    @field_validator("negative_constraints")
+    @classmethod
+    def validate_negative_constraints(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _non_empty_strings(value, "negative_constraints")
+
+    @field_validator("query_or_prompt")
+    @classmethod
+    def validate_query_or_prompt(cls, value: str | None) -> str | None:
+        return _validate_asset_query(value)
+
+    @field_validator("supports_fragment_refs")
+    @classmethod
+    def validate_support_refs(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        return _non_empty_strings(value, "supports_fragment_refs")
 
     @model_validator(mode="after")
-    def validate_draft_resolution(self) -> "AssetDirectiveDraftV4":
-        if self.resolution is not None:
-            width, height = self.resolution
-            if width < 1 or height < 1:
-                raise ValueError("resolution must contain positive integers")
+    def validate_draft_semantics(self) -> "AssetDirectiveDraftV4":
+        _validate_asset_semantics(
+            role=self.role,
+            purpose=self.purpose,
+            supports_fragment_refs=self.supports_fragment_refs,
+            preferred_source=self.preferred_source,
+            fallback_source=self.fallback_source,
+            required=self.required,
+            query_or_prompt=self.query_or_prompt,
+        )
         return self
+
+
+class AssetDirectiveCandidateV4(_FrozenDirectionV4):
+    """Relaxed local preflight DTO; it is never persisted as a durable plan."""
+
+    directive_id: StrictStr = ""
+    page_id: StrictStr = ""
+    role: StrictStr = ""
+    purpose: StrictStr = ""
+    supports_fragment_refs: tuple[StrictStr, ...] = ()
+    required: StrictBool = False
+    preferred_source: AssetSourceV4 = "none"
+    fallback_source: AssetSourceV4 = "none"
+    query_or_prompt: StrictStr | None = None
+    negative_constraints: tuple[StrictStr, ...] = ()
+    orientation: AssetOrientationV4 = "any"
+
+
+class NarrativeBeatDraftV4(_FrozenDirectionV4):
+    """Untrusted provider beat; local conversion binds it to the model."""
+
+    beat_id: StrictStr = Field(min_length=1)
+    sequence: StrictInt = Field(ge=1)
+    task: StrictStr = Field(min_length=1)
+
+    @field_validator("task")
+    @classmethod
+    def validate_task(cls, value: str) -> str:
+        if contains_forbidden_visible_copy(value):
+            raise ValueError("narrative beat task cannot carry visible copy")
+        return value
 
 
 class CarouselNarrativeDraftV4(_FrozenDirectionV4):
@@ -388,24 +550,19 @@ class CarouselNarrativeDraftV4(_FrozenDirectionV4):
 
     template_family: TemplateFamilyV4
     page_count: StrictInt = Field(ge=5, le=18)
-    beats: tuple[StrictStr, ...]
+    beats: tuple[NarrativeBeatV4, ...]
     density_curve: tuple[DensityLevelV4, ...]
     variation_strategy: StrictStr = Field(min_length=1)
     continuity_strategy: StrictStr = Field(min_length=1)
     art_direction: StrictStr = Field(min_length=1)
-
-    @field_validator("beats")
-    @classmethod
-    def validate_draft_beats(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        return _non_empty_strings(value, "beats")
-
 
 class PageBriefDraftV4(_FrozenDirectionV4):
     """Untrusted provider page semantics with references checked locally later."""
 
     page_id: StrictStr = Field(min_length=1)
     sequence: StrictInt = Field(ge=1)
-    narrative_role: StrictStr = Field(min_length=1)
+    narrative_role: StrictStr = ""
+    beat_ref: StrictStr = ""
     fragment_refs: tuple[StrictStr, ...] = ()
     visual_priority: tuple[StrictStr, ...] = ()
     density_budget: DensityLevelV4
@@ -415,8 +572,38 @@ class PageBriefDraftV4(_FrozenDirectionV4):
     continuity_with_previous: StrictStr = "none"
 
 
+class PageBriefCandidateV4(_FrozenDirectionV4):
+    """Relaxed local page candidate used for deterministic Q1 diagnostics."""
+
+    page_id: StrictStr = ""
+    sequence: StrictInt = 0
+    narrative_role: StrictStr = ""
+    beat_ref: StrictStr = ""
+    fragment_refs: tuple[StrictStr, ...] = ()
+    visual_priority: tuple[StrictStr, ...] = ()
+    density_budget: DensityLevelV4 = "low"
+    preferred_compositions: tuple[StrictStr, ...] = ()
+    forbidden_patterns: tuple[StrictStr, ...] = ()
+    asset_directives: tuple[AssetDirectiveCandidateV4, ...] = ()
+    continuity_with_previous: StrictStr = "none"
+
+
 class PageBriefSetDraftV4(_FrozenDirectionV4):
     pages: tuple[PageBriefDraftV4, ...]
+
+
+class PageBriefSetCandidateV4(_FrozenDirectionV4):
+    """Relaxed candidate set; only a passing candidate becomes durable."""
+
+    page_count: StrictInt = 0
+    pages: tuple[PageBriefCandidateV4, ...] = ()
+    template_family: TemplateFamilyV4 | None = None
+    content_atom_set_sha256: StrictStr | None = None
+    semantic_content_model_sha256: StrictStr | None = None
+
+    @property
+    def candidate_sha256(self) -> str:
+        return canonical_direction_sha256_v4(self, exclude_none=True)
 
 
 class VisualAuthoringDraftV4(_FrozenDirectionV4):
@@ -527,10 +714,15 @@ AuthoringIssueCodeV4 = Literal[
     "PAGE_COUNT_INVALID",
     "PAGE_COUNT_MISMATCH",
     "PAGE_SEQUENCE_INVALID",
+    "PAGE_ID_INVALID",
     "FAMILY_MISMATCH",
     "HASH_BINDING_MISMATCH",
     "NARRATIVE_ROLE_EMPTY",
     "NARRATIVE_ROLE_REPEATED",
+    "BEAT_OWNERSHIP_MISSING",
+    "BEAT_OWNERSHIP_UNKNOWN",
+    "BEAT_OWNERSHIP_DUPLICATED",
+    "PAGE_BRIEF_DUTY_EMPTY",
     "PAGE_BRIEF_DUPLICATE_SIGNATURE",
     "DENSITY_CURVE_MISMATCH",
     "DENSITY_CURVE_UNBALANCED",
@@ -542,6 +734,9 @@ AuthoringIssueCodeV4 = Literal[
     "ASSET_DIRECTIVE_OWNERSHIP_DUPLICATED",
     "ASSET_DIRECTIVE_PAGE_MISMATCH",
     "ASSET_DIRECTIVE_MISMATCH",
+    "ASSET_DIRECTIVE_FRAGMENT_MISSING",
+    "ASSET_DIRECTIVE_FRAGMENT_UNKNOWN",
+    "ASSET_DIRECTIVE_FRAGMENT_CROSS_PAGE",
     "FORBIDDEN_VISIBLE_COPY",
 ]
 
@@ -569,6 +764,7 @@ class AuthoringQAResultV4(_FrozenDirectionV4):
     narrative_sha256: StrictStr
     page_brief_set_sha256: StrictStr
     visual_direction_plan_sha256: StrictStr
+    candidate_sha256: StrictStr = _ZERO_SHA256
     canonical_sha256: StrictStr
 
     @field_validator(
@@ -578,6 +774,7 @@ class AuthoringQAResultV4(_FrozenDirectionV4):
         "narrative_sha256",
         "page_brief_set_sha256",
         "visual_direction_plan_sha256",
+        "candidate_sha256",
         "canonical_sha256",
     )
     @classmethod
@@ -613,24 +810,33 @@ PageBriefDraft = PageBriefDraftV4
 PageBriefSetDraft = PageBriefSetDraftV4
 AuthoringIssue = AuthoringIssueV4
 AuthoringQAResult = AuthoringQAResultV4
+NarrativeBeat = NarrativeBeatV4
 
 
 __all__ = [
     "ALLOWED_COMPOSITIONS_V4",
     "ASSET_SOURCES_V4",
+    "ASSET_ROLES_V4",
+    "ASSET_PURPOSES_V4",
     "AssetDirective",
     "AssetDirectiveContractV4",
     "AssetDirectiveDraftV4",
+    "AssetDirectiveCandidateV4",
     "AssetDirectiveV4",
     "AuthoringAssetDirectiveV4",
     "AuthoringDraftV4",
     "AssetOrientationV4",
+    "AssetPurposeV4",
+    "AssetRoleV4",
     "AssetSourceV4",
     "AuthoringIssue",
     "AuthoringIssueCodeV4",
     "AuthoringIssueV4",
     "AuthoringQAResult",
     "AuthoringQAResultV4",
+    "NarrativeBeat",
+    "NarrativeBeatDraftV4",
+    "NarrativeBeatV4",
     "CarouselNarrative",
     "CarouselNarrativeDraftV4",
     "CarouselNarrativeDraft",
@@ -647,6 +853,8 @@ __all__ = [
     "PageBriefSet",
     "PageBriefSetDraftV4",
     "PageBriefSetDraft",
+    "PageBriefSetCandidateV4",
+    "PageBriefCandidateV4",
     "PageBriefSetV4",
     "PageBriefV4",
     "TEMPLATE_FAMILIES_V4",

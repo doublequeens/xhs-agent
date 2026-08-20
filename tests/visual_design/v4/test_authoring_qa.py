@@ -4,6 +4,7 @@ from src.schemas.v4.content import ContentAtomSetV4, ContentAtomV4, canonical_sh
 from src.schemas.v4.direction import (
     AssetDirectiveV4,
     CarouselNarrativeV4,
+    NarrativeBeatV4,
     PageBriefSetV4,
     PageBriefV4,
 )
@@ -68,11 +69,12 @@ def briefs(*, densities: tuple[str, ...] | None = None, duplicate: bool = False)
     for index, density in enumerate(densities, start=1):
         refs = (f"fragment-{index - 1}",)
         if duplicate and index == 2:
-            refs = ("fragment-0",)
+            refs = ("fragment-1", "fragment-0")
         payload = {
             "page_id": f"page-{index}",
             "sequence": index,
             "narrative_role": f"role-{index}",
+            "beat_ref": f"beat-{index - 1}",
             "fragment_refs": refs,
             "visual_priority": refs,
             "density_budget": density,
@@ -104,14 +106,11 @@ def recanonicalize_page_set(page_set: PageBriefSetV4, **updates) -> PageBriefSet
     payload.update(updates)
     payload.pop("canonical_sha256", None)
 
-    canonical_source = PageBriefSetV4.model_construct(
-        **payload,
-        canonical_sha256="0" * 64,
-    ).model_dump(
-        mode="json",
-        exclude={"canonical_sha256"},
-        exclude_none=True,
-    )
+    canonical_source = {
+        key: value
+        for key, value in payload.items()
+        if key != "canonical_sha256" and value is not None
+    }
     return PageBriefSetV4(
         **payload,
         canonical_sha256=canonical_sha256_v4(canonical_source),
@@ -122,7 +121,14 @@ def narrative_for(page_set: PageBriefSetV4, *, family: str = "pink_red") -> Caro
     payload = {
         "template_family": family,
         "page_count": page_set.page_count,
-        "beats": tuple(f"beat-{index}" for index in range(page_set.page_count)),
+        "beats": tuple(
+            NarrativeBeatV4(
+                beat_id=f"beat-{index}",
+                sequence=index + 1,
+                task=f"task-{index}",
+            )
+            for index in range(page_set.page_count)
+        ),
         "density_curve": tuple(page.density_budget for page in page_set.pages),
         "variation_strategy": "alternate structures",
         "continuity_strategy": "carry one cue",
@@ -152,22 +158,21 @@ def test_authoring_qa_rejects_three_consecutive_high_density_pages():
 
 def test_authoring_qa_reports_missing_and_unknown_fragment_ownership():
     page_set = briefs()
-    pages = list(page_set.pages)
-    missing_payload = pages[-1].model_dump(mode="python")
+    missing_raw = page_set.model_dump(mode="python")
+    pages = list(missing_raw["pages"])
+    missing_payload = dict(pages[-1])
     missing_payload["fragment_refs"] = ()
     missing_payload["visual_priority"] = ()
     missing_payload.pop("canonical_sha256", None)
-    pages[-1] = PageBriefV4(
-        **missing_payload,
-        canonical_sha256=canonical_sha256_v4(missing_payload),
-    )
-    missing_set = recanonicalize_page_set(page_set, pages=tuple(pages))
+    pages[-1] = missing_payload
+    missing_raw["pages"] = tuple(pages)
+    missing_raw.pop("canonical_sha256", None)
     missing_codes = {
-        issue.code for issue in evaluate_authoring(missing_set, semantic_model()).issues
+        issue.code for issue in evaluate_authoring(missing_raw, semantic_model()).issues
     }
     assert "FRAGMENT_OWNERSHIP_MISSING" in missing_codes
 
-    unknown_payload = pages[0].model_dump(mode="python")
+    unknown_payload = page_set.pages[0].model_dump(mode="python")
     unknown_payload["fragment_refs"] = ("fragment-does-not-exist",)
     unknown_payload["visual_priority"] = ("fragment-does-not-exist",)
     unknown_payload.pop("canonical_sha256", None)
@@ -184,23 +189,55 @@ def test_authoring_qa_reports_missing_and_unknown_fragment_ownership():
     assert "FRAGMENT_OWNERSHIP_UNKNOWN" in unknown_codes
 
 
+def test_authoring_qa_reports_mixed_fragment_ownership_errors_together():
+    pages = list(briefs().pages)
+    first_payload = pages[0].model_dump(mode="python")
+    first_payload["fragment_refs"] = ("fragment-0", "fragment-unknown")
+    first_payload["visual_priority"] = ("fragment-0",)
+    first_payload.pop("canonical_sha256", None)
+    pages[0] = PageBriefV4(
+        **first_payload,
+        canonical_sha256=canonical_sha256_v4(first_payload),
+    )
+    second_payload = pages[1].model_dump(mode="python")
+    second_payload["fragment_refs"] = ("fragment-0",)
+    second_payload["visual_priority"] = ("fragment-0",)
+    second_payload.pop("canonical_sha256", None)
+    pages[1] = PageBriefV4(
+        **second_payload,
+        canonical_sha256=canonical_sha256_v4(second_payload),
+    )
+    result = evaluate_authoring(
+        recanonicalize_page_set(briefs(), pages=tuple(pages)),
+        semantic_model(),
+    )
+    codes = {issue.code for issue in result.issues}
+    assert {
+        "FRAGMENT_OWNERSHIP_DUPLICATED",
+        "FRAGMENT_OWNERSHIP_MISSING",
+        "FRAGMENT_OWNERSHIP_UNKNOWN",
+    }.issubset(codes)
+
+
 def test_authoring_qa_checks_page_bounds_sequence_family_and_hash_bindings():
-    four = briefs(densities=("low", "low", "low", "low"))
+    four = briefs().model_dump(mode="python")
+    four["page_count"] = 4
+    four["pages"] = four["pages"][:4]
+    four.pop("canonical_sha256", None)
     assert "PAGE_COUNT_INVALID" in {
         issue.code for issue in evaluate_authoring(four, semantic_model()).issues
     }
 
-    pages = list(briefs().pages)
-    changed_payload = pages[1].model_dump(mode="python")
+    sequence_raw = briefs().model_dump(mode="python")
+    pages = list(sequence_raw["pages"])
+    changed_payload = dict(pages[1])
     changed_payload["sequence"] = 3
     changed_payload.pop("canonical_sha256", None)
-    pages[1] = PageBriefV4(
-        **changed_payload,
-        canonical_sha256=canonical_sha256_v4(changed_payload),
-    )
-    sequence_set = recanonicalize_page_set(briefs(), pages=tuple(pages))
+    pages[1] = changed_payload
+    sequence_raw["pages"] = tuple(pages)
+    sequence_raw.pop("canonical_sha256", None)
     assert "PAGE_SEQUENCE_INVALID" in {
-        issue.code for issue in evaluate_authoring(sequence_set, semantic_model()).issues
+        issue.code for issue in evaluate_authoring(sequence_raw, semantic_model()).issues
     }
 
     page_set = recanonicalize_page_set(briefs(), template_family="pink_red")
@@ -230,6 +267,38 @@ def test_authoring_qa_rejects_repeated_composition_and_note_only_priority():
         issue.code for issue in evaluate_authoring(repeated, semantic_model()).issues
     }
 
+    first, second = page_set.pages[:2]
+    first_payload = first.model_dump(mode="python")
+    first_payload["preferred_compositions"] = (
+        "editorial_hero",
+        "comparison_grid",
+    )
+    first_payload.pop("canonical_sha256", None)
+    second_payload = second.model_dump(mode="python")
+    second_payload["preferred_compositions"] = (
+        "summary_closing",
+        "comparison_grid",
+    )
+    second_payload.pop("canonical_sha256", None)
+    different_first = recanonicalize_page_set(
+        page_set,
+        pages=(
+            PageBriefV4(
+                **first_payload,
+                canonical_sha256=canonical_sha256_v4(first_payload),
+            ),
+            PageBriefV4(
+                **second_payload,
+                canonical_sha256=canonical_sha256_v4(second_payload),
+            ),
+            *page_set.pages[2:],
+        ),
+    )
+    assert "COMPOSITION_REPEATED" not in {
+        issue.code
+        for issue in evaluate_authoring(different_first, semantic_model()).issues
+    }
+
     note_fragment = semantic_model().fragments[0].model_copy(
         update={"semantic_role": "note"}
     )
@@ -255,19 +324,64 @@ def test_authoring_qa_rejects_repeated_composition_and_note_only_priority():
         issue.code for issue in evaluate_authoring(note_set, note_model).issues
     }
 
+    note_only_payload = page_set.pages[0].model_dump(mode="python")
+    note_only_payload["fragment_refs"] = ("fragment-0",)
+    note_only_payload["visual_priority"] = ("fragment-0",)
+    note_only_payload.pop("canonical_sha256", None)
+    note_only_page = PageBriefV4(
+        **note_only_payload,
+        canonical_sha256=canonical_sha256_v4(note_only_payload),
+    )
+    note_only_set = recanonicalize_page_set(
+        page_set,
+        pages=(note_only_page, *page_set.pages[1:]),
+    )
+    assert "NOTES_CANNOT_BE_PRIMARY" in {
+        issue.code for issue in evaluate_authoring(note_only_set, note_model).issues
+    }
+
+
+def test_authoring_qa_requires_one_to_one_beat_ownership():
+    pages = list(briefs().pages)
+    payload = pages[1].model_dump(mode="python")
+    payload["beat_ref"] = "beat-0"
+    payload.pop("canonical_sha256", None)
+    pages[1] = PageBriefV4(**payload, canonical_sha256=canonical_sha256_v4(payload))
+    result = evaluate_authoring(
+        recanonicalize_page_set(briefs(), pages=tuple(pages)),
+        semantic_model(),
+        narrative_for(briefs()),
+    )
+    codes = {issue.code for issue in result.issues}
+    assert {"BEAT_OWNERSHIP_DUPLICATED", "BEAT_OWNERSHIP_MISSING"}.issubset(codes)
+
+
+def test_authoring_qa_rejects_empty_page_candidate_without_throwing():
+    raw = briefs().model_dump(mode="python")
+    raw["canonical_sha256"] = "0" * 64
+    empty_pages = list(raw["pages"])
+    for index in range(1, 5):
+        empty = dict(empty_pages[index])
+        empty["fragment_refs"] = ()
+        empty["visual_priority"] = ()
+        empty["preferred_compositions"] = ()
+        empty.pop("canonical_sha256", None)
+        empty_pages[index] = empty
+    raw["pages"] = tuple(empty_pages)
+    result = evaluate_authoring(raw, semantic_model(), narrative_for(briefs()))
+    assert result.passed is False
+    assert "PAGE_BRIEF_DUTY_EMPTY" in {issue.code for issue in result.issues}
+
 
 def test_authoring_qa_rejects_empty_narrative_role():
-    page = briefs().pages[0]
-    payload = page.model_dump(mode="python")
+    raw = briefs().model_dump(mode="python")
+    payload = dict(raw["pages"][0])
     payload["narrative_role"] = ""
     payload.pop("canonical_sha256", None)
-    empty_role = PageBriefV4(
-        **payload,
-        canonical_sha256=canonical_sha256_v4(payload),
-    )
-    page_set = recanonicalize_page_set(briefs(), pages=(empty_role, *briefs().pages[1:]))
+    raw["pages"] = (payload, *raw["pages"][1:])
+    raw.pop("canonical_sha256", None)
     assert "NARRATIVE_ROLE_EMPTY" in {
-        issue.code for issue in evaluate_authoring(page_set, semantic_model()).issues
+        issue.code for issue in evaluate_authoring(raw, semantic_model()).issues
     }
 
 
@@ -275,7 +389,9 @@ def test_authoring_qa_requires_unique_asset_directive_ownership_and_page_binding
     directive = AssetDirectiveV4(
         directive_id="asset-1",
         page_id="page-1",
-        role="evidence",
+        role="evidence_example",
+        purpose="evidence",
+        supports_fragment_refs=("fragment-0",),
         required=True,
         preferred_source="search",
         fallback_source="none",
@@ -299,3 +415,29 @@ def test_authoring_qa_requires_unique_asset_directive_ownership_and_page_binding
     }
     assert "ASSET_DIRECTIVE_OWNERSHIP_DUPLICATED" in codes
     assert "ASSET_DIRECTIVE_PAGE_MISMATCH" in codes
+
+
+def test_authoring_qa_rejects_asset_fragment_support_that_is_missing_or_cross_page():
+    pages = list(briefs().pages)
+    directive = AssetDirectiveV4(
+        directive_id="asset-cross-page",
+        page_id="page-1",
+        role="evidence_example",
+        purpose="evidence",
+        supports_fragment_refs=("fragment-2",),
+        required=True,
+        preferred_source="search",
+        query_or_prompt="clean skincare evidence photo",
+        orientation="portrait",
+    )
+    payload = pages[0].model_dump(mode="python")
+    payload["asset_directives"] = (directive,)
+    payload.pop("canonical_sha256", None)
+    pages[0] = PageBriefV4(**payload, canonical_sha256=canonical_sha256_v4(payload))
+    result = evaluate_authoring(
+        recanonicalize_page_set(briefs(), pages=tuple(pages)),
+        semantic_model(),
+    )
+    assert "ASSET_DIRECTIVE_FRAGMENT_CROSS_PAGE" in {
+        issue.code for issue in result.issues
+    }

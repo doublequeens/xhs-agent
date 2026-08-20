@@ -86,3 +86,74 @@ exit 0
 - The Q1 evaluator deliberately accepts a `PageBriefSetV4` with an invalid
   `page_count` value so it can emit deterministic `PAGE_COUNT_INVALID` evidence;
   durable plan construction remains bounded to 5–18 pages.
+
+## Fix round 1
+
+### Status
+
+`DONE_WITH_CONCERNS`
+
+Reviewer findings were addressed without changing Task 6/7, gateway, v3,
+graph, publishing, or AgentState files.
+
+### Fix mapping
+
+- Added typed `NarrativeBeatV4`/`beat_ref` and deterministic one-to-one beat
+  ownership checks. Durable pages now require a fragment, priority and
+  composition; relaxed candidates report `PAGE_BRIEF_DUTY_EMPTY` instead of
+  throwing during durable construction.
+- Restored strict durable `PageBriefSetV4` bounds, exact length and contiguous
+  sequence validation. Added explicit `PageBriefCandidateV4`/
+  `PageBriefSetCandidateV4` preflight DTOs; no `model_construct` recovery path
+  remains in the authoring implementation.
+- Fragment ownership now reports duplicate, missing and unknown IDs together;
+  duplicate-only fixtures preserve all fragments and add one duplicate.
+- Adjacent composition checks compare only each page's first preferred
+  composition; duplicate signatures remain role + first composition + density.
+- Removed dimensions from `AssetDirectiveDraftV4`; shared draft/durable
+  forbidden-copy validation rejects visible-label requests. Durable assets
+  retain the controlled 1080x1440 safety minimum, injected by the application.
+- Added controlled asset role/purpose and page-bound
+  `supports_fragment_refs` checks, including missing, unknown and cross-page
+  findings. Note-only priorities now fail `NOTES_CANNOT_BE_PRIMARY`.
+- Node preflights candidates before durable page-set/plan construction and
+  returns sanitized failed Q1 evidence plus `visual_authoring` on malformed or
+  duty-invalid candidates.
+
+### Fix-round verification
+
+RED before implementation: the focused collection failed in all three Task 8
+modules because the new `NarrativeBeatV4` contract was not yet defined.
+
+```text
+pytest -q tests/schemas/v4/test_direction.py tests/nodes/v4/test_authoring.py tests/visual_design/v4/test_authoring_qa.py
+24 passed
+
+pytest -q tests/schemas/v4/test_direction.py tests/nodes/v4/test_authoring.py tests/visual_design/v4/test_authoring_qa.py tests/nodes/test_visual_director.py
+72 passed
+
+pytest -q tests/nodes/v4/test_semantic.py tests/schemas/v4/test_semantic.py tests/visual_design/v4/test_semantic_qa.py tests/visual_ai/test_factory.py tests/visual_ai/test_gateway.py tests/visual_ai/test_gemini_adapter.py tests/visual_ai/test_v4_worker.py
+109 passed, 4 warnings
+
+pytest -q
+1529 passed, 2 skipped, 4 warnings
+
+python -m compileall -q src main.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+### Fix-round self-review and concerns
+
+- Canonical payload/hash derivation is centralized in
+  `canonical_direction_payload_v4`/`canonical_direction_sha256_v4`; asset
+  semantic validation is shared between draft and durable contracts.
+- Q1 uses indexed ownership/count checks and one page scan for forbidden copy;
+  issue ordering is append-only and deterministic. The node's durable plan
+  embeds the same revalidated semantic model, narrative and page-brief set,
+  with each hash compared against its nested object.
+- Full offline verification is green. Remaining concerns are the same four
+  pre-existing serializer/macOS pytest cleanup warnings; no authoring failure
+  is associated with them.
