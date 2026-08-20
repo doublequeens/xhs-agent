@@ -115,6 +115,12 @@ class SafeChecker:
         return AssetSafetyDecision(approved=True)
 
 
+class StagingAwareGenerationProvider(GenerationProvider):
+    def generate(self, request, transaction_dir):
+        assert ".staging" in transaction_dir.name
+        return super().generate(request, transaction_dir)
+
+
 def test_asset_node_resolves_directives_once_under_revision_identity(tmp_path: Path):
     from src.nodes.v4.assets import asset_resolver_node
 
@@ -170,3 +176,61 @@ def test_asset_node_optional_failure_is_unresolved_without_fake_approval(tmp_pat
     assert result["asset_manifest"].items == ()
     assert result["unresolved_optional_assets"][0].directive_id == "asset-1"
     assert result["route"] == "composition_planning"
+
+
+def test_generated_provider_writes_staging_and_manifest_points_to_final_copy(tmp_path: Path):
+    from src.nodes.v4.assets import asset_resolver_node
+
+    provider = StagingAwareGenerationProvider()
+    result = asset_resolver_node(
+        _authored_state(),
+        generation_provider=provider,
+        safety_checker=SafeChecker(),
+        base_root=tmp_path,
+    )
+
+    item = result["asset_manifest"].items[0]
+    assert Path(item.local_path).parent.name == "generated"
+    assert ".staging" not in item.local_path
+    assert Path(item.local_path).read_bytes()
+
+
+class MutatingSafetyChecker:
+    def check(self, path, directive):
+        path.write_bytes(b"mutated-after-snapshot")
+        return AssetSafetyDecision(approved=True)
+
+
+def test_generated_safety_mutation_cannot_leave_stale_manifest_hash(tmp_path: Path):
+    from src.nodes.v4.assets import asset_resolver_node
+
+    with pytest.raises(VisualProductionInterrupted, match="asset_resolver"):
+        asset_resolver_node(
+            _authored_state(),
+            generation_provider=GenerationProvider(),
+            safety_checker=MutatingSafetyChecker(),
+            base_root=tmp_path,
+        )
+
+
+def test_generated_final_collision_never_overwrites_existing_revision_asset(tmp_path: Path):
+    from src.nodes.v4.assets import asset_resolver_node
+
+    first = asset_resolver_node(
+        _authored_state(),
+        generation_provider=GenerationProvider(),
+        safety_checker=SafeChecker(),
+        base_root=tmp_path,
+    )
+    final_path = Path(first["asset_manifest"].items[0].local_path)
+    original = final_path.read_bytes()
+
+    with pytest.raises(VisualProductionInterrupted, match="asset_resolver"):
+        asset_resolver_node(
+            _authored_state(),
+            generation_provider=GenerationProvider(),
+            safety_checker=SafeChecker(),
+            base_root=tmp_path,
+        )
+
+    assert final_path.read_bytes() == original

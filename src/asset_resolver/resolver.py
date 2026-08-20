@@ -5,7 +5,6 @@ import json
 import os
 import re
 import stat
-import tempfile
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -28,6 +27,20 @@ from src.visual_ai.protocols import (
     ImageGenerationRequest,
 )
 from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_runtime.artifact_identity import (
+    ArtifactBindingError,
+    ArtifactIdentityError,
+    ArtifactPaths,
+    _DirectoryLease,
+    _atomic_write_at,
+    _create_staging_directory,
+    _open_absolute_directory,
+    _pin_artifact_paths,
+    _read_file_at,
+    _remove_tree_at,
+    _validate_component,
+    revalidate_artifact_paths,
+)
 
 from .providers import ExternalAssetCandidate, candidate_urls_are_allowed
 
@@ -39,141 +52,61 @@ class AssetResolutionError(RuntimeError):
     """Raised when a visual asset directive cannot be resolved."""
 
 
-def _check_no_follow_chain(path: Path) -> None:
-    """Reject symlinks in every existing component of a transaction path."""
-
-    current = path
-    while True:
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            if current.parent == current:
-                break
-            current = current.parent
-            continue
-        except OSError as error:
-            raise AssetResolutionError(f"cannot inspect transaction path: {current}") from error
-        trusted_darwin_var = (
-            current == Path("/var")
-            and Path("/private/var").is_dir()
-            and current.resolve(strict=False) == Path("/private/var")
-        )
-        if stat.S_ISLNK(info.st_mode) and not trusted_darwin_var:
-            raise AssetResolutionError(f"transaction path contains symlink: {current}")
-        if current.parent == current:
-            break
-        current = current.parent
-
-
-def _secure_mkdir(path: Path) -> None:
-    """Create a directory without following an existing symlink."""
-
-    _check_no_follow_chain(path)
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            _check_no_follow_chain(path)
-            info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise AssetResolutionError(f"transaction directory collision: {path}")
-        except OSError as error:
-            raise AssetResolutionError(f"cannot create transaction directory: {path}") from error
-        return
-    except OSError as error:
-        raise AssetResolutionError(f"cannot inspect transaction directory: {path}") from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise AssetResolutionError(f"transaction directory collision: {path}")
-
-
-def _secure_mkdirs(path: Path) -> None:
-    """Create missing directory components one at a time."""
-
-    missing: list[Path] = []
-    current = path
-    while True:
-        try:
-            current.lstat()
-            break
-        except FileNotFoundError:
-            missing.append(current)
-            if current.parent == current:
-                break
-            current = current.parent
-    for item in reversed(missing):
-        _secure_mkdir(item)
-
-
-def _validate_transaction_directory(path: Path, *, create: bool) -> Path:
-    """Validate an explicit v4 asset root and optionally establish it."""
-
-    directory = Path(path).absolute()
-    _check_no_follow_chain(directory)
-    if create and not directory.exists():
-        _secure_mkdirs(directory)
-    _check_no_follow_chain(directory)
-    try:
-        info = directory.lstat()
-    except OSError as error:
-        raise AssetResolutionError("explicit transaction directory is unavailable") from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise AssetResolutionError("explicit transaction directory must be a regular directory")
-    try:
-        directory.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        raise AssetResolutionError("explicit transaction directory containment failed") from error
-    return directory
-
-
-def _path_contained(path: Path, root: Path) -> bool:
-    try:
-        path.absolute().relative_to(root.absolute())
-        _check_no_follow_chain(path.absolute())
-        path.absolute().resolve(strict=False).relative_to(root.absolute().resolve(strict=False))
-    except (OSError, RuntimeError, ValueError, AssetResolutionError):
-        return False
-    return True
-
-
 def _safe_component(value: str) -> str:
-    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", value).strip("-.")
+    """Make a deterministic leaf name without using it as an identity."""
+
+    sanitized = re.sub(r"[^a-zA-Z0-9._-]+", "-", str(value)).strip("-.")
     return sanitized or "asset"
 
 
-def _atomic_write_bytes(path: Path, content: bytes, *, replace_existing: bool = True) -> None:
-    _secure_mkdirs(path.parent)
-    descriptor, temporary_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
+def _path_relative_to(path: Path, root: Path) -> tuple[str, ...]:
+    """Return safe lexical parts; actual access is performed with a dirfd."""
+
     try:
-        with os.fdopen(descriptor, "wb") as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if replace_existing:
-            os.replace(temporary_name, path)
-        else:
-            try:
-                os.link(temporary_name, path, follow_symlinks=False)
-            except FileExistsError as error:
-                raise AssetResolutionError("artifact destination already exists") from error
-            except OSError as error:
-                raise AssetResolutionError("artifact destination could not be published") from error
-            os.unlink(temporary_name)
-            temporary_name = None
-        directory_descriptor = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
-    finally:
-        try:
-            if temporary_name is not None:
-                os.unlink(temporary_name)
-        except FileNotFoundError:
-            pass
+        relative = Path(os.path.abspath(os.fspath(path))).relative_to(
+            Path(os.path.abspath(os.fspath(root)))
+        )
+    except (TypeError, ValueError) as error:
+        raise AssetResolutionError("asset path escapes its pinned transaction directory") from error
+    if not relative.parts or any(part in {"", ".", ".."} for part in relative.parts):
+        raise AssetResolutionError("asset path contains an unsafe component")
+    try:
+        return tuple(_validate_component(part, "asset path component") for part in relative.parts)
+    except ArtifactIdentityError as error:
+        raise AssetResolutionError(str(error)) from error
+
+
+def _close_owned(fd: int | None, primary: BaseException | None = None) -> OSError | None:
+    """Transfer descriptor ownership before one close; never retry the number."""
+
+    if fd is None:
+        return None
+    try:
+        os.close(fd)
+    except OSError as error:
+        if primary is not None:
+            primary.add_note(f"descriptor cleanup failed: {error}")
+        return error
+    return None
+
+
+def _assert_lease(lease: _DirectoryLease) -> None:
+    try:
+        lease.assert_intact()
+    except (ArtifactIdentityError, OSError) as error:
+        raise AssetResolutionError("pinned asset transaction changed") from error
+
+
+def _publish_bytes(
+    lease: _DirectoryLease,
+    relative_parts: tuple[str, ...],
+    content: bytes,
+) -> None:
+    try:
+        _atomic_write_at(lease.fd, relative_parts, content)
+    except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+        raise AssetResolutionError("asset publication failed") from error
+    _assert_lease(lease)
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,56 +119,64 @@ class AssetSafetyDecision:
 
 
 class DefaultAssetSafetyChecker:
-    """Deterministic raster/MIME/containment safety checks.
-
-    Unwanted-visible-text detection is delegated to the injected checker in
-    production; the default only fails closed on unreadable or non-regular
-    images so generated/searched bytes cannot be marked approved unless they
-    decode as a real raster.
-    """
+    """Raster/MIME checks over an identity-pinned descriptor."""
 
     def check(self, path: Path, directive: AssetDirective) -> AssetSafetyDecision:
         nofollow = getattr(os, "O_NOFOLLOW", 0)
         descriptor: int | None = None
+        decision: AssetSafetyDecision | None = None
+        close_error: OSError | None = None
         try:
             before = path.lstat()
             if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-                return AssetSafetyDecision(
+                decision = AssetSafetyDecision(
                     approved=False,
                     unwanted_text=False,
                     reason="image is not a regular non-symlink file",
                 )
-            descriptor = os.open(path, os.O_RDONLY | nofollow)
-            opened = os.fstat(descriptor)
-            if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-                return AssetSafetyDecision(
-                    approved=False,
-                    unwanted_text=False,
-                    reason="image identity changed during safety check",
-                )
-            try:
-                # Decode through a duplicate of the already identity-checked
-                # descriptor; reopening ``path`` would reintroduce a swap
-                # window between no-follow validation and raster inspection.
-                with os.fdopen(os.dup(descriptor), "rb") as stream:
-                    with Image.open(stream) as image:
-                        image.verify()
-            except (OSError, ValueError) as error:
-                return AssetSafetyDecision(
-                    approved=False,
-                    unwanted_text=False,
-                    reason=f"image raster decode failed: {error}",
-                )
+            else:
+                descriptor = os.open(path, os.O_RDONLY | nofollow)
+                opened = os.fstat(descriptor)
+                if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+                    decision = AssetSafetyDecision(
+                        approved=False,
+                        unwanted_text=False,
+                        reason="image identity changed during safety check",
+                    )
+                else:
+                    try:
+                        with os.fdopen(os.dup(descriptor), "rb") as stream:
+                            with Image.open(stream) as image:
+                                image.verify()
+                    except (OSError, ValueError) as error:
+                        decision = AssetSafetyDecision(
+                            approved=False,
+                            unwanted_text=False,
+                            reason=f"image raster decode failed: {error}",
+                        )
+                    else:
+                        decision = AssetSafetyDecision(approved=True, unwanted_text=False)
         except OSError as error:
-            return AssetSafetyDecision(
+            decision = AssetSafetyDecision(
                 approved=False,
                 unwanted_text=False,
                 reason=f"image safety check failed: {error}",
             )
         finally:
-            if descriptor is not None:
-                os.close(descriptor)
-        return AssetSafetyDecision(approved=True, unwanted_text=False)
+            owned = descriptor
+            descriptor = None
+            close_error = _close_owned(owned)
+        if close_error is not None:
+            return AssetSafetyDecision(
+                approved=False,
+                unwanted_text=False,
+                reason=f"image descriptor close failed: {close_error}",
+            )
+        return decision or AssetSafetyDecision(
+            approved=False,
+            unwanted_text=False,
+            reason="image safety check failed",
+        )
 
 
 def _directive_rejection_message(field_name: str) -> str:
@@ -263,10 +204,7 @@ def _candidate_meets_directive(
         return False, _directive_rejection_message("license_terms_url is missing")
     if candidate.width < directive.min_width or candidate.height < directive.min_height:
         return False, _directive_rejection_message("dimensions below directive minimum")
-    if (
-        directive.orientation != "any"
-        and candidate.orientation != directive.orientation
-    ):
+    if directive.orientation != "any" and candidate.orientation != directive.orientation:
         return False, _directive_rejection_message("orientation mismatch")
     if candidate.has_watermark is True:
         return False, _directive_rejection_message("watermark present")
@@ -291,13 +229,11 @@ def _candidate_meets_directive(
 def _pixel_orientation_local(width: int, height: int) -> str:
     if width == height:
         return "square"
-    if width > height:
-        return "landscape"
-    return "portrait"
+    return "landscape" if width > height else "portrait"
 
 
 def _decode_raster(raw: bytes) -> tuple[bytes, str, int, int]:
-    """Return (bytes, extension, width, height); raise on invalid rasters."""
+    """Return canonical bytes, extension, width and height."""
 
     try:
         with Image.open(BytesIO(raw)) as source:
@@ -307,6 +243,8 @@ def _decode_raster(raw: bytes) -> tuple[bytes, str, int, int]:
             source.load()
             has_alpha = "A" in source.getbands() or "transparency" in source.info
             normalized = source.convert("RGBA" if has_alpha else "RGB")
+    except AssetResolutionError:
+        raise
     except (OSError, ValueError) as error:
         raise AssetResolutionError("provider returned an invalid image") from error
     output = BytesIO()
@@ -319,69 +257,56 @@ def _decode_raster(raw: bytes) -> tuple[bytes, str, int, int]:
     return output.getvalue(), extension, width, height
 
 
-def _nofollow_read(path: Path) -> tuple[bytes, tuple[int, int]]:
-    """Read a regular non-symlink file via O_NOFOLLOW and return (bytes, identity)."""
-
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
-    try:
-        before = path.lstat()
-        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-            raise AssetResolutionError("generated image is not a regular file")
-        descriptor = os.open(path, os.O_RDONLY | nofollow)
-        opened = os.fstat(descriptor)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise AssetResolutionError("generated image identity changed during read")
-        chunks: list[bytes] = []
-        while chunk := os.read(descriptor, 1024 * 1024):
-            chunks.append(chunk)
-        after_fd = os.fstat(descriptor)
-        after_path = path.lstat()
-        if (after_fd.st_dev, after_fd.st_ino) != (before.st_dev, before.st_ino) or (
-            after_path.st_dev,
-            after_path.st_ino,
-        ) != (before.st_dev, before.st_ino):
-            raise AssetResolutionError("generated image identity changed during read")
-        return b"".join(chunks), (opened.st_dev, opened.st_ino)
-    except OSError as error:
-        raise AssetResolutionError("generated image is unreadable") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-
 def _transaction_dir(transaction_root: Path, transaction_id: str) -> Path:
-    if type(transaction_id) is not str or not transaction_id:
-        raise AssetResolutionError("transaction_id must be a non-empty string")
-    root = Path(transaction_root).absolute()
-    _secure_mkdirs(root)
-    directory = root / transaction_id
+    """Create one legacy transaction using only a trusted root dirfd."""
+
+    lease, result = _legacy_transaction_lease(transaction_root, transaction_id)
+    close_error = lease.close()
+    if close_error is not None:
+        raise AssetResolutionError("transaction directory descriptor close failed") from close_error
+    return result
+
+
+def _close_owned_lease(lease: _DirectoryLease, primary: BaseException | None = None) -> None:
+    error = lease.close()
+    if error is not None and primary is not None:
+        primary.add_note(f"descriptor cleanup failed: {error}")
+
+
+def _legacy_transaction_lease(transaction_root: Path, transaction_id: str) -> tuple[_DirectoryLease, Path]:
+    """Establish and keep the root and transaction descriptors pinned."""
+
     try:
-        directory.relative_to(root)
-    except ValueError as error:
-        raise AssetResolutionError("transaction id escapes transaction root") from error
-    _secure_mkdirs(directory)
-    _check_no_follow_chain(directory)
+        _validate_component(transaction_id, "transaction_id")
+    except ArtifactIdentityError as error:
+        raise AssetResolutionError(str(error)) from error
     try:
-        info = directory.lstat()
-    except OSError as error:
-        raise AssetResolutionError("transaction directory is unavailable") from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise AssetResolutionError("transaction id collides with a non-directory")
+        lease = _open_absolute_directory(Path(transaction_root), create=True)
+        lease.add_child(transaction_id, create=True)
+        lease.assert_intact()
+        return lease, lease.paths[-1]
+    except (ArtifactIdentityError, OSError) as error:
+        if "lease" in locals():
+            _close_owned_lease(lease, error)
+        raise AssetResolutionError("transaction directory could not be established") from error
+
+
+def _explicit_transaction_lease(paths: ArtifactPaths) -> tuple[_DirectoryLease, Path, ArtifactPaths]:
     try:
-        directory.resolve(strict=True).relative_to(root.resolve(strict=True))
-    except (OSError, RuntimeError, ValueError) as error:
-        raise AssetResolutionError("transaction directory escapes transaction root") from error
-    return directory
+        lease = _pin_artifact_paths(paths, create=False)
+        lease.assert_intact()
+        return lease, paths.asset_root, paths
+    except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+        raise AssetResolutionError("artifact paths are not a valid pinned revision") from error
 
 
 def _persist_recovery_journal(
+    transaction_lease: _DirectoryLease,
     transaction_dir: Path,
     *,
     transaction_id: str,
     run_id: str,
     errors: tuple[str, ...],
-    immutable_transaction: bool = False,
 ) -> None:
     payload = {
         "status": "interrupted",
@@ -391,15 +316,10 @@ def _persist_recovery_journal(
         "errors": list(errors),
         "written_at": datetime.now(UTC).isoformat(),
     }
-    journal_path = transaction_dir / "recovery.json"
-    content = (
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    content = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
-    _atomic_write_bytes(
-        journal_path,
-        content,
-        replace_existing=not immutable_transaction,
-    )
+    _publish_bytes(transaction_lease, ("recovery.json",), content)
 
 
 def _directive_search_query(directive: AssetDirective) -> str:
@@ -430,15 +350,41 @@ def _generation_request(
     )
 
 
+def _safety_error(decision: AssetSafetyDecision) -> AssetResolutionError | None:
+    if decision.approved:
+        return None
+    message = (
+        "rejected: unwanted visible text"
+        if decision.unwanted_text
+        else f"rejected: {decision.reason or 'safety check failed'}"
+    )
+    return AssetResolutionError(message)
+
+
+def _final_snapshot(
+    lease: _DirectoryLease,
+    transaction_dir: Path,
+    relative_parts: tuple[str, ...],
+    *,
+    path_label: str,
+) -> object:
+    try:
+        snapshot = _read_file_at(lease.fd, relative_parts)
+    except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+        raise AssetResolutionError(f"{path_label} publication could not be read") from error
+    _assert_lease(lease)
+    return snapshot
+
+
 def _resolve_via_search(
     directive: AssetDirective,
     *,
     search_provider: object,
+    transaction_lease: _DirectoryLease,
     transaction_dir: Path,
     safety_checker: object,
     run_id: str,
     transaction_id: str,
-    immutable_transaction: bool = False,
 ) -> AssetManifestItem:
     name = getattr(search_provider, "name", "search")
     try:
@@ -466,9 +412,7 @@ def _resolve_via_search(
         search_provider.record_download(selected)
         raw = search_provider.download(selected)
     except Exception as error:
-        raise AssetResolutionError(
-            f"search provider {name} download failed: {error}"
-        ) from error
+        raise AssetResolutionError(f"search provider {name} download failed: {error}") from error
 
     normalized, extension, raster_width, raster_height = _decode_raster(raw)
     if (
@@ -483,24 +427,38 @@ def _resolve_via_search(
 
     sha256 = hashlib.sha256(normalized).hexdigest()
     asset_id = f"{selected.provider}-{selected.provider_asset_id}"
-    relative_path = Path("search") / f"{_safe_component(directive.directive_id)}-{_safe_component(asset_id)}{extension}"
-    destination = transaction_dir / relative_path
-    if not _path_contained(destination, transaction_dir):
-        raise AssetResolutionError("search asset destination escapes the transaction dir")
-    _atomic_write_bytes(
-        destination,
-        normalized,
-        replace_existing=not immutable_transaction,
+    leaf = (
+        f"{_safe_component(directive.directive_id)}-"
+        f"{_safe_component(asset_id)}-{sha256[:16]}{extension}"
     )
-
-    decision = safety_checker.check(destination, directive)
-    if not decision.approved:
-        message = (
-            "rejected: unwanted visible text"
-            if decision.unwanted_text
-            else f"rejected: {decision.reason or 'safety check failed'}"
-        )
-        raise AssetResolutionError(message)
+    relative_parts = ("search", leaf)
+    _publish_bytes(transaction_lease, relative_parts, normalized)
+    destination = transaction_dir.joinpath(*relative_parts)
+    before = _final_snapshot(
+        transaction_lease,
+        transaction_dir,
+        relative_parts,
+        path_label="search asset",
+    )
+    try:
+        decision = safety_checker.check(destination, directive)
+    except Exception as error:
+        raise AssetResolutionError(f"asset safety checker failed: {error}") from error
+    safety_error = _safety_error(decision)
+    if safety_error is not None:
+        raise safety_error
+    after = _final_snapshot(
+        transaction_lease,
+        transaction_dir,
+        relative_parts,
+        path_label="search asset",
+    )
+    if (after.sha256, after.size, after.identity) != (
+        before.sha256,
+        before.size,
+        before.identity,
+    ):
+        raise AssetResolutionError("search asset changed during safety validation")
 
     return AssetManifestItem(
         asset_id=asset_id,
@@ -512,7 +470,7 @@ def _resolve_via_search(
         local_path=str(destination),
         width=raster_width,
         height=raster_height,
-        sha256=sha256,
+        sha256=after.sha256,
         subject_focal_point=(0.5, 0.5),
         crop_guidance=directive.orientation,
         security_status="approved",
@@ -527,89 +485,145 @@ def _resolve_via_search(
     )
 
 
+def _close_staging(
+    asset_fd: int,
+    staging_name: str,
+    staging_fd: int | None,
+    primary: BaseException | None,
+) -> AssetResolutionError | None:
+    owned = staging_fd
+    staging_fd = None
+    close_error = _close_owned(owned, primary)
+    try:
+        _remove_tree_at(asset_fd, staging_name)
+    except (ArtifactIdentityError, OSError) as error:
+        if primary is not None:
+            primary.add_note(f"staging cleanup failed: {error}")
+        else:
+            return AssetResolutionError("staging cleanup failed")
+    if close_error is not None and primary is None:
+        error = AssetResolutionError("staging descriptor close failed")
+        error.__cause__ = close_error
+        return error
+    return None
+
+
 def _resolve_via_generation(
     directive: AssetDirective,
     *,
     generation_provider: ImageGenerationProvider,
+    transaction_lease: _DirectoryLease,
     transaction_dir: Path,
     safety_checker: object,
     run_id: str,
     transaction_id: str,
-    immutable_transaction: bool = False,
 ) -> AssetManifestItem:
-    generation_dir = transaction_dir / "generated"
-    if immutable_transaction and generation_dir.exists():
-        raise AssetResolutionError("generated asset directory already exists in immutable revision")
-    _secure_mkdirs(generation_dir)
-    request = _generation_request(
-        directive,
-        width=directive.min_width,
-        height=directive.min_height,
-    )
+    # A provider receives a fresh exclusive staging subtree, never the final
+    # generated directory.  Final bytes are published by the resolver.
+    staging_name = f".staging-{_safe_component(directive.directive_id)}-{os.urandom(8).hex()}"
+    staging_path = transaction_dir / staging_name
     try:
-        generated = generation_provider.generate(request, generation_dir)
-    except Exception as error:
-        raise AssetResolutionError(f"generation provider failed: {error}") from error
-
-    if not isinstance(generated, GeneratedImage):
-        raise AssetResolutionError("generation provider returned a non-GeneratedImage result")
-
-    generated_path = Path(generated.path)
-    # Containment is checked before reading provider output, and bytes are
-    # then read through a no-follow descriptor so the provider cannot smuggle
-    # a path outside the transaction into the manifest.
-    if not _path_contained(generated_path, transaction_dir):
-        raise AssetResolutionError("generated image escapes the transaction directory")
-    raw, _identity = _nofollow_read(generated_path)
+        staging_fd = _create_staging_directory(transaction_lease.fd, staging_name)
+    except (ArtifactIdentityError, OSError) as error:
+        raise AssetResolutionError("generation staging directory could not be created") from error
+    primary: BaseException | None = None
     try:
-        resolved = generated_path.resolve(strict=True)
-    except (OSError, RuntimeError) as error:
-        raise AssetResolutionError("generated image path is unresolvable") from error
-    transaction_resolved = transaction_dir.resolve()
-    if not resolved.is_relative_to(transaction_resolved):
-        raise AssetResolutionError("generated image escapes the transaction directory")
-
-    # Re-decode to validate the raster and obtain authoritative dimensions.
-    # The manifest hash is computed from the actual on-disk bytes (raw), not
-    # from a re-encoded copy or the provider-reported digest, so the manifest
-    # matches the bytes a downstream renderer will read.
-    _validated, _extension, raster_width, raster_height = _decode_raster(raw)
-    # Generated assets come back at the provider's default aspect ratio (the
-    # interactions API is called with just the prompt); the renderer's
-    # fit="cover" + focal_point + crop map the asset into the page box, so the
-    # generated raster's absolute dimensions and orientation need not match the
-    # directive's min_width/min_height/orientation. Only require a valid raster.
-    sha256 = hashlib.sha256(raw).hexdigest()
-
-    decision = safety_checker.check(generated_path, directive)
-    if not decision.approved:
-        message = (
-            "rejected: unwanted visible text"
-            if decision.unwanted_text
-            else f"rejected: {decision.reason or 'safety check failed'}"
+        request = _generation_request(
+            directive,
+            width=directive.min_width,
+            height=directive.min_height,
         )
-        raise AssetResolutionError(message)
+        try:
+            generated = generation_provider.generate(request, staging_path)
+        except Exception as error:
+            raise AssetResolutionError(f"generation provider failed: {error}") from error
+        _assert_lease(transaction_lease)
+        if not isinstance(generated, GeneratedImage):
+            raise AssetResolutionError("generation provider returned a non-GeneratedImage result")
+        if (
+            type(generated.provider) is not str
+            or not generated.provider.strip()
+            or type(generated.model) is not str
+            or not generated.model.strip()
+            or type(generated.mime_type) is not str
+            or not generated.mime_type.startswith("image/")
+        ):
+            raise AssetResolutionError("generated provider identity or MIME is invalid")
 
-    provenance = dict(generated.internal_provenance)
-    return AssetManifestItem(
-        asset_id=f"generated-{directive.directive_id}",
-        directive_id=directive.directive_id,
-        page_id=directive.page_id,
-        source_kind="generated",
-        provider=generated.provider,
-        license="internal-generated",
-        local_path=str(generated_path),
-        width=raster_width,
-        height=raster_height,
-        sha256=sha256,
-        subject_focal_point=(0.5, 0.5),
-        crop_guidance=directive.orientation,
-        security_status="approved",
-        human_decision="pending",
-        run_id=run_id,
-        transaction_id=transaction_id,
-        internal_provenance=provenance,
-    )
+        generated_path = Path(generated.path)
+        generated_parts = _path_relative_to(generated_path, staging_path)
+        try:
+            staged = _read_file_at(staging_fd, generated_parts)
+        except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+            raise AssetResolutionError("generated image is not a stable regular staging file") from error
+        _assert_lease(transaction_lease)
+        if generated.sha256.lower() != staged.sha256:
+            raise AssetResolutionError("generated provider byte hash does not match output")
+        normalized, extension, raster_width, raster_height = _decode_raster(staged.raw)
+        sha256 = hashlib.sha256(normalized).hexdigest()
+        final_parts = (
+            "generated",
+            f"{_safe_component(directive.directive_id)}-{sha256[:16]}{extension}",
+        )
+        _publish_bytes(transaction_lease, final_parts, normalized)
+        destination = transaction_dir.joinpath(*final_parts)
+        before = _final_snapshot(
+            transaction_lease,
+            transaction_dir,
+            final_parts,
+            path_label="generated asset",
+        )
+        try:
+            decision = safety_checker.check(destination, directive)
+        except Exception as error:
+            raise AssetResolutionError(f"asset safety checker failed: {error}") from error
+        safety_error = _safety_error(decision)
+        if safety_error is not None:
+            raise safety_error
+        after = _final_snapshot(
+            transaction_lease,
+            transaction_dir,
+            final_parts,
+            path_label="generated asset",
+        )
+        if (after.sha256, after.size, after.identity) != (
+            before.sha256,
+            before.size,
+            before.identity,
+        ):
+            raise AssetResolutionError("generated asset changed during safety validation")
+        provenance = dict(generated.internal_provenance)
+        return AssetManifestItem(
+            asset_id=f"generated-{directive.directive_id}",
+            directive_id=directive.directive_id,
+            page_id=directive.page_id,
+            source_kind="generated",
+            provider=generated.provider,
+            license="internal-generated",
+            local_path=str(destination),
+            width=raster_width,
+            height=raster_height,
+            sha256=after.sha256,
+            subject_focal_point=(0.5, 0.5),
+            crop_guidance=directive.orientation,
+            security_status="approved",
+            human_decision="pending",
+            run_id=run_id,
+            transaction_id=transaction_id,
+            internal_provenance=provenance,
+        )
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        cleanup_error = _close_staging(
+            transaction_lease.fd,
+            staging_name,
+            staging_fd,
+            primary,
+        )
+        if cleanup_error is not None and primary is None:
+            raise cleanup_error
 
 
 def _attempt_source(
@@ -618,11 +632,11 @@ def _attempt_source(
     *,
     search_provider: object | None,
     generation_provider: object | None,
+    transaction_lease: _DirectoryLease,
     transaction_dir: Path,
     safety_checker: object,
     run_id: str,
     transaction_id: str,
-    immutable_transaction: bool = False,
 ) -> AssetManifestItem:
     if source == "search":
         if search_provider is None:
@@ -630,11 +644,11 @@ def _attempt_source(
         return _resolve_via_search(
             directive,
             search_provider=search_provider,
+            transaction_lease=transaction_lease,
             transaction_dir=transaction_dir,
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
-            immutable_transaction=immutable_transaction,
         )
     if source == "generate":
         if generation_provider is None:
@@ -642,11 +656,11 @@ def _attempt_source(
         return _resolve_via_generation(
             directive,
             generation_provider=generation_provider,
+            transaction_lease=transaction_lease,
             transaction_dir=transaction_dir,
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
-            immutable_transaction=immutable_transaction,
         )
     raise AssetResolutionError(f"unsupported source kind: {source}")
 
@@ -656,14 +670,12 @@ def _preferred_then_fallback(
     *,
     search_provider: object | None,
     generation_provider: object | None,
+    transaction_lease: _DirectoryLease,
     transaction_dir: Path,
     safety_checker: object,
     run_id: str,
     transaction_id: str,
-    immutable_transaction: bool = False,
 ) -> tuple[AssetManifestItem | None, tuple[str, ...]]:
-    """Resolve a directive; return (item-or-None, error-tuple)."""
-
     errors: list[str] = []
     try:
         primary = _select_primary_source(directive)
@@ -675,34 +687,32 @@ def _preferred_then_fallback(
             directive,
             search_provider=search_provider,
             generation_provider=generation_provider,
+            transaction_lease=transaction_lease,
             transaction_dir=transaction_dir,
             safety_checker=safety_checker,
             run_id=run_id,
             transaction_id=transaction_id,
-            immutable_transaction=immutable_transaction,
         )
         return item, ()
     except AssetResolutionError as error:
         errors.append(str(error))
 
     if directive.fallback_source != "none":
-        fallback = directive.fallback_source
         try:
             item = _attempt_source(
-                fallback,
+                directive.fallback_source,
                 directive,
                 search_provider=search_provider,
                 generation_provider=generation_provider,
+                transaction_lease=transaction_lease,
                 transaction_dir=transaction_dir,
                 safety_checker=safety_checker,
                 run_id=run_id,
                 transaction_id=transaction_id,
-                immutable_transaction=immutable_transaction,
             )
             return item, ()
-        except AssetResolutionError as fallback_error:
-            errors.append(str(fallback_error))
-
+        except AssetResolutionError as error:
+            errors.append(str(error))
     return None, tuple(errors)
 
 
@@ -719,78 +729,43 @@ def _select_primary_source(directive: AssetDirective) -> str:
     raise AssetResolutionError(f"unsupported preferred_source: {preferred}")
 
 
-def resolve_asset_directives(
+def _run_resolution(
     *,
     directives: Iterable[AssetDirective],
+    transaction_lease: _DirectoryLease,
+    transaction_dir: Path,
     run_id: str,
-    transaction_root: Path | None = None,
-    transaction_id: str | None = None,
-    search_provider: object | None = None,
-    generation_provider: object | None = None,
-    safety_checker: object | None = None,
-    transaction_directory: Path | None = None,
+    transaction_id: str,
+    checker: object,
+    search_provider: object | None,
+    generation_provider: object | None,
 ) -> AssetResolutionResult:
-    """Resolve visual asset directives into a hash-bound manifest.
-
-    Preferred source first; on primary failure, fall back only when the
-    directive allows it. Required unresolved directives raise
-    ``VisualProductionInterrupted`` with recovery evidence persisted under
-    ``transaction_root / transaction_id / recovery.json``; optional unresolved
-    directives become ``UnresolvedOptionalAsset`` entries.
-    """
-
-    checker = safety_checker if safety_checker is not None else DefaultAssetSafetyChecker()
-    explicit_directory = transaction_directory is not None
-    if explicit_directory:
-        if transaction_root is not None:
-            raise AssetResolutionError(
-                "transaction_directory is mutually exclusive with transaction_root"
-            )
-        if transaction_id is None or type(transaction_id) is not str or not transaction_id:
-            raise AssetResolutionError(
-                "transaction_directory mode requires a non-empty transaction_id"
-            )
-        transaction_dir = _validate_transaction_directory(
-            Path(transaction_directory), create=True
-        )
-    else:
-        if transaction_root is None or transaction_id is None:
-            raise AssetResolutionError(
-                "v3 resolver mode requires transaction_root and transaction_id"
-            )
-        transaction_dir = _transaction_dir(transaction_root, transaction_id)
-    resolved_transaction_id = transaction_id
-    assert resolved_transaction_id is not None
     items: list[AssetManifestItem] = []
     unresolved: list[UnresolvedOptionalAsset] = []
-
     for directive in directives:
         item, errors = _preferred_then_fallback(
-            directive,
-            search_provider=search_provider,
-            generation_provider=generation_provider,
-            transaction_dir=transaction_dir,
-            safety_checker=checker,
-            run_id=run_id,
-            transaction_id=resolved_transaction_id,
-            immutable_transaction=explicit_directory,
-        )
+                directive,
+                search_provider=search_provider,
+                generation_provider=generation_provider,
+                transaction_lease=transaction_lease,
+                transaction_dir=transaction_dir,
+                safety_checker=checker,
+                run_id=run_id,
+                transaction_id=transaction_id,
+            )
         if item is not None:
             items.append(item)
             continue
         if directive.required:
             try:
                 _persist_recovery_journal(
-                    transaction_dir,
-                    transaction_id=resolved_transaction_id,
-                    run_id=run_id,
-                    errors=errors,
-                    immutable_transaction=explicit_directory,
-                )
+                        transaction_lease,
+                        transaction_dir,
+                        transaction_id=transaction_id,
+                        run_id=run_id,
+                        errors=errors,
+                    )
             except Exception as journal_error:
-                # The persistence-and-assets contract requires recovery
-                # failures to preserve the primary resolution error rather
-                # than masking it; chain the journal error as the cause.
                 raise VisualProductionInterrupted(
                     stage="asset_resolver",
                     errors=errors,
@@ -809,10 +784,9 @@ def resolve_asset_directives(
                 reason=reason,
             )
         )
-
     evidence = AssetTransactionEvidence(
         run_id=run_id,
-        transaction_id=resolved_transaction_id,
+        transaction_id=transaction_id,
         transaction_root=str(transaction_dir),
         journal_path=str(transaction_dir / "recovery.json"),
         status="complete",
@@ -826,3 +800,93 @@ def resolve_asset_directives(
         unresolved_optional_assets=tuple(unresolved),
         transaction_evidence=evidence,
     )
+
+
+def resolve_asset_directives(
+    *,
+    directives: Iterable[AssetDirective],
+    run_id: str,
+    transaction_root: Path | None = None,
+    transaction_id: str | None = None,
+    search_provider: object | None = None,
+    generation_provider: object | None = None,
+    safety_checker: object | None = None,
+    artifact_paths: ArtifactPaths | None = None,
+    transaction_directory: Path | None = None,
+) -> AssetResolutionResult:
+    """Resolve directives using legacy v3 root/id or a complete v4 binding.
+
+    The old v3 API remains available.  The v4 API is intentionally typed: a
+    bare directory cannot be paired with misleading run/revision evidence.
+    """
+
+    if transaction_directory is not None:
+        raise AssetResolutionError(
+            "bare transaction_directory mode is not supported; provide artifact_paths"
+        )
+    if artifact_paths is not None and (transaction_root is not None):
+        raise AssetResolutionError("artifact_paths is mutually exclusive with transaction_root")
+    checker = safety_checker if safety_checker is not None else DefaultAssetSafetyChecker()
+
+    lease: _DirectoryLease
+    transaction_dir: Path
+    resolved_run_id = run_id
+    resolved_transaction_id: str
+    if artifact_paths is not None:
+        if not isinstance(artifact_paths, ArtifactPaths):
+            raise AssetResolutionError("artifact_paths must be ArtifactPaths")
+        try:
+            checked = revalidate_artifact_paths(artifact_paths)
+        except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+            raise AssetResolutionError("artifact_paths are not identity-bound") from error
+        if run_id != checked.identity.run_id:
+            raise AssetResolutionError("run_id does not match artifact identity")
+        if transaction_id is not None and transaction_id != checked.identity.revision_id:
+            raise AssetResolutionError("transaction_id does not match artifact identity")
+        resolved_run_id = checked.identity.run_id
+        resolved_transaction_id = checked.identity.revision_id
+        lease, transaction_dir, _ = _explicit_transaction_lease(checked)
+    else:
+        if transaction_root is None or transaction_id is None:
+            raise AssetResolutionError(
+                "v3 resolver mode requires transaction_root and transaction_id"
+            )
+        if type(transaction_id) is not str:
+            raise AssetResolutionError("transaction_id must be a non-empty string")
+        lease, transaction_dir = _legacy_transaction_lease(transaction_root, transaction_id)
+        resolved_transaction_id = transaction_id
+
+    primary: BaseException | None = None
+    try:
+        try:
+            return _run_resolution(
+                directives=directives,
+                transaction_lease=lease,
+                transaction_dir=transaction_dir,
+                run_id=resolved_run_id,
+                transaction_id=resolved_transaction_id,
+                checker=checker,
+                search_provider=search_provider,
+                generation_provider=generation_provider,
+            )
+        except (AssetResolutionError, VisualProductionInterrupted):
+            raise
+        except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+            raise AssetResolutionError("asset transaction operation failed") from error
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        close_error = lease.close()
+        if close_error is not None and primary is not None:
+            primary.add_note(f"descriptor cleanup failed: {close_error}")
+        elif close_error is not None:
+            raise AssetResolutionError("asset transaction descriptor close failed") from close_error
+
+
+__all__ = [
+    "AssetResolutionError",
+    "AssetSafetyDecision",
+    "DefaultAssetSafetyChecker",
+    "resolve_asset_directives",
+]

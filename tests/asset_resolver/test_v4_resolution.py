@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
 from src.asset_resolver.v4 import adapt_asset_directive_v4
+from src.asset_resolver.resolver import AssetResolutionError, resolve_asset_directives
 from src.schemas.v4.direction import AssetDirectiveV4
+from src.schemas.visual_director import AssetDirective
+from src.visual_design.model_retry import VisualProductionInterrupted
+from src.visual_runtime.artifact_identity import (
+    ArtifactIdentity,
+    ensure_artifact_paths,
+    resolve_artifact_paths,
+    revalidate_artifact_paths,
+)
 
 
 def test_v4_adapter_maps_only_approved_provider_fields():
@@ -51,12 +61,17 @@ def test_v4_adapter_rejects_unknown_or_non_v4_input():
 def test_v4_resolver_uses_explicit_asset_directory_without_transaction_id_rewrite(tmp_path: Path):
     from src.asset_resolver.v4 import resolve_v4_asset_directives
 
-    asset_root = tmp_path / "run" / "candidate" / "revision" / "assets"
+    paths = ensure_artifact_paths(
+        resolve_artifact_paths(
+            tmp_path,
+            ArtifactIdentity("run", "candidate", "revision"),
+        )
+    )
     result = resolve_v4_asset_directives(
         directives=(),
         run_id="run",
         transaction_id="revision",
-        transaction_directory=asset_root,
+        artifact_paths=paths,
         search_provider=object(),
         generation_provider=object(),
     )
@@ -64,16 +79,153 @@ def test_v4_resolver_uses_explicit_asset_directory_without_transaction_id_rewrit
     assert result.manifest.items == ()
     assert result.transaction_evidence.run_id == "run"
     assert result.transaction_evidence.transaction_id == "revision"
-    assert Path(result.transaction_evidence.transaction_root) == asset_root
+    assert Path(result.transaction_evidence.transaction_root) == paths.asset_root
 
 
-def test_v4_resolver_rejects_directory_not_bound_to_run_revision(tmp_path: Path):
+def test_v4_resolver_rejects_bare_transaction_directory(tmp_path: Path):
     from src.asset_resolver.v4 import resolve_v4_asset_directives
 
-    with pytest.raises(RuntimeError, match="bound"):
+    with pytest.raises(AssetResolutionError, match="artifact_paths|identity"):
         resolve_v4_asset_directives(
             directives=(),
             run_id="run",
             transaction_id="revision",
-            transaction_directory=tmp_path / "unrelated",
+            transaction_directory=tmp_path / "run" / "candidate" / "revision" / "assets",
         )
+
+
+def test_shared_resolver_rejects_bare_transaction_directory(tmp_path: Path):
+    with pytest.raises(AssetResolutionError, match="artifact_paths|bare"):
+        resolve_asset_directives(
+            directives=(),
+            run_id="run",
+            transaction_id="revision",
+            transaction_directory=tmp_path / "assets",
+        )
+    assert not tmp_path.exists() or not tuple(tmp_path.iterdir())
+
+
+def test_artifact_paths_revalidate_candidate_and_base_identity(tmp_path: Path):
+    paths = ensure_artifact_paths(
+        resolve_artifact_paths(
+            tmp_path,
+            ArtifactIdentity("run", "candidate", "revision"),
+        )
+    )
+    assert revalidate_artifact_paths(paths) == paths
+
+    drifted = replace(
+        paths,
+        identity=ArtifactIdentity("run", "other-candidate", "revision"),
+    )
+    with pytest.raises(ValueError, match="identity|path"):
+        revalidate_artifact_paths(drifted)
+
+
+def test_legacy_transaction_traversal_has_zero_filesystem_side_effect(tmp_path: Path):
+    root = tmp_path / "transactions"
+    with pytest.raises(AssetResolutionError, match="transaction_id"):
+        resolve_asset_directives(
+            directives=(),
+            transaction_root=root,
+            transaction_id="../escaped",
+            run_id="run",
+        )
+    assert not root.exists()
+    assert not (tmp_path / "escaped").exists()
+
+
+@pytest.mark.parametrize(
+    ("source", "preferred", "fallback"),
+    [
+        ("search_then_generate", "search", "generate"),
+        ("generate_then_search", "generate", "search"),
+    ],
+)
+def test_composite_sources_expand_to_deterministic_pairs(source, preferred, fallback):
+    directive = AssetDirectiveV4(
+        directive_id="asset-1",
+        page_id="page-1",
+        role="texture",
+        purpose="texture",
+        supports_fragment_refs=("fragment-1",),
+        required=False,
+        preferred_source=source,
+        fallback_source="none",
+        query_or_prompt="texture",
+    )
+    adapted = adapt_asset_directive_v4(directive)
+    assert (adapted.preferred_source, adapted.fallback_source) == (preferred, fallback)
+
+
+def test_composite_source_with_explicit_different_fallback_is_rejected():
+    directive = AssetDirectiveV4(
+        directive_id="asset-1",
+        page_id="page-1",
+        role="texture",
+        purpose="texture",
+        supports_fragment_refs=("fragment-1",),
+        required=False,
+        preferred_source="search_then_generate",
+        fallback_source="search",
+        query_or_prompt="texture",
+    )
+    with pytest.raises(ValueError, match="ambiguous"):
+        adapt_asset_directive_v4(directive)
+
+
+def test_v4_resolver_rejects_evidence_identity_drift(tmp_path: Path):
+    from src.asset_resolver.v4 import resolve_v4_asset_directives
+
+    paths = ensure_artifact_paths(
+        resolve_artifact_paths(
+            tmp_path,
+            ArtifactIdentity("run", "candidate", "revision"),
+        )
+    )
+    with pytest.raises(RuntimeError, match="identity"):
+        resolve_v4_asset_directives(
+            directives=(),
+            run_id="other-run",
+            transaction_id="revision",
+            artifact_paths=paths,
+        )
+
+
+def test_required_journal_close_failure_preserves_primary_errors(tmp_path: Path, monkeypatch):
+    from src.asset_resolver import resolver as module
+
+    directive = AssetDirective(
+        directive_id="asset-1",
+        page_id="page-1",
+        role="texture",
+        required=True,
+        preferred_source="generate",
+        fallback_source="none",
+        query_or_prompt="texture",
+        orientation="any",
+        min_width=1080,
+        min_height=1440,
+    )
+    original_close = module.os.close
+    calls: list[int] = []
+
+    def fail_close(fd: int):
+        calls.append(fd)
+        if len(calls) == 1:
+            raise OSError("journal close sentinel")
+        return original_close(fd)
+
+    monkeypatch.setattr(module.os, "close", fail_close)
+    with pytest.raises(VisualProductionInterrupted) as exc_info:
+        resolve_asset_directives(
+            directives=(directive,),
+            transaction_root=tmp_path / "transactions",
+            transaction_id="tx-1",
+            run_id="run-1",
+        )
+    assert exc_info.value.errors == (
+        "generate source requested without a generation provider",
+    )
+    assert isinstance(exc_info.value.__cause__, AssetResolutionError)
+    assert len(calls) == len(set(calls))

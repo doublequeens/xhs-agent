@@ -133,3 +133,51 @@ def test_reuse_does_not_overwrite_existing_target(tmp_path: Path):
             revision_root=revision_root,
         )
     assert destination.read_bytes() == b"existing"
+
+
+def test_reuse_rejects_symlinked_source_ancestor(tmp_path: Path):
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    source = outside / "source.bin"
+    source.write_bytes(b"source")
+    source_parent = tmp_path / "source-parent"
+    source_parent.symlink_to(outside, target_is_directory=True)
+    revision_root = tmp_path / "revision"
+    revision_root.mkdir()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+
+    with pytest.raises(ArtifactBindingError, match="symlink"):
+        bind_reused_artifact(
+            source_parent / "source.bin",
+            declared_sha256=digest,
+            destination=revision_root / "copy.bin",
+            revision_root=revision_root,
+        )
+
+
+def test_reuse_close_failure_is_typed_and_never_retries_fd(tmp_path: Path, monkeypatch):
+    from src.visual_runtime import artifact_identity as module
+
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"source")
+    revision_root = tmp_path / "revision"
+    revision_root.mkdir()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    original_close = module.os.close
+    calls: list[int] = []
+
+    def close_once(fd: int):
+        calls.append(fd)
+        if len(calls) == 1:
+            raise OSError("close sentinel")
+        return original_close(fd)
+
+    monkeypatch.setattr(module.os, "close", close_once)
+    with pytest.raises(ArtifactBindingError, match="close"):
+        bind_reused_artifact(
+            source,
+            declared_sha256=digest,
+            destination=revision_root / "copy.bin",
+            revision_root=revision_root,
+        )
+    assert len(calls) == len(set(calls))

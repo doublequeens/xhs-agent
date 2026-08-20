@@ -1,9 +1,8 @@
-"""Immutable, containment-safe identity and artifact bindings for v4.
+"""Descriptor-relative, immutable v4 artifact identity and file primitives.
 
-The v4 visual pipeline treats a candidate revision as an append-only artifact
-boundary.  This module deliberately does not sanitize identifiers: changing a
-caller supplied value while deriving a path would make two identities collide.
-Invalid components are rejected instead.
+The public API is intentionally small.  The resolver and artifact binder share
+the private directory-descriptor primitives below so a lexical path check is
+never followed by an unrelated path-based write.
 """
 
 from __future__ import annotations
@@ -11,9 +10,11 @@ from __future__ import annotations
 import hashlib
 import os
 import stat
-import tempfile
-from dataclasses import dataclass
+import uuid
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Iterator
 
 
 class ArtifactIdentityError(ValueError):
@@ -24,6 +25,11 @@ class ArtifactBindingError(RuntimeError):
     """Raised when a reused artifact cannot be bound immutably."""
 
 
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_DIR_FLAGS = os.O_RDONLY | _DIRECTORY | _NOFOLLOW
+
+
 def _validate_component(value: str, field_name: str) -> str:
     if type(value) is not str or not value:
         raise ArtifactIdentityError(f"{field_name} must be a non-empty string")
@@ -31,16 +37,22 @@ def _validate_component(value: str, field_name: str) -> str:
         raise ArtifactIdentityError(f"{field_name} cannot be a traversal component")
     if any(ord(char) < 0x20 or ord(char) == 0x7F for char in value):
         raise ArtifactIdentityError(f"{field_name} contains a control character")
-    # Keep the grammar explicit rather than relying on platform Path rules.
-    # This also rejects Unicode lookalikes/homoglyphs and encoded separators.
-    if any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-" for char in value):
+    if any(
+        char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+        for char in value
+    ):
         raise ArtifactIdentityError(
             f"{field_name} must contain only ASCII letters, digits, '.', '_' or '-'")
-    if "/" in value or "\\" in value:
+    if "/" in value or "\\" in value or Path(value).is_absolute():
         raise ArtifactIdentityError(f"{field_name} cannot contain a path separator")
-    if Path(value).is_absolute():
-        raise ArtifactIdentityError(f"{field_name} cannot be absolute")
     return value
+
+
+def _safe_name(value: str, field_name: str = "path component") -> str:
+    try:
+        return _validate_component(value, field_name)
+    except ArtifactIdentityError as error:
+        raise ArtifactBindingError(str(error)) from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,7 +71,7 @@ class ArtifactIdentity:
 
 @dataclass(frozen=True, slots=True)
 class ArtifactPaths:
-    """Lexical artifact paths derived from one immutable identity."""
+    """Lexical paths plus the trusted identity of the established base root."""
 
     base_root: Path
     identity: ArtifactIdentity
@@ -70,6 +82,13 @@ class ArtifactPaths:
     render_root: Path
     review_root: Path
     artifact_root: Path
+    trusted_base_identity: tuple[int, int] | None = None
+
+    @property
+    def base_identity(self) -> tuple[int, int] | None:
+        """Compatibility/readability alias for the pinned base stat identity."""
+
+        return self.trusted_base_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,21 +100,32 @@ class ArtifactBinding:
     size: int
 
 
+@dataclass(frozen=True, slots=True)
+class _FileSnapshot:
+    raw: bytes
+    sha256: str
+    size: int
+    identity: tuple[int, int]
+
+
 def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
     try:
-        return Path(path).absolute()
+        # abspath normalizes ``..`` lexically without resolving user symlinks.
+        return Path(os.path.abspath(os.fspath(path)))
     except (TypeError, ValueError) as error:
         raise ArtifactIdentityError("artifact root must be a filesystem path") from error
 
 
+def _canonical_open_path(path: Path) -> Path:
+    """Return a lexical absolute spelling; user symlinks are never resolved."""
+
+    return _lexical_absolute(path)
+
+
 def _check_existing_chain(path: Path, *, require_directory: bool = False) -> None:
-    """Reject symlinks in every existing component of ``path``.
+    """Reject user-controlled symlinks in every existing path component."""
 
-    ``Path.resolve`` alone is insufficient here: it follows a link and would
-    allow a later mkdir/write to cross an explicitly selected root.
-    """
-
-    current = path
+    current = _lexical_absolute(path)
     while True:
         try:
             info = current.lstat()
@@ -106,33 +136,50 @@ def _check_existing_chain(path: Path, *, require_directory: bool = False) -> Non
             continue
         except OSError as error:
             raise ArtifactIdentityError(f"cannot inspect artifact path {current}") from error
-        # macOS exposes the temporary directory through the system ``/var``
-        # compatibility link.  Treat that fixed OS alias as the same explicit
-        # root, while still rejecting every user-controlled symlink.
-        trusted_darwin_var = (
-            current == Path("/var")
-            and Path("/private/var").is_dir()
-            and current.resolve(strict=False) == Path("/private/var")
-        )
-        if stat.S_ISLNK(info.st_mode) and not trusted_darwin_var:
+        if stat.S_ISLNK(info.st_mode):
             raise ArtifactIdentityError(f"artifact path contains symlink: {current}")
-        if require_directory and current == path and not stat.S_ISDIR(info.st_mode):
-            raise ArtifactIdentityError(f"artifact root is not a directory: {current}")
+        if require_directory and current == _lexical_absolute(path) and not stat.S_ISDIR(info.st_mode):
+            raise ArtifactIdentityError(f"artifact path is not a directory: {current}")
         if current.parent == current:
             break
         current = current.parent
 
 
+def _snapshot_existing_chain(path: Path) -> dict[Path, tuple[int, int] | None]:
+    """Capture existing directory identities before descriptor traversal."""
+
+    snapshot: dict[Path, tuple[int, int] | None] = {}
+    current = _lexical_absolute(path)
+    components: list[Path] = []
+    while True:
+        components.append(current)
+        if current.parent == current:
+            break
+        current = current.parent
+    for component in reversed(components):
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            snapshot[component] = None
+            continue
+        except OSError as error:
+            raise ArtifactIdentityError(f"cannot inspect artifact path {component}") from error
+        if stat.S_ISLNK(info.st_mode):
+            raise ArtifactIdentityError(f"artifact path contains symlink: {component}")
+        snapshot[component] = (info.st_dev, info.st_ino)
+    return snapshot
+
+
 def _assert_contained(path: Path, base_root: Path) -> None:
+    base = _lexical_absolute(base_root)
+    candidate = _lexical_absolute(path)
     try:
-        path.relative_to(base_root)
+        candidate.relative_to(base)
     except ValueError as error:
         raise ArtifactIdentityError("artifact path escapes the explicit base root") from error
-    _check_existing_chain(path, require_directory=True)
+    _check_existing_chain(candidate, require_directory=True)
     try:
-        resolved_base = base_root.resolve(strict=False)
-        resolved_path = path.resolve(strict=False)
-        resolved_path.relative_to(resolved_base)
+        candidate.resolve(strict=False).relative_to(base.resolve(strict=False))
     except (OSError, RuntimeError, ValueError) as error:
         raise ArtifactIdentityError("resolved artifact path escapes the explicit base root") from error
 
@@ -140,7 +187,7 @@ def _assert_contained(path: Path, base_root: Path) -> None:
 def resolve_artifact_paths(
     base_root: str | os.PathLike[str], identity: ArtifactIdentity
 ) -> ArtifactPaths:
-    """Derive all v4 artifact paths without creating or writing anything."""
+    """Derive v4 paths without creating anything or following a link."""
 
     if not isinstance(identity, ArtifactIdentity):
         raise ArtifactIdentityError("identity must be an ArtifactIdentity")
@@ -148,6 +195,10 @@ def resolve_artifact_paths(
     _check_existing_chain(base, require_directory=True)
     if base.exists() and not base.is_dir():
         raise ArtifactIdentityError("artifact base root is not a directory")
+    trusted_identity: tuple[int, int] | None = None
+    if base.exists():
+        info = base.lstat()
+        trusted_identity = (info.st_dev, info.st_ino)
 
     run_root = base / identity.run_id
     candidate_root = run_root / identity.candidate_id
@@ -162,6 +213,7 @@ def resolve_artifact_paths(
         render_root=revision_root / "render",
         review_root=revision_root / "review",
         artifact_root=revision_root / "artifacts",
+        trusted_base_identity=trusted_identity,
     )
     for path in (
         paths.run_root,
@@ -176,146 +228,416 @@ def resolve_artifact_paths(
     return paths
 
 
-def _mkdir_secure(path: Path) -> None:
-    """Create one directory while rejecting symlink/file collisions."""
+def _close_fd_once(fd: int | None) -> OSError | None:
+    """Close one owned descriptor; callers must clear ownership first."""
 
-    _check_existing_chain(path)
+    if fd is None:
+        return None
     try:
-        info = path.lstat()
-    except FileNotFoundError:
-        try:
-            path.mkdir(mode=0o700)
-        except FileExistsError:
-            # Another writer won the race; inspect the winner without
-            # following a potentially malicious replacement.
-            _check_existing_chain(path)
-            info = path.lstat()
-            if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-                raise ArtifactIdentityError(f"artifact directory collision: {path}")
-        except OSError as error:
-            raise ArtifactIdentityError(f"cannot create artifact directory: {path}") from error
-        return
+        os.close(fd)
     except OSError as error:
-        raise ArtifactIdentityError(f"cannot inspect artifact directory: {path}") from error
-    if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
-        raise ArtifactIdentityError(f"artifact directory collision: {path}")
+        return error
+    return None
+
+
+def _attach_cleanup_error(primary: BaseException, cleanup: OSError | None) -> None:
+    if cleanup is not None:
+        primary.add_note(f"descriptor cleanup failed: {cleanup}")
+
+
+@dataclass
+class _DirectoryLease:
+    paths: list[Path]
+    fds: list[int | None]
+    identities: list[tuple[int, int]]
+    base_index: int
+    closed: bool = False
+    close_error: OSError | None = None
+
+    @property
+    def fd(self) -> int:
+        if self.closed or self.fds[-1] is None:
+            raise ArtifactIdentityError("directory lease is closed")
+        return self.fds[-1]  # type: ignore[return-value]
+
+    @property
+    def base_identity(self) -> tuple[int, int]:
+        return self.identities[self.base_index]
+
+    def add_child(self, name: str, *, create: bool) -> None:
+        if self.closed:
+            raise ArtifactIdentityError("directory lease is closed")
+        _validate_component(name, "directory name")
+        parent_fd = self.fd
+        child_fd: int | None = None
+        try:
+            child_fd = _open_child_directory(parent_fd, name, create=create)
+            info = os.fstat(child_fd)
+        except BaseException as primary:
+            owned = child_fd
+            child_fd = None
+            _attach_cleanup_error(primary, _close_fd_once(owned))
+            raise
+        assert child_fd is not None
+        self.fds.append(child_fd)
+        self.paths.append(self.paths[-1] / name)
+        self.identities.append((info.st_dev, info.st_ino))
+
+    def assert_intact(self) -> None:
+        if self.closed:
+            raise ArtifactIdentityError("directory lease is closed")
+        for path, fd, expected in zip(self.paths, self.fds, self.identities):
+            if fd is None:
+                raise ArtifactIdentityError("directory lease descriptor is unavailable")
+            current_fd = os.fstat(fd)
+            if (current_fd.st_dev, current_fd.st_ino) != expected:
+                raise ArtifactIdentityError("pinned directory identity changed")
+            try:
+                current_path = path.lstat()
+            except OSError as error:
+                raise ArtifactIdentityError("pinned directory path disappeared") from error
+            if stat.S_ISLNK(current_path.st_mode) or not stat.S_ISDIR(current_path.st_mode):
+                raise ArtifactIdentityError("pinned directory path changed type")
+            if (current_path.st_dev, current_path.st_ino) != expected:
+                raise ArtifactIdentityError("pinned directory ancestor changed")
+
+    def close(self) -> OSError | None:
+        if self.closed:
+            return self.close_error
+        self.closed = True
+        errors: list[OSError] = []
+        for index in range(len(self.fds) - 1, -1, -1):
+            fd = self.fds[index]
+            self.fds[index] = None  # ownership is transferred before close
+            error = _close_fd_once(fd)
+            if error is not None:
+                errors.append(error)
+        self.close_error = errors[0] if errors else None
+        return self.close_error
+
+
+@contextmanager
+def _lease_context(lease: _DirectoryLease) -> Iterator[_DirectoryLease]:
+    try:
+        yield lease
+    except BaseException as primary:
+        _attach_cleanup_error(primary, lease.close())
+        raise
+    else:
+        error = lease.close()
+        if error is not None:
+            raise ArtifactIdentityError("directory descriptor close failed") from error
+
+
+def _open_child_directory(parent_fd: int, name: str, *, create: bool) -> int:
+    _validate_component(name, "directory name")
+    try:
+        return os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    except FileNotFoundError:
+        if not create:
+            raise
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            pass
+        return os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+
+
+def _open_absolute_directory(path: Path, *, create: bool) -> _DirectoryLease:
+    lexical = _lexical_absolute(path)
+    _check_existing_chain(lexical, require_directory=False)
+    open_path = _canonical_open_path(lexical)
+    expected_chain = _snapshot_existing_chain(open_path)
+    if not open_path.is_absolute():
+        raise ArtifactIdentityError("directory path must be absolute")
+    fds: list[int | None] = []
+    paths: list[Path] = []
+    identities: list[tuple[int, int]] = []
+    try:
+        root_fd = os.open(os.sep, _DIR_FLAGS)
+        fds.append(root_fd)
+        paths.append(Path(os.sep))
+        root_info = os.fstat(root_fd)
+        identities.append((root_info.st_dev, root_info.st_ino))
+        current_fd = root_fd
+        current_path = Path(os.sep)
+        for component in open_path.parts[1:]:
+            if component in {"", "."}:
+                continue
+            child_fd = _open_child_directory(current_fd, component, create=create)
+            try:
+                child_info = os.fstat(child_fd)
+            except BaseException as primary:
+                _attach_cleanup_error(primary, _close_fd_once(child_fd))
+                raise
+            current_path = current_path / component
+            expected = expected_chain.get(current_path)
+            actual = (child_info.st_dev, child_info.st_ino)
+            if expected is not None and actual != expected:
+                primary = ArtifactIdentityError("directory ancestor changed during open")
+                _attach_cleanup_error(primary, _close_fd_once(child_fd))
+                raise primary
+            fds.append(child_fd)
+            paths.append(current_path)
+            identities.append((child_info.st_dev, child_info.st_ino))
+            current_fd = child_fd
+        base_index = len(fds) - 1
+        return _DirectoryLease(paths, fds, identities, base_index)
+    except BaseException as primary:
+        for index in range(len(fds) - 1, -1, -1):
+            fd = fds[index]
+            fds[index] = None
+            _attach_cleanup_error(primary, _close_fd_once(fd))
+        raise
+
+
+def _pin_artifact_paths(paths: ArtifactPaths, *, create: bool) -> _DirectoryLease:
+    lease = _open_absolute_directory(paths.base_root, create=create)
+    try:
+        for name in (
+            paths.identity.run_id,
+            paths.identity.candidate_id,
+            paths.identity.revision_id,
+            "assets",
+        ):
+            lease.add_child(name, create=create)
+        lease.assert_intact()
+        return lease
+    except BaseException as primary:
+        _attach_cleanup_error(primary, lease.close())
+        raise
 
 
 def ensure_artifact_paths(paths: ArtifactPaths) -> ArtifactPaths:
-    """Create and revalidate a v4 path tree without following symlinks."""
+    """Create only the revision/asset roots using descriptor-relative mkdirat."""
 
     if not isinstance(paths, ArtifactPaths):
         raise ArtifactIdentityError("paths must be ArtifactPaths")
-    checked = resolve_artifact_paths(paths.base_root, paths.identity)
-    for path in (
-        checked.base_root,
-        checked.run_root,
-        checked.candidate_root,
-        checked.revision_root,
-        checked.asset_root,
-        checked.render_root,
-        checked.review_root,
-        checked.artifact_root,
+    expected = resolve_artifact_paths(paths.base_root, paths.identity)
+    with _lease_context(_pin_artifact_paths(expected, create=True)) as lease:
+        lease.assert_intact()
+        return replace(expected, trusted_base_identity=lease.base_identity)
+
+
+def revalidate_artifact_paths(paths: ArtifactPaths) -> ArtifactPaths:
+    """Rebuild and pin a complete identity path, rejecting candidate drift."""
+
+    if not isinstance(paths, ArtifactPaths):
+        raise ArtifactIdentityError("paths must be ArtifactPaths")
+    expected = resolve_artifact_paths(paths.base_root, paths.identity)
+    for field in (
+        "base_root",
+        "run_root",
+        "candidate_root",
+        "revision_root",
+        "asset_root",
+        "render_root",
+        "review_root",
+        "artifact_root",
     ):
-        _mkdir_secure(path)
-        _check_existing_chain(path, require_directory=True)
-    return checked
+        if getattr(paths, field) != getattr(expected, field):
+            raise ArtifactIdentityError(f"artifact path field drifted: {field}")
+    if paths.trusted_base_identity is None:
+        raise ArtifactIdentityError("artifact paths have no trusted base identity")
+    with _lease_context(_pin_artifact_paths(expected, create=False)) as lease:
+        if lease.base_identity != paths.trusted_base_identity:
+            raise ArtifactIdentityError("artifact base identity changed")
+        lease.assert_intact()
+        return replace(expected, trusted_base_identity=lease.base_identity)
 
 
-def _read_source_bytes(source: Path) -> tuple[bytes, tuple[int, int]]:
-    nofollow = getattr(os, "O_NOFOLLOW", 0)
-    descriptor: int | None = None
+def _close_file_for_error(fd: int | None, primary: BaseException | None) -> None:
+    error = _close_fd_once(fd)
+    if error is not None and primary is not None:
+        _attach_cleanup_error(primary, error)
+    elif error is not None:
+        raise ArtifactBindingError("file descriptor close failed") from error
+
+
+def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnapshot:
+    if not relative_parts:
+        raise ArtifactBindingError("file path must contain a leaf")
+    transient: list[int | None] = []
+    current_fd = parent_fd
     try:
+        for component in relative_parts[:-1]:
+            _safe_name(component)
+            child_fd = _open_child_directory(current_fd, component, create=False)
+            transient.append(child_fd)
+            current_fd = child_fd
+        leaf = _safe_name(relative_parts[-1], "file name")
+        file_fd: int | None = os.open(leaf, os.O_RDONLY | _NOFOLLOW, dir_fd=current_fd)
         try:
-            _check_existing_chain(source)
-        except ArtifactIdentityError as error:
-            raise ArtifactBindingError("source path contains a symlink") from error
-        before = source.lstat()
-        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
-            raise ArtifactBindingError("source must be a regular non-symlink file")
-        try:
-            descriptor = os.open(source, os.O_RDONLY | nofollow)
-        except OSError as error:
-            raise ArtifactBindingError("source cannot be opened without following links") from error
-        opened = os.fstat(descriptor)
-        if (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
-            raise ArtifactBindingError("source identity changed during read")
-        chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
-            if not chunk:
-                break
-            chunks.append(chunk)
-        after_fd = os.fstat(descriptor)
-        try:
-            after_path = source.lstat()
-        except OSError as error:
-            raise ArtifactBindingError("source disappeared during read") from error
-        if (after_fd.st_dev, after_fd.st_ino) != (before.st_dev, before.st_ino) or (
-            after_path.st_dev,
-            after_path.st_ino,
-        ) != (before.st_dev, before.st_ino):
-            raise ArtifactBindingError("source identity changed during read")
-        return b"".join(chunks), (before.st_dev, before.st_ino)
-    except ArtifactBindingError:
+            before = os.fstat(file_fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise ArtifactBindingError("file is not regular")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(file_fd, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            after = os.fstat(file_fd)
+            if (after.st_dev, after.st_ino, after.st_size) != (
+                before.st_dev,
+                before.st_ino,
+                before.st_size,
+            ):
+                raise ArtifactBindingError("file identity changed during read")
+            entry = os.stat(leaf, dir_fd=current_fd, follow_symlinks=False)
+            if (entry.st_dev, entry.st_ino) != (before.st_dev, before.st_ino):
+                raise ArtifactBindingError("file directory entry changed during read")
+            raw = b"".join(chunks)
+            if len(raw) != after.st_size:
+                raise ArtifactBindingError("file size changed during read")
+            return _FileSnapshot(
+                raw=raw,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                size=len(raw),
+                identity=(after.st_dev, after.st_ino),
+            )
+        finally:
+            owned = file_fd
+            file_fd = None
+            _close_file_for_error(owned, None)
+    except BaseException as primary:
+        for index in range(len(transient) - 1, -1, -1):
+            owned = transient[index]
+            transient[index] = None
+            _attach_cleanup_error(primary, _close_fd_once(owned))
+        if isinstance(primary, OSError):
+            if getattr(primary, "errno", None) == getattr(os, "ELOOP", 62):
+                raise ArtifactBindingError("source path contains a symlink") from primary
+            raise ArtifactBindingError("source file is unreadable") from primary
         raise
-    except OSError as error:
-        raise ArtifactBindingError("source is unreadable") from error
-    finally:
-        if descriptor is not None:
-            os.close(descriptor)
-
-
-def _destination_for(
-    source: Path,
-    destination: str | os.PathLike[str],
-    revision_root: str | os.PathLike[str] | None,
-) -> tuple[Path, Path]:
-    destination_path = _lexical_absolute(destination)
-    if destination_path.exists() and destination_path.is_dir():
-        revision = (
-            destination_path
-            if revision_root is None
-            else _lexical_absolute(revision_root)
-        )
-        target = destination_path / source.name
     else:
-        revision = _lexical_absolute(revision_root) if revision_root is not None else destination_path.parent
-        target = destination_path
-    _check_existing_chain(revision, require_directory=True)
-    if not revision.exists():
-        _mkdir_secure(revision)
+        close_errors: list[OSError] = []
+        for index in range(len(transient) - 1, -1, -1):
+            owned = transient[index]
+            transient[index] = None
+            error = _close_fd_once(owned)
+            if error is not None:
+                close_errors.append(error)
+        if close_errors:
+            raise ArtifactBindingError("directory descriptor close failed") from close_errors[0]
+
+
+def _atomic_write_at(
+    parent_fd: int,
+    relative_parts: tuple[str, ...],
+    content: bytes,
+) -> None:
+    """Publish bytes below a pinned directory without replacing a target."""
+
+    if not relative_parts:
+        raise ArtifactBindingError("artifact path must contain a leaf")
+    transient: list[int | None] = []
+    current_fd = parent_fd
+    temporary_name: str | None = None
+    temp_fd: int | None = None
+    try:
+        for component in relative_parts[:-1]:
+            _safe_name(component)
+            child_fd = _open_child_directory(current_fd, component, create=True)
+            transient.append(child_fd)
+            current_fd = child_fd
+        leaf = _safe_name(relative_parts[-1], "file name")
+        temporary_name = f".{leaf}.{uuid.uuid4().hex}.tmp"
+        temp_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+            0o600,
+            dir_fd=current_fd,
+        )
+        view = memoryview(content)
+        while view:
+            written = os.write(temp_fd, view)
+            if written <= 0:
+                raise ArtifactBindingError("artifact write made no progress")
+            view = view[written:]
+        os.fsync(temp_fd)
+        owned = temp_fd
+        temp_fd = None
+        close_error = _close_fd_once(owned)
+        if close_error is not None:
+            raise ArtifactBindingError("temporary artifact close failed") from close_error
+        try:
+            os.link(
+                temporary_name,
+                leaf,
+                src_dir_fd=current_fd,
+                dst_dir_fd=current_fd,
+                follow_symlinks=False,
+            )
+        except FileExistsError as error:
+            raise ArtifactBindingError("artifact destination already exists") from error
+        os.unlink(temporary_name, dir_fd=current_fd)
+        temporary_name = None
+        os.fsync(current_fd)
+        if current_fd != parent_fd:
+            os.fsync(parent_fd)
+    except BaseException as primary:
+        if temp_fd is not None:
+            owned = temp_fd
+            temp_fd = None
+            _attach_cleanup_error(primary, _close_fd_once(owned))
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name, dir_fd=current_fd)
+            except OSError as cleanup_error:
+                _attach_cleanup_error(primary, cleanup_error)
+        for index in range(len(transient) - 1, -1, -1):
+            owned = transient[index]
+            transient[index] = None
+            _attach_cleanup_error(primary, _close_fd_once(owned))
+        if isinstance(primary, ArtifactBindingError):
+            raise
+        raise ArtifactBindingError("artifact publication failed") from primary
+    else:
+        close_errors: list[OSError] = []
+        for index in range(len(transient) - 1, -1, -1):
+            owned = transient[index]
+            transient[index] = None
+            error = _close_fd_once(owned)
+            if error is not None:
+                close_errors.append(error)
+        if close_errors:
+            raise ArtifactBindingError("directory descriptor close failed") from close_errors[0]
+
+
+def _relative_parts(path: Path, root: Path) -> tuple[str, ...]:
+    try:
+        relative = _lexical_absolute(path).relative_to(_lexical_absolute(root))
+    except ValueError as error:
+        raise ArtifactBindingError("destination containment violation") from error
+    parts = relative.parts
+    if not parts or any(part in {"", ".", ".."} for part in parts):
+        raise ArtifactBindingError("destination contains unsafe path components")
+    return tuple(_safe_name(part) for part in parts)
+
+
+def _resolve_destination(
+    source: Path,
+    destination: Path,
+    revision_root: Path | None,
+) -> tuple[Path, tuple[str, ...]]:
+    destination = _lexical_absolute(destination)
+    revision = _lexical_absolute(revision_root) if revision_root is not None else None
+    if destination.exists() and destination.is_dir():
+        if revision is None:
+            revision = destination
+        target = destination / source.name
+    else:
+        if revision is None:
+            revision = destination.parent
+        target = destination
+    assert revision is not None
+    _check_existing_chain(revision, require_directory=False)
     try:
         target.relative_to(revision)
     except ValueError as error:
-        raise ArtifactBindingError("destination containment violation: escapes revision root") from error
-    _check_existing_chain(target)
-    try:
-        if not target.resolve(strict=False).relative_to(revision.resolve(strict=False)):
-            raise ArtifactBindingError("destination containment violation: escapes revision root")
-    except (OSError, RuntimeError, ValueError) as error:
-        if isinstance(error, ArtifactBindingError):
-            raise
-        raise ArtifactBindingError("destination containment violation: escapes revision root") from error
-    parent = target.parent
-    # Build only directories below the already validated revision.  A symlink
-    # at any level is rejected before a file is created.
-    relative_parts = parent.relative_to(revision).parts
-    current = revision
-    for part in relative_parts:
-        current = current / part
-        _mkdir_secure(current)
-    try:
-        info = target.lstat()
-    except FileNotFoundError:
-        pass
-    except OSError as error:
-        raise ArtifactBindingError("destination cannot be inspected") from error
-    else:
-        if stat.S_ISLNK(info.st_mode):
-            raise ArtifactBindingError("destination is a symlink")
-        raise ArtifactBindingError("destination already exists")
-    return revision, target
+        raise ArtifactBindingError("destination containment violation") from error
+    return target, _relative_parts(target, revision)
 
 
 def bind_reused_artifact(
@@ -324,9 +646,14 @@ def bind_reused_artifact(
     destination: str | os.PathLike[str],
     revision_root: str | os.PathLike[str] | None = None,
 ) -> ArtifactBinding:
-    """Copy source bytes into a new revision target with no-follow guarantees."""
+    """Copy a verified source into a new revision target atomically."""
 
-    source_path = _lexical_absolute(source)
+    try:
+        source_path = _lexical_absolute(source)
+        destination_path = _lexical_absolute(destination)
+        revision_path = _lexical_absolute(revision_root) if revision_root is not None else None
+    except ArtifactIdentityError as error:
+        raise ArtifactBindingError(str(error)) from error
     if type(declared_sha256) is not str or len(declared_sha256) != 64:
         raise ArtifactBindingError("declared sha256 must be a 64-character digest")
     try:
@@ -334,58 +661,74 @@ def bind_reused_artifact(
     except ValueError as error:
         raise ArtifactBindingError("declared sha256 must be hexadecimal") from error
 
-    raw, _identity = _read_source_bytes(source_path)
-    actual_sha256 = hashlib.sha256(raw).hexdigest()
-    if actual_sha256 != declared_sha256.lower():
-        raise ArtifactBindingError("source sha256 does not match declared sha256")
-    revision, target = _destination_for(source_path, destination, revision_root)
-
-    temporary_name: str | None = None
-    descriptor: int | None = None
     try:
-        descriptor, temporary_name = tempfile.mkstemp(
-            dir=revision if target.parent == revision else target.parent,
-            prefix=f".{target.name}.",
-            suffix=".tmp",
-        )
-        os.fchmod(descriptor, 0o600)
-        view = memoryview(raw)
-        while view:
-            written = os.write(descriptor, view)
-            if written <= 0:
-                raise ArtifactBindingError("temporary artifact write made no progress")
-            view = view[written:]
-        os.fsync(descriptor)
-        os.close(descriptor)
-        descriptor = None
-        # link(2) is atomic and fails with EEXIST; unlike rename/replace it
-        # cannot silently overwrite a target created by a racing writer.
-        try:
-            os.link(temporary_name, target, follow_symlinks=False)
-        except FileExistsError as error:
-            raise ArtifactBindingError("destination already exists") from error
-        except OSError as error:
-            raise ArtifactBindingError("cannot atomically publish artifact") from error
-        os.unlink(temporary_name)
-        temporary_name = None
-        directory_descriptor = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_descriptor)
-        finally:
-            os.close(directory_descriptor)
+        source_parent = _open_absolute_directory(source_path.parent, create=False)
+    except ArtifactIdentityError as error:
+        raise ArtifactBindingError(str(error)) from error
+    try:
+        with _lease_context(source_parent) as source_lease:
+            source_snapshot = _read_file_at(source_lease.fd, (source_path.name,))
+            source_lease.assert_intact()
     except ArtifactBindingError:
         raise
-    except OSError as error:
-        raise ArtifactBindingError("cannot persist artifact binding") from error
+    except ArtifactIdentityError as error:
+        raise ArtifactBindingError(str(error)) from error
+    if source_snapshot.sha256 != declared_sha256.lower():
+        raise ArtifactBindingError("source sha256 does not match declared sha256")
+
+    target, relative_parts = _resolve_destination(
+        source_path,
+        destination_path,
+        revision_path,
+    )
+    revision = revision_path if revision_path is not None else target.parent
+    if target.exists() and target.is_dir() and target != revision:
+        raise ArtifactBindingError("destination must be a file")
+    try:
+        revision_lease = _open_absolute_directory(revision, create=True)
+        with _lease_context(revision_lease) as lease:
+            lease.assert_intact()
+            _atomic_write_at(lease.fd, relative_parts, source_snapshot.raw)
+            lease.assert_intact()
+    except ArtifactBindingError:
+        raise
+    except (ArtifactIdentityError, OSError) as error:
+        raise ArtifactBindingError(str(error)) from error
+    return ArtifactBinding(destination=target, sha256=source_snapshot.sha256, size=source_snapshot.size)
+
+
+def _create_staging_directory(asset_fd: int, name: str) -> int:
+    _safe_name(name)
+    os.mkdir(name, mode=0o700, dir_fd=asset_fd)
+    try:
+        return os.open(name, _DIR_FLAGS, dir_fd=asset_fd)
+    except BaseException as primary:
+        try:
+            os.rmdir(name, dir_fd=asset_fd)
+        except OSError as cleanup_error:
+            _attach_cleanup_error(primary, cleanup_error)
+        raise
+
+
+def _remove_tree_at(parent_fd: int, name: str) -> None:
+    """Remove a provider staging tree using only parent directory fds."""
+
+    _safe_name(name)
+    try:
+        directory_fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    except NotADirectoryError:
+        os.unlink(name, dir_fd=parent_fd)
+        return
+    try:
+        for child in os.listdir(directory_fd):
+            _remove_tree_at(directory_fd, child)
     finally:
-        if descriptor is not None:
-            os.close(descriptor)
-        if temporary_name is not None:
-            try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
-                pass
-    return ArtifactBinding(destination=target, sha256=actual_sha256, size=len(raw))
+        owned = directory_fd
+        directory_fd = None
+        error = _close_fd_once(owned)
+        if error is not None:
+            raise ArtifactIdentityError("staging directory close failed") from error
+    os.rmdir(name, dir_fd=parent_fd)
 
 
 __all__ = [
@@ -396,5 +739,6 @@ __all__ = [
     "ArtifactPaths",
     "bind_reused_artifact",
     "ensure_artifact_paths",
+    "revalidate_artifact_paths",
     "resolve_artifact_paths",
 ]

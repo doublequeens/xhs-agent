@@ -28,11 +28,12 @@ test modules, and this report.  v3 resolver callers remain on the existing
   composite source strategies become an explicit preferred/fallback pair;
   `purpose` and `supports_fragment_refs` never enter provider requests.
 - `src/asset_resolver/resolver.py` keeps the v3 API/default behavior while
-  adding mutually exclusive `transaction_directory` mode.  Explicit v4
-  directories receive no-follow/containment checks and immutable destination
-  writes.  Existing provider identity, licensing, allowlists, dimensions,
-  orientation, safety checks, journal preservation, pending human review, and
-  byte-hash semantics remain in the shared path.
+  adding mutually exclusive complete `artifact_paths` mode; bare
+  `transaction_directory` input is rejected.  Explicit v4 directories
+  receive no-follow/containment checks and immutable destination writes.
+  Existing provider identity, licensing, allowlists, dimensions, orientation,
+  safety checks, journal preservation, pending human review, and byte-hash
+  semantics remain in the shared path.
 - `src/nodes/v4/assets.py` recomputes the Task 8 Q1 route before identity,
   filesystem, or provider work; stale/missing/failed Q1 returns
   `visual_authoring`.  A passed plan is revalidated, bound to a strict
@@ -104,10 +105,103 @@ warnings.
 
 ## Concerns
 
-- The shared resolver's explicit directory API still accepts the caller's
-  `transaction_id` as a required evidence label; the v4 node binds it to the
-  `ArtifactIdentity.revision_id` and passes the validated `asset_root`, while
-  direct callers should use `artifact_paths`/the v4 wrapper when they need the
-  stronger identity cross-check.
+- Runtime manifests retain the existing absolute `local_path` handle needed
+  by renderer consumers; it is not provider-visible prompt data or AI
+  provenance, and transaction evidence is emitted only from the validated
+  identity-bound lease.
 - The full offline suite retains four unrelated warnings described above;
   none is associated with Task 9 assertions.
+
+## Fix round 1: security review closure
+
+### Status
+
+`DONE_WITH_CONCERNS` — the seven Important findings are addressed in the
+Task 9 files.  The remaining concerns are limited to intentionally skipped
+external smoke tests and pre-existing warning output.
+
+### Review finding mapping
+
+- Bare explicit-directory mode is rejected by both the shared resolver and
+  the v4 wrapper.  Explicit resolution accepts only a revalidated
+  `ArtifactPaths`, reconstructs the exact identity-derived path, checks the
+  trusted base identity, and binds run/revision evidence to that identity;
+  the candidate remains in the established path boundary.
+- `artifact_identity.py` now owns the shared descriptor-relative primitives:
+  trusted ancestor traversal, `O_DIRECTORY|O_NOFOLLOW` open/mkdir, pinned
+  lease identity checks, descriptor-relative reads/publication, and staging
+  cleanup.  Source, destination, staging, journal, and final publication do
+  not use a path check followed by an unrelated path write.
+- Every descriptor owner is cleared before its one close attempt.  Close
+  errors are aggregated as cleanup facts without retrying or reusing a
+  numeric fd; required failures preserve the primary
+  `VisualProductionInterrupted` error.
+- Legacy transaction IDs are validated before root creation and established
+  through a trusted root dirfd; `../escaped`, separators, control,
+  non-ASCII, and dot components have zero side effects.
+- Atomic publication converts write/fsync/link/unlink/parent-fsync/close
+  failures to `AssetResolutionError`; required failures retain the recovery
+  journal path or chain journal failure as the cause without masking the
+  directive's primary errors.
+- Generated providers receive an exclusive `.staging-*` directory only.
+  Resolver-owned final names are published no-overwrite, then safety-checked
+  and descriptor-reread for final inode/size/hash equality before manifest
+  construction.  Provider/safety mutation and final-collision regressions
+  are covered.
+- Composite v4 sources expand deterministically to
+  `search->generate` or `generate->search`; conflicting explicit fallbacks
+  are rejected as ambiguous.
+
+### RED-GREEN and attack coverage
+
+The fix-round attack tests cover bare-directory rejection, identity/evidence
+drift, symlink source/ancestor and destination escape, source SHA mismatch,
+existing target preservation, close-failure fd non-reuse, legacy traversal
+zero-side-effect behavior, journal close failure with primary-error
+preservation, staging-only generation, safety mutation, final collision,
+empty directives, immutable approved/pending status, optional unresolved
+assets, and composite source pairs.  The original focused suite was RED on
+the bare API/close/staging/mutation regressions before the implementation;
+the fresh focused run is GREEN.
+
+### Fresh verification
+
+```text
+pytest -q tests/visual_runtime/test_artifact_identity.py tests/asset_resolver/test_v4_resolution.py tests/nodes/v4/test_assets.py
+36 passed, 2 warnings
+
+pytest -q tests/asset_resolver tests/nodes/test_asset_resolver.py tests/nodes/v4/test_assets.py tests/visual_runtime/test_artifact_identity.py
+46 passed, 1 skipped, 2 warnings
+
+pytest -q tests/schemas/v4/test_direction.py tests/nodes/v4/test_authoring.py tests/visual_design/v4/test_authoring_qa.py tests/visual_ai/test_v4_worker.py
+47 passed, 2 warnings
+
+pytest -q
+1571 passed, 3 skipped, 4 warnings
+
+python -m compileall -q src main.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+The three skips are the opt-in Pexels/Unsplash smoke and two existing Gemini
+smokes; no live provider or network path was constructed by the default suite.
+The four warnings are the existing two Pydantic tampered-model warnings and
+two macOS pytest temporary-directory cleanup warnings.
+
+### Self-review and concerns
+
+- The legacy/v4 split occurs only while constructing the pinned transaction
+  handle; search, generation, final publication, safety reread, journal, and
+  evidence all share the same resolver path.
+- The descriptor helper audit found no repeated fd ownership: leases and
+  temporary/file descriptors are set to `None` before close, including close
+  exceptions, and no close path uses a previously failed numeric descriptor.
+- Manifest hashes are reread from the resolver-owned final bytes.  Absolute
+  local paths remain runtime-internal resolution handles required by the
+  existing renderer contract; no provider credentials, raw responses, or
+  local paths are copied into provider-visible prompts or AI provenance.
+- External live smoke remains intentionally unrun because the gate was not
+  enabled; this is not an offline-test failure.

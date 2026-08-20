@@ -116,7 +116,9 @@ def asset_resolver_node(
         return _blocked_result()
 
     run_id = _required_identity(state, "run_id")
-    _required_identity(state, "run_mode")
+    run_mode = _required_identity(state, "run_mode")
+    if run_mode not in {"production", "shadow"}:
+        raise ValueError("v4 asset resolver state.run_mode must be production or shadow")
     candidate_id = _required_identity(state, "candidate_id")
     revision_id = _required_identity(state, "revision_id")
     parent_revision_id = state.get("parent_revision_id")
