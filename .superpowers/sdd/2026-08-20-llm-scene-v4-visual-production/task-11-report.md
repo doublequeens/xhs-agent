@@ -112,3 +112,64 @@ scene/compiler regression set passed 118; Task 10 grammar/composition tests
 passed 54; and the full offline suite passed 1690 with 3 explicitly skipped
 live tests.  The 11 warnings are limited to deliberate Pydantic tampered
 fixtures and pytest temporary-directory cleanup.
+
+## Fix round 2
+
+The second review attack suite was written and run before the fixes. After
+correcting one test fixture to use the existing `paragraph` role, the focused
+RED run reported 11 expected behavior failures: policy constants were only
+format-checked, nested evidence could still be mutated, grammar axes and
+relationships were not executed, newline/bearing evidence was incomplete,
+portrait assets were forced through an incompatible cover box, whitespace
+classification was reversed, and dynamic step-flow layouts could not handle
+both three- and five-fragment programs.
+
+The fix closes those seams by:
+
+- enforcing canonical compiler, contrast, accessibility-ink, and wrap-policy
+  constants, and deep-freezing typography, asset, font, and region evidence
+  with deterministic thawing only during serialization;
+- recording hash-bound named-region geometry and executing the canonical
+  editorial, comparison, and step-flow axes, order, focus, pair, and sequence
+  constraints, with unknown constraint kinds rejected as invariants;
+- preserving Unicode-codepoint offsets for explicit LF/CRLF breaks versus
+  inserted grapheme breaks, recording Pillow ink bearings/ascent/descent, and
+  translating glyph boxes into the safe margin;
+- selecting deterministic `contain` boxes for compatible portrait, square,
+  and landscape assets while retaining a real intrinsic-orientation mismatch
+  failure path and binding fit/ratio/crop evidence;
+- classifying whitespace from actual occupied geometry, keeping solver box
+  overlap as an internal invariant, and dynamically allocating non-overlapping
+  step-flow heading/sequence/support slots with an explicit fragment-to-icon
+  mapping;
+- making the public compiler and aggregate APIs require a complete
+  hash-bound `VisualDirectionPlanV4`, candidate, revision, and run identity,
+  and extending the non-vacuous leakage test to real compiled page and design
+  plan JSON containing provider/path/provenance secrets.
+
+Fresh fix-round verification was run offline:
+
+```text
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py
+66 passed in 8.27s
+
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py tests/schemas/test_scene_graph.py tests/rendering/scene/test_compiler.py
+133 passed, 2 warnings in 8.54s
+
+$ pytest -q tests/schemas/v4/test_layout.py tests/visual_design/v4/test_grammars.py tests/nodes/v4/test_composition.py
+54 passed in 0.15s
+
+$ pytest -q
+1705 passed, 3 skipped, 4 warnings in 40.82s
+
+$ python -m compileall -q src main.py
+$ git diff --check
+```
+
+The three skipped tests are explicitly disabled live provider/Gemini smoke
+tests. The four full-suite warnings are two deliberate Pydantic tampered
+fixture serializer warnings and two pytest temporary-directory cleanup
+warnings; no test failed. No renderer or Chromium was invoked, and the v3
+renderer/schema behavior remains unchanged. Task 13 still owns actual CSS
+application/render verification: this round only emits the versioned,
+hash-bound wrap and measurement evidence needed to enforce that seam.

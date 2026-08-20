@@ -12,7 +12,9 @@ from src.schemas.v4.direction import (
     AssetDirectiveV4,
     CarouselNarrativeV4,
     NarrativeBeatV4,
+    PageBriefSetV4,
     PageBriefV4,
+    VisualDirectionPlanV4,
 )
 from src.schemas.scene_graph import Box, TextElement
 from src.schemas.v4.layout import (
@@ -161,6 +163,45 @@ def _inputs(
         density_budget=density_budget or ("low" if family == "white_quote" else "medium"),
     )
     narrative = _narrative(page, task_kind="context", family=family)
+    narrative_payload = narrative.model_dump(mode="python")
+    narrative_payload["content_atom_set_sha256"] = atom_set.canonical_sha256
+    narrative_payload.pop("canonical_sha256", None)
+    narrative = CarouselNarrativeV4(
+        **narrative_payload,
+        canonical_sha256=canonical_sha256_v4(narrative_payload),
+    )
+    page_briefs = [page]
+    for sequence in range(2, 6):
+        page_payload = page.model_dump(mode="python")
+        page_payload.update({"page_id": f"page-{sequence}", "sequence": sequence, "beat_ref": f"beat-{sequence}"})
+        page_payload.pop("canonical_sha256", None)
+        page_briefs.append(PageBriefV4(**page_payload, canonical_sha256=canonical_sha256_v4(page_payload)))
+    page_set_payload = {
+        "page_count": 5,
+        "pages": tuple(page_briefs),
+        "template_family": family,
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "semantic_content_model_sha256": semantic.canonical_sha256,
+    }
+    page_set = PageBriefSetV4(
+        **page_set_payload,
+        canonical_sha256=canonical_sha256_v4(page_set_payload),
+    )
+    direction_payload = {
+        "semantic_content_model": semantic,
+        "narrative": narrative,
+        "page_brief_set": page_set,
+        "template_family": family,
+        "page_count": 5,
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "semantic_content_model_sha256": semantic.canonical_sha256,
+        "narrative_sha256": narrative.canonical_sha256,
+        "page_brief_set_sha256": page_set.canonical_sha256,
+    }
+    direction_plan = VisualDirectionPlanV4(
+        **direction_payload,
+        canonical_sha256=canonical_sha256_v4(direction_payload),
+    )
     program = build_layout_program(
         page,
         grammar_id="editorial_hero",
@@ -199,7 +240,57 @@ def _inputs(
         asset_manifest=manifest,
         candidate_id="candidate-a",
         revision=3,
+        run_id="run-a",
+        visual_direction_plan=direction_plan,
         min_body_font_px=min_body_font_px,
+    )
+
+
+def _direction_plan_for(
+    page: PageBriefV4,
+    semantic: SemanticContentModelV4,
+    atom_set: ContentAtomSetV4,
+    narrative: CarouselNarrativeV4,
+    family: str,
+) -> VisualDirectionPlanV4:
+    narrative_payload = narrative.model_dump(mode="python")
+    narrative_payload["content_atom_set_sha256"] = atom_set.canonical_sha256
+    narrative_payload.pop("canonical_sha256", None)
+    checked_narrative = CarouselNarrativeV4(
+        **narrative_payload,
+        canonical_sha256=canonical_sha256_v4(narrative_payload),
+    )
+    page_briefs = [page]
+    for sequence in range(2, 6):
+        page_payload = page.model_dump(mode="python")
+        page_payload.update({"page_id": f"page-{sequence}", "sequence": sequence, "beat_ref": f"beat-{sequence}"})
+        page_payload.pop("canonical_sha256", None)
+        page_briefs.append(PageBriefV4(**page_payload, canonical_sha256=canonical_sha256_v4(page_payload)))
+    page_set_payload = {
+        "page_count": 5,
+        "pages": tuple(page_briefs),
+        "template_family": family,
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "semantic_content_model_sha256": semantic.canonical_sha256,
+    }
+    page_set = PageBriefSetV4(
+        **page_set_payload,
+        canonical_sha256=canonical_sha256_v4(page_set_payload),
+    )
+    direction_payload = {
+        "semantic_content_model": semantic,
+        "narrative": checked_narrative,
+        "page_brief_set": page_set,
+        "template_family": family,
+        "page_count": 5,
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "semantic_content_model_sha256": semantic.canonical_sha256,
+        "narrative_sha256": checked_narrative.canonical_sha256,
+        "page_brief_set_sha256": page_set.canonical_sha256,
+    }
+    return VisualDirectionPlanV4(
+        **direction_payload,
+        canonical_sha256=canonical_sha256_v4(direction_payload),
     )
 
 
@@ -207,10 +298,7 @@ def _rehash_program(program: LayoutProgramV4, **updates) -> LayoutProgramV4:
     raw = program.model_dump(mode="python")
     raw.update(updates)
     raw.pop("canonical_sha256", None)
-    source = LayoutProgramV4.model_construct(
-        **raw,
-        canonical_sha256="0" * 64,
-    ).model_dump(mode="json", exclude={"canonical_sha256"}, exclude_none=True)
+    source = {key: value for key, value in raw.items() if value is not None}
     return LayoutProgramV4(**raw, canonical_sha256=canonical_sha256_v4(source))
 
 
@@ -221,10 +309,7 @@ def _rehash_provenance(
     raw = provenance.model_dump(mode="python")
     raw.update(updates)
     raw.pop("canonical_sha256", None)
-    source = CompilerProvenanceV4.model_construct(
-        **raw,
-        canonical_sha256="0" * 64,
-    ).model_dump(mode="json", exclude={"canonical_sha256"})
+    source = dict(raw)
     return CompilerProvenanceV4(**raw, canonical_sha256=canonical_sha256_v4(source))
 
 
@@ -232,10 +317,7 @@ def _rehash_page(page: CompiledPageV4, **updates) -> CompiledPageV4:
     raw = page.model_dump(mode="python")
     raw.update(updates)
     raw.pop("canonical_sha256", None)
-    source = CompiledPageV4.model_construct(
-        **raw,
-        canonical_sha256="0" * 64,
-    ).model_dump(mode="json", exclude={"canonical_sha256"})
+    source = {key: value for key, value in raw.items() if value is not None}
     return CompiledPageV4(**raw, canonical_sha256=canonical_sha256_v4(source))
 
 
@@ -276,7 +358,13 @@ def test_each_implemented_grammar_returns_safe_flat_scene(
     semantic = _semantic(atom_set, "这是一个可读的页面标题")
     page = _page(grammar=grammar, task_kind=task_kind)
     narrative = _narrative(page, task_kind=task_kind)
-    program = build_layout_program(page, grammar_id=grammar, family="pink_red", narrative=narrative)
+    direction_plan = _direction_plan_for(page, semantic, atom_set, narrative, "pink_red")
+    program = build_layout_program(
+        page,
+        grammar_id=grammar,
+        family="pink_red",
+        narrative=direction_plan.narrative,
+    )
     result = compile_layout(
         program,
         LayoutCompilerInputsV4(
@@ -286,6 +374,8 @@ def test_each_implemented_grammar_returns_safe_flat_scene(
             asset_manifest=AssetManifest(items=()),
             candidate_id="candidate-a",
             revision=3,
+            run_id="run-a",
+            visual_direction_plan=direction_plan,
         ),
     )
     assert result.scene.sequence == 1
@@ -400,16 +490,9 @@ def test_solver_executes_legal_region_choice_instead_of_ignoring_placement() -> 
         program,
         fragment_placements=(changed_placement,),
     )
-    hero_page = compile_layout(program, inputs)
-    support_page = compile_layout(changed_program, inputs)
-    hero_box = next(element.box for element in hero_page.scene.elements if isinstance(element, TextElement))
-    support_box = next(element.box for element in support_page.scene.elements if isinstance(element, TextElement))
-    assert (hero_box.x, hero_box.y, hero_box.width, hero_box.height) != (
-        support_box.x,
-        support_box.y,
-        support_box.width,
-        support_box.height,
-    )
+    with pytest.raises(LayoutCompilationError) as exc:
+        compile_layout(changed_program, inputs)
+    assert exc.value.code == "UNBALANCED_REGIONS"
 
 
 @pytest.mark.parametrize("family", tuple(FAMILY_TOKENS))
@@ -446,6 +529,17 @@ def test_typography_uses_ink_extents_and_face_nominal_weight() -> None:
     assert resolved.nominal_weight >= 700
 
 
+def test_display_bearings_are_safe_at_88px_for_j_and_ringed_letters() -> None:
+    program, inputs = _inputs(text="j\nÅg", semantic_role="heading")
+    compiled = compile_layout(program, inputs)
+    element = next(item for item in compiled.scene.elements if isinstance(item, TextElement))
+    evidence = compiled.compiler_provenance.text_measurement_evidence[element.content_ref]
+    assert element.box.x + evidence.ink_left_px >= 80
+    assert element.box.x + evidence.ink_right_px <= 1000
+    assert element.box.y + evidence.ink_top_px >= 80
+    assert element.box.y + evidence.ink_bottom_px <= 1360
+
+
 def test_compiler_persists_task13_wrap_policy_and_measurement_evidence_without_copy() -> None:
     program, inputs = _inputs()
     page = compile_layout(program, inputs)
@@ -462,11 +556,11 @@ def test_portrait_asset_is_not_cropped_into_extreme_landscape_cover_box() -> Non
     program, inputs = _inputs(with_asset=True, asset_orientation="any")
     portrait = inputs.asset_manifest.items[0].model_copy(update={"width": 800, "height": 1200})
     inputs = inputs.model_copy(update={"asset_manifest": AssetManifest(items=(portrait,))})
-    with pytest.raises(LayoutCompilationError) as exc:
-        compile_layout(program, inputs)
-    assert exc.value.code == "ASSET_ASPECT_MISMATCH"
-    assert "fixture-provider" not in repr(exc.value)
-    assert "/tmp/fixture.png" not in repr(exc.value)
+    compiled = compile_layout(program, inputs)
+    image = next(element for element in compiled.scene.elements if element.kind == "image")
+    assert image.fit == "contain"
+    assert "fixture-provider" not in compiled.model_dump_json()
+    assert "/tmp/fixture.png" not in compiled.model_dump_json()
 
 
 def test_single_unbreakable_grapheme_reports_content_overflow() -> None:
@@ -487,10 +581,12 @@ def test_region_relationship_violation_reports_unbalanced_regions() -> None:
 
 
 def test_density_target_with_insufficient_occupied_whitespace_reports_whitespace_failure() -> None:
-    program, inputs = _inputs(density_budget="high")
+    program, inputs = _inputs(family="white_quote", with_asset=True, asset_orientation="landscape")
     with pytest.raises(LayoutCompilationError) as exc:
         compile_layout(program, inputs)
     assert exc.value.code == "INSUFFICIENT_WHITESPACE"
+    assert "actual_whitespace=" in exc.value.evidence
+    assert "minimum_whitespace=" in exc.value.evidence
 
 
 def test_minimum_font_policy_conflict_reports_typography_constraint_conflict() -> None:
@@ -519,3 +615,208 @@ def test_contract_error_strings_and_cause_chain_do_not_leak_visible_or_private_v
     assert secret not in rendered
     assert "/Users/private" not in rendered
     assert "provider-secret" not in rendered
+
+
+def test_public_compile_requires_direction_plan_and_run_identity() -> None:
+    program, inputs = _inputs()
+    payload = inputs.model_dump(mode="python")
+    payload.pop("visual_direction_plan")
+    payload.pop("run_id")
+    with pytest.raises(ValueError, match="direction|plan|run|invalid"):
+        compile_layout(program, payload)
+
+
+def test_provenance_policy_values_are_fixed_not_only_well_formed() -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    raw = page.compiler_provenance.model_dump(mode="json")
+    raw.update(
+        {
+            "contrast_policy_version": "attacker-policy-v1",
+            "accessibility_ink": "#ABCDEF",
+        }
+    )
+    raw.pop("canonical_sha256")
+    with pytest.raises(ValueError, match="contrast|accessibility|policy|canonical"):
+        CompilerProvenanceV4(**raw, canonical_sha256=canonical_sha256_v4(raw))
+
+
+def test_provenance_evidence_and_font_maps_are_deeply_immutable() -> None:
+    program, inputs = _inputs(with_asset=True)
+    page = compile_layout(program, inputs)
+    provenance = page.compiler_provenance
+    with pytest.raises(TypeError):
+        provenance.font_sha256_by_role["body"] = "f" * 64
+    with pytest.raises((TypeError, AttributeError)):
+        provenance.text_measurement_evidence.pop("fragment-1")
+    with pytest.raises((TypeError, AttributeError)):
+        provenance.asset_binding_evidence["directive-1"] = None
+    with pytest.raises((TypeError, AttributeError)):
+        provenance.region_geometry_evidence.pop("hero")
+    assert page.canonical_sha256 == _rehash_page(page).canonical_sha256
+
+
+def test_provenance_records_hash_bound_region_geometry_evidence() -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.region_geometry_evidence
+    assert set(evidence) == {"hero", "support", "accent"}
+    assert all(item.width > 0 and item.height > 0 for item in evidence.values())
+    assert all("这是一个可读的页面标题" not in item.model_dump_json() for item in evidence.values())
+
+
+def test_editorial_primary_visual_priority_must_remain_in_hero() -> None:
+    program, inputs = _inputs()
+    changed_placement = program.fragment_placements[0].model_copy(update={"region_id": "support"})
+    changed_program = _rehash_program(program, fragment_placements=(changed_placement,))
+    with pytest.raises(LayoutCompilationError) as exc:
+        compile_layout(changed_program, inputs)
+    assert exc.value.code == "UNBALANCED_REGIONS"
+
+
+def test_portrait_asset_uses_contain_when_cover_crop_would_be_extreme() -> None:
+    program, inputs = _inputs(with_asset=True, asset_orientation="any")
+    portrait = inputs.asset_manifest.items[0].model_copy(update={"width": 800, "height": 1200})
+    compiled = compile_layout(
+        program,
+        inputs.model_copy(update={"asset_manifest": AssetManifest(items=(portrait,))}),
+    )
+    image = next(element for element in compiled.scene.elements if element.kind == "image")
+    assert image.fit == "contain"
+    assert compiled.compiler_provenance.asset_binding_evidence["directive-1"].fit == "contain"
+
+
+def test_intrinsic_asset_orientation_conflict_remains_aspect_failure() -> None:
+    program, inputs = _inputs(with_asset=True, asset_orientation="landscape")
+    portrait = inputs.asset_manifest.items[0].model_copy(update={"width": 800, "height": 1200})
+    with pytest.raises(LayoutCompilationError) as exc:
+        compile_layout(
+            program,
+            inputs.model_copy(update={"asset_manifest": AssetManifest(items=(portrait,))}),
+        )
+    assert exc.value.code == "ASSET_ASPECT_MISMATCH"
+
+
+def test_high_density_underfill_is_not_misclassified_as_insufficient_whitespace() -> None:
+    program, inputs = _inputs(density_budget="high")
+    compiled = compile_layout(program, inputs)
+    assert compiled.scene.elements
+
+
+def _many_fragment_inputs(count: int) -> tuple[LayoutProgramV4, LayoutCompilerInputsV4]:
+    pieces = ("步骤标题", "第一步", "第二步", "第三步", "第四步")[:count]
+    text = "".join(pieces)
+    atom_payload = {
+        "atom_id": "atom-steps",
+        "source_unit_id": "unit-steps",
+        "source_projection_sha256": "1" * 64,
+        "source_field": "content",
+        "raw_start": 0,
+        "raw_end": len(text),
+        "raw_slice_sha256": "2" * 64,
+        "text": text,
+        "role": "paragraph",
+    }
+    atom = ContentAtomV4(**atom_payload, sha256=canonical_sha256_v4(atom_payload))
+    atom_set_payload = {"projection_sha256": "1" * 64, "atoms": (atom,)}
+    atom_set = ContentAtomSetV4(**atom_set_payload, canonical_sha256=canonical_sha256_v4(atom_set_payload))
+    fragments = []
+    cursor = 0
+    for index, piece in enumerate(pieces):
+        fragments.append(
+            SemanticFragmentV4(
+                fragment_id=f"step-fragment-{index}",
+                source_atom_id="atom-steps",
+                start=cursor,
+                end=cursor + len(piece),
+                exact_text=piece,
+                semantic_role="heading" if index == 0 else "paragraph",
+                sequence_index=index,
+            )
+        )
+        cursor += len(piece)
+    semantic_payload = {
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "fragments": tuple(fragments),
+        "groups": (),
+    }
+    semantic = SemanticContentModelV4(**semantic_payload, canonical_sha256=canonical_sha256_v4(semantic_payload))
+    refs = tuple(fragment.fragment_id for fragment in fragments)
+    page_payload = {
+        "page_id": "steps-page",
+        "sequence": 1,
+        "narrative_role": "typed role",
+        "beat_ref": "steps-beat-1",
+        "fragment_refs": refs,
+        "visual_priority": (refs[0],),
+        "density_budget": "medium",
+        "preferred_compositions": ("step_flow",),
+        "forbidden_patterns": (),
+        "asset_directives": (),
+        "continuity_with_previous": "none",
+    }
+    page = PageBriefV4(**page_payload, canonical_sha256=canonical_sha256_v4(page_payload))
+    beats = tuple(
+        NarrativeBeatV4(
+            beat_id=f"steps-beat-{index}",
+            sequence=index,
+            task_kind="step",
+            fragment_refs=refs,
+            task="ordered steps",
+        )
+        for index in range(1, 6)
+    )
+    narrative_payload = {
+        "template_family": "pink_red",
+        "page_count": 5,
+        "beats": beats,
+        "density_curve": ("medium",) * 5,
+        "variation_strategy": "stable",
+        "continuity_strategy": "stable",
+        "art_direction": "editorial",
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+    }
+    checked_narrative = CarouselNarrativeV4(
+        **narrative_payload,
+        canonical_sha256=canonical_sha256_v4(narrative_payload),
+    )
+    program = build_layout_program(page, grammar_id="step_flow", family="pink_red", narrative=checked_narrative)
+    direction_plan = _direction_plan_for(
+        page,
+        semantic,
+        atom_set,
+        checked_narrative,
+        "pink_red",
+    )
+    return program, LayoutCompilerInputsV4(
+        page_brief=page,
+        semantic_content_model=semantic,
+        content_atom_set=atom_set,
+        asset_manifest=AssetManifest(items=()),
+        candidate_id="candidate-steps",
+        revision=1,
+        run_id="run-steps",
+        visual_direction_plan=direction_plan,
+    )
+
+
+@pytest.mark.parametrize("count", (3, 5))
+def test_step_flow_allocates_three_and_five_fragment_pages_without_overlap(count: int) -> None:
+    program, inputs = _many_fragment_inputs(count)
+    compiled = compile_layout(program, inputs)
+    sequence_count = sum(item.region_id == "sequence" for item in program.fragment_placements)
+    assert sum(element.kind == "icon" for element in compiled.scene.elements) == sequence_count
+
+
+def test_solver_region_choice_changes_compiled_geometry() -> None:
+    program, inputs = _many_fragment_inputs(3)
+    baseline = compile_layout(program, inputs)
+    changed_placement = program.fragment_placements[0].model_copy(update={"region_id": "support"})
+    changed_program = _rehash_program(
+        program,
+        fragment_placements=(changed_placement, *program.fragment_placements[1:]),
+    )
+    changed = compile_layout(changed_program, inputs)
+    baseline_text = next(element for element in baseline.scene.elements if element.kind == "text")
+    changed_text = next(element for element in changed.scene.elements if element.kind == "text")
+    assert (changed_text.box.x, changed_text.box.y) != (baseline_text.box.x, baseline_text.box.y)

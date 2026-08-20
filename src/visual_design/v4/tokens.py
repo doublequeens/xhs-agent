@@ -75,8 +75,8 @@ FAMILY_TOKEN_REGISTRY = FAMILY_TOKENS
 def get_family_tokens(family: str) -> FamilyTokensV4:
     try:
         return FAMILY_TOKENS[family]
-    except KeyError as exc:
-        raise ValueError(f"unknown v4 template family: {family}") from exc
+    except KeyError:
+        raise ValueError("unknown v4 template family") from None
 
 
 def load_family_tokens() -> MappingProxyType[str, FamilyTokensV4]:

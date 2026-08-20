@@ -94,6 +94,15 @@ class TextMeasurementV4:
     ink_width_px: float
     ink_height_px: float
     break_offsets: tuple[int, ...]
+    offset_unit: str
+    explicit_break_spans: tuple[tuple[int, int], ...]
+    inserted_break_offsets: tuple[int, ...]
+    ink_left_px: float
+    ink_top_px: float
+    ink_right_px: float
+    ink_bottom_px: float
+    ascent_px: float
+    descent_px: float
     measurement_sha256: str
 
     @property
@@ -116,8 +125,8 @@ def _finite_positive(value: object, field_name: str) -> float:
         raise ValueError(f"{field_name} must be a finite positive number")
     try:
         number = float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field_name} must be a finite positive number") from exc
+    except (TypeError, ValueError):
+        raise ValueError(f"{field_name} must be a finite positive number") from None
     if not math.isfinite(number) or number <= 0:
         raise ValueError(f"{field_name} must be a finite positive number")
     return number
@@ -130,8 +139,8 @@ def _font_bytes(path: Path) -> bytes:
         if not resolved.is_file():
             raise ValueError("checked-in font path is not a regular file")
         data = resolved.read_bytes()
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise ValueError("checked-in v4 font file is missing or unreadable") from exc
+    except (OSError, RuntimeError, ValueError):
+        raise ValueError("checked-in v4 font file is missing or unreadable") from None
     if not data:
         raise ValueError("checked-in v4 font file is empty")
     return data
@@ -151,8 +160,8 @@ def resolve_font_file_v4(family: str, role: str) -> ResolvedFontV4:
         raise ValueError(f"unknown v4 font role: {role!r}")
     try:
         tokens = get_family_tokens(family)
-    except Exception as exc:
-        raise ValueError(f"unknown v4 font family: {family!r}") from exc
+    except Exception:
+        raise ValueError("unknown v4 font family") from None
     family_name = getattr(tokens.font_roles, role, None)
     path = _FONT_FILES.get(family_name)
     if not isinstance(family_name, str) or path is None:
@@ -183,15 +192,15 @@ def resolve_font_path_v4(family: str, role: str) -> Path:
 def _load_font(resolved: ResolvedFontV4, size_px: float):
     try:
         return ImageFont.truetype(str(resolved.path), size=max(1, round(size_px)))
-    except (OSError, ValueError) as exc:
-        raise ValueError("checked-in v4 font cannot be loaded by Pillow/FreeType") from exc
+    except (OSError, ValueError):
+        raise ValueError("checked-in v4 font cannot be loaded by Pillow/FreeType") from None
 
 
 def _text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
     try:
         width = float(font.getlength(text))
-    except (AttributeError, OSError, ValueError) as exc:
-        raise ValueError("Pillow/FreeType failed to measure text") from exc
+    except (AttributeError, OSError, ValueError):
+        raise ValueError("Pillow/FreeType failed to measure text") from None
     if not math.isfinite(width) or width < 0:
         raise ValueError("Pillow/FreeType returned invalid text geometry")
     return width
@@ -200,32 +209,46 @@ def _text_width(font: ImageFont.FreeTypeFont, text: str) -> float:
 def _text_ink_extents(
     font: ImageFont.FreeTypeFont,
     text: str,
-) -> tuple[float, float]:
-    """Return ink width/height, retaining negative bearings and marks."""
+) -> tuple[float, float, float, float]:
+    """Return Pillow's complete ink bbox, including negative bearings."""
 
     try:
         left, top, right, bottom = font.getbbox(text)
-        width = max(0.0, float(right - left))
-        height = max(0.0, float(bottom - top))
-    except (AttributeError, OSError, ValueError) as exc:
-        raise ValueError("Pillow/FreeType failed to measure ink extents") from exc
-    if not math.isfinite(width) or not math.isfinite(height):
+        left_value = float(left)
+        top_value = float(top)
+        right_value = float(right)
+        bottom_value = float(bottom)
+    except (AttributeError, OSError, ValueError):
+        raise ValueError("Pillow/FreeType failed to measure ink extents") from None
+    if not all(
+        math.isfinite(value)
+        for value in (left_value, top_value, right_value, bottom_value)
+    ):
         raise ValueError("Pillow/FreeType returned invalid ink extents")
-    return width, height
+    return left_value, top_value, right_value, bottom_value
 
 
 def _text_extent(font: ImageFont.FreeTypeFont, text: str) -> float:
     """Measure the conservative horizontal extent used for wrapping."""
 
-    return max(_text_width(font, text), _text_ink_extents(font, text)[0])
+    left, _top, right, _bottom = _text_ink_extents(font, text)
+    return max(_text_width(font, text), max(0.0, right - left))
 
 
-def _explicit_lines(text: str) -> tuple[tuple[str, ...], int]:
-    # Keep CRLF as one delimiter for geometry while preserving ``text`` in the
-    # returned measurement object.  A trailing delimiter deliberately creates
-    # a final empty line, matching ordinary text layout semantics.
-    parts = tuple(regex.split(r"\r\n|\n|\r", text))
-    return parts, max(0, len(parts) - 1)
+def _explicit_lines(
+    text: str,
+) -> tuple[tuple[tuple[str, int], ...], tuple[tuple[int, int], ...]]:
+    """Return exact line slices and original codepoint spans for delimiters."""
+
+    lines: list[tuple[str, int]] = []
+    break_spans: list[tuple[int, int]] = []
+    cursor = 0
+    for match in regex.finditer(r"\r\n|\n|\r", text):
+        lines.append((text[cursor : match.start()], cursor))
+        break_spans.append((match.start(), match.end()))
+        cursor = match.end()
+    lines.append((text[cursor:], cursor))
+    return tuple(lines), tuple(break_spans)
 
 
 def _wrap_graphemes(
@@ -282,10 +305,11 @@ def measure_text_v4(
     resolved = resolve_font_file_v4(family, role)
     font = _load_font(resolved, font_size)
 
-    explicit, newline_count = _explicit_lines(text)
+    explicit, explicit_break_spans = _explicit_lines(text)
     lines: list[str] = []
     widths: list[float] = []
-    for explicit_line in explicit:
+    inserted_break_offsets: list[int] = []
+    for explicit_line, line_start in explicit:
         wrapped, wrapped_widths = _wrap_graphemes(
             explicit_line,
             font=font,
@@ -293,37 +317,68 @@ def measure_text_v4(
         )
         lines.extend(wrapped)
         widths.extend(wrapped_widths)
+        cursor = line_start
+        for wrapped_line in wrapped[:-1]:
+            cursor += len(wrapped_line)
+            inserted_break_offsets.append(cursor)
 
     line_count = len(lines)
     try:
         ascent, descent = font.getmetrics()
-    except (AttributeError, OSError, ValueError) as exc:
-        raise ValueError("Pillow/FreeType failed to measure font metrics") from exc
+    except (AttributeError, OSError, ValueError):
+        raise ValueError("Pillow/FreeType failed to measure font metrics") from None
     line_ink_widths: list[float] = []
     line_ink_heights: list[float] = []
+    line_bboxes: list[tuple[float, float, float, float]] = []
     for line in lines:
-        ink_width, ink_height = _text_ink_extents(font, line)
+        left, top, right, bottom = _text_ink_extents(font, line)
+        ink_width = max(0.0, right - left)
+        ink_height = max(0.0, bottom - top)
         line_ink_widths.append(ink_width)
         line_ink_heights.append(ink_height)
+        line_bboxes.append((left, top, right, bottom))
     advance_width = max(
         (_text_width(font, line) for line in lines),
         default=0.0,
     )
     ink_width = max([advance_width, *line_ink_widths])
-    line_box_height = max(float(ascent + descent), max(line_ink_heights, default=0.0))
-    ink_height = float(line_count) * line_box_height
-    break_offsets: list[int] = []
-    cursor = 0
-    for line in lines[:-1]:
-        cursor += len(line)
-        break_offsets.append(cursor)
+    line_box_height = max(
+        float(ascent + descent),
+        max(line_ink_heights, default=0.0),
+        font_size * line_height_value,
+    )
+    positioned_bboxes = [
+        (
+            left,
+            top + index * line_box_height,
+            right,
+            bottom + index * line_box_height,
+        )
+        for index, (left, top, right, bottom) in enumerate(line_bboxes)
+    ]
+    nonempty_bboxes = [bbox for line, bbox in zip(lines, positioned_bboxes) if line]
+    if nonempty_bboxes:
+        ink_left = min(bbox[0] for bbox in nonempty_bboxes)
+        ink_top = min(bbox[1] for bbox in nonempty_bboxes)
+        ink_right = max(bbox[2] for bbox in nonempty_bboxes)
+        ink_bottom = max(bbox[3] for bbox in nonempty_bboxes)
+    else:
+        ink_left = ink_top = ink_right = ink_bottom = 0.0
+    ink_height = max(0.0, ink_bottom - ink_top)
     measurement_payload = {
-        "break_offsets": tuple(break_offsets),
+        "explicit_break_spans": tuple(explicit_break_spans),
         "font_nominal_weight": resolved.nominal_weight,
         "font_sha256": resolved.sha256,
         "font_size_px": font_size,
         "ink_height_px": ink_height,
+        "ink_left_px": ink_left,
+        "ink_top_px": ink_top,
+        "ink_right_px": ink_right,
+        "ink_bottom_px": ink_bottom,
         "ink_width_px": ink_width,
+        "ascent_px": float(ascent),
+        "descent_px": float(descent),
+        "inserted_break_offsets": tuple(inserted_break_offsets),
         "line_count": line_count,
         "line_height": line_height_value,
         "line_widths_px": tuple(widths),
@@ -338,11 +393,11 @@ def measure_text_v4(
         line_widths_px=tuple(widths),
         width_px=ink_width,
         height_px=max(
-            float(line_count) * font_size * line_height_value,
+            float(line_count) * line_box_height,
             ink_height,
         ),
         line_count=line_count,
-        explicit_newline_count=newline_count,
+        explicit_newline_count=len(explicit_break_spans),
         font_size_px=font_size,
         line_height=line_height_value,
         max_width_px=max_width,
@@ -351,7 +406,16 @@ def measure_text_v4(
         advance_width_px=advance_width,
         ink_width_px=ink_width,
         ink_height_px=ink_height,
-        break_offsets=tuple(break_offsets),
+        break_offsets=tuple(inserted_break_offsets),
+        offset_unit="unicode_codepoint_v1",
+        explicit_break_spans=tuple(explicit_break_spans),
+        inserted_break_offsets=tuple(inserted_break_offsets),
+        ink_left_px=ink_left,
+        ink_top_px=ink_top,
+        ink_right_px=ink_right,
+        ink_bottom_px=ink_bottom,
+        ascent_px=float(ascent),
+        descent_px=float(descent),
         measurement_sha256=measurement_sha256,
     )
 

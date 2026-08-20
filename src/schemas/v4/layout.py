@@ -38,6 +38,10 @@ GRAMMAR_IDS_V4 = ("editorial_hero", "comparison_grid", "step_flow")
 ImplementedGrammarIDV4 = Literal["editorial_hero", "comparison_grid", "step_flow"]
 PAGE_ROLES_V4 = ("cover", "body", "closing")
 PageRoleV4 = Literal["cover", "body", "closing"]
+CANONICAL_COMPILER_VERSION_V4 = "v4-layout-compiler-2"
+CANONICAL_TEXT_WRAP_POLICY_V4 = "pre-wrap-grapheme-anywhere-v1"
+CANONICAL_CONTRAST_POLICY_VERSION_V4 = "wcag-semantic-ink-v1"
+CANONICAL_ACCESSIBILITY_INK_V4 = "#111111"
 TASK_KIND_TO_PAGE_ROLE_V4 = MappingProxyType(
     {
         "cover_hook": "cover",
@@ -602,8 +606,8 @@ class LayoutProgramV4(_FrozenLayoutV4):
             from src.visual_design.v4.tokens import get_family_tokens
 
             current_tokens = get_family_tokens(self.template_family)
-        except Exception as exc:
-            raise ValueError("layout program family token registry is unavailable") from exc
+        except Exception:
+            raise ValueError("layout program family token registry is unavailable") from None
         if self.family_tokens_sha256 != current_tokens.canonical_sha256:
             raise ValueError("layout program family token hash does not match current family tokens")
 
@@ -726,6 +730,16 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     font_size_px: float = Field(gt=0)
     line_count: StrictInt = Field(ge=1)
     break_offsets: tuple[StrictInt, ...] = ()
+    offset_unit: Literal["unicode_codepoint_v1"] = "unicode_codepoint_v1"
+    explicit_break_spans: tuple[tuple[StrictInt, StrictInt], ...] = ()
+    inserted_break_offsets: tuple[StrictInt, ...] = ()
+    ink_left_px: float = 0.0
+    ink_top_px: float = 0.0
+    ink_right_px: float = 0.0
+    ink_bottom_px: float = 0.0
+    ascent_px: float = Field(ge=0)
+    descent_px: float = Field(ge=0)
+    wrap_policy: StrictStr = CANONICAL_TEXT_WRAP_POLICY_V4
     measurement_sha256: StrictStr
 
     @field_validator("font_sha256", "measurement_sha256")
@@ -740,7 +754,7 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
             raise ValueError("text measurement font size must be finite and positive")
         return value
 
-    @field_validator("break_offsets")
+    @field_validator("break_offsets", "inserted_break_offsets")
     @classmethod
     def validate_break_offsets(cls, value: tuple[int, ...]) -> tuple[int, ...]:
         if any(offset < 0 for offset in value):
@@ -748,6 +762,46 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
         if tuple(value) != tuple(sorted(value)):
             raise ValueError("text measurement break offsets must be ordered")
         return value
+
+    @field_validator("explicit_break_spans")
+    @classmethod
+    def validate_break_spans(
+        cls,
+        value: tuple[tuple[int, int], ...],
+    ) -> tuple[tuple[int, int], ...]:
+        previous_end = -1
+        for start, end in value:
+            if start < 0 or end <= start or start < previous_end:
+                raise ValueError("text measurement explicit break spans are invalid")
+            previous_end = end
+        return value
+
+    @field_validator(
+        "ink_left_px",
+        "ink_top_px",
+        "ink_right_px",
+        "ink_bottom_px",
+        "ascent_px",
+        "descent_px",
+    )
+    @classmethod
+    def validate_metrics(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("text measurement metric must be finite")
+        return value
+
+    @field_validator("wrap_policy")
+    @classmethod
+    def validate_wrap_policy(cls, value: str) -> str:
+        if value != CANONICAL_TEXT_WRAP_POLICY_V4:
+            raise ValueError("text measurement wrap policy is not canonical")
+        return value
+
+    @model_validator(mode="after")
+    def validate_ink_bounds(self) -> "TextMeasurementEvidenceV4":
+        if self.ink_right_px < self.ink_left_px or self.ink_bottom_px < self.ink_top_px:
+            raise ValueError("text measurement ink bounds are inverted")
+        return self
 
 
 class AssetBindingEvidenceV4(_FrozenLayoutV4):
@@ -758,11 +812,67 @@ class AssetBindingEvidenceV4(_FrozenLayoutV4):
     asset_sha256: StrictStr
     orientation: Literal["any", "portrait", "landscape", "square"]
     fit: Literal["cover", "contain"]
+    box_ratio: float = Field(gt=0)
+    crop_factor: float = Field(ge=1)
 
     @field_validator("asset_sha256")
     @classmethod
     def validate_asset_hash(cls, value: str) -> str:
         return _validate_hash(value, "asset_sha256")
+
+    @field_validator("box_ratio", "crop_factor")
+    @classmethod
+    def validate_asset_geometry(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("asset binding geometry must be finite")
+        return value
+
+
+class RegionGeometryEvidenceV4(_FrozenLayoutV4):
+    """Hash-bound named-region geometry emitted by a grammar solver."""
+
+    region_id: StrictStr = Field(min_length=1)
+    role: StrictStr = Field(min_length=1)
+    order: StrictInt = Field(ge=0)
+    x: float = Field(ge=80)
+    y: float = Field(ge=80)
+    width: float = Field(gt=0)
+    height: float = Field(gt=0)
+    geometry_sha256: StrictStr
+
+    @field_validator("region_id", "role")
+    @classmethod
+    def validate_region_tokens(cls, value: str, info) -> str:
+        return _validate_identifier(value, info.field_name)
+
+    @field_validator("geometry_sha256")
+    @classmethod
+    def validate_geometry_hash(cls, value: str) -> str:
+        return _validate_hash(value, "geometry_sha256")
+
+    @field_validator("x", "y", "width", "height")
+    @classmethod
+    def validate_region_geometry(cls, value: float) -> float:
+        if not math.isfinite(value):
+            raise ValueError("region geometry must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_region_bounds(self) -> "RegionGeometryEvidenceV4":
+        payload = {
+            "region_id": self.region_id,
+            "role": self.role,
+            "order": self.order,
+            "x": self.x,
+            "y": self.y,
+            "width": self.width,
+            "height": self.height,
+        }
+        if self.geometry_sha256 != canonical_sha256_v4(payload):
+            raise ValueError("region geometry evidence hash does not match payload")
+        if self.x + self.width > 1000 or self.y + self.height > 1360:
+            raise ValueError("region geometry evidence exceeds compiler safe margin")
+        return self
 
 
 class CompilerProvenanceV4(_FrozenLayoutV4):
@@ -773,31 +883,32 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
     boundaries and cannot enter this durable scene contract.
     """
 
-    compiler_version: StrictStr = "v4-layout-compiler-2"
+    compiler_version: StrictStr = CANONICAL_COMPILER_VERSION_V4
     grammar_id: ImplementedGrammarIDV4
     template_family: TemplateFamilyV4
     program_sha256: StrictStr
     content_atom_set_sha256: StrictStr
     semantic_content_model_sha256: StrictStr
     page_brief_sha256: StrictStr
-    page_brief_set_sha256: StrictStr | None = None
-    visual_direction_plan_sha256: StrictStr | None = None
+    page_brief_set_sha256: StrictStr
+    visual_direction_plan_sha256: StrictStr
     asset_manifest_sha256: StrictStr
     family_tokens_sha256: StrictStr
     font_sha256_by_role: dict[StrictStr, StrictStr]
     candidate_id: StrictStr
     revision: StrictInt = Field(ge=0)
-    run_id: StrictStr | None = None
+    run_id: StrictStr
     canvas_width: StrictInt = 1080
     canvas_height: StrictInt = 1440
     safe_margin_px: StrictInt = 80
     min_body_font_px: StrictInt = Field(default=24, ge=24)
     min_display_font_px: StrictInt = Field(default=32, ge=32)
-    text_wrap_policy: StrictStr = "pre-wrap-grapheme-anywhere-v1"
-    contrast_policy_version: StrictStr = "wcag-semantic-ink-v1"
-    accessibility_ink: StrictStr = "#111111"
+    text_wrap_policy: StrictStr = CANONICAL_TEXT_WRAP_POLICY_V4
+    contrast_policy_version: StrictStr = CANONICAL_CONTRAST_POLICY_VERSION_V4
+    accessibility_ink: StrictStr = CANONICAL_ACCESSIBILITY_INK_V4
     text_measurement_evidence: dict[StrictStr, TextMeasurementEvidenceV4] = {}
     asset_binding_evidence: dict[StrictStr, AssetBindingEvidenceV4] = {}
+    region_geometry_evidence: dict[StrictStr, RegionGeometryEvidenceV4]
     canonical_sha256: StrictStr
 
     @field_validator(
@@ -815,31 +926,36 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
 
     @field_validator("page_brief_set_sha256", "visual_direction_plan_sha256")
     @classmethod
-    def validate_optional_provenance_hash(cls, value: str | None, info) -> str | None:
-        if value is None:
-            return None
+    def validate_optional_provenance_hash(cls, value: str, info) -> str:
         return _validate_hash(value, info.field_name)
 
     @field_validator("compiler_version")
     @classmethod
     def validate_compiler_version(cls, value: str) -> str:
-        if value != "v4-layout-compiler-2":
+        if value != CANONICAL_COMPILER_VERSION_V4:
             raise ValueError("v4 compiler version is not canonical")
         return value
 
     @field_validator("text_wrap_policy")
     @classmethod
     def validate_wrap_policy(cls, value: str) -> str:
-        if value != "pre-wrap-grapheme-anywhere-v1":
+        if value != CANONICAL_TEXT_WRAP_POLICY_V4:
             raise ValueError("v4 text wrap policy is not canonical")
         return value
 
     @field_validator("accessibility_ink")
     @classmethod
     def validate_accessibility_ink(cls, value: str) -> str:
-        if not re.fullmatch(r"#[0-9A-Fa-f]{6}", value):
-            raise ValueError("v4 accessibility ink must be a six-digit color")
-        return value.upper()
+        if value != CANONICAL_ACCESSIBILITY_INK_V4:
+            raise ValueError("v4 accessibility ink is not canonical")
+        return value
+
+    @field_validator("contrast_policy_version")
+    @classmethod
+    def validate_contrast_policy(cls, value: str) -> str:
+        if value != CANONICAL_CONTRAST_POLICY_VERSION_V4:
+            raise ValueError("v4 contrast policy is not canonical")
+        return value
 
     @field_validator("candidate_id")
     @classmethod
@@ -848,9 +964,7 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
 
     @field_validator("run_id")
     @classmethod
-    def validate_run_id(cls, value: str | None) -> str | None:
-        if value is None:
-            return None
+    def validate_run_id(cls, value: str) -> str:
         return _validate_identifier(value, "run_id")
 
     @field_validator("font_sha256_by_role")
@@ -885,8 +999,31 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
             raise ValueError("asset binding evidence keys must match directive IDs")
         return checked
 
+    @field_validator("region_geometry_evidence")
+    @classmethod
+    def validate_region_evidence(cls, value: dict[str, RegionGeometryEvidenceV4]):
+        checked = {
+            key: RegionGeometryEvidenceV4.model_validate(item.model_dump(mode="python"))
+            for key, item in value.items()
+        }
+        if any(key != item.region_id for key, item in checked.items()):
+            raise ValueError("region geometry evidence keys must match region IDs")
+        return checked
+
     @field_serializer("font_sha256_by_role")
     def serialize_font_hashes(self, value):
+        return deep_thaw(value)
+
+    @field_serializer("text_measurement_evidence")
+    def serialize_text_evidence(self, value):
+        return deep_thaw(value)
+
+    @field_serializer("asset_binding_evidence")
+    def serialize_asset_evidence(self, value):
+        return deep_thaw(value)
+
+    @field_serializer("region_geometry_evidence")
+    def serialize_region_evidence(self, value):
         return deep_thaw(value)
 
     @model_validator(mode="after")
@@ -918,6 +1055,9 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
             "font_sha256_by_role",
             deep_freeze(self.font_sha256_by_role),
         )
+        object.__setattr__(self, "text_measurement_evidence", deep_freeze(self.text_measurement_evidence))
+        object.__setattr__(self, "asset_binding_evidence", deep_freeze(self.asset_binding_evidence))
+        object.__setattr__(self, "region_geometry_evidence", deep_freeze(self.region_geometry_evidence))
         expected = canonical_sha256_v4(
             self.model_dump(
                 mode="json",
@@ -969,6 +1109,13 @@ class CompiledPageV4(_FrozenLayoutV4):
             raise ValueError("compiler provenance family token hash does not match layout program")
         if self.compiler_provenance.page_brief_sha256 != self.layout_program.page_brief_sha256:
             raise ValueError("compiler provenance page brief hash does not match layout program")
+        expected_region_ids = tuple(region.region_id for region in self.layout_program.regions)
+        if set(self.compiler_provenance.region_geometry_evidence) != set(expected_region_ids):
+            raise ValueError("compiler provenance region geometry evidence is incomplete")
+        for region in self.layout_program.regions:
+            evidence = self.compiler_provenance.region_geometry_evidence[region.region_id]
+            if evidence.role != region.role or evidence.order != region.order:
+                raise ValueError("compiler provenance region geometry identity does not match program")
 
         def _safe_number(value: object) -> bool:
             return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
@@ -1023,6 +1170,22 @@ class CompiledPageV4(_FrozenLayoutV4):
                 evidence = self.compiler_provenance.text_measurement_evidence.get(element.content_ref)
                 if evidence is None:
                     raise ValueError("compiled page text has no measurement evidence")
+                if evidence.font_role != element.style.font_role:
+                    raise ValueError("compiled page text role does not match measurement evidence")
+                if abs(evidence.font_size_px - element.style.font_size) > 1e-6:
+                    raise ValueError("compiled page text size does not match measurement evidence")
+                margin = self.compiler_provenance.safe_margin_px
+                glyph_left = box[0] + evidence.ink_left_px
+                glyph_top = box[1] + evidence.ink_top_px
+                glyph_right = box[0] + evidence.ink_right_px
+                glyph_bottom = box[1] + evidence.ink_bottom_px
+                if (
+                    glyph_left < margin
+                    or glyph_top < margin
+                    or glyph_right > self.compiler_provenance.canvas_width - margin
+                    or glyph_bottom > self.compiler_provenance.canvas_height - margin
+                ):
+                    raise ValueError("compiled page glyph ink exceeds compiler safe margin")
                 try:
                     from src.visual_design.v4.typography import resolve_font_file_v4
 
@@ -1048,6 +1211,8 @@ class CompiledPageV4(_FrozenLayoutV4):
         for directive_id, asset_ref in zip(expected_directives, image_refs):
             if evidence[directive_id].asset_id != asset_ref:
                 raise ValueError("compiled page asset evidence does not match scene assets")
+            if evidence[directive_id].box_ratio <= 0 or evidence[directive_id].crop_factor < 1:
+                raise ValueError("compiled page asset geometry evidence is invalid")
         for left_index, (left_id, left_box, left_allowed) in enumerate(boxes):
             for right_id, right_box, right_allowed in boxes[left_index + 1 :]:
                 intersects = (
@@ -1090,8 +1255,8 @@ class CarouselDesignPlanV4(_FrozenLayoutV4):
     family_tokens_sha256: StrictStr
     candidate_id: StrictStr
     revision: StrictInt = Field(ge=0)
-    run_id: StrictStr | None = None
-    visual_direction_plan_sha256: StrictStr | None = None
+    run_id: StrictStr
+    visual_direction_plan_sha256: StrictStr
     pages: tuple[CompiledPageV4, ...] = Field(min_length=5, max_length=18)
     canonical_sha256: StrictStr
 
@@ -1114,6 +1279,11 @@ class CarouselDesignPlanV4(_FrozenLayoutV4):
     @classmethod
     def validate_plan_candidate(cls, value: str) -> str:
         return _validate_identifier(value, "candidate_id")
+
+    @field_validator("run_id")
+    @classmethod
+    def validate_plan_run(cls, value: str) -> str:
+        return _validate_identifier(value, "run_id")
 
     @model_validator(mode="after")
     def validate_plan_identity_and_hash(self) -> "CarouselDesignPlanV4":
@@ -1216,6 +1386,7 @@ __all__ = [
     "TASK_KIND_TO_PAGE_ROLE_V4",
     "EmphasisRuleV4",
     "ResponsiveConstraintV4",
+    "RegionGeometryEvidenceV4",
     "TypographyRolesV4",
     "TextMeasurementEvidenceV4",
 ]

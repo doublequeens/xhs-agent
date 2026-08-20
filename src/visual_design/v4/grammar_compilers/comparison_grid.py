@@ -69,6 +69,54 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
         by_region.setdefault(placement.region_id, []).append(placement.fragment_ref)
     elements: list[SceneElement] = []
     heading_refs = by_region.get("heading", [])
+    gap = 32.0
+    grid_top = 340.0
+    rows = max(
+        math.ceil(len(by_region.get("left", [])) / 1),
+        math.ceil(len(by_region.get("right", [])) / 1),
+        1,
+    )
+    grid_height = min(640.0, asset_start - grid_top - 24.0)
+    row_height = max(88.0, (grid_height - gap * (rows - 1)) / rows)
+    column_width = (context.width - gap) / 2
+    support_top = 1020.0
+    support_height = max(80.0, asset_start - support_top - 24.0)
+    context.register_region_geometry(
+        region_id="heading",
+        role="primary",
+        order=0,
+        x=SAFE_MARGIN_V4,
+        y=SAFE_MARGIN_V4,
+        width=context.width,
+        height=180.0,
+    )
+    context.register_region_geometry(
+        region_id="left",
+        role="comparison_primary",
+        order=1,
+        x=SAFE_MARGIN_V4,
+        y=grid_top,
+        width=column_width,
+        height=row_height * rows + gap * (rows - 1),
+    )
+    context.register_region_geometry(
+        region_id="right",
+        role="comparison_secondary",
+        order=2,
+        x=SAFE_MARGIN_V4 + column_width + gap,
+        y=grid_top,
+        width=column_width,
+        height=row_height * rows + gap * (rows - 1),
+    )
+    context.register_region_geometry(
+        region_id="support",
+        role="supporting",
+        order=3,
+        x=SAFE_MARGIN_V4,
+        y=support_top,
+        width=context.width,
+        height=support_height,
+    )
     if heading_refs:
         heading_slot = 180.0 / len(heading_refs)
         for index, ref in enumerate(heading_refs):
@@ -84,15 +132,7 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
             )
     comparison_refs = by_region.get("left", []) + by_region.get("right", [])
     if comparison_refs:
-        rows = max(
-            math.ceil(len(by_region.get("left", [])) / 1),
-            math.ceil(len(by_region.get("right", [])) / 1),
-            1,
-        )
-        gap = 32.0
-        grid_top = 340.0
-        grid_height = min(640.0, asset_start - grid_top - 24.0)
-        row_height = (grid_height - gap * (rows - 1)) / rows
+
         if row_height < 88:
             raise LayoutCompilationError(
                 "DENSITY_EXCEEDED",
@@ -100,7 +140,6 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
                 region_id="comparison",
                 evidence="comparison rows cannot retain minimum readable density",
             )
-        column_width = (context.width - gap) / 2
         for index, ref in enumerate(by_region.get("left", [])):
             elements.append(
                 context.text_element(
@@ -127,8 +166,6 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
             )
     support_refs = by_region.get("support", [])
     if support_refs:
-        support_top = 1020.0
-        support_height = asset_start - support_top - 24.0
         slot = support_height / len(support_refs)
         if slot < 72.0:
             raise LayoutCompilationError(

@@ -75,8 +75,40 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
     hero_refs = by_region.get("hero", [])
     support_refs = by_region.get("support", [])
     accent_refs = by_region.get("accent", [])
+    hero_height = 430.0 if support_refs or accent_refs else 520.0
+    support_top = 600.0 if not hero_refs else 650.0
+    support_width = context.width - 264.0 if accent_refs else context.width
+    support_height = max(120.0, asset_start - support_top - 24.0)
+    accent_top = support_top
+    accent_height = max(120.0, min(180.0, (asset_start - accent_top - 24.0) / max(1, len(accent_refs))))
+    context.register_region_geometry(
+        region_id="hero",
+        role="primary",
+        order=0,
+        x=SAFE_MARGIN_V4,
+        y=SAFE_MARGIN_V4,
+        width=context.width,
+        height=hero_height,
+    )
+    context.register_region_geometry(
+        region_id="support",
+        role="supporting",
+        order=1,
+        x=SAFE_MARGIN_V4,
+        y=support_top,
+        width=support_width,
+        height=support_height,
+    )
+    context.register_region_geometry(
+        region_id="accent",
+        role="accent",
+        order=2,
+        x=SAFE_MARGIN_V4 + context.width - 240.0,
+        y=accent_top,
+        width=240.0,
+        height=accent_height,
+    )
     if hero_refs:
-        hero_height = 430.0 if support_refs or accent_refs else 520.0
         slot = hero_height / len(hero_refs)
         if slot < 96:
             raise LayoutCompilationError(
@@ -98,9 +130,6 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
                 )
             )
     if support_refs:
-        support_top = 600.0 if not hero_refs else 650.0
-        support_width = context.width - 264.0 if accent_refs else context.width
-        support_height = asset_start - support_top - 24.0
         slot = support_height / len(support_refs)
         if slot < 72.0:
             raise LayoutCompilationError(
@@ -121,8 +150,6 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
                 )
             )
     if accent_refs:
-        accent_top = 600.0 if not hero_refs else 650.0
-        accent_height = min(180.0, (asset_start - accent_top - 24.0) / len(accent_refs))
         for index, ref in enumerate(accent_refs):
             elements.append(
                 context.text_element(

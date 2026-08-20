@@ -69,31 +69,40 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
         by_region.setdefault(placement.region_id, []).append(placement.fragment_ref)
     elements: list[SceneElement] = []
     heading_refs = by_region.get("heading", [])
+    heading_top = float(SAFE_MARGIN_V4)
+    heading_height = max(120.0, min(180.0 * max(1, len(heading_refs)), 220.0))
     for index, ref in enumerate(heading_refs):
+        heading_slot = heading_height / len(heading_refs)
         elements.append(
             context.text_element(
                 ref,
                 x=SAFE_MARGIN_V4,
-                y=100.0 + index * 170.0,
+                y=heading_top + index * heading_slot,
                 width=context.width,
-                height=170.0,
+                height=heading_slot - 12.0 if len(heading_refs) > 1 else heading_height,
                 region_id="heading",
             )
         )
     steps = by_region.get("sequence", [])
+    support_refs = by_region.get("support", [])
+    content_bottom = asset_start - 24.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
+    support_height = max(120.0, 132.0 * len(support_refs)) if support_refs else 120.0
+    support_top = content_bottom - support_height if support_refs else content_bottom - 120.0
+    sequence_top = heading_top + heading_height + 44.0
+    sequence_bottom = support_top - 32.0 if support_refs else content_bottom
+    sequence_height = sequence_bottom - sequence_top
     if steps:
-        flow_top = 330.0
-        flow_height = asset_start - flow_top - 24.0
-        slot = flow_height / len(steps)
+        slot = (sequence_height - 24.0 * (len(steps) - 1)) / len(steps)
         if slot < 96:
             raise LayoutCompilationError(
                 "DENSITY_EXCEEDED",
                 page_id=context.page_id,
                 region_id="sequence",
-                evidence="ordered steps cannot retain minimum readable density",
+                evidence=f"sequence_slot={slot:.3f}; minimum=96.000",
             )
         for index, ref in enumerate(steps):
-            y = flow_top + index * slot
+            y = sequence_top + index * (slot + 24.0)
+            text_height = min(slot - 32.0, 360.0)
             icon_id = context._next_id("step", ref)
             icon_box = context._safe_box(
                 x=SAFE_MARGIN_V4,
@@ -104,33 +113,30 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
                 region_id="sequence",
                 ref=ref,
             )
-            elements.append(
-                IconElement(
-                    element_id=icon_id,
-                    layer=12,
-                    box=icon_box,
-                    icon="dot",
-                    color=context.palette_primary,
-                )
+            icon = IconElement(
+                element_id=icon_id,
+                layer=12,
+                box=icon_box,
+                icon="dot",
+                color=context.palette_primary,
             )
+            context.icon_by_fragment_ref[ref] = icon
+            elements.append(icon)
             elements.append(
                 context.text_element(
                     ref,
                     x=SAFE_MARGIN_V4 + 76.0,
                     y=y,
                     width=context.width - 76.0,
-                    height=slot - 16.0,
+                    height=text_height,
                     region_id="sequence",
                 )
             )
-    support_refs = by_region.get("support", [])
     if support_refs:
-        support_top = 1000.0
-        support_height = asset_start - support_top - 24.0
-        support_slot = support_height / len(support_refs)
+        support_slot = (support_height - 24.0 * (len(support_refs) - 1)) / len(support_refs)
         if support_slot < 72.0:
             raise LayoutCompilationError(
-                "INSUFFICIENT_WHITESPACE",
+                "DENSITY_EXCEEDED",
                 page_id=context.page_id,
                 region_id="support",
                 evidence=f"support_slot={support_slot:.3f}; minimum=72.000",
@@ -140,12 +146,39 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
                 context.text_element(
                     ref,
                     x=SAFE_MARGIN_V4,
-                    y=support_top + index * support_slot,
+                    y=support_top + index * (support_slot + 24.0),
                     width=context.width,
-                    height=support_slot - 12.0,
+                    height=support_slot,
                     region_id="support",
                 )
             )
+    context.register_region_geometry(
+        region_id="heading",
+        role="primary",
+        order=0,
+        x=SAFE_MARGIN_V4,
+        y=heading_top,
+        width=context.width,
+        height=heading_height,
+    )
+    context.register_region_geometry(
+        region_id="sequence",
+        role="ordered_steps",
+        order=1,
+        x=SAFE_MARGIN_V4,
+        y=sequence_top,
+        width=context.width,
+        height=max(120.0, sequence_height),
+    )
+    context.register_region_geometry(
+        region_id="support",
+        role="supporting",
+        order=2,
+        x=SAFE_MARGIN_V4,
+        y=support_top,
+        width=context.width,
+        height=support_height,
+    )
     elements.extend(_assets(context, asset_start + 24.0 if context.program.asset_placements else asset_start))
     by_ref = {
         element.content_ref: element
@@ -155,15 +188,8 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
     ordered: list[SceneElement] = []
     for placement in placements:
         if placement.region_id == "sequence":
-            ordered.extend(
-                element
-                for element in elements
-                if getattr(element, "content_ref", None) == placement.fragment_ref
-                or (
-                    getattr(element, "kind", None) == "icon"
-                    and element.element_id.endswith(f"-{placement.fragment_ref}-1")
-                )
-            )
+            ordered.append(context.icon_by_fragment_ref[placement.fragment_ref])
+            ordered.append(by_ref[placement.fragment_ref])
         else:
             ordered.append(by_ref[placement.fragment_ref])
     ordered.extend(element for element in elements if getattr(element, "kind", None) == "image")

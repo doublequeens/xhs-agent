@@ -82,3 +82,53 @@ def test_measurement_rejects_non_positive_geometry(
             max_width_px=max_width_px,
             line_height=line_height,
         )
+
+
+def test_measurement_records_codepoint_newline_spans_separately_from_inserted_breaks() -> None:
+    lf = measure_text_v4(
+        "A\nBC",
+        family="pink_red",
+        role="body",
+        font_size_px=32,
+        max_width_px=920,
+        line_height=1.25,
+    )
+    crlf = measure_text_v4(
+        "A\r\nBC",
+        family="pink_red",
+        role="body",
+        font_size_px=32,
+        max_width_px=920,
+        line_height=1.25,
+    )
+    wrapped = measure_text_v4(
+        "ABCD",
+        family="pink_red",
+        role="body",
+        font_size_px=32,
+        max_width_px=70,
+        line_height=1.25,
+    )
+    assert lf.offset_unit == "unicode_codepoint_v1"
+    assert lf.explicit_break_spans == ((1, 2),)
+    assert lf.inserted_break_offsets == ()
+    assert crlf.explicit_break_spans == ((1, 3),)
+    assert crlf.inserted_break_offsets == ()
+    assert wrapped.explicit_break_spans == ()
+    assert wrapped.inserted_break_offsets
+    assert wrapped.text == "ABCD"
+
+
+def test_measurement_records_ink_bearings_and_font_metrics() -> None:
+    measurement = measure_text_v4(
+        "j\nÅg",
+        family="pink_red",
+        role="display",
+        font_size_px=88,
+        max_width_px=920,
+        line_height=1.15,
+    )
+    assert measurement.ink_left_px <= measurement.ink_right_px
+    assert measurement.ink_top_px <= measurement.ink_bottom_px
+    assert measurement.ascent_px > 0
+    assert measurement.descent_px >= 0

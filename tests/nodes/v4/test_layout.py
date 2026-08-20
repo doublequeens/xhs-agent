@@ -4,9 +4,10 @@ import pytest
 
 from src.nodes.v4.composition import build_layout_program
 from src.nodes.v4.layout import aggregate_layout_plan, layout_node
-from src.schemas.assets import AssetManifest
+from src.schemas.assets import AssetManifest, AssetManifestItem
 from src.schemas.v4.content import ContentAtomSetV4, ContentAtomV4, canonical_sha256_v4
 from src.schemas.v4.direction import (
+    AssetDirectiveV4,
     CarouselNarrativeV4,
     NarrativeBeatV4,
     PageBriefSetV4,
@@ -253,11 +254,104 @@ def _direction_upstream(*, candidate_id: str = "candidate-a", revision: int = 1)
                     asset_manifest=AssetManifest(items=()),
                     candidate_id=candidate_id,
                     revision=revision,
+                    run_id="run-a",
                     visual_direction_plan=plan,
                 ),
             )
         )
     return atom_set, semantic, page_set, narrative, plan, tuple(compiled_pages)
+
+
+def _direction_upstream_with_approved_asset():
+    atom_set, semantic, page_set, narrative, direction_plan, base_pages = _direction_upstream()
+    directive = AssetDirectiveV4(
+        directive_id="directive-1",
+        page_id="page-1",
+        role="object",
+        purpose="supporting",
+        supports_fragment_refs=("fragment-1",),
+        required=True,
+        preferred_source="search",
+        query_or_prompt="text-free supporting object",
+        orientation="landscape",
+    )
+    first_page_payload = page_set.pages[0].model_dump(mode="python")
+    first_page_payload["asset_directives"] = (directive,)
+    first_page_payload.pop("canonical_sha256", None)
+    first_page = PageBriefV4(
+        **first_page_payload,
+        canonical_sha256=canonical_sha256_v4(first_page_payload),
+    )
+    page_set_payload = page_set.model_dump(mode="python")
+    page_set_payload["pages"] = (first_page, *page_set.pages[1:])
+    page_set_payload.pop("canonical_sha256", None)
+    updated_page_set = PageBriefSetV4(
+        **page_set_payload,
+        canonical_sha256=canonical_sha256_v4(page_set_payload),
+    )
+    plan_payload = direction_plan.model_dump(mode="python")
+    plan_payload.update(
+        {
+            "page_brief_set": updated_page_set,
+            "page_brief_set_sha256": updated_page_set.canonical_sha256,
+        }
+    )
+    plan_payload.pop("canonical_sha256", None)
+    updated_plan = VisualDirectionPlanV4(
+        **plan_payload,
+        canonical_sha256=canonical_sha256_v4(plan_payload),
+    )
+    manifest = AssetManifest(
+        items=(
+            AssetManifestItem(
+                asset_id="asset-1",
+                directive_id="directive-1",
+                page_id="page-1",
+                source_kind="search",
+                provider="fixture-provider-secret",
+                license="fixture-license",
+                local_path="/Users/private/fixture.png",
+                width=1200,
+                height=800,
+                sha256="3" * 64,
+                subject_focal_point=(0.5, 0.5),
+                crop_guidance="center",
+                security_status="approved",
+                human_decision="pending",
+                run_id="run-a",
+                transaction_id="tx-1",
+                internal_provenance={"secret": "fixture provenance"},
+            ),
+        )
+    )
+    compiled_pages = []
+    for index, page in enumerate(updated_page_set.pages):
+        program = (
+            build_layout_program(
+                page,
+                grammar_id="editorial_hero",
+                family="pink_red",
+                narrative=narrative,
+            )
+            if index == 0
+            else base_pages[index].layout_program
+        )
+        compiled_pages.append(
+            compile_layout(
+                program,
+                LayoutCompilerInputsV4(
+                    page_brief=page,
+                    semantic_content_model=semantic,
+                    content_atom_set=atom_set,
+                    asset_manifest=manifest,
+                    candidate_id="candidate-a",
+                    revision=1,
+                    run_id="run-a",
+                    visual_direction_plan=updated_plan,
+                ),
+            )
+        )
+    return atom_set, semantic, updated_page_set, updated_plan, manifest, tuple(compiled_pages)
 
 
 def _upstream(page_count: int = 5):
@@ -270,10 +364,7 @@ def _rehash_page(page: CompiledPageV4, **updates) -> CompiledPageV4:
     raw = page.model_dump(mode="python")
     raw.update(updates)
     raw.pop("canonical_sha256", None)
-    source = CompiledPageV4.model_construct(
-        **raw,
-        canonical_sha256="0" * 64,
-    ).model_dump(mode="json", exclude={"canonical_sha256"})
+    source = dict(raw)
     return CompiledPageV4(**raw, canonical_sha256=canonical_sha256_v4(source))
 
 
@@ -281,10 +372,7 @@ def _rehash_provenance(provenance: CompilerProvenanceV4, **updates) -> CompilerP
     raw = provenance.model_dump(mode="python")
     raw.update(updates)
     raw.pop("canonical_sha256", None)
-    source = CompilerProvenanceV4.model_construct(
-        **raw,
-        canonical_sha256="0" * 64,
-    ).model_dump(mode="json", exclude={"canonical_sha256"})
+    source = dict(raw)
     return CompilerProvenanceV4(**raw, canonical_sha256=canonical_sha256_v4(source))
 
 
@@ -298,6 +386,7 @@ def test_layout_node_aggregates_ordered_pages_and_binds_all_hashes() -> None:
         asset_manifest=AssetManifest(items=()),
         family_tokens=get_family_tokens("pink_red"),
         revision=1,
+        run_id="run-a",
         candidate_id="candidate-a",
         visual_direction_plan=direction_plan,
     )
@@ -325,6 +414,7 @@ def test_layout_node_rejects_page_identity_errors(mutation: str) -> None:
             asset_manifest=AssetManifest(items=()),
             family_tokens=get_family_tokens("pink_red"),
             revision=1,
+            run_id="run-a",
             candidate_id="candidate-a",
             visual_direction_plan=direction_plan,
         )
@@ -342,6 +432,7 @@ def test_layout_node_rejects_unrepresented_brief_fragment() -> None:
             asset_manifest=AssetManifest(items=()),
             family_tokens=get_family_tokens("pink_red"),
             revision=1,
+            run_id="run-a",
             candidate_id="candidate-a",
             visual_direction_plan=direction_plan,
         )
@@ -359,6 +450,7 @@ def test_aggregate_requires_one_hash_bound_direction_plan_and_candidate_revision
         visual_direction_plan=direction_plan,
         candidate_id="candidate-a",
         revision=1,
+        run_id="run-a",
     )
     assert plan.visual_direction_plan_sha256 == direction_plan.canonical_sha256
     assert plan.candidate_id == "candidate-a"
@@ -384,10 +476,7 @@ def test_aggregate_recompiles_scene_after_outer_hashes_are_recomputed() -> None:
     raw = original.model_dump(mode="python")
     raw["scene"] = changed_scene
     raw.pop("canonical_sha256", None)
-    source = CompiledPageV4.model_construct(
-        **raw,
-        canonical_sha256="0" * 64,
-    ).model_dump(mode="json", exclude={"canonical_sha256"}, exclude_none=True)
+    source = dict(raw)
     raw["canonical_sha256"] = canonical_sha256_v4(source)
     with pytest.raises(ValueError, match="safe|geometry|scene|stale|invalid"):
         aggregate_layout_plan(
@@ -400,6 +489,7 @@ def test_aggregate_recompiles_scene_after_outer_hashes_are_recomputed() -> None:
             visual_direction_plan=direction_plan,
             candidate_id="candidate-a",
             revision=1,
+            run_id="run-a",
         )
 
 
@@ -443,6 +533,7 @@ def test_durable_direction_boundary_rejects_duplicate_global_fragment_ownership(
             visual_direction_plan=duplicate_plan,
             candidate_id="candidate-a",
             revision=1,
+            run_id="run-a",
         )
 
 
@@ -464,6 +555,7 @@ def test_durable_direction_boundary_rejects_mixed_candidate_pages() -> None:
             visual_direction_plan=direction_plan,
             candidate_id="candidate-a",
             revision=1,
+            run_id="run-a",
         )
 
 
@@ -479,8 +571,43 @@ def test_carousel_plan_json_contains_no_asset_provider_path_or_provenance() -> N
         visual_direction_plan=direction_plan,
         candidate_id="candidate-a",
         revision=1,
+        run_id="run-a",
     )
     payload = plan.model_dump_json()
     assert "/tmp/fixture.png" not in payload
     assert "fixture-provider" not in payload
     assert "internal_provenance" not in payload
+
+
+def test_compiled_page_and_carousel_json_strip_real_asset_private_fields_recursively() -> None:
+    atom_set, semantic, page_set, direction_plan, manifest, pages = _direction_upstream_with_approved_asset()
+    plan = aggregate_layout_plan(
+        pages,
+        content_atom_set=atom_set,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        asset_manifest=manifest,
+        family_tokens=get_family_tokens("pink_red"),
+        candidate_id="candidate-a",
+        revision=1,
+        run_id="run-a",
+        visual_direction_plan=direction_plan,
+    )
+
+    def walk(value):
+        if isinstance(value, dict):
+            for key, item in value.items():
+                assert key not in {"provider", "local_path", "internal_provenance", "asset_provenance"}
+                yield from walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from walk(item)
+
+    import json
+
+    for payload in (pages[0].model_dump(mode="json"), plan.model_dump(mode="json")):
+        tuple(walk(payload))
+        rendered = json.dumps(payload, ensure_ascii=False)
+        assert "fixture-provider-secret" not in rendered
+        assert "/Users/private/fixture.png" not in rendered
+        assert "fixture provenance" not in rendered

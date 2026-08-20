@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
 
 from src.schemas.assets import AssetManifest, AssetManifestItem
 from src.schemas.content_atoms import canonical_sha256 as canonical_sha256_v3
@@ -36,6 +36,7 @@ from src.schemas.v4.layout import (
     CompiledPageV4,
     FamilyTokensV4,
     LayoutProgramV4,
+    RegionGeometryEvidenceV4,
     TextMeasurementEvidenceV4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4, SemanticFragmentV4
@@ -110,6 +111,10 @@ class LayoutCompilationError(ValueError):
         super().__init__(f"{code}: {location}: {evidence}")
 
 
+class LayoutInvariantError(ValueError):
+    """Programming/invariant failure, never a user-facing quality code."""
+
+
 class LayoutCompilerInputsV4(BaseModel):
     """Revalidated upstream objects and immutable compiler constraints."""
 
@@ -119,10 +124,10 @@ class LayoutCompilerInputsV4(BaseModel):
     semantic_content_model: SemanticContentModelV4
     content_atom_set: ContentAtomSetV4
     asset_manifest: AssetManifest
-    candidate_id: str = Field(min_length=1)
+    candidate_id: StrictStr = Field(min_length=1)
     revision: StrictInt = Field(ge=0)
-    run_id: str | None = None
-    visual_direction_plan: VisualDirectionPlanV4 | None = None
+    run_id: StrictStr
+    visual_direction_plan: VisualDirectionPlanV4
     family_tokens: FamilyTokensV4 | None = None
     min_body_font_px: StrictInt = Field(default=MIN_BODY_FONT_PX_V4, ge=MIN_BODY_FONT_PX_V4)
     min_display_font_px: StrictInt = Field(
@@ -231,6 +236,8 @@ class CompilerContextV4:
     used_boxes: list[_PlacedBox]
     text_measurement_evidence: dict[str, TextMeasurementEvidenceV4]
     asset_binding_evidence: dict[str, AssetBindingEvidenceV4]
+    region_geometry_evidence: dict[str, RegionGeometryEvidenceV4]
+    icon_by_fragment_ref: dict[str, IconElement]
     element_counter: int = 0
 
     @property
@@ -286,7 +293,7 @@ class CompilerContextV4:
     def fragment_text(self, ref: str) -> str:
         fragment = self.fragments.get(ref)
         if fragment is None:
-            raise ValueError(f"unknown semantic fragment reference: {ref}")
+            raise ValueError("unknown semantic fragment reference")
         return fragment.exact_text
 
     def role_for_fragment(self, ref: str) -> str:
@@ -302,6 +309,31 @@ class CompilerContextV4:
         element_id = f"v4-{kind}-{suffix}-{self.element_counter}"
         self.element_counter += 1
         return element_id[:64]
+
+    def register_region_geometry(
+        self,
+        *,
+        region_id: str,
+        role: str,
+        order: int,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+    ) -> None:
+        payload = {
+            "region_id": region_id,
+            "role": role,
+            "order": order,
+            "x": float(x),
+            "y": float(y),
+            "width": float(width),
+            "height": float(height),
+        }
+        self.region_geometry_evidence[region_id] = RegionGeometryEvidenceV4(
+            **payload,
+            geometry_sha256=canonical_sha256_v4(payload),
+        )
 
     def _safe_box(
         self,
@@ -351,13 +383,7 @@ class CompilerContextV4:
                 and y < previous.y + previous.height
                 and y + height > previous.y
             ):
-                raise LayoutCompilationError(
-                    "CONTENT_OVERFLOW",
-                    page_id=self.page_id,
-                    region_id=region_id,
-                    ref=ref,
-                    evidence="unintentional region overlap",
-                )
+                raise LayoutInvariantError("solver emitted an unintended overlapping box")
         self.used_boxes.append(_PlacedBox(x, y, width, height, element_id))
         return Box(x=x, y=y, width=width, height=height)
 
@@ -448,11 +474,29 @@ class CompilerContextV4:
             region_id=region_id,
         )
         element_id = self._next_id("text", ref)
+        # Pillow bboxes may have negative left/top bearings for j, combining
+        # marks, and accents.  Shift the box just enough to keep the measured
+        # glyph ink inside the canonical safe margin without changing copy or
+        # the requested font size.
+        adjusted_x = float(x)
+        adjusted_y = float(y)
+        safe_right = float(CANVAS_WIDTH_V4 - SAFE_MARGIN_V4)
+        safe_bottom = float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
+        if adjusted_x + measurement.ink_left_px < SAFE_MARGIN_V4:
+            adjusted_x += SAFE_MARGIN_V4 - (adjusted_x + measurement.ink_left_px)
+        if adjusted_x + measurement.ink_right_px > safe_right:
+            adjusted_x -= adjusted_x + measurement.ink_right_px - safe_right
+        if adjusted_y + measurement.ink_top_px < SAFE_MARGIN_V4:
+            adjusted_y += SAFE_MARGIN_V4 - (adjusted_y + measurement.ink_top_px)
+        if adjusted_y + measurement.ink_bottom_px > safe_bottom:
+            adjusted_y -= adjusted_y + measurement.ink_bottom_px - safe_bottom
+        adjusted_width = min(float(width), safe_right - adjusted_x)
+        adjusted_height = min(float(height), safe_bottom - adjusted_y)
         box = self._safe_box(
-            x=x,
-            y=y,
-            width=width,
-            height=height,
+            x=adjusted_x,
+            y=adjusted_y,
+            width=adjusted_width,
+            height=adjusted_height,
             element_id=element_id,
             region_id=region_id,
             ref=ref,
@@ -465,6 +509,16 @@ class CompilerContextV4:
             font_size_px=measurement.font_size_px,
             line_count=measurement.line_count,
             break_offsets=measurement.break_offsets,
+            offset_unit=measurement.offset_unit,
+            explicit_break_spans=measurement.explicit_break_spans,
+            inserted_break_offsets=measurement.inserted_break_offsets,
+            ink_left_px=measurement.ink_left_px,
+            ink_top_px=measurement.ink_top_px,
+            ink_right_px=measurement.ink_right_px,
+            ink_bottom_px=measurement.ink_bottom_px,
+            ascent_px=measurement.ascent_px,
+            descent_px=measurement.descent_px,
+            wrap_policy=measurement.wrap_policy,
             measurement_sha256=measurement.measurement_sha256,
         )
         return TextElement(
@@ -495,11 +549,11 @@ class CompilerContextV4:
         asset = self.assets_by_directive.get(directive_id)
         directive = self.directives_by_id.get(directive_id)
         if asset is None or directive is None:
-            raise ValueError(f"asset placement has no exact approved directive binding: {directive_id}")
+            raise ValueError("asset placement has no exact approved directive binding")
         if asset.directive_id != directive_id or asset.page_id != self.page_id:
-            raise ValueError(f"asset placement page/directive binding is invalid: {directive_id}")
+            raise ValueError("asset placement page/directive binding is invalid")
         if asset.security_status != "approved":
-            raise ValueError(f"asset placement is not security-approved: {directive_id}")
+            raise ValueError("asset placement is not security-approved")
         asset_ratio = asset.width / asset.height
         box_ratio = width / height
         orientation = getattr(directive, "orientation", "any")
@@ -519,7 +573,7 @@ class CompilerContextV4:
                 ref=directive_id,
                 evidence="approved asset orientation conflicts with directive",
             )
-        if orientation == "square" and not 0.6 <= asset_ratio <= 1.7:
+        if orientation == "square" and not 0.8 <= asset_ratio <= 1.25:
             raise LayoutCompilationError(
                 "ASSET_ASPECT_MISMATCH",
                 page_id=self.page_id,
@@ -528,14 +582,7 @@ class CompilerContextV4:
                 evidence="approved asset aspect ratio is not square-compatible",
             )
         crop_factor = max(asset_ratio / box_ratio, box_ratio / asset_ratio)
-        if crop_factor > ASSET_CROP_THRESHOLD_V4:
-            raise LayoutCompilationError(
-                "ASSET_ASPECT_MISMATCH",
-                page_id=self.page_id,
-                region_id=region_id,
-                ref=directive_id,
-                evidence=f"crop_factor={crop_factor:.3f}; threshold={ASSET_CROP_THRESHOLD_V4:.3f}",
-            )
+        fit = "cover" if crop_factor <= ASSET_CROP_THRESHOLD_V4 else "contain"
         element_id = self._next_id("image", directive_id)
         box = self._safe_box(
             x=x,
@@ -552,14 +599,16 @@ class CompilerContextV4:
             asset_id=asset.asset_id,
             asset_sha256=asset.sha256,
             orientation=orientation,
-            fit="cover",
+            fit=fit,
+            box_ratio=box_ratio,
+            crop_factor=crop_factor,
         )
         return ImageElement(
             element_id=element_id,
             layer=10,
             box=box,
             asset_ref=asset.asset_id,
-            fit="cover",
+            fit=fit,
             focal_point=(float(focal[0]), float(focal[1])),
             corner_radius=24,
         )
@@ -662,17 +711,42 @@ def _validate_boundary(
     )
     if actual_constraints != expected_constraints:
         raise ValueError("layout program responsive constraints do not exactly match canonical grammar")
-    if checked_program.grammar_id == "editorial_hero" and checked_program.fragment_placements[0].region_id == "accent":
-        raise LayoutCompilationError(
-            "UNBALANCED_REGIONS",
-            page_id=checked_program.page_id,
-            region_id="accent",
-            ref=checked_program.fragment_placements[0].fragment_ref,
-            evidence="primary_focus_region_count=0",
-        )
+    known_constraints = {
+        ("single_focus", "preserve_primary_focus"),
+        ("reflow_order", "preserve_named_order"),
+        ("paired_regions", "preserve_pairing"),
+        ("ordered_regions", "preserve_sequence"),
+    }
+    if any(
+        (constraint.kind, constraint.behavior) not in known_constraints
+        for constraint in checked_program.responsive_constraints
+    ):
+        raise ValueError("layout program contains an unknown executable constraint")
     region_counts: dict[str, int] = {}
     for placement in checked_program.fragment_placements:
         region_counts[placement.region_id] = region_counts.get(placement.region_id, 0) + 1
+    placement_by_ref = {
+        placement.fragment_ref: placement
+        for placement in checked_program.fragment_placements
+    }
+    if checked_program.grammar_id == "editorial_hero":
+        primary_ref = brief.visual_priority[0]
+        primary_placement = placement_by_ref.get(primary_ref)
+        if primary_placement is None or primary_placement.region_id != "hero":
+            raise LayoutCompilationError(
+                "UNBALANCED_REGIONS",
+                page_id=checked_program.page_id,
+                region_id="hero",
+                ref=primary_ref,
+                evidence="primary_focus_region=hero; actual_region=non-hero",
+            )
+        if region_counts.get("hero", 0) == 0:
+            raise LayoutCompilationError(
+                "UNBALANCED_REGIONS",
+                page_id=checked_program.page_id,
+                region_id="hero",
+                evidence="primary_focus_region_count=0",
+            )
     if checked_program.grammar_id == "comparison_grid":
         left_count = region_counts.get("left", 0)
         right_count = region_counts.get("right", 0)
@@ -703,14 +777,14 @@ def _validate_boundary(
     for ref in brief_fragment_refs:
         fragment = fragments.get(ref)
         if fragment is None:
-            raise ValueError(f"page brief references an unknown semantic fragment: {ref}")
+            raise ValueError("page brief references an unknown semantic fragment")
         atom = atom_by_id.get(fragment.source_atom_id)
         if atom is None:
-            raise ValueError(f"semantic fragment references an unknown source atom: {ref}")
+            raise ValueError("semantic fragment references an unknown source atom")
         if not 0 <= fragment.start < fragment.end <= len(atom.text):
-            raise ValueError(f"semantic fragment bounds are invalid: {ref}")
+            raise ValueError("semantic fragment bounds are invalid")
         if fragment.exact_text != atom.text[fragment.start : fragment.end]:
-            raise ValueError(f"semantic fragment exact_text is not the source slice: {ref}")
+            raise ValueError("semantic fragment exact_text is not the source slice")
     assets_by_directive = {item.directive_id: item for item in manifest.items}
     if len(assets_by_directive) != len(manifest.items):
         raise ValueError("asset manifest directive IDs must be unique")
@@ -742,6 +816,82 @@ def _font_hashes(family: TemplateFamilyV4) -> dict[str, str]:
     }
 
 
+def _validate_executable_constraints(context: CompilerContextV4) -> None:
+    """Interpret the canonical grammar relationships after solver geometry."""
+
+    from src.visual_design.v4.grammars import get_grammar
+
+    geometry = context.region_geometry_evidence
+    active_regions = {
+        *(placement.region_id for placement in context.program.fragment_placements),
+        *(placement.region_id for placement in context.program.asset_placements),
+    }
+    for relationship in get_grammar(context.program.grammar_id).relationships:
+        if (
+            relationship.source_region_id not in active_regions
+            or relationship.target_region_id not in active_regions
+        ):
+            continue
+        source = geometry[relationship.source_region_id]
+        target = geometry[relationship.target_region_id]
+        if relationship.kind in {"stack", "sequence"}:
+            if target.y < source.y + source.height:
+                raise LayoutInvariantError(
+                    f"{relationship.relationship_id} violates canonical block order"
+                )
+        elif relationship.kind == "pair":
+            if abs(source.y - target.y) > 1e-6 or abs(source.height - target.height) > 1e-6:
+                raise LayoutInvariantError(
+                    f"{relationship.relationship_id} violates paired region alignment"
+                )
+        elif relationship.kind == "anchor":
+            if target.y < source.y:
+                raise LayoutInvariantError(
+                    f"{relationship.relationship_id} violates canonical anchor order"
+                )
+        elif relationship.kind in {"contain", "contrast"}:
+            continue
+        else:
+            raise ValueError("unknown grammar relationship kind")
+
+    for axis in get_grammar(context.program.grammar_id).alignment_axes:
+        regions = [geometry[region_id] for region_id in axis.region_ids]
+        if any(region_id not in active_regions for region_id in axis.region_ids):
+            continue
+        if axis.orientation == "block":
+            if any(
+                current.y > following.y + 1e-6
+                for current, following in zip(regions, regions[1:])
+            ):
+                raise LayoutInvariantError(f"{axis.axis_id} violates block alignment")
+        elif axis.orientation == "inline":
+            if any(
+                current.x > following.x + 1e-6
+                for current, following in zip(regions, regions[1:])
+            ):
+                raise LayoutInvariantError(f"{axis.axis_id} violates inline alignment")
+        elif axis.orientation in {"baseline", "center", "edge"}:
+            continue
+        else:
+            raise ValueError("unknown grammar alignment orientation")
+
+    for constraint in context.program.responsive_constraints:
+        if constraint.kind == "single_focus":
+            if context.program.grammar_id != "editorial_hero":
+                raise LayoutInvariantError("single_focus is only valid for editorial_hero")
+        elif constraint.kind == "paired_regions":
+            left = geometry[constraint.region_ids[0]]
+            right = geometry[constraint.region_ids[1]]
+            if abs(left.y - right.y) > 1e-6 or abs(left.height - right.height) > 1e-6:
+                raise LayoutInvariantError("paired regions are not geometrically balanced")
+        elif constraint.kind in {"ordered_regions", "reflow_order"}:
+            order = [geometry[region_id].order for region_id in constraint.region_ids]
+            if order != sorted(order):
+                raise LayoutInvariantError("named regions violate canonical order")
+        else:
+            raise ValueError("unknown executable grammar constraint")
+
+
 def _make_provenance(
     program: LayoutProgramV4,
     inputs: LayoutCompilerInputsV4,
@@ -749,6 +899,7 @@ def _make_provenance(
     *,
     text_measurement_evidence: dict[str, TextMeasurementEvidenceV4],
     asset_binding_evidence: dict[str, AssetBindingEvidenceV4],
+    region_geometry_evidence: dict[str, RegionGeometryEvidenceV4],
 ) -> CompilerProvenanceV4:
     asset_manifest_hash = canonical_sha256_v3(inputs.asset_manifest)
     plan = inputs.visual_direction_plan
@@ -778,6 +929,7 @@ def _make_provenance(
         "accessibility_ink": ACCESSIBILITY_INK_V4[0],
         "text_measurement_evidence": text_measurement_evidence,
         "asset_binding_evidence": asset_binding_evidence,
+        "region_geometry_evidence": region_geometry_evidence,
     }
     return CompilerProvenanceV4(
         **payload,
@@ -826,6 +978,8 @@ def compile_layout(
         used_boxes=[],
         text_measurement_evidence={},
         asset_binding_evidence={},
+        region_geometry_evidence={},
+        icon_by_fragment_ref={},
     )
     # Import only after the validated context exists so each grammar module is
     # a separate deterministic dispatch target and cannot bypass the boundary.
@@ -839,6 +993,10 @@ def compile_layout(
             page_id=checked_program.page_id,
             evidence="grammar produced no scene elements",
         )
+    expected_region_ids = {region.region_id for region in checked_program.regions}
+    if set(context.region_geometry_evidence) != expected_region_ids:
+        raise LayoutInvariantError("solver did not register every canonical named region")
+    _validate_executable_constraints(context)
     text_refs = tuple(element.content_ref for element in elements if isinstance(element, TextElement))
     if text_refs != tuple(item.fragment_ref for item in checked_program.fragment_placements):
         raise ValueError("compiled scene does not represent every exact fragment placement")
@@ -846,20 +1004,26 @@ def compile_layout(
     expected_assets = set(assets_by_directive[item.directive_id].asset_id for item in checked_program.asset_placements)
     if asset_refs != expected_assets:
         raise ValueError("compiled scene asset references do not match approved placements")
-    if checked_program.density_target == "high":
-        occupied = sum(
-            element.box.width * element.box.height
-            for element in elements
-            if hasattr(element, "box")
+    occupied = sum(
+        element.box.width * element.box.height
+        for element in elements
+        if hasattr(element, "box")
+    )
+    inner_area = float(
+        (CANVAS_WIDTH_V4 - 2 * SAFE_MARGIN_V4)
+        * (CANVAS_HEIGHT_V4 - 2 * SAFE_MARGIN_V4)
+    )
+    whitespace_ratio = 1.0 - occupied / inner_area
+    minimum_whitespace = tokens.whitespace_envelope.low
+    if whitespace_ratio < minimum_whitespace:
+        raise LayoutCompilationError(
+            "INSUFFICIENT_WHITESPACE",
+            page_id=checked_program.page_id,
+            evidence=(
+                f"actual_whitespace={whitespace_ratio:.3f}; "
+                f"minimum_whitespace={minimum_whitespace:.3f}"
+            ),
         )
-        inner_area = float((CANVAS_WIDTH_V4 - 2 * SAFE_MARGIN_V4) * (CANVAS_HEIGHT_V4 - 2 * SAFE_MARGIN_V4))
-        occupied_ratio = occupied / inner_area
-        if occupied_ratio < 0.45:
-            raise LayoutCompilationError(
-                "INSUFFICIENT_WHITESPACE",
-                page_id=checked_program.page_id,
-                evidence=f"occupied_ratio={occupied_ratio:.3f}; required=0.450",
-            )
     scene = PageScene(
         page_id=checked_program.page_id,
         sequence=checked_inputs.page_brief.sequence,
@@ -873,6 +1037,7 @@ def compile_layout(
         hashes,
         text_measurement_evidence=context.text_measurement_evidence,
         asset_binding_evidence=context.asset_binding_evidence,
+        region_geometry_evidence=context.region_geometry_evidence,
     )
     return _make_compiled_page(checked_program, scene, provenance)
 
@@ -889,6 +1054,7 @@ __all__ = [
     "COMPILATION_ERROR_CODES_V4",
     "CompilerContextV4",
     "LayoutCompilationError",
+    "LayoutInvariantError",
     "LayoutCompilerInputs",
     "LayoutCompilerInputV4",
     "LayoutCompilerInputsV4",

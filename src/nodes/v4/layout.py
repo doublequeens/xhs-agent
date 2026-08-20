@@ -74,10 +74,10 @@ def _check_page_bindings(
     page_brief_set: PageBriefSetV4,
     manifest: AssetManifest,
     family_tokens: FamilyTokensV4,
-    visual_direction_plan: VisualDirectionPlanV4 | None = None,
-    candidate_id: str | None = None,
-    revision: int | None = None,
-    run_id: str | None = None,
+    visual_direction_plan: VisualDirectionPlanV4,
+    candidate_id: str,
+    revision: int,
+    run_id: str,
 ) -> None:
     if not 5 <= len(pages) <= 18:
         raise ValueError("v4 layout aggregation requires 5-18 compiled pages")
@@ -93,21 +93,20 @@ def _check_page_bindings(
         raise ValueError("compiled page sequences must be contiguous and one-based")
     if page_brief_set.template_family != family_tokens.family:
         raise ValueError("page brief family does not match canonical family tokens")
-    if visual_direction_plan is not None:
-        if visual_direction_plan.template_family != family_tokens.family:
-            raise ValueError("visual direction plan family does not match canonical family tokens")
-        if visual_direction_plan.content_atom_set_sha256 != atom_set.canonical_sha256:
-            raise ValueError("visual direction plan atom hash does not match content atoms")
-        if visual_direction_plan.semantic_content_model_sha256 != semantic_model.canonical_sha256:
-            raise ValueError("visual direction plan semantic hash does not match semantic model")
-        if visual_direction_plan.page_brief_set_sha256 != page_brief_set.canonical_sha256:
-            raise ValueError("visual direction plan page brief set hash does not match page briefs")
-        if page_brief_set.content_atom_set_sha256 is None or page_brief_set.semantic_content_model_sha256 is None:
-            raise ValueError("durable page brief set must bind atom and semantic hashes")
-        if page_brief_set.content_atom_set_sha256 != atom_set.canonical_sha256:
-            raise ValueError("durable page brief set atom hash does not match content atoms")
-        if page_brief_set.semantic_content_model_sha256 != semantic_model.canonical_sha256:
-            raise ValueError("durable page brief set semantic hash does not match semantic model")
+    if visual_direction_plan.template_family != family_tokens.family:
+        raise ValueError("visual direction plan family does not match canonical family tokens")
+    if visual_direction_plan.content_atom_set_sha256 != atom_set.canonical_sha256:
+        raise ValueError("visual direction plan atom hash does not match content atoms")
+    if visual_direction_plan.semantic_content_model_sha256 != semantic_model.canonical_sha256:
+        raise ValueError("visual direction plan semantic hash does not match semantic model")
+    if visual_direction_plan.page_brief_set_sha256 != page_brief_set.canonical_sha256:
+        raise ValueError("visual direction plan page brief set hash does not match page briefs")
+    if page_brief_set.content_atom_set_sha256 is None or page_brief_set.semantic_content_model_sha256 is None:
+        raise ValueError("durable page brief set must bind atom and semantic hashes")
+    if page_brief_set.content_atom_set_sha256 != atom_set.canonical_sha256:
+        raise ValueError("durable page brief set atom hash does not match content atoms")
+    if page_brief_set.semantic_content_model_sha256 != semantic_model.canonical_sha256:
+        raise ValueError("durable page brief set semantic hash does not match semantic model")
     atom_by_id = {atom.atom_id: atom for atom in atom_set.atoms}
     fragment_by_id = {fragment.fragment_id: fragment for fragment in semantic_model.fragments}
     asset_by_id = {item.asset_id: item for item in manifest.items}
@@ -156,46 +155,43 @@ def _check_page_bindings(
         if actual_asset_ids != expected_asset_ids:
             raise ValueError("compiled page image references do not match approved asset placements")
         provenance = page.compiler_provenance
-        if candidate_id is not None and provenance.candidate_id != candidate_id:
+        if provenance.candidate_id != candidate_id:
             raise ValueError("compiled page candidate identity does not match aggregation")
-        if revision is not None and provenance.revision != revision:
+        if provenance.revision != revision:
             raise ValueError("compiled page revision does not match aggregation")
-        if run_id is not None and provenance.run_id != run_id:
+        if provenance.run_id != run_id:
             raise ValueError("compiled page run identity does not match aggregation")
         if provenance.content_atom_set_sha256 != atom_set.canonical_sha256:
             raise ValueError("compiled page content atom hash is not exact")
         if provenance.semantic_content_model_sha256 != semantic_model.canonical_sha256:
             raise ValueError("compiled page semantic model hash is not exact")
-        if provenance.page_brief_set_sha256 != (
-            page_brief_set.canonical_sha256 if visual_direction_plan is not None else provenance.page_brief_set_sha256
-        ):
+        if provenance.page_brief_set_sha256 != page_brief_set.canonical_sha256:
             raise ValueError("compiled page page brief set hash is not exact")
         if provenance.asset_manifest_sha256 != canonical_sha256_v3(manifest):
             raise ValueError("compiled page asset manifest hash is not exact")
-        if visual_direction_plan is not None and provenance.visual_direction_plan_sha256 != visual_direction_plan.canonical_sha256:
+        if provenance.visual_direction_plan_sha256 != visual_direction_plan.canonical_sha256:
             raise ValueError("compiled page visual direction plan hash is not exact")
 
-    if visual_direction_plan is not None:
-        semantic_refs = tuple(fragment.fragment_id for fragment in semantic_model.fragments)
-        owned_refs = tuple(
-            ref
-            for brief in page_brief_set.pages
-            for ref in brief.fragment_refs
-        )
-        if len(owned_refs) != len(set(owned_refs)) or set(owned_refs) != set(semantic_refs):
-            raise ValueError("global semantic fragment ownership must be exact-once")
-        if tuple(sorted(owned_refs)) != tuple(sorted(semantic_refs)):
-            raise ValueError("global semantic fragment ownership must cover every fragment")
-        program_page_ids = tuple(page.layout_program.page_id for page in pages)
-        if program_page_ids != page_ids or len(set(program_page_ids)) != len(program_page_ids):
-            raise ValueError("global page and program identity must be one-to-one")
-        directive_ids = tuple(
-            placement.directive_id
-            for page in pages
-            for placement in page.layout_program.asset_placements
-        )
-        if len(directive_ids) != len(set(directive_ids)):
-            raise ValueError("global asset directive identity must be one-to-one")
+    semantic_refs = tuple(fragment.fragment_id for fragment in semantic_model.fragments)
+    owned_refs = tuple(
+        ref
+        for brief in page_brief_set.pages
+        for ref in brief.fragment_refs
+    )
+    if len(owned_refs) != len(set(owned_refs)) or set(owned_refs) != set(semantic_refs):
+        raise ValueError("global semantic fragment ownership must be exact-once")
+    if tuple(sorted(owned_refs)) != tuple(sorted(semantic_refs)):
+        raise ValueError("global semantic fragment ownership must cover every fragment")
+    program_page_ids = tuple(page.layout_program.page_id for page in pages)
+    if program_page_ids != page_ids or len(set(program_page_ids)) != len(program_page_ids):
+        raise ValueError("global page and program identity must be one-to-one")
+    directive_ids = tuple(
+        placement.directive_id
+        for page in pages
+        for placement in page.layout_program.asset_placements
+    )
+    if len(directive_ids) != len(set(directive_ids)):
+        raise ValueError("global asset directive identity must be one-to-one")
 
 
 def aggregate_layout_plan(
@@ -206,19 +202,19 @@ def aggregate_layout_plan(
     page_brief_set: PageBriefSetV4 | Mapping[str, Any],
     asset_manifest: AssetManifest | Mapping[str, Any],
     family_tokens: FamilyTokensV4 | str,
-    revision: int | None = None,
-    candidate_id: str | None = None,
-    run_id: str | None = None,
-    visual_direction_plan: VisualDirectionPlanV4 | Mapping[str, Any] | None = None,
+    revision: int,
+    candidate_id: str,
+    run_id: str,
+    visual_direction_plan: VisualDirectionPlanV4 | Mapping[str, Any],
 ) -> CarouselDesignPlanV4:
     """Aggregate an already compiled ordered 5-18 page set deterministically."""
 
-    if revision is not None and (type(revision) is not int or revision < 0):
+    if type(revision) is not int or revision < 0:
         raise ValueError("v4 layout revision must be a non-negative integer")
-    if candidate_id is not None and (
-        not candidate_id.strip() or not all(char.isalnum() or char in "_.:-" for char in candidate_id)
-    ):
+    if not candidate_id.strip() or not all(char.isalnum() or char in "_.:-" for char in candidate_id):
         raise ValueError("v4 layout candidate identity is invalid")
+    if not run_id.strip() or not all(char.isalnum() or char in "_.:-" for char in run_id):
+        raise ValueError("v4 layout run identity is invalid")
     atom_set = _coerce(ContentAtomSetV4, content_atom_set, "content atom set")
     semantic_model = _coerce(SemanticContentModelV4, semantic_content_model, "semantic content model")
     page_set = _coerce(PageBriefSetV4, page_brief_set, "page brief set")
@@ -228,28 +224,13 @@ def aggregate_layout_plan(
     else:
         family = _coerce(FamilyTokensV4, family_tokens, "family tokens")
     pages = _coerce_pages(compiled_pages)
-    plan = _coerce_direction_plan(visual_direction_plan) if visual_direction_plan is not None else None
-    if plan is None:
-        raise ValueError("v4 layout aggregation requires one hash-bound visual direction plan")
+    plan = _coerce_direction_plan(visual_direction_plan)
     if semantic_model.content_atom_set_sha256 != atom_set.canonical_sha256:
         raise ValueError("semantic model does not bind content atom set")
-    if plan is not None:
-        if plan.semantic_content_model.canonical_sha256 != semantic_model.canonical_sha256:
-            raise ValueError("visual direction plan semantic model is not the supplied exact model")
-        if plan.page_brief_set.canonical_sha256 != page_set.canonical_sha256:
-            raise ValueError("visual direction plan page briefs are not the supplied exact set")
-        if candidate_id is None or revision is None:
-            raise ValueError("v4 layout aggregation requires candidate_id and revision")
-    if candidate_id is None:
-        candidate_id = pages[0].compiler_provenance.candidate_id
-    if revision is None:
-        revision = pages[0].compiler_provenance.revision
-    if run_id is None:
-        run_id = pages[0].compiler_provenance.run_id
-    if not candidate_id:
-        raise ValueError("v4 layout aggregation requires candidate_id")
-    if revision is None:
-        raise ValueError("v4 layout aggregation requires revision")
+    if plan.semantic_content_model.canonical_sha256 != semantic_model.canonical_sha256:
+        raise ValueError("visual direction plan semantic model is not the supplied exact model")
+    if plan.page_brief_set.canonical_sha256 != page_set.canonical_sha256:
+        raise ValueError("visual direction plan page briefs are not the supplied exact set")
     _check_page_bindings(
         pages,
         atom_set=atom_set,
@@ -294,7 +275,7 @@ def aggregate_layout_plan(
         "page_brief_set_sha256": page_set.canonical_sha256,
         "asset_manifest_sha256": canonical_sha256_v3(manifest),
         "family_tokens_sha256": family.canonical_sha256,
-        "visual_direction_plan_sha256": plan.canonical_sha256 if plan is not None else None,
+        "visual_direction_plan_sha256": plan.canonical_sha256,
         "candidate_id": candidate_id,
         "revision": revision,
         "run_id": run_id,
@@ -343,8 +324,8 @@ def layout_node(state: Mapping[str, Any]) -> dict[str, Any]:
     revision = state.get("revision")
     candidate_id = state.get("candidate_id")
     run_id = state.get("run_id")
-    if checked_plan is not None and (candidate_id is None or revision is None):
-        raise ValueError("v4 layout node requires candidate_id and revision")
+    if checked_plan is not None and (candidate_id is None or revision is None or run_id is None):
+        raise ValueError("v4 layout node requires candidate_id, revision, and run_id")
     if any(value is None for value in (atom_set, semantic_model, page_set, manifest, family_tokens)):
         raise ValueError("v4 layout node requires all upstream contracts")
     page_set_checked = _coerce(PageBriefSetV4, page_set, "page brief set")
