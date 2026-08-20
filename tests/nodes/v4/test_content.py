@@ -65,6 +65,27 @@ def test_projection_preserves_raw_spans_punctuation_emoji_and_markers_are_struct
     assert source[projection.units[0].raw_start : projection.units[0].raw_end] == "## **标题**✨"
 
 
+def test_escaped_markdown_punctuation_is_restored_without_second_pass_parsing():
+    from src.nodes.v4 import project_visible_copy
+
+    projection = project_visible_copy(r"\*literal\* \[literal\](target) \_under\_ \! #")
+
+    assert [unit.text for unit in projection.units] == [
+        "*literal* [literal](target) _under_ ! #"
+    ]
+
+
+def test_visible_copy_hash_ignores_markdown_structure_but_full_hash_keeps_provenance():
+    from src.nodes.v4 import project_visible_copy
+
+    styled = project_visible_copy("**same**")
+    plain = project_visible_copy("same")
+
+    assert [unit.text for unit in styled.units] == [unit.text for unit in plain.units]
+    assert styled.canonical_visible_copy_sha256 == plain.canonical_visible_copy_sha256
+    assert styled.canonical_sha256 != plain.canonical_sha256
+
+
 def test_escaped_pipe_is_visible_cell_content_not_a_table_delimiter():
     from src.nodes.v4 import project_visible_copy
 
@@ -87,6 +108,23 @@ def test_indented_markdown_table_keeps_cells_and_block_relation():
 
     assert [unit.text for unit in projection.units] == ["时刻", "做法", "午后", "补涂"]
     assert projection.table_groups[0].rows == (("时刻", "做法"), ("午后", "补涂"))
+
+
+def test_table_cell_span_is_trimmed_to_the_exact_source_cell_slice():
+    from hashlib import sha256
+
+    from src.nodes.v4 import project_visible_copy
+
+    source = "| A  | B |\n|---|---|\n| C  | D |"
+    projection = project_visible_copy(source)
+
+    first_header, second_header, first_cell, second_cell = projection.units
+    assert source[first_header.raw_start : first_header.raw_end] == "A"
+    assert source[first_cell.raw_start : first_cell.raw_end] == "C"
+    assert first_header.raw_slice_sha256 == sha256(b"A").hexdigest()
+    assert first_cell.raw_slice_sha256 == sha256(b"C").hexdigest()
+    assert source[second_header.raw_start : second_header.raw_end] == "B"
+    assert source[second_cell.raw_start : second_cell.raw_end] == "D"
 
 
 def test_ordinary_pipe_row_is_not_mistaken_for_a_table():

@@ -108,7 +108,15 @@ def test_projection_hash_binds_all_source_hashes_and_nested_contracts():
         canonical_sha256=canonical_sha256_v4(payload),
     )
 
-    assert projection.canonical_visible_copy_sha256 == projection.canonical_sha256
+    assert projection.canonical_visible_copy_sha256 == canonical_sha256_v4(
+        ({
+            "sequence": units[0].sequence,
+            "source_field": units[0].source_field,
+            "structural_role": units[0].structural_role,
+            "text": units[0].text,
+        },)
+    )
+    assert projection.canonical_visible_copy_sha256 != projection.canonical_sha256
     with pytest.raises(ValidationError, match="canonical sha256"):
         VisibleCopyProjectionV4(
             **payload,

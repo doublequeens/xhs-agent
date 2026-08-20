@@ -104,3 +104,73 @@ metadata lock drift behavior.
 - Live Gemini/provider checks were intentionally not run because the repository
   requires explicit opt-in credentials. v4 graph wiring remains outside this
   file-scoped Task 6 change.
+
+## Fix round 1: preserve v4 visible-copy invariants
+
+### Findings addressed
+
+1. `_strip_inline_markdown` now protects escaped Markdown tokens through all
+   structural fixed-point passes and restores them only after parsing. Escaped
+   emphasis, link brackets, and punctuation remain visible and cannot become
+   active syntax on a later iteration.
+2. `VisibleCopyProjectionV4` now persists
+   `canonical_visible_copy_sha256` over the ordered projected visible payload,
+   separately from the full provenance-bound `canonical_sha256`. Formatting-only
+   changes therefore share the visible hash while retaining distinct full
+   source/provenance hashes.
+3. Table cells now use the padding-trimmed offsets returned by `_visible_cell`.
+   Unit raw spans and raw-slice hashes cover the exact cell source slice rather
+   than structural pipe padding.
+
+### Covering tests
+
+- `tests/nodes/v4/test_content.py`: escaped emphasis/link/punctuation,
+  formatting-insensitive visible hash versus provenance-sensitive full hash,
+  and exact table cell half-open spans/raw hashes.
+- `tests/schemas/v4/test_content.py`: persisted visible hash validation and
+  separation from the full projection hash.
+
+### Fix round verification
+
+The required new regression subset was run first after the tests were added:
+
+```text
+pytest -q tests/nodes/v4/test_content.py -k \
+  'escaped_markdown or visible_copy_hash or table_cell_span'
+3 failed, 13 deselected
+```
+
+After the fixes:
+
+```text
+pytest -q tests/nodes/v4/test_content.py -k \
+  'escaped_markdown or visible_copy_hash or table_cell_span'
+3 passed, 13 deselected
+
+pytest -q tests/schemas/v4/test_content.py tests/nodes/v4/test_content.py \
+  tests/nodes/test_content_atomizer.py tests/schemas/test_content_atoms.py
+54 passed
+
+pytest -q
+1480 passed, 2 skipped, 2 warnings in 50.28s
+
+python -m compileall -q src main.py
+git diff --check
+```
+
+The full-suite skips and warnings have the same documented causes as the
+initial Task 6 run: two opt-in live Gemini tests were not enabled, and two
+unrelated macOS pytest temporary-directory cleanup warnings were emitted.
+
+### Fix round self-review and concerns
+
+- Reviewed the four modified Task 6 source/test files and confirmed the diff
+  contains no v3, graph, publishing, AgentState, database, output, or
+  credential changes.
+- Confirmed the full projection hash still binds source hashes, raw spans,
+  raw-slice hashes, table relations, unit semantics, and atom bindings, while
+  the new visible hash excludes those provenance-only details.
+- `git diff --check`, compileall, focused tests, and the full offline suite are
+  clean apart from the two pre-existing cleanup warnings.
+- Remaining concerns are unchanged: live provider/model checks were not run by
+  design, and v4 graph wiring remains outside this file-scoped Task 6 task.

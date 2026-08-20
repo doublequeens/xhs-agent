@@ -47,10 +47,26 @@ _ESCAPED_MARKDOWN = re.compile(r"\\([\\`*_{}\[\]()#+.!|>~-])")
 def _strip_inline_markdown(text: str) -> str:
     """Remove only deterministic Markdown syntax, preserving copy payload."""
 
+    # Protect escaped syntax until all structural parsing is complete.  If an
+    # escaped marker is restored before the next fixed-point iteration, it can
+    # be mistaken for a fresh link/emphasis delimiter and delete visible copy.
+    escaped_tokens: dict[str, str] = {}
+    token_prefix = "\ue000"
+    while token_prefix in text:
+        token_prefix += "\ue000"
+    token_suffix = "\ue001"
+
+    def protect(match: re.Match[str]) -> str:
+        token = f"{token_prefix}{len(escaped_tokens)}{token_suffix}"
+        escaped_tokens[token] = match.group(1)
+        return token
+
+    protected = _ESCAPED_MARKDOWN.sub(protect, text)
+
     # Links and code spans must be handled before emphasis, since their
     # delimiters can contain characters that otherwise look like emphasis.
     while True:
-        updated = _LINK.sub(lambda match: match.group(1), text)
+        updated = _LINK.sub(lambda match: match.group(1), protected)
         updated = _CODE_SPAN.sub(lambda match: match.group(2), updated)
         updated = _STRONG.sub(lambda match: match.group(2), updated)
         updated = _STRIKE.sub(lambda match: match.group(1), updated)
@@ -58,10 +74,13 @@ def _strip_inline_markdown(text: str) -> str:
             lambda match: match.group(1) if match.group(1) is not None else match.group(2),
             updated,
         )
-        updated = _ESCAPED_MARKDOWN.sub(r"\1", updated)
-        if updated == text:
-            return updated
-        text = updated
+        if updated == protected:
+            break
+        protected = updated
+
+    for token, visible in escaped_tokens.items():
+        protected = protected.replace(token, visible)
+    return protected
 
 
 def _line_records(text: str) -> list["_Line"]:
@@ -235,8 +254,8 @@ def _append_table(
             pending_cells.append(
                 (
                     visible,
-                    lines[row_index].start + cell.start,
-                    lines[row_index].start + cell.end,
+                    lines[row_index].start + raw_start,
+                    lines[row_index].start + raw_end,
                     role,
                 )
             )

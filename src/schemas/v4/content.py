@@ -96,6 +96,20 @@ def _atom_sha256_payload(value: Mapping[str, Any]) -> dict[str, Any]:
     return {key: item for key, item in value.items() if key != "sha256"}
 
 
+def _visible_copy_payload(units: tuple[Any, ...]) -> tuple[dict[str, Any], ...]:
+    """Return the ordered projected payload without source provenance."""
+
+    return tuple(
+        {
+            "sequence": unit.sequence,
+            "source_field": unit.source_field,
+            "structural_role": unit.structural_role,
+            "text": unit.text,
+        }
+        for unit in units
+    )
+
+
 class VisibleCopyUnitV4(_FrozenV4Model):
     """One visible source unit and the exact source span that produced it."""
 
@@ -209,10 +223,19 @@ class VisibleCopyProjectionV4(_FrozenV4Model):
     cover_copy_sha256: str
     content_sha256: str
     canonical_sha256: str
+    canonical_visible_copy_sha256: str | None = None
 
-    @field_validator("title_sha256", "cover_copy_sha256", "content_sha256", "canonical_sha256")
+    @field_validator(
+        "title_sha256",
+        "cover_copy_sha256",
+        "content_sha256",
+        "canonical_sha256",
+        "canonical_visible_copy_sha256",
+    )
     @classmethod
-    def validate_hash_shape(cls, value: str, info) -> str:
+    def validate_hash_shape(cls, value: str | None, info) -> str | None:
+        if value is None:
+            return None
         return _validate_sha(value, info.field_name)
 
     @model_validator(mode="after")
@@ -264,7 +287,19 @@ class VisibleCopyProjectionV4(_FrozenV4Model):
             ):
                 raise ValueError("table group raw span must contain its units")
 
-        payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
+        visible_payload = _visible_copy_payload(self.units)
+        expected_visible = canonical_sha256_v4(visible_payload)
+        if self.canonical_visible_copy_sha256 is None:
+            object.__setattr__(self, "canonical_visible_copy_sha256", expected_visible)
+        elif self.canonical_visible_copy_sha256 != expected_visible:
+            raise ValueError(
+                "projection canonical visible-copy sha256 does not match visible units"
+            )
+
+        payload = self.model_dump(
+            mode="json",
+            exclude={"canonical_sha256", "canonical_visible_copy_sha256"},
+        )
         expected = canonical_sha256_v4(payload)
         if self.canonical_sha256 != expected:
             raise ValueError("projection canonical sha256 does not match canonical payload")
@@ -272,10 +307,6 @@ class VisibleCopyProjectionV4(_FrozenV4Model):
 
     def validate_integrity(self) -> None:
         type(self).model_validate(self.model_dump(mode="python"))
-
-    @property
-    def canonical_visible_copy_sha256(self) -> str:
-        return self.canonical_sha256
 
     @property
     def source_field_hashes(self) -> tuple[str, str, str]:
