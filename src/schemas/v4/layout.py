@@ -12,7 +12,16 @@ import re
 from types import MappingProxyType
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictInt,
+    StrictStr,
+    field_serializer,
+    field_validator,
+    model_validator,
+)
 
 from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.direction import (
@@ -20,6 +29,8 @@ from src.schemas.v4.direction import (
     NarrativeTaskKindV4,
     TemplateFamilyV4,
 )
+from src.schemas.scene_graph import PageScene
+from src.schemas.visual_style import deep_freeze, deep_thaw
 
 
 GRAMMAR_IDS_V4 = ("editorial_hero", "comparison_grid", "step_flow")
@@ -705,6 +716,176 @@ class LayoutProgramV4(_FrozenLayoutV4):
         return self.asset_placements
 
 
+class CompilerProvenanceV4(_FrozenLayoutV4):
+    """Auditable deterministic compiler inputs without machine-local data.
+
+    Only byte hashes of the checked-in role fonts are persisted.  Absolute
+    paths, provider metadata and asset provenance belong to upstream private
+    boundaries and cannot enter this durable scene contract.
+    """
+
+    compiler_version: StrictStr = "v4-layout-compiler-1"
+    grammar_id: ImplementedGrammarIDV4
+    program_sha256: StrictStr
+    font_sha256_by_role: dict[StrictStr, StrictStr]
+    canvas_width: StrictInt = 1080
+    canvas_height: StrictInt = 1440
+    safe_margin_px: StrictInt = 80
+    canonical_sha256: StrictStr
+
+    @field_validator("program_sha256", "canonical_sha256")
+    @classmethod
+    def validate_provenance_hash(cls, value: str, info) -> str:
+        return _validate_hash(value, info.field_name)
+
+    @field_validator("font_sha256_by_role")
+    @classmethod
+    def validate_font_hashes(cls, value: dict[str, str]) -> dict[str, str]:
+        expected_roles = {"display", "heading", "body", "caption"}
+        if set(value) != expected_roles:
+            raise ValueError("compiler provenance must bind all canonical font roles")
+        for role, digest in value.items():
+            _validate_hash(digest, f"font_sha256_by_role[{role}]")
+        return value
+
+    @field_serializer("font_sha256_by_role")
+    def serialize_font_hashes(self, value):
+        return deep_thaw(value)
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> "CompilerProvenanceV4":
+        if self.canvas_width != 1080 or self.canvas_height != 1440:
+            raise ValueError("v4 compiler provenance canvas must be exactly 1080x1440")
+        if self.safe_margin_px != 80:
+            raise ValueError("v4 compiler provenance safe margin is fixed at 80px")
+        object.__setattr__(
+            self,
+            "font_sha256_by_role",
+            deep_freeze(self.font_sha256_by_role),
+        )
+        expected = canonical_sha256_v4(
+            self.model_dump(
+                mode="json",
+                exclude={"canonical_sha256"},
+            )
+        )
+        if self.canonical_sha256 != expected:
+            raise ValueError("compiler provenance canonical sha256 does not match payload")
+        return self
+
+    def validate_integrity(self) -> None:
+        type(self).model_validate(self.model_dump(mode="python"))
+
+
+class CompiledPageV4(_FrozenLayoutV4):
+    """One immutable page seam between the v4 compiler and renderer."""
+
+    page_id: StrictStr = Field(min_length=1)
+    sequence: StrictInt = Field(ge=1)
+    layout_program: LayoutProgramV4
+    scene: PageScene
+    compiler_provenance: CompilerProvenanceV4
+    canonical_sha256: StrictStr
+
+    @field_validator("canonical_sha256")
+    @classmethod
+    def validate_compiled_page_hash(cls, value: str) -> str:
+        return _validate_hash(value, "canonical_sha256")
+
+    @model_validator(mode="after")
+    def validate_compiled_page(self) -> "CompiledPageV4":
+        self.layout_program.validate_integrity()
+        self.compiler_provenance.validate_integrity()
+        if self.layout_program.page_id != self.page_id:
+            raise ValueError("compiled page ID does not match layout program")
+        if self.layout_program.grammar_id != self.compiler_provenance.grammar_id:
+            raise ValueError("compiled page grammar does not match compiler provenance")
+        if self.layout_program.canonical_sha256 != self.compiler_provenance.program_sha256:
+            raise ValueError("compiler provenance is bound to a different layout program")
+        if self.scene.page_id != self.page_id or self.scene.sequence != self.sequence:
+            raise ValueError("compiled page scene identity does not match page identity")
+        payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
+        expected = canonical_sha256_v4(payload)
+        if self.canonical_sha256 != expected:
+            raise ValueError("compiled page canonical sha256 does not match payload")
+        return self
+
+    def validate_integrity(self) -> None:
+        type(self).model_validate(self.model_dump(mode="python"))
+
+    @property
+    def program(self) -> LayoutProgramV4:
+        return self.layout_program
+
+    @property
+    def page_scene(self) -> PageScene:
+        return self.scene
+
+    @property
+    def provenance(self) -> CompilerProvenanceV4:
+        return self.compiler_provenance
+
+
+class CarouselDesignPlanV4(_FrozenLayoutV4):
+    """Hash-bound ordered v4 compiled pages for the renderer seam."""
+
+    content_atom_set_sha256: StrictStr
+    semantic_content_model_sha256: StrictStr
+    page_brief_set_sha256: StrictStr
+    asset_manifest_sha256: StrictStr
+    family_tokens_sha256: StrictStr
+    revision: StrictInt = Field(ge=0)
+    pages: tuple[CompiledPageV4, ...] = Field(min_length=5, max_length=18)
+    canonical_sha256: StrictStr
+
+    @field_validator(
+        "content_atom_set_sha256",
+        "semantic_content_model_sha256",
+        "page_brief_set_sha256",
+        "asset_manifest_sha256",
+        "family_tokens_sha256",
+        "canonical_sha256",
+    )
+    @classmethod
+    def validate_plan_hashes(cls, value: str, info) -> str:
+        return _validate_hash(value, info.field_name)
+
+    @model_validator(mode="after")
+    def validate_plan_identity_and_hash(self) -> "CarouselDesignPlanV4":
+        for page in self.pages:
+            page.validate_integrity()
+        page_ids = [page.page_id for page in self.pages]
+        if len(page_ids) != len(set(page_ids)):
+            raise ValueError("v4 design plan page IDs must be unique")
+        if [page.sequence for page in self.pages] != list(range(1, len(self.pages) + 1)):
+            raise ValueError("v4 design plan page sequences must be contiguous from 1")
+        program_families = {
+            page.layout_program.family_tokens_sha256 for page in self.pages
+        }
+        if program_families != {self.family_tokens_sha256}:
+            raise ValueError("v4 design plan family token hash is not shared by every page")
+        expected = canonical_sha256_v4(
+            self.model_dump(mode="json", exclude={"canonical_sha256"})
+        )
+        if self.canonical_sha256 != expected:
+            raise ValueError("v4 design plan canonical sha256 does not match payload")
+        return self
+
+    def validate_integrity(self) -> None:
+        type(self).model_validate(self.model_dump(mode="python"))
+
+    @property
+    def page_count(self) -> int:
+        return len(self.pages)
+
+
+# Friendly aliases keep the isolated contract discoverable while the suffixed
+# names remain the durable implementation names.
+CompilerProvenance = CompilerProvenanceV4
+CompiledPage = CompiledPageV4
+CarouselDesignPlan = CarouselDesignPlanV4
+
+
 # Explicit aliases keep v4 callers discoverable without importing v3 layout
 # contracts.  The suffixed names remain the canonical implementation names.
 CompositionGrammar = CompositionGrammarV4
@@ -719,6 +900,12 @@ __all__ = [
     "AssetPlacementV4",
     "CompositionGrammar",
     "CompositionGrammarV4",
+    "CarouselDesignPlan",
+    "CarouselDesignPlanV4",
+    "CompiledPage",
+    "CompiledPageV4",
+    "CompilerProvenance",
+    "CompilerProvenanceV4",
     "FamilyTokens",
     "FamilyTokensV4",
     "FragmentPlacementV4",
