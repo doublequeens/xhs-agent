@@ -37,6 +37,65 @@ TemplateFamilyV4 = Literal[
 DENSITY_LEVELS_V4 = ("low", "medium", "high")
 DensityLevelV4 = Literal["low", "medium", "high"]
 
+NARRATIVE_TASK_KINDS_V4 = (
+    "cover_hook",
+    "context",
+    "diagnosis",
+    "step",
+    "comparison",
+    "checklist",
+    "evidence",
+    "summary",
+    "closing",
+)
+NarrativeTaskKindV4 = Literal[
+    "cover_hook",
+    "context",
+    "diagnosis",
+    "step",
+    "comparison",
+    "checklist",
+    "evidence",
+    "summary",
+    "closing",
+]
+
+# These are semantic-role compatibility rules, not a copy generator.  A beat
+# must still bind exact fragment IDs; this map only prevents a ``step`` or
+# ``checklist`` duty from being asserted over unrelated semantic roles.
+TASK_KIND_FRAGMENT_ROLES_V4: dict[str, tuple[str, ...]] = {
+    "cover_hook": ("title", "cover", "heading", "paragraph"),
+    "context": ("heading", "paragraph", "quote", "note"),
+    "diagnosis": (
+        "heading",
+        "paragraph",
+        "warning",
+        "comparison_label",
+        "comparison_value",
+        "note",
+    ),
+    "step": ("step", "list_item"),
+    "comparison": (
+        "comparison_label",
+        "comparison_value",
+        "table_header",
+        "table_row",
+        "table_cell",
+        "paragraph",
+    ),
+    "checklist": ("checklist_item", "list_item", "heading", "paragraph"),
+    "evidence": (
+        "evidence",
+        "paragraph",
+        "table_header",
+        "table_row",
+        "table_cell",
+        "comparison_value",
+    ),
+    "summary": ("paragraph", "quote", "closing", "heading", "note"),
+    "closing": ("closing", "quote", "paragraph", "heading"),
+}
+
 ALLOWED_COMPOSITIONS_V4 = (
     "editorial_hero",
     "comparison_grid",
@@ -307,7 +366,15 @@ class NarrativeBeatV4(_FrozenDirectionV4):
 
     beat_id: StrictStr = Field(min_length=1)
     sequence: StrictInt = Field(ge=1)
+    task_kind: NarrativeTaskKindV4
+    fragment_refs: tuple[StrictStr, ...] = Field(min_length=1)
+    group_refs: tuple[StrictStr, ...] = ()
     task: StrictStr = Field(min_length=1)
+
+    @field_validator("fragment_refs", "group_refs")
+    @classmethod
+    def validate_beat_refs(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
+        return _non_empty_strings(value, info.field_name)
 
     @field_validator("task")
     @classmethod
@@ -535,7 +602,15 @@ class NarrativeBeatDraftV4(_FrozenDirectionV4):
 
     beat_id: StrictStr = Field(min_length=1)
     sequence: StrictInt = Field(ge=1)
+    task_kind: NarrativeTaskKindV4
+    fragment_refs: tuple[StrictStr, ...] = Field(min_length=1)
+    group_refs: tuple[StrictStr, ...] = ()
     task: StrictStr = Field(min_length=1)
+
+    @field_validator("fragment_refs", "group_refs")
+    @classmethod
+    def validate_beat_refs(cls, value: tuple[str, ...], info) -> tuple[str, ...]:
+        return _non_empty_strings(value, info.field_name)
 
     @field_validator("task")
     @classmethod
@@ -722,6 +797,11 @@ AuthoringIssueCodeV4 = Literal[
     "BEAT_OWNERSHIP_MISSING",
     "BEAT_OWNERSHIP_UNKNOWN",
     "BEAT_OWNERSHIP_DUPLICATED",
+    "BEAT_FRAGMENT_MISSING",
+    "BEAT_FRAGMENT_UNKNOWN",
+    "BEAT_GROUP_UNKNOWN",
+    "BEAT_FRAGMENT_BINDING_MISMATCH",
+    "BEAT_TASK_KIND_MISMATCH",
     "PAGE_BRIEF_DUTY_EMPTY",
     "PAGE_BRIEF_DUPLICATE_SIGNATURE",
     "DENSITY_CURVE_MISMATCH",
@@ -758,13 +838,13 @@ class AuthoringQAResultV4(_FrozenDirectionV4):
 
     passed: StrictBool
     issues: tuple[AuthoringIssueV4, ...] = ()
-    content_atom_set_sha256: StrictStr
-    content_lock_sha256: StrictStr
-    semantic_content_model_sha256: StrictStr
-    narrative_sha256: StrictStr
-    page_brief_set_sha256: StrictStr
-    visual_direction_plan_sha256: StrictStr
-    candidate_sha256: StrictStr = _ZERO_SHA256
+    content_atom_set_sha256: StrictStr | None = None
+    content_lock_sha256: StrictStr | None = None
+    semantic_content_model_sha256: StrictStr | None = None
+    narrative_sha256: StrictStr | None = None
+    page_brief_set_sha256: StrictStr | None = None
+    visual_direction_plan_sha256: StrictStr | None = None
+    candidate_sha256: StrictStr | None = None
     canonical_sha256: StrictStr
 
     @field_validator(
@@ -778,13 +858,35 @@ class AuthoringQAResultV4(_FrozenDirectionV4):
         "canonical_sha256",
     )
     @classmethod
-    def validate_result_hashes(cls, value: str, info) -> str:
-        return _validate_hash(value, info.field_name)
+    def validate_result_hashes(cls, value: str | None, info) -> str | None:
+        return None if value is None else _validate_hash(value, info.field_name)
 
     @model_validator(mode="after")
     def validate_result(self) -> "AuthoringQAResultV4":
         if self.passed != (not self.issues):
             raise ValueError("authoring QA passed must be equivalent to issues being empty")
+        durable_hashes = (
+            self.content_atom_set_sha256,
+            self.content_lock_sha256,
+            self.semantic_content_model_sha256,
+            self.narrative_sha256,
+            self.page_brief_set_sha256,
+            self.visual_direction_plan_sha256,
+        )
+        if self.passed:
+            if self.candidate_sha256 is not None or any(
+                value is None or value == _ZERO_SHA256 for value in durable_hashes
+            ):
+                raise ValueError(
+                    "passed authoring QA requires complete durable hashes and no candidate hash"
+                )
+        elif self.candidate_sha256 is not None and (
+            self.page_brief_set_sha256 is not None
+            or self.visual_direction_plan_sha256 is not None
+        ):
+            raise ValueError(
+                "candidate authoring failure cannot carry durable page or plan hashes"
+            )
         expected = canonical_direction_sha256_v4(self)
         if self.canonical_sha256 != expected:
             raise ValueError("authoring QA canonical sha256 does not match payload")
@@ -847,6 +949,9 @@ __all__ = [
     "CompositionIDV4",
     "DENSITY_LEVELS_V4",
     "DensityLevelV4",
+    "NARRATIVE_TASK_KINDS_V4",
+    "NarrativeTaskKindV4",
+    "TASK_KIND_FRAGMENT_ROLES_V4",
     "PageBrief",
     "PageBriefDraftV4",
     "PageBriefDraft",

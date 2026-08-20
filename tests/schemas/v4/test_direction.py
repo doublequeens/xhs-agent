@@ -9,6 +9,7 @@ from src.schemas.v4.direction import (
     TEMPLATE_FAMILIES_V4,
     AssetDirectiveDraftV4,
     AssetDirectiveV4,
+    AuthoringQAResultV4,
     CarouselNarrativeV4,
     NarrativeBeatV4,
     PageBriefV4,
@@ -26,6 +27,8 @@ def _narrative(page_count: int = 5) -> CarouselNarrativeV4:
             NarrativeBeatV4(
                 beat_id=f"beat-{index}",
                 sequence=index + 1,
+                task_kind="context",
+                fragment_refs=(f"fragment-{index}",),
                 task=f"task-{index}",
             )
             for index in range(page_count)
@@ -157,7 +160,16 @@ def test_provider_draft_has_no_visible_text_or_geometry_fields():
                 "narrative": {
                     "template_family": "pink_red",
                     "page_count": 5,
-                    "beats": ["a", "b", "c", "d", "e"],
+                    "beats": [
+                        {
+                            "beat_id": f"beat-{index}",
+                            "sequence": index + 1,
+                            "task_kind": "context",
+                            "fragment_refs": (f"fragment-{index}",),
+                            "task": "internal",
+                        }
+                        for index in range(5)
+                    ],
                     "density_curve": ["low", "low", "low", "low", "low"],
                     "variation_strategy": "vary",
                     "continuity_strategy": "carry",
@@ -166,6 +178,57 @@ def test_provider_draft_has_no_visible_text_or_geometry_fields():
                 },
                 "page_brief_set": PageBriefSetDraftV4(pages=()),
             }
+        )
+
+
+def test_narrative_beat_requires_controlled_kind_and_fragment_bindings():
+    with pytest.raises(ValidationError):
+        NarrativeBeatV4(
+            beat_id="beat-1",
+            sequence=1,
+            task="free-form duty",
+        )
+    with pytest.raises(ValidationError):
+        NarrativeBeatV4(
+            beat_id="beat-1",
+            sequence=1,
+            task_kind="free_form",
+            fragment_refs=("fragment-1",),
+            task="free-form duty",
+        )
+
+
+def test_passed_authoring_result_requires_durable_hashes_and_no_sentinel():
+    payload = {
+        "passed": True,
+        "issues": (),
+        "content_atom_set_sha256": "0" * 64,
+        "content_lock_sha256": "0" * 64,
+        "semantic_content_model_sha256": "0" * 64,
+        "narrative_sha256": "0" * 64,
+        "page_brief_set_sha256": "0" * 64,
+        "visual_direction_plan_sha256": "0" * 64,
+        "candidate_sha256": None,
+    }
+    with pytest.raises(ValidationError):
+        AuthoringQAResultV4(
+            **payload,
+            canonical_sha256=canonical_sha256_v4(payload),
+        )
+
+    incomplete = {
+        **payload,
+        "content_atom_set_sha256": "1" * 64,
+        "content_lock_sha256": "1" * 64,
+        "semantic_content_model_sha256": "1" * 64,
+        "narrative_sha256": "1" * 64,
+        "page_brief_set_sha256": "1" * 64,
+        "visual_direction_plan_sha256": None,
+    }
+    with pytest.raises(ValidationError):
+        AuthoringQAResultV4(
+            **incomplete,
+            canonical_sha256=canonical_sha256_v4(incomplete),
         )
 
     with pytest.raises(ValidationError):

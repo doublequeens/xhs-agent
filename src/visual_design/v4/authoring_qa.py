@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from src.schemas.content_lock import ContentLock
@@ -13,6 +14,7 @@ from src.schemas.v4.direction import (
     AuthoringQAResultV4,
     ASSET_PURPOSES_V4,
     ASSET_ROLES_V4,
+    TASK_KIND_FRAGMENT_ROLES_V4,
     CarouselNarrativeV4,
     AssetDirectiveCandidateV4,
     PageBriefCandidateV4,
@@ -30,12 +32,38 @@ from src.schemas.v4.semantic import (
 
 
 _ZERO_SHA256 = "0" * 64
+
+
+@dataclass(frozen=True)
+class AuthoringCandidatePreflightV4:
+    """Internal candidate gate; never serialized as durable Q1 state."""
+
+    candidate_sha256: str
+    issues: tuple[AuthoringIssueV4, ...]
+
+    def __post_init__(self) -> None:
+        if (
+            len(self.candidate_sha256) != 64
+            or any(character not in "0123456789abcdef" for character in self.candidate_sha256)
+            or self.candidate_sha256 == _ZERO_SHA256
+        ):
+            raise ValueError("candidate_sha256 must be a non-zero lowercase sha256")
+
+    @property
+    def passed(self) -> bool:
+        return not self.issues
+
+
 def _safe_hash(value: Any) -> str:
     if isinstance(value, str) and len(value) == 64 and all(
         character in "0123456789abcdef" for character in value
     ):
         return value
     return _ZERO_SHA256
+
+
+def _optional_hash(value: Any) -> str | None:
+    return _safe_hash(value) if value is not None else None
 
 
 def _payload(value: Any) -> Mapping[str, Any] | None:
@@ -277,28 +305,42 @@ def _result(
     content_lock: ContentLock | None,
     content_atom_set: ContentAtomSetV4 | None,
     candidate: PageBriefSetCandidateV4 | None = None,
-) -> AuthoringQAResultV4:
+) -> AuthoringQAResultV4 | AuthoringCandidatePreflightV4:
+    if candidate is not None:
+        return AuthoringCandidatePreflightV4(
+            candidate_sha256=candidate.candidate_sha256,
+            issues=tuple(issues),
+        )
+
+    # The two-argument public seam intentionally supports standalone Q1
+    # diagnostics.  Without a narrative and durable plan there is no
+    # hash-complete AuthoringQAResultV4 to publish, so expose the deterministic
+    # page-set check as the same internal preflight state used by the node.
+    if page_brief_set is not None and (narrative is None or plan is None):
+        return AuthoringCandidatePreflightV4(
+            candidate_sha256=page_brief_set.canonical_sha256,
+            issues=tuple(issues),
+        )
+
     payload = {
         "passed": not issues,
         "issues": tuple(issues),
-        "content_atom_set_sha256": _safe_hash(
+        "content_atom_set_sha256": _optional_hash(
             getattr(content_atom_set, "canonical_sha256", None)
             or getattr(semantic_model, "content_atom_set_sha256", None)
         ),
-        "content_lock_sha256": _safe_hash(getattr(content_lock, "canonical_sha256", None)),
-        "semantic_content_model_sha256": _safe_hash(
+        "content_lock_sha256": _optional_hash(getattr(content_lock, "canonical_sha256", None)),
+        "semantic_content_model_sha256": _optional_hash(
             getattr(semantic_model, "canonical_sha256", None)
         ),
-        "narrative_sha256": _safe_hash(getattr(narrative, "canonical_sha256", None)),
-        "page_brief_set_sha256": _safe_hash(
+        "narrative_sha256": _optional_hash(getattr(narrative, "canonical_sha256", None)),
+        "page_brief_set_sha256": _optional_hash(
             getattr(page_brief_set, "canonical_sha256", None)
         ),
-        "visual_direction_plan_sha256": _safe_hash(
+        "visual_direction_plan_sha256": _optional_hash(
             getattr(plan, "canonical_sha256", None)
         ),
-        "candidate_sha256": _safe_hash(
-            getattr(candidate, "candidate_sha256", None)
-        ),
+        "candidate_sha256": None,
     }
     return AuthoringQAResultV4(
         **payload,
@@ -314,7 +356,7 @@ def evaluate_authoring(
     *,
     content_lock: ContentLock | Mapping[str, Any] | None = None,
     content_atom_set: ContentAtomSetV4 | Mapping[str, Any] | None = None,
-) -> AuthoringQAResultV4:
+) -> AuthoringQAResultV4 | AuthoringCandidatePreflightV4:
     """Evaluate authoring semantics without model/provider side effects.
 
     The first two positional parameters intentionally form the small public
@@ -540,6 +582,57 @@ def evaluate_authoring(
 
         if narrative_obj is not None:
             beat_ids = {beat.beat_id for beat in narrative_obj.beats}
+            known_group_ids = (
+                {group.group_id for group in model.groups}
+                if model is not None
+                else set()
+            )
+            for beat in sorted(narrative_obj.beats, key=lambda item: item.sequence):
+                if not beat.fragment_refs:
+                    _append_unique(
+                        issues,
+                        _issue(
+                            "BEAT_FRAGMENT_MISSING",
+                            location=f"narrative.beats[{beat.sequence}].fragment_refs",
+                            message="every narrative beat must bind at least one semantic fragment",
+                            fragment_id=beat.beat_id,
+                        ),
+                    )
+                for fragment_id in beat.fragment_refs:
+                    if fragment_id not in known_fragment_ids:
+                        _append_unique(
+                            issues,
+                            _issue(
+                                "BEAT_FRAGMENT_UNKNOWN",
+                                location=f"narrative.beats[{beat.sequence}].fragment_refs",
+                                message="narrative beat references an unknown semantic fragment",
+                                fragment_id=fragment_id,
+                            ),
+                        )
+                    elif model is not None and (
+                        fragments_by_id[fragment_id].semantic_role
+                        not in TASK_KIND_FRAGMENT_ROLES_V4[beat.task_kind]
+                    ):
+                        _append_unique(
+                            issues,
+                            _issue(
+                                "BEAT_TASK_KIND_MISMATCH",
+                                location=f"narrative.beats[{beat.sequence}].task_kind",
+                                message="beat task kind is incompatible with its semantic fragment role",
+                                fragment_id=fragment_id,
+                            ),
+                        )
+                for group_id in beat.group_refs:
+                    if group_id not in known_group_ids:
+                        _append_unique(
+                            issues,
+                            _issue(
+                                "BEAT_GROUP_UNKNOWN",
+                                location=f"narrative.beats[{beat.sequence}].group_refs",
+                                message="narrative beat references an unknown semantic group",
+                                fragment_id=group_id,
+                            ),
+                        )
             beat_refs = [getattr(page, "beat_ref", "") for page in pages]
             beat_counts = Counter(beat_refs)
             for beat_id in sorted(
@@ -574,6 +667,20 @@ def evaluate_authoring(
                         fragment_id=beat_id,
                     ),
                 )
+            beats_by_id = {beat.beat_id: beat for beat in narrative_obj.beats}
+            for page in pages:
+                beat = beats_by_id.get(getattr(page, "beat_ref", ""))
+                if beat is not None and tuple(page.fragment_refs) != tuple(beat.fragment_refs):
+                    _append_unique(
+                        issues,
+                        _issue(
+                            "BEAT_FRAGMENT_BINDING_MISMATCH",
+                            location=f"pages[{page.sequence}].fragment_refs",
+                            message="page fragment ownership must exactly match its narrative beat",
+                            page_id=page.page_id or None,
+                            fragment_id=beat.beat_id,
+                        ),
+                    )
 
         # Family/page-count consistency is checked at every available layer.
         families = []
@@ -935,12 +1042,16 @@ def evaluate_authoring(
     )
 
 
-def evaluate_authoring_qa(*args: Any, **kwargs: Any) -> AuthoringQAResultV4:
+def evaluate_authoring_qa(
+    *args: Any,
+    **kwargs: Any,
+) -> AuthoringQAResultV4 | AuthoringCandidatePreflightV4:
     return evaluate_authoring(*args, **kwargs)
 
 
 __all__ = [
     "AuthoringIssueV4",
+    "AuthoringCandidatePreflightV4",
     "AuthoringQAResultV4",
     "evaluate_authoring",
     "evaluate_authoring_qa",

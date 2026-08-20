@@ -97,6 +97,8 @@ def _draft() -> VisualAuthoringDraftV4:
             NarrativeBeatV4(
                 beat_id=f"beat-{index}",
                 sequence=index + 1,
+                task_kind="context",
+                fragment_refs=(f"fragment-{index}",),
                 task=f"task-{index}",
             )
             for index in range(5)
@@ -244,6 +246,9 @@ def test_authoring_node_keeps_unknown_provider_fragment_in_q1_fail_route():
     assert "FRAGMENT_OWNERSHIP_UNKNOWN" in {
         issue.code for issue in result["authoring_qa_result"].issues
     }
+    assert result["authoring_qa_result"].candidate_sha256 != "0" * 64
+    assert result["authoring_qa_result"].page_brief_set_sha256 is None
+    assert result["authoring_qa_result"].visual_direction_plan_sha256 is None
 
 
 def test_authoring_node_returns_failed_candidate_for_empty_pages_without_throwing():
@@ -300,6 +305,31 @@ def test_authoring_node_injects_controlled_asset_resolution_after_q1():
     assert result["authoring_qa_result"].passed is True
     directive = result["page_brief_set"].pages[0].asset_directives[0]
     assert directive.preferred_resolution == (1080, 1440)
+
+
+def test_authoring_node_converts_expected_draft_validation_error_to_fail_route():
+    invalid = _draft().model_dump(mode="python")
+    invalid["narrative"]["unexpected"] = "not allowed"
+    result = visual_authoring_node(
+        _state(),
+        gateway=RecordingGateway(invalid, []),
+    )
+    assert result["authoring_route"] == "visual_authoring"
+    assert result["page_brief_set"] is None
+    assert result["visual_direction_plan"] is None
+    assert result["authoring_qa_result"].passed is False
+
+
+def test_authoring_node_propagates_programming_error_after_candidate_passes(monkeypatch):
+    def broken_builder(*args, **kwargs):
+        raise RuntimeError("durable invariant broke")
+
+    monkeypatch.setattr(
+        "src.nodes.v4.authoring._derive_page_brief_set",
+        broken_builder,
+    )
+    with pytest.raises(RuntimeError, match="durable invariant broke"):
+        visual_authoring_node(_state(), gateway=RecordingGateway(_draft(), []))
 
 
 def test_authoring_node_propagates_gateway_failure_without_retry_or_fallback():

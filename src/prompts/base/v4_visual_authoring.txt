@@ -16,8 +16,13 @@ composition IDs:
 editorial_hero, comparison_grid, step_flow, diagnostic_matrix, checklist,
 evidence_card, image_annotation, summary_closing
 
-Return one typed narrative beat (beat_id, sequence, task) for every page and
-set exactly one page beat_ref for each beat. Every page must own at least one
+Return one typed narrative beat (beat_id, sequence, task_kind, fragment_refs)
+for every page. Use only these task kinds: cover_hook, context, diagnosis,
+step, comparison, checklist, evidence, summary, closing. Each beat must bind
+one or more opaque fragment IDs (and may bind semantic group IDs) from the
+supplied model; task is internal rationale only and never substitutes for
+those references. Set exactly one page beat_ref for each beat, and make that
+page's fragment_refs exactly equal to its beat's fragment_refs. Every page must own at least one
 opaque fragment ID, one visual-priority fragment ID, and one preferred
 composition. A narrative role is an explanation, not a substitute for these
 semantic duties.

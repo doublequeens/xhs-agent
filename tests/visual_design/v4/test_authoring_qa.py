@@ -8,11 +8,18 @@ from src.schemas.v4.direction import (
     PageBriefSetV4,
     PageBriefV4,
 )
-from src.schemas.v4.semantic import SemanticContentModelV4, SemanticFragmentV4
-from src.visual_design.v4.authoring_qa import evaluate_authoring
+from src.schemas.v4.semantic import (
+    SemanticContentModelV4,
+    SemanticFragmentV4,
+    SemanticGroupV4,
+)
+from src.visual_design.v4.authoring_qa import (
+    AuthoringCandidatePreflightV4,
+    evaluate_authoring,
+)
 
 
-def semantic_model() -> SemanticContentModelV4:
+def semantic_model(*, with_group: bool = False) -> SemanticContentModelV4:
     atom_payloads = []
     for index in range(5):
         text = f"fragment text {index}"
@@ -52,10 +59,18 @@ def semantic_model() -> SemanticContentModelV4:
         )
         for index, atom in enumerate(atom_set.atoms)
     )
+    groups = (
+        SemanticGroupV4(
+            group_id="group-1",
+            group_kind="context",
+            fragment_ids=("fragment-0", "fragment-1"),
+            ordering=0,
+        ),
+    ) if with_group else ()
     model_payload = {
         "content_atom_set_sha256": atom_set.canonical_sha256,
         "fragments": fragments,
-        "groups": (),
+        "groups": groups,
     }
     return SemanticContentModelV4(
         **model_payload,
@@ -125,6 +140,8 @@ def narrative_for(page_set: PageBriefSetV4, *, family: str = "pink_red") -> Caro
             NarrativeBeatV4(
                 beat_id=f"beat-{index}",
                 sequence=index + 1,
+                task_kind="context",
+                fragment_refs=(f"fragment-{index}",),
                 task=f"task-{index}",
             )
             for index in range(page_set.page_count)
@@ -137,6 +154,19 @@ def narrative_for(page_set: PageBriefSetV4, *, family: str = "pink_red") -> Caro
     return CarouselNarrativeV4(
         **payload,
         canonical_sha256=canonical_sha256_v4(payload),
+    )
+
+
+def recanonicalize_narrative(narrative: CarouselNarrativeV4, **updates):
+    payload = narrative.model_dump(mode="python")
+    payload.update(updates)
+    payload.pop("canonical_sha256", None)
+    canonical_payload = {
+        key: value for key, value in payload.items() if value is not None
+    }
+    return CarouselNarrativeV4(
+        **payload,
+        canonical_sha256=canonical_sha256_v4(canonical_payload),
     )
 
 
@@ -354,6 +384,83 @@ def test_authoring_qa_requires_one_to_one_beat_ownership():
     )
     codes = {issue.code for issue in result.issues}
     assert {"BEAT_OWNERSHIP_DUPLICATED", "BEAT_OWNERSHIP_MISSING"}.issubset(codes)
+
+
+def test_authoring_qa_binds_beat_task_kind_and_fragment_refs():
+    page_set = briefs()
+    narrative = narrative_for(page_set)
+    changed = list(narrative.beats)
+    changed[0] = changed[0].model_copy(
+        update={"fragment_refs": ("fragment-1",)}
+    )
+    mismatch = recanonicalize_narrative(narrative, beats=tuple(changed))
+    codes = {
+        issue.code
+        for issue in evaluate_authoring(page_set, semantic_model(), mismatch).issues
+    }
+    assert "BEAT_FRAGMENT_BINDING_MISMATCH" in codes
+
+    unknown = list(narrative.beats)
+    unknown[0] = unknown[0].model_copy(
+        update={"fragment_refs": ("fragment-unknown",)}
+    )
+    unknown_narrative = recanonicalize_narrative(
+        narrative,
+        beats=tuple(unknown),
+    )
+    unknown_codes = {
+        issue.code
+        for issue in evaluate_authoring(
+            page_set,
+            semantic_model(),
+            unknown_narrative,
+        ).issues
+    }
+    assert "BEAT_FRAGMENT_UNKNOWN" in unknown_codes
+
+    group_unknown = list(narrative.beats)
+    group_unknown[0] = group_unknown[0].model_copy(
+        update={"group_refs": ("group-unknown",)}
+    )
+    group_narrative = recanonicalize_narrative(
+        narrative,
+        beats=tuple(group_unknown),
+    )
+    group_codes = {
+        issue.code
+        for issue in evaluate_authoring(
+            page_set,
+            semantic_model(with_group=True),
+            group_narrative,
+        ).issues
+    }
+    assert "BEAT_GROUP_UNKNOWN" in group_codes
+
+    role_mismatch = list(narrative.beats)
+    role_mismatch[0] = role_mismatch[0].model_copy(
+        update={"task_kind": "step"}
+    )
+    role_narrative = recanonicalize_narrative(
+        narrative,
+        beats=tuple(role_mismatch),
+    )
+    assert "BEAT_TASK_KIND_MISMATCH" in {
+        issue.code
+        for issue in evaluate_authoring(page_set, semantic_model(), role_narrative).issues
+    }
+
+
+def test_candidate_preflight_is_not_a_passed_durable_q1_result():
+    candidate = briefs().model_dump(mode="python")
+    candidate.pop("canonical_sha256", None)
+    result = evaluate_authoring(
+        candidate,
+        semantic_model(),
+        narrative_for(briefs()),
+    )
+    assert isinstance(result, AuthoringCandidatePreflightV4)
+    assert result.passed is True
+    assert result.candidate_sha256 != "0" * 64
 
 
 def test_authoring_qa_rejects_empty_page_candidate_without_throwing():

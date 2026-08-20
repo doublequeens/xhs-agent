@@ -87,6 +87,79 @@ exit 0
   `page_count` value so it can emit deterministic `PAGE_COUNT_INVALID` evidence;
   durable plan construction remains bounded to 5–18 pages.
 
+## Fix round 2
+
+### Status
+
+`DONE_WITH_CONCERNS`
+
+The second review round is addressed in the same seven Task8 files. The
+candidate preflight and durable Q1 result are now distinct states, and durable
+construction is no longer converted into a retryable authoring failure when a
+programming invariant breaks.
+
+### Fix mapping
+
+- Replaced free-form beat responsibility with controlled `task_kind`, required
+  non-empty `fragment_refs`, optional semantic `group_refs`, and deterministic
+  semantic-role compatibility checks. Each page's `fragment_refs` must exactly
+  equal its referenced beat's fragments; unknown/missing/mismatched beat and
+  group references produce stable Q1 issues.
+- Kept `PageBriefSetV4` strict for 5–18 pages, exact length, and continuous
+  one-based sequence. Standalone/minimal `evaluate_authoring` calls return the
+  internal `AuthoringCandidatePreflightV4` when durable narrative/plan hashes
+  are unavailable, while node candidates never become durable until that
+  preflight passes.
+- Made public `AuthoringQAResultV4` reject passed results with missing hashes,
+  candidate hashes, or zero sentinels. Candidate failures carry only a
+  non-zero candidate hash and no durable page/plan hashes; the authoring route
+  accepts only a hash-complete durable result.
+- Narrowed the node's provider/candidate recovery boundary to
+  `pydantic.ValidationError`. Gateway failures and all post-preflight durable
+  construction exceptions propagate instead of being disguised as retries.
+- Updated the provider prompt to describe typed task kinds and exact beat/page
+  fragment ownership without permitting visible copy or geometry.
+
+### TDD evidence
+
+RED before implementation: the focused round-2 collection failed because the
+new `AuthoringCandidatePreflightV4` seam was not yet implemented. After the
+vertical fixes, the focused Task8 suite passed.
+
+### Verification commands
+
+```text
+pytest -q tests/schemas/v4/test_direction.py tests/nodes/v4/test_authoring.py tests/visual_design/v4/test_authoring_qa.py
+30 passed
+
+pytest -q tests/schemas/v4/test_direction.py tests/nodes/v4/test_authoring.py tests/visual_design/v4/test_authoring_qa.py tests/nodes/test_visual_director.py
+79 passed
+
+pytest -q tests/nodes/v4/test_semantic.py tests/schemas/v4/test_semantic.py tests/visual_design/v4/test_semantic_qa.py tests/visual_ai/test_factory.py tests/visual_ai/test_gateway.py tests/visual_ai/test_gemini_adapter.py tests/visual_ai/test_v4_worker.py
+109 passed, 4 warnings
+
+pytest -q
+1535 passed, 2 skipped, 4 warnings
+
+python -m compileall -q src main.py
+exit 0
+
+git diff --check
+exit 0
+```
+
+### Fix-round self-review and concerns
+
+- `VisualDirectionPlanV4` is still built from the exact revalidated semantic
+  model, narrative, and strict page-brief set objects; its embedded objects and
+  all canonical/source hashes are checked again by the durable model validator.
+- The candidate preflight is an in-memory dataclass with a non-zero canonical
+  candidate hash and cannot be serialized as a durable Q1 result. Public pass
+  results require all six durable bindings and no candidate hash.
+- The full suite remains green. The four warnings are pre-existing Pydantic
+  serializer/tampered-model and macOS pytest temporary-directory cleanup
+  warnings; no authoring assertion is associated with them.
+
 ## Fix round 1
 
 ### Status

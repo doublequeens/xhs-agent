@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from src.schemas.content_lock import ContentLock
 from src.schemas.v4.content import (
     ContentAtomSetV4,
@@ -30,7 +32,10 @@ from src.schemas.v4.direction import (
 )
 from src.schemas.v4.semantic import SemanticContentModelV4, SemanticQAResultV4
 from src.visual_ai.protocols import InvocationPolicy, InvocationRequest
-from src.visual_design.v4.authoring_qa import evaluate_authoring
+from src.visual_design.v4.authoring_qa import (
+    AuthoringCandidatePreflightV4,
+    evaluate_authoring,
+)
 from src.nodes.v4.semantic import route_after_semantic_qa
 
 
@@ -72,11 +77,8 @@ def _load_prompt() -> str:
 
 
 def _revalidate_draft(value: Any) -> VisualAuthoringDraftV4:
-    try:
-        raw = value.model_dump(mode="python") if isinstance(value, VisualAuthoringDraftV4) else value
-        return VisualAuthoringDraftV4.model_validate(raw)
-    except Exception as exc:
-        raise ValueError("visual_authoring gateway draft is invalid") from exc
+    raw = value.model_dump(mode="python") if isinstance(value, VisualAuthoringDraftV4) else value
+    return VisualAuthoringDraftV4.model_validate(raw)
 
 
 def _revalidate_q0(state: Mapping[str, Any]) -> tuple[
@@ -147,12 +149,22 @@ def _request_payload(
         }
         for fragment in model.fragments
     )
+    groups = tuple(
+        {
+            "group_id": group.group_id,
+            "group_kind": group.group_kind,
+            "fragment_ids": group.fragment_ids,
+            "ordering": group.ordering,
+        }
+        for group in model.groups
+    )
     return {
         "prompt": _load_prompt(),
         "content_atom_set_sha256": atom_set.canonical_sha256,
         "content_lock_sha256": lock.canonical_sha256,
         "semantic_content_model_sha256": model.canonical_sha256,
         "fragments": fragments,
+        "groups": groups,
         "constraints": {
             "allow_visible_text_output": False,
             "allow_fragment_text_output": False,
@@ -277,29 +289,28 @@ def _derive_plan(
 
 def _failed_qa(
     *,
-    atom_set: ContentAtomSetV4,
-    lock: ContentLock,
-    semantic_model: SemanticContentModelV4,
-    narrative: CarouselNarrativeV4 | None = None,
-    candidate: PageBriefSetCandidateV4 | None = None,
+    candidate_sha256: str | None = None,
     location: str = "provider_draft",
+    issues: tuple[AuthoringIssueV4, ...] | None = None,
 ) -> AuthoringQAResultV4:
-    issue = AuthoringIssueV4(
-        code="SCHEMA_INVALID",
-        location=location,
-        message="visual authoring candidate failed local contract preflight",
-        evidence="sanitized local schema diagnostic",
+    issue_set = issues or (
+        AuthoringIssueV4(
+            code="SCHEMA_INVALID",
+            location=location,
+            message="visual authoring candidate failed local contract preflight",
+            evidence="sanitized local schema diagnostic",
+        ),
     )
     payload = {
         "passed": False,
-        "issues": (issue,),
-        "content_atom_set_sha256": atom_set.canonical_sha256,
-        "content_lock_sha256": lock.canonical_sha256,
-        "semantic_content_model_sha256": semantic_model.canonical_sha256,
-        "narrative_sha256": getattr(narrative, "canonical_sha256", "0" * 64),
-        "page_brief_set_sha256": "0" * 64,
-        "visual_direction_plan_sha256": "0" * 64,
-        "candidate_sha256": getattr(candidate, "candidate_sha256", "0" * 64),
+        "issues": issue_set,
+        "content_atom_set_sha256": None,
+        "content_lock_sha256": None,
+        "semantic_content_model_sha256": None,
+        "narrative_sha256": None,
+        "page_brief_set_sha256": None,
+        "visual_direction_plan_sha256": None,
+        "candidate_sha256": candidate_sha256,
     }
     return AuthoringQAResultV4(
         **payload,
@@ -392,14 +403,12 @@ def visual_authoring_node(
             semantic_model=semantic_model,
             atom_set=atom_set,
         )
-    except Exception:
+    except ValidationError:
         # A successfully invoked provider can still return a malformed
         # semantic candidate.  Return a sanitized hard-gate result instead of
         # allowing a durable-construction ValidationError to escape.
         qa_result = _failed_qa(
-            atom_set=atom_set,
-            lock=lock,
-            semantic_model=semantic_model,
+            location="provider_draft",
         )
         return _node_result(
             atom_set=atom_set,
@@ -421,39 +430,12 @@ def visual_authoring_node(
         content_lock=lock,
         content_atom_set=atom_set,
     )
+    if not isinstance(candidate_qa, AuthoringCandidatePreflightV4):
+        raise RuntimeError("candidate preflight returned a durable Q1 result")
     if not candidate_qa.passed:
-        return _node_result(
-            atom_set=atom_set,
-            lock=lock,
-            semantic_model=semantic_model,
-            q0=_q0,
-            narrative=narrative,
-            page_brief_set=None,
-            plan=None,
-            qa_result=candidate_qa,
-        )
-
-    try:
-        page_brief_set = _derive_page_brief_set(
-            candidate,
-            narrative=narrative,
-            semantic_model=semantic_model,
-            atom_set=atom_set,
-        )
-        plan = _derive_plan(
-            semantic_model=semantic_model,
-            atom_set=atom_set,
-            narrative=narrative,
-            page_brief_set=page_brief_set,
-        )
-    except Exception:
         qa_result = _failed_qa(
-            atom_set=atom_set,
-            lock=lock,
-            semantic_model=semantic_model,
-            narrative=narrative,
-            candidate=candidate,
-            location="durable_contract",
+            candidate_sha256=candidate_qa.candidate_sha256,
+            issues=candidate_qa.issues,
         )
         return _node_result(
             atom_set=atom_set,
@@ -465,6 +447,19 @@ def visual_authoring_node(
             plan=None,
             qa_result=qa_result,
         )
+
+    page_brief_set = _derive_page_brief_set(
+        candidate,
+        narrative=narrative,
+        semantic_model=semantic_model,
+        atom_set=atom_set,
+    )
+    plan = _derive_plan(
+        semantic_model=semantic_model,
+        atom_set=atom_set,
+        narrative=narrative,
+        page_brief_set=page_brief_set,
+    )
 
     qa_result = evaluate_authoring(
         page_brief_set,
