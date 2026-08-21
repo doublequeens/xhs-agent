@@ -291,3 +291,43 @@ inherited round3 implementation. The `src/nodes/v4/composition.py` change is
 retained because its prior last-region fallback routed editorial asset
 directives to `accent`; selecting the canonical `supporting` region is
 required for the opaque asset/directive and region-lane contracts.
+
+## Fix round 4
+
+The independent review found one remaining geometry seam: text validation
+recorded a complete reserved box and then replaced it with painted glyph
+bounds before the overlap pass. A rehashed comparison page could therefore
+move the right reserved lane from x=556 to x=500, move and rehash its region,
+and pass while the narrow glyph ink remained visually separate.
+
+The regression was added first and reproduced the bypass against the prior
+implementation. The fix keeps two immutable geometry sets through validation:
+
+- every scene element's complete reserved box is checked pairwise for
+  unintended overlap;
+- each text's painted bounds remain checked inside its reserved box, canonical
+  region, and safe margin, then participate in painted-to-painted and
+  painted-to-other-reserved overlap checks without replacing the reserved box.
+
+Fresh offline verification:
+
+```text
+$ pytest -q tests/visual_design/v4/test_compiler.py
+57 passed in 6.70s
+
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py
+77 passed in 15.47s
+
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py tests/schemas/test_scene_graph.py tests/rendering/scene/test_compiler.py
+144 passed, 2 warnings in 15.85s
+
+$ pytest -q tests/schemas/v4/test_layout.py tests/visual_design/v4/test_grammars.py tests/nodes/v4/test_composition.py
+54 passed in 0.25s
+
+$ python -m compileall -q src main.py
+$ git diff --check
+```
+
+The two warnings are pytest temporary-directory cleanup warnings. No v3
+renderer, compiler, graph, publish, state, asset, output, database, or
+unrelated source file was changed in this round.

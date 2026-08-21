@@ -1137,6 +1137,62 @@ def test_rehashed_region_binding_cannot_hide_region_geometry_contradiction() -> 
         _rehash_page(compiled, compiler_provenance=provenance)
 
 
+def test_rehashed_reserved_comparison_boxes_cannot_hide_behind_painted_bounds() -> None:
+    program, inputs = _comparison_inputs_for_test()
+    compiled = compile_layout(program, inputs)
+    right_text = next(
+        element
+        for element in compiled.scene.elements
+        if isinstance(element, TextElement) and element.content_ref == "comparison-fragment-3"
+    )
+    # The right reserved box is moved into the left reserved box by 24px.  The
+    # right region is moved with it and all hashes are recomputed, so this is a
+    # validly-shaped attacker payload rather than a stale-object shortcut.
+    tampered_right = right_text.model_copy(
+        update={
+            "box": Box(
+                x=500,
+                y=right_text.box.y,
+                width=right_text.box.width,
+                height=right_text.box.height,
+            )
+        }
+    )
+    tampered_scene = compiled.scene.model_copy(
+        update={
+            "elements": tuple(
+                tampered_right if element.element_id == right_text.element_id else element
+                for element in compiled.scene.elements
+            )
+        }
+    )
+    right_region = compiled.compiler_provenance.region_geometry_evidence["right"]
+    right_region_payload = right_region.model_dump(mode="python")
+    right_region_payload["x"] = 500.0
+    right_region_hash_payload = {
+        key: right_region_payload[key]
+        for key in ("region_id", "role", "order", "x", "y", "width", "height")
+    }
+    tampered_right_region = right_region.model_copy(
+        update={
+            **right_region_payload,
+            "geometry_sha256": canonical_sha256_v4(right_region_hash_payload),
+        }
+    )
+    regions = dict(compiled.compiler_provenance.region_geometry_evidence)
+    regions["right"] = tampered_right_region
+    tampered_provenance = _rehash_provenance(
+        compiled.compiler_provenance,
+        region_geometry_evidence=regions,
+    )
+    with pytest.raises(ValueError, match="overlap"):
+        _rehash_page(
+            compiled,
+            scene=tampered_scene,
+            compiler_provenance=tampered_provenance,
+        )
+
+
 @pytest.mark.parametrize("grammar", ("editorial_hero", "comparison_grid", "step_flow"))
 def test_all_grammars_compile_normal_asset_and_text_paths_with_opaque_bindings(
     grammar: str,

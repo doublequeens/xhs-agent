@@ -1209,7 +1209,17 @@ class CompiledPageV4(_FrozenLayoutV4):
                 raise ValueError("compiled page geometry exceeds compiler safe margin")
             return float(box.x), float(box.y), float(box.width), float(box.height)
 
-        boxes: list[tuple[str, tuple[float, float, float, float], tuple[str, ...]]] = []
+        # Keep the adapter's complete reserved boxes separate from the measured
+        # glyph ink bounds.  The reserved box is the geometry contract for the
+        # renderer and must never be replaced by a smaller painted rectangle:
+        # doing so lets a rehashed scene hide two colliding layout lanes when
+        # their glyphs happen to be narrow.
+        reserved_boxes: list[
+            tuple[str, tuple[float, float, float, float], tuple[str, ...]]
+        ] = []
+        painted_boxes: list[
+            tuple[str, tuple[float, float, float, float], tuple[str, ...]]
+        ] = []
         element_ids = [element.element_id for element in self.scene.elements]
         if len(element_ids) != len(set(element_ids)):
             raise ValueError("compiled page scene element IDs must be unique")
@@ -1256,7 +1266,7 @@ class CompiledPageV4(_FrozenLayoutV4):
             box = _safe_box(element)
             if not _inside_region((box[0], box[1], box[0] + box[2], box[1] + box[3])):
                 raise ValueError("compiled page element box exceeds bound region")
-            boxes.append((element.element_id, box, tuple(element.intentional_overlap_with)))
+            reserved_boxes.append((element.element_id, box, tuple(element.intentional_overlap_with)))
             if isinstance(element, TextElement):
                 text_refs.append(element.content_ref)
                 floor = (
@@ -1308,12 +1318,12 @@ class CompiledPageV4(_FrozenLayoutV4):
                     raise ValueError("compiled page glyph ink exceeds compiler safe margin")
                 if not _inside_region((glyph_left, glyph_top, glyph_right, glyph_bottom)):
                     raise ValueError("compiled page painted text exceeds bound region")
-                # Overlap/adjacency checks use painted bounds, not the full
-                # reserved box that the renderer adapter will pad.
-                boxes[-1] = (
+                painted_boxes.append(
+                    (
                     element.element_id,
                     (glyph_left, glyph_top, glyph_right - glyph_left, glyph_bottom - glyph_top),
                     tuple(element.intentional_overlap_with),
+                    )
                 )
                 try:
                     from src.visual_design.v4.typography import resolve_font_file_v4
@@ -1373,16 +1383,49 @@ class CompiledPageV4(_FrozenLayoutV4):
                 raise ValueError("compiled page opaque asset reference is not evidence-bound")
             if binding.box_ratio <= 0 or binding.crop_factor < 1:
                 raise ValueError("compiled page asset geometry evidence is invalid")
-        for left_index, (left_id, left_box, left_allowed) in enumerate(boxes):
-            for right_id, right_box, right_allowed in boxes[left_index + 1 :]:
+        def _intersects(
+            left_box: tuple[float, float, float, float],
+            right_box: tuple[float, float, float, float],
+        ) -> bool:
+            return (
+                left_box[0] < right_box[0] + right_box[2]
+                and left_box[0] + left_box[2] > right_box[0]
+                and left_box[1] < right_box[1] + right_box[3]
+                and left_box[1] + left_box[3] > right_box[1]
+            )
+
+        def _check_overlaps(
+            boxes: list[tuple[str, tuple[float, float, float, float], tuple[str, ...]]],
+            error_message: str,
+        ) -> None:
+            for left_index, (left_id, left_box, left_allowed) in enumerate(boxes):
+                for right_id, right_box, right_allowed in boxes[left_index + 1 :]:
+                    intersects = _intersects(left_box, right_box)
+                    if intersects and right_id not in left_allowed and left_id not in right_allowed:
+                        raise ValueError(error_message)
+
+        # Reserved geometry is authoritative and is checked independently of
+        # painted ink.  Painted bounds get their own pairwise check below.
+        _check_overlaps(reserved_boxes, "compiled page contains an unintended element overlap")
+        _check_overlaps(painted_boxes, "compiled page contains an unintended painted text overlap")
+
+        # A painted text bound is already proven to be inside its own reserved
+        # box above.  Check it against every other reserved element as well;
+        # this makes the painted geometry participate in the same overlap
+        # policy without comparing a text element with its own box.
+        for painted_id, painted_box, painted_allowed in painted_boxes:
+            for reserved_id, reserved_box, reserved_allowed in reserved_boxes:
+                if painted_id == reserved_id:
+                    continue
                 intersects = (
-                    left_box[0] < right_box[0] + right_box[2]
-                    and left_box[0] + left_box[2] > right_box[0]
-                    and left_box[1] < right_box[1] + right_box[3]
-                    and left_box[1] + left_box[3] > right_box[1]
+                    _intersects(painted_box, reserved_box)
                 )
-                if intersects and right_id not in left_allowed and left_id not in right_allowed:
-                    raise ValueError("compiled page contains an unintended element overlap")
+                if (
+                    intersects
+                    and reserved_id not in painted_allowed
+                    and painted_id not in reserved_allowed
+                ):
+                    raise ValueError("compiled page contains an unintended painted text overlap")
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         expected = canonical_sha256_v4(payload)
         if self.canonical_sha256 != expected:
