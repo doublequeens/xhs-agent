@@ -11,6 +11,12 @@ from .runtime import (
     AttemptTerminalStatus,
     canonical_json,
 )
+from .quality import (
+    DesignMetricEvidenceV4,
+    DesignMetricsQAResultV4,
+    DesignPlanQAResultV4,
+    DesignQualityIssueV4,
+)
 
 __all__ = [
     "ATTEMPT_STATUSES",
@@ -22,4 +28,8 @@ __all__ = [
     "AttemptStatus",
     "AttemptTerminalStatus",
     "canonical_json",
+    "DesignMetricEvidenceV4",
+    "DesignMetricsQAResultV4",
+    "DesignPlanQAResultV4",
+    "DesignQualityIssueV4",
 ]
