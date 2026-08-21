@@ -781,21 +781,16 @@ def _make_metric_set(
     orphan_element = None
     for element in text_elements:
         evidence = page.compiler_provenance.text_measurement_evidence[element.content_ref]
-        if evidence.line_count > 1:
-            widest_line = max(evidence.line_widths_px)
-            short_line_threshold = max(1.0, 0.05 * widest_line)
-            orphan_lines = tuple(
-                index
-                for index, (width, count) in enumerate(
-                    zip(evidence.line_widths_px, evidence.line_codepoint_counts)
-                )
-                if count == 0 or width <= short_line_threshold
-            )
-            if orphan_lines:
-                orphan_line += 1
-                if element.style.font_role in {"display", "heading"}:
-                    orphan_heading += 1
-                orphan_element = element
+        # Orphan detection is a semantic line-count rule, not a relative-width
+        # heuristic.  The persisted Pillow code-point counts include wrapped,
+        # final, and explicit-newline lines, so every line participates.
+        if evidence.line_count > 1 and any(
+            count <= 1 for count in evidence.line_codepoint_counts
+        ):
+            orphan_line += 1
+            if element.style.font_role in {"display", "heading"}:
+                orphan_heading += 1
+            orphan_element = element
     text_area = sum(box[2] * box[3] for element, box in zip(elements, boxes) if isinstance(element, TextElement))
     image_area = sum(box[2] * box[3] for element, box in zip(elements, boxes) if isinstance(element, ImageElement))
     if not math.isfinite(text_area) or text_area <= 0:

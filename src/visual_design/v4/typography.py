@@ -9,7 +9,6 @@ and Pillow/FreeType performs the measurement locally.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -20,6 +19,7 @@ from typing import Final
 import regex
 from PIL import ImageFont
 
+from src.schemas.v4.layout import canonical_text_measurement_sha256_v4
 from src.visual_design.v4.tokens import get_family_tokens
 
 
@@ -406,39 +406,45 @@ def measure_text_v4(
     )
     measured_height = max(content_height, content_inset_top + ink_bottom)
     measurement_payload = {
+        "advance_width_px": advance_width,
+        "ascent_px": float(ascent),
+        "break_offsets": tuple(inserted_break_offsets),
         "content_inset_bottom_px": content_inset_bottom,
         "content_inset_left_px": content_inset_left,
         "content_inset_policy": CONTENT_INSET_POLICY_V4,
         "content_inset_right_px": content_inset_right,
         "content_inset_top_px": content_inset_top,
+        "descent_px": float(descent),
         "explicit_break_spans": tuple(explicit_break_spans),
+        "explicit_newline_count": len(explicit_break_spans),
         "font_nominal_weight": resolved.nominal_weight,
+        "font_role": role,
         "font_sha256": resolved.sha256,
         "font_size_px": font_size,
+        "height_px": measured_height,
         "ink_height_px": ink_height,
         "ink_left_px": ink_left,
         "ink_top_px": ink_top,
         "ink_right_px": ink_right,
         "ink_bottom_px": ink_bottom,
         "ink_width_px": ink_width,
-        "ascent_px": float(ascent),
-        "descent_px": float(descent),
         "inserted_break_offsets": tuple(inserted_break_offsets),
-        "line_count": line_count,
         "line_codepoint_counts": line_codepoint_counts,
+        "line_count": line_count,
         "line_height": line_height_value,
         "line_widths_px": tuple(widths),
         "max_width_px": max_width,
+        "offset_unit": "unicode_codepoint_v1",
         "painted_bottom_px": ink_bottom,
         "painted_left_px": ink_left,
         "painted_offset_x_px": painted_offset_x,
         "painted_offset_y_px": painted_offset_y,
         "painted_right_px": ink_right,
         "painted_top_px": ink_top,
+        "width_px": ink_width,
+        "wrap_policy": TEXT_WRAP_POLICY_V4,
     }
-    measurement_sha256 = hashlib.sha256(
-        json.dumps(measurement_payload, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    measurement_sha256 = canonical_text_measurement_sha256_v4(measurement_payload)
     return TextMeasurementV4(
         text=text,
         lines=tuple(lines),

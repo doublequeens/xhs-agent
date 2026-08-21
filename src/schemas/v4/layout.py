@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import math
+from collections.abc import Mapping
 from types import MappingProxyType
 from typing import Literal
 
@@ -128,6 +129,74 @@ def _validate_hash(value: str, field_name: str) -> str:
     if not _HASH_RE.fullmatch(value):
         raise ValueError(f"{field_name} must be a lowercase sha256")
     return value
+
+
+# This is the complete non-visible payload emitted by the Pillow producer and
+# persisted in ``TextMeasurementEvidenceV4``.  Keeping the field set here
+# makes the durable consumer use exactly the producer's hash contract instead
+# of maintaining a second, silently drifting list.
+_TEXT_MEASUREMENT_PAYLOAD_FIELDS_V4 = frozenset(
+    {
+        "advance_width_px",
+        "ascent_px",
+        "break_offsets",
+        "content_inset_bottom_px",
+        "content_inset_left_px",
+        "content_inset_policy",
+        "content_inset_right_px",
+        "content_inset_top_px",
+        "descent_px",
+        "explicit_break_spans",
+        "explicit_newline_count",
+        "font_nominal_weight",
+        "font_role",
+        "font_sha256",
+        "font_size_px",
+        "height_px",
+        "ink_bottom_px",
+        "ink_height_px",
+        "ink_left_px",
+        "ink_right_px",
+        "ink_top_px",
+        "ink_width_px",
+        "inserted_break_offsets",
+        "line_codepoint_counts",
+        "line_count",
+        "line_height",
+        "line_widths_px",
+        "max_width_px",
+        "offset_unit",
+        "painted_bottom_px",
+        "painted_left_px",
+        "painted_offset_x_px",
+        "painted_offset_y_px",
+        "painted_right_px",
+        "painted_top_px",
+        "width_px",
+        "wrap_policy",
+    }
+)
+
+
+def canonical_text_measurement_payload_v4(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Return the exact canonical, non-visible measurement payload.
+
+    The helper is deliberately pure: it performs no font lookup, filesystem
+    access, or visible-copy handling.  Both Pillow production and durable
+    schema validation call this function before hashing.
+    """
+
+    if set(payload) != _TEXT_MEASUREMENT_PAYLOAD_FIELDS_V4:
+        raise ValueError("text measurement payload fields are not canonical")
+    return {key: payload[key] for key in sorted(_TEXT_MEASUREMENT_PAYLOAD_FIELDS_V4)}
+
+
+def canonical_text_measurement_sha256_v4(payload: Mapping[str, object]) -> str:
+    """Hash one canonical measurement payload with the v4 JSON contract."""
+
+    return canonical_sha256_v4(canonical_text_measurement_payload_v4(payload))
 
 
 def _validate_identifier(value: str, field_name: str) -> str:
@@ -728,8 +797,17 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     fragment_ref: StrictStr = Field(min_length=1)
     font_role: Literal["display", "heading", "body", "caption"]
     font_sha256: StrictStr
+    font_nominal_weight: StrictInt = Field(ge=1, le=1000)
     font_size_px: float = Field(gt=0)
+    width_px: float = Field(ge=0)
+    height_px: float = Field(gt=0)
     line_count: StrictInt = Field(ge=1)
+    explicit_newline_count: StrictInt = Field(ge=0)
+    line_height: float = Field(gt=0)
+    max_width_px: float = Field(gt=0)
+    advance_width_px: float = Field(ge=0)
+    ink_width_px: float = Field(ge=0)
+    ink_height_px: float = Field(ge=0)
     line_widths_px: tuple[float, ...]
     line_codepoint_counts: tuple[StrictInt, ...]
     break_offsets: tuple[StrictInt, ...] = ()
@@ -758,17 +836,38 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     painted_top_px: float = 0.0
     painted_right_px: float = 0.0
     painted_bottom_px: float = 0.0
+    # Exact immutable inputs used by the compiler.  These are intentionally
+    # separate from the Pillow measurement hash: the page validator binds
+    # them to the scene box/style, so a caller cannot rehash a self-consistent
+    # evidence object with a different reserved geometry.
+    reserved_box_x_px: float = Field(ge=0)
+    reserved_box_y_px: float = Field(ge=0)
+    reserved_box_width_px: float = Field(gt=0)
+    reserved_box_height_px: float = Field(gt=0)
 
     @field_validator("font_sha256", "measurement_sha256")
     @classmethod
     def validate_evidence_hash(cls, value: str, info) -> str:
         return _validate_hash(value, info.field_name)
 
-    @field_validator("font_size_px")
+    @field_validator(
+        "font_size_px",
+        "width_px",
+        "height_px",
+        "line_height",
+        "max_width_px",
+        "advance_width_px",
+        "ink_width_px",
+        "ink_height_px",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+    )
     @classmethod
-    def validate_font_size(cls, value: float) -> float:
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError("text measurement font size must be finite and positive")
+    def validate_positive_metrics(cls, value: float, info) -> float:
+        if not math.isfinite(value):
+            raise ValueError(f"text measurement {info.field_name} must be finite")
         return value
 
     @field_validator("line_widths_px")
@@ -854,6 +953,21 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
             raise ValueError("text measurement line widths must match line count")
         if len(self.line_codepoint_counts) != self.line_count:
             raise ValueError("text measurement line codepoint counts must match line count")
+        if self.explicit_newline_count != len(self.explicit_break_spans):
+            raise ValueError("text measurement newline count must match explicit break spans")
+        if abs(self.reserved_box_width_px - self.max_width_px) > 1e-6:
+            raise ValueError("text measurement reserved width must match max width")
+        if self.reserved_box_width_px <= 0 or self.reserved_box_height_px <= 0:
+            raise ValueError("text measurement reserved box must be positive")
+        if (
+            self.width_px > self.max_width_px + 1e-6
+            or self.advance_width_px > self.max_width_px + 1e-6
+            or self.ink_width_px > self.max_width_px + 1e-6
+            or any(width > self.max_width_px + 1e-6 for width in self.line_widths_px)
+        ):
+            raise ValueError("text measurement width exceeds reserved max width")
+        if self.height_px > self.reserved_box_height_px + 1e-6:
+            raise ValueError("text measurement height exceeds reserved box")
         if self.ink_right_px < self.ink_left_px or self.ink_bottom_px < self.ink_top_px:
             raise ValueError("text measurement ink bounds are inverted")
         if any(
@@ -868,6 +982,49 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
             raise ValueError("text measurement content insets must be non-negative")
         if self.painted_right_px < self.painted_left_px or self.painted_bottom_px < self.painted_top_px:
             raise ValueError("text measurement painted bounds are inverted")
+        expected = canonical_text_measurement_sha256_v4(
+            {
+                "advance_width_px": self.advance_width_px,
+                "ascent_px": self.ascent_px,
+                "break_offsets": self.break_offsets,
+                "content_inset_bottom_px": self.content_inset_bottom_px,
+                "content_inset_left_px": self.content_inset_left_px,
+                "content_inset_policy": self.content_inset_policy,
+                "content_inset_right_px": self.content_inset_right_px,
+                "content_inset_top_px": self.content_inset_top_px,
+                "descent_px": self.descent_px,
+                "explicit_break_spans": self.explicit_break_spans,
+                "explicit_newline_count": self.explicit_newline_count,
+                "font_nominal_weight": self.font_nominal_weight,
+                "font_role": self.font_role,
+                "font_sha256": self.font_sha256,
+                "font_size_px": self.font_size_px,
+                "height_px": self.height_px,
+                "ink_bottom_px": self.ink_bottom_px,
+                "ink_height_px": self.ink_height_px,
+                "ink_left_px": self.ink_left_px,
+                "ink_right_px": self.ink_right_px,
+                "ink_top_px": self.ink_top_px,
+                "ink_width_px": self.ink_width_px,
+                "inserted_break_offsets": self.inserted_break_offsets,
+                "line_codepoint_counts": self.line_codepoint_counts,
+                "line_count": self.line_count,
+                "line_height": self.line_height,
+                "line_widths_px": self.line_widths_px,
+                "max_width_px": self.max_width_px,
+                "offset_unit": self.offset_unit,
+                "painted_bottom_px": self.painted_bottom_px,
+                "painted_left_px": self.painted_left_px,
+                "painted_offset_x_px": self.painted_offset_x_px,
+                "painted_offset_y_px": self.painted_offset_y_px,
+                "painted_right_px": self.painted_right_px,
+                "painted_top_px": self.painted_top_px,
+                "width_px": self.width_px,
+                "wrap_policy": self.wrap_policy,
+            }
+        )
+        if self.measurement_sha256 != expected:
+            raise ValueError("text measurement sha256 does not match canonical payload")
         return self
 
 
@@ -1304,10 +1461,23 @@ class CompiledPageV4(_FrozenLayoutV4):
                 evidence = self.compiler_provenance.text_measurement_evidence.get(element.content_ref)
                 if evidence is None:
                     raise ValueError("compiled page text has no measurement evidence")
+                if evidence.fragment_ref != element.content_ref:
+                    raise ValueError("compiled page text fragment does not match measurement evidence")
                 if evidence.font_role != element.style.font_role:
                     raise ValueError("compiled page text role does not match measurement evidence")
                 if abs(evidence.font_size_px - element.style.font_size) > 1e-6:
                     raise ValueError("compiled page text size does not match measurement evidence")
+                if abs(evidence.line_height - element.style.line_height) > 1e-6:
+                    raise ValueError("compiled page text line height does not match measurement evidence")
+                if abs(evidence.max_width_px - box[2]) > 1e-6:
+                    raise ValueError("compiled page text max width does not match reserved box")
+                if (
+                    abs(evidence.reserved_box_x_px - box[0]) > 1e-6
+                    or abs(evidence.reserved_box_y_px - box[1]) > 1e-6
+                    or abs(evidence.reserved_box_width_px - box[2]) > 1e-6
+                    or abs(evidence.reserved_box_height_px - box[3]) > 1e-6
+                ):
+                    raise ValueError("compiled page text reserved box does not match scene box")
                 margin = self.compiler_provenance.safe_margin_px
                 content_left = box[0] + evidence.content_inset_left_px
                 content_top = box[1] + evidence.content_inset_top_px
@@ -1363,6 +1533,8 @@ class CompiledPageV4(_FrozenLayoutV4):
                     raise ValueError("compiled page canonical font registry is unavailable") from None
                 if element.style.weight != nominal_weight:
                     raise ValueError("compiled page text weight does not match measured font face")
+                if evidence.font_nominal_weight != nominal_weight:
+                    raise ValueError("compiled page text evidence weight does not match measured font face")
             elif isinstance(element, ImageElement):
                 image_refs.append(element.asset_ref)
         expected_text_refs = tuple(item.fragment_ref for item in self.layout_program.fragment_placements)
@@ -1592,6 +1764,8 @@ __all__ = [
     "CarouselDesignPlan",
     "CarouselDesignPlanV4",
     "CANONICAL_CONTENT_INSET_POLICY_V4",
+    "canonical_text_measurement_payload_v4",
+    "canonical_text_measurement_sha256_v4",
     "CompiledPage",
     "CompiledPageV4",
     "AssetBindingEvidenceV4",

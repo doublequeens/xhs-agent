@@ -18,7 +18,10 @@ from src.visual_design.v4.design_metrics import (
     get_quality_policy,
 )
 from src.schemas.v4.content import canonical_sha256_v4
-from src.schemas.v4.layout import RegionGeometryEvidenceV4
+from src.schemas.v4.layout import (
+    RegionGeometryEvidenceV4,
+    canonical_text_measurement_sha256_v4,
+)
 
 
 def test_quality_policy_is_grammar_and_role_specific() -> None:
@@ -34,7 +37,7 @@ def test_metric_evaluator_is_public() -> None:
 
 
 def test_compiled_page_metrics_are_complete_finite_and_deterministic() -> None:
-    program, inputs = _inputs()
+    program, inputs = _inputs(text="美" * 12)
     page = compile_layout(program, inputs)
     page_brief_set = inputs.visual_direction_plan.page_brief_set
     first = evaluate_page_metrics(page, page_brief_set=page_brief_set)
@@ -66,7 +69,7 @@ def test_compiled_page_metrics_are_complete_finite_and_deterministic() -> None:
 
 def test_canonical_asset_and_fragment_fixtures_pass_q2() -> None:
     fixtures = (
-        ("hero-asset", _inputs, {"with_asset": True}),
+        ("hero-asset", _inputs, {"with_asset": True, "text": "美" * 12}),
         ("comparison-asset", _comparison_inputs_for_test, {"with_asset": True}),
         ("step-three-no-asset", _many_fragment_inputs, {"count": 3, "with_asset": False}),
         ("step-five-no-asset", _many_fragment_inputs, {"count": 5, "with_asset": False}),
@@ -88,8 +91,23 @@ def test_line_length_uses_pillow_line_width_and_has_reachable_fail_boundary() ->
     program, inputs = _inputs()
     page = compile_layout(program, inputs)
     evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    line_widths = (901.0, *evidence.line_widths_px[1:])
+    payload = evidence.model_dump(mode="python")
+    for field in (
+        "fragment_ref",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+        "measurement_sha256",
+    ):
+        payload.pop(field)
+    payload["line_widths_px"] = line_widths
     widened = evidence.model_copy(
-        update={"line_widths_px": (901.0, *evidence.line_widths_px[1:])}
+        update={
+            "line_widths_px": line_widths,
+            "measurement_sha256": canonical_text_measurement_sha256_v4(payload),
+        }
     )
     provenance = _rehash_provenance(
         page.compiler_provenance,
@@ -159,30 +177,34 @@ def test_spacing_consistency_ignores_cross_region_gaps_and_unions_step_rows() ->
     assert spacing.passed is True
 
 
-def test_orphan_metric_keeps_auto_wrap_and_explicit_newline_lines_measurement_bound() -> None:
-    program, inputs = _inputs()
+@pytest.mark.parametrize(
+    ("text", "expected_counts", "should_pass"),
+    (
+        ("美" * 11, (10, 1), False),
+        ("美\n美美美美", (1, 4), False),
+        ("美美\n美美", (2, 2), True),
+    ),
+)
+def test_orphan_metrics_use_every_persisted_line_codepoint_count(
+    text: str,
+    expected_counts: tuple[int, ...],
+    should_pass: bool,
+) -> None:
+    program, inputs = _inputs(text=text)
     page = compile_layout(program, inputs)
     evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
-    assert evidence.line_codepoint_counts[-1] == 1
+    assert evidence.line_codepoint_counts == expected_counts
     result = evaluate_page_metrics(
         page,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
     )
-    orphan = next(metric for metric in result.metrics if metric.metric == "orphan_line")
-    assert orphan.actual == 0.0
-
-    newline_program, newline_inputs = _inputs(text="标\n题")
-    newline_page = compile_layout(newline_program, newline_inputs)
-    newline_evidence = newline_page.compiler_provenance.text_measurement_evidence["fragment-1"]
-    assert newline_evidence.line_codepoint_counts == (1, 1)
-    newline_result = evaluate_page_metrics(
-        newline_page,
-        page_brief_set=newline_inputs.visual_direction_plan.page_brief_set,
-    )
-    newline_orphan = next(
-        metric for metric in newline_result.metrics if metric.metric == "orphan_line"
-    )
-    assert newline_orphan.actual == 0.0
+    orphan_line = next(metric for metric in result.metrics if metric.metric == "orphan_line")
+    orphan_heading = next(metric for metric in result.metrics if metric.metric == "orphan_heading")
+    expected_actual = 0.0 if should_pass else 1.0
+    assert orphan_line.actual == expected_actual
+    assert orphan_heading.actual == expected_actual
+    assert orphan_line.passed is should_pass
+    assert orphan_heading.passed is should_pass
 
 
 def test_orphan_metric_rejects_empty_explicit_newline_line_in_current_provenance() -> None:
@@ -245,7 +267,7 @@ def test_public_q2_rejects_stale_page_brief_set_hash() -> None:
 
 
 def test_q2_revalidation_does_not_read_font_files(monkeypatch: pytest.MonkeyPatch) -> None:
-    program, inputs = _inputs()
+    program, inputs = _inputs(text="美" * 12)
     page = compile_layout(program, inputs)
     page_set = inputs.visual_direction_plan.page_brief_set
 

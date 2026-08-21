@@ -702,6 +702,61 @@ def test_compiler_persists_task13_wrap_policy_and_measurement_evidence_without_c
     assert "这是一个可读的页面标题" not in json.dumps(provenance.model_dump(mode="json"), ensure_ascii=False)
 
 
+def test_rehashed_page_rejects_tampered_measurement_payload_with_old_hash() -> None:
+    """The durable page boundary must not trust rehashed outer provenance."""
+    program, inputs = _inputs(text="美" * 12)
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    tampered_evidence = evidence.model_copy(
+        update={
+            "line_widths_px": tuple(1.0 for _ in evidence.line_widths_px),
+            "line_codepoint_counts": tuple(100 for _ in evidence.line_codepoint_counts),
+        }
+    )
+    with pytest.raises(ValueError, match="measurement|evidence"):
+        provenance = _rehash_provenance(
+            page.compiler_provenance,
+            text_measurement_evidence={"fragment-1": tampered_evidence},
+        )
+        _rehash_page(page, compiler_provenance=provenance)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("line_widths_px", "widths"),
+        ("line_codepoint_counts", "counts"),
+        ("max_width_px", "max_width"),
+        ("line_height", "line_height"),
+        ("measurement_sha256", "hash"),
+    ),
+)
+def test_each_measurement_evidence_field_tamper_is_rejected(
+    field: str,
+    value: str,
+) -> None:
+    program, inputs = _inputs(text="美" * 12)
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    if value == "widths":
+        tampered_value = tuple(1.0 for _ in evidence.line_widths_px)
+    elif value == "counts":
+        tampered_value = tuple(100 for _ in evidence.line_codepoint_counts)
+    elif value == "max_width":
+        tampered_value = 1.0
+    elif value == "line_height":
+        tampered_value = 9.0
+    else:
+        tampered_value = "0" * 64
+    tampered_evidence = evidence.model_copy(update={field: tampered_value})
+    with pytest.raises(ValueError, match="measurement|evidence|reserved|width"):
+        provenance = _rehash_provenance(
+            page.compiler_provenance,
+            text_measurement_evidence={"fragment-1": tampered_evidence},
+        )
+        _rehash_page(page, compiler_provenance=provenance)
+
+
 def test_portrait_asset_is_not_cropped_into_extreme_landscape_cover_box() -> None:
     program, inputs = _inputs(with_asset=True, asset_orientation="any")
     portrait = inputs.asset_manifest.items[0].model_copy(update={"width": 800, "height": 1200})
@@ -1187,7 +1242,7 @@ def test_rehashed_reserved_comparison_boxes_cannot_hide_behind_painted_bounds() 
         compiled.compiler_provenance,
         region_geometry_evidence=regions,
     )
-    with pytest.raises(ValueError, match="overlap"):
+    with pytest.raises(ValueError, match="overlap|reserved box"):
         _rehash_page(
             compiled,
             scene=tampered_scene,

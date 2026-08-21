@@ -126,10 +126,54 @@ warnings; no Task 12 assertion failed.
 The warning is the pre-existing Pydantic serializer warning from the tampered
 nested semantic-model test. No v3 source or renderer files were modified.
 
+## Fix round 2: bind v4 typography evidence and close orphan-line ambiguity
+
+The fresh RED attack compiled a real page, replaced every persisted line width
+with `1.0` and every line code-point count with `100`, retained the original
+measurement digest, and recomputed the enclosing provenance/page digests. The
+old boundary accepted this payload. The new boundary rejects it while
+constructing the durable evidence/provenance object, before Q2 can observe a
+false `line_length=1` result.
+
+`canonical_text_measurement_payload_v4` and
+`canonical_text_measurement_sha256_v4` now define one exact, pure producer /
+consumer payload. It persists the complete non-visible Pillow facts required
+for recomputation: font role/bytes/nominal weight and size, width/height,
+advance and ink dimensions/bounds, line count/height/max width, line widths and
+code-point counts, break offsets/spans, insets, painted offsets/bounds, wrap
+policy and newline count. `TextMeasurementEvidenceV4` recomputes this digest
+with the same helper. It also records the exact reserved scene box and
+`CompiledPageV4` cross-checks fragment reference, font role/weight, font size,
+line height, max width and all box coordinates against scene/style/provenance.
+The producer continues to read and byte-verify canonical fonts; Q2 remains
+filesystem-free (the `Path.read_bytes` probe reports zero calls).
+
+The reviewer tamper matrix covers `line_widths_px`, `line_codepoint_counts`,
+`max_width_px`, `line_height` and `measurement_sha256`. The line-length fail
+fixture recomputes the canonical measurement digest intentionally, proving the
+metric itself reaches `901` against the canonical `<920` threshold rather than
+depending on a stale-hash shortcut.
+
+Orphan detection now uses every persisted `line_codepoint_counts` entry,
+including the final wrapped line and explicit-newline lines; any count `<= 1`
+in a multi-line display/heading increments both orphan metrics, and count `0`
+remains a deterministic failure. Fresh regressions prove `美*11 -> (10,1)`
+fails, `美\n美美美美 -> (1,4)` fails, and `美美\n美美 -> (2,2)` passes. Canonical hero+asset, comparison+asset, and step-flow 3/5-fragment
+no-asset fixtures remain passing.
+
+Fresh verification after round 2:
+
+- v4 visual-design suite (Task 12 + Task 11 typography/compiler): `144 passed, 1 warning`.
+- Task 12 quality/node focused: `29 passed`.
+- Existing v3 plan/node QA: `39 passed`.
+- Filtered offline suite (Chromium smoke excluded): `1768 passed, 3 skipped, 4 warnings`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
 ## Concerns / handoff
 
 Q2 remains a deterministic layout/provenance gate and does not establish final
 DOM/PNG fidelity; that evidence belongs to Task 13 Q3. Orphan detection uses
-the compiler's persisted line widths/counts without copying visible text.
-The controller should run its filtered offline full-suite verification and
-review/commit this Task 12 boundary as `fix: recompute v4 design metrics at hard gate`.
+the compiler's persisted line counts without copying visible text. The
+controller should review/commit this Task 12 round as
+`fix: bind v4 typography metric evidence`.
