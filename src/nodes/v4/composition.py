@@ -63,7 +63,10 @@ def _checked_narrative(
 
 def _support_region_id(region_ids: tuple[str, ...], roles: Mapping[str, str]) -> str:
     for region_id in region_ids:
-        if roles[region_id] in {"supporting", "comparison_secondary", "accent"}:
+        if roles[region_id] == "supporting":
+            return region_id
+    for region_id in region_ids:
+        if roles[region_id] in {"comparison_secondary", "accent"}:
             return region_id
     return region_ids[-1]
 

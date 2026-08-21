@@ -56,6 +56,7 @@ CANONICAL_FONT_NOMINAL_WEIGHTS_V4: Mapping[str, int] = MappingProxyType(
     }
 )
 TEXT_WRAP_POLICY_V4: Final[str] = "pre-wrap-grapheme-anywhere-v1"
+CONTENT_INSET_POLICY_V4: Final[str] = "content-origin-inset-v1"
 
 
 @dataclass(frozen=True)
@@ -103,6 +104,17 @@ class TextMeasurementV4:
     ink_bottom_px: float
     ascent_px: float
     descent_px: float
+    content_inset_policy: str
+    content_inset_left_px: float
+    content_inset_top_px: float
+    content_inset_right_px: float
+    content_inset_bottom_px: float
+    painted_offset_x_px: float
+    painted_offset_y_px: float
+    painted_left_px: float
+    painted_top_px: float
+    painted_right_px: float
+    painted_bottom_px: float
     measurement_sha256: str
 
     @property
@@ -365,7 +377,38 @@ def measure_text_v4(
     else:
         ink_left = ink_top = ink_right = ink_bottom = 0.0
     ink_height = max(0.0, ink_bottom - ink_top)
+    # Keep the reserved box at the caller's requested origin.  Negative
+    # bearings (for example ``j``) are represented as a content-origin inset
+    # for the later renderer adapter, with painted bounds retained separately.
+    content_height = float(line_count) * line_box_height
+    content_inset_left = max(0.0, -ink_left)
+    content_inset_top = max(0.0, -ink_top)
+    # Painted bounds are measured relative to the content origin.  The later
+    # renderer adapter adds the declared inset before applying this offset;
+    # keeping the two values separate makes the negative-bearing contract
+    # executable instead of silently moving the reserved scene box.
+    painted_offset_x = 0.0
+    painted_offset_y = 0.0
+    painted_right_from_origin = (
+        content_inset_left + painted_offset_x + ink_right
+    )
+    if painted_right_from_origin > max_width + 1e-6:
+        raise ValueError("painted ink width exceeds available width")
+    content_inset_right = max(
+        0.0,
+        painted_right_from_origin - max_width,
+    )
+    content_inset_bottom = max(
+        0.0,
+        painted_offset_y + ink_bottom - content_height,
+    )
+    measured_height = max(content_height, content_inset_top + ink_bottom)
     measurement_payload = {
+        "content_inset_bottom_px": content_inset_bottom,
+        "content_inset_left_px": content_inset_left,
+        "content_inset_policy": CONTENT_INSET_POLICY_V4,
+        "content_inset_right_px": content_inset_right,
+        "content_inset_top_px": content_inset_top,
         "explicit_break_spans": tuple(explicit_break_spans),
         "font_nominal_weight": resolved.nominal_weight,
         "font_sha256": resolved.sha256,
@@ -383,6 +426,12 @@ def measure_text_v4(
         "line_height": line_height_value,
         "line_widths_px": tuple(widths),
         "max_width_px": max_width,
+        "painted_bottom_px": ink_bottom,
+        "painted_left_px": ink_left,
+        "painted_offset_x_px": painted_offset_x,
+        "painted_offset_y_px": painted_offset_y,
+        "painted_right_px": ink_right,
+        "painted_top_px": ink_top,
     }
     measurement_sha256 = hashlib.sha256(
         json.dumps(measurement_payload, sort_keys=True, separators=(",", ":")).encode()
@@ -392,10 +441,7 @@ def measure_text_v4(
         lines=tuple(lines),
         line_widths_px=tuple(widths),
         width_px=ink_width,
-        height_px=max(
-            float(line_count) * line_box_height,
-            ink_height,
-        ),
+        height_px=measured_height,
         line_count=line_count,
         explicit_newline_count=len(explicit_break_spans),
         font_size_px=font_size,
@@ -416,6 +462,17 @@ def measure_text_v4(
         ink_bottom_px=ink_bottom,
         ascent_px=float(ascent),
         descent_px=float(descent),
+        content_inset_policy=CONTENT_INSET_POLICY_V4,
+        content_inset_left_px=content_inset_left,
+        content_inset_top_px=content_inset_top,
+        content_inset_right_px=content_inset_right,
+        content_inset_bottom_px=content_inset_bottom,
+        painted_offset_x_px=painted_offset_x,
+        painted_offset_y_px=painted_offset_y,
+        painted_left_px=ink_left,
+        painted_top_px=ink_top,
+        painted_right_px=ink_right,
+        painted_bottom_px=ink_bottom,
         measurement_sha256=measurement_sha256,
     )
 
@@ -433,6 +490,7 @@ __all__ = [
     "CANONICAL_FONT_FILES_V4",
     "CANONICAL_FONT_SHA256_V4",
     "CANONICAL_FONT_NOMINAL_WEIGHTS_V4",
+    "CONTENT_INSET_POLICY_V4",
     "FONT_ROOT",
     "REPOSITORY_ROOT",
     "ResolvedFontV4",

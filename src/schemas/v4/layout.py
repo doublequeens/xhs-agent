@@ -40,6 +40,7 @@ PAGE_ROLES_V4 = ("cover", "body", "closing")
 PageRoleV4 = Literal["cover", "body", "closing"]
 CANONICAL_COMPILER_VERSION_V4 = "v4-layout-compiler-2"
 CANONICAL_TEXT_WRAP_POLICY_V4 = "pre-wrap-grapheme-anywhere-v1"
+CANONICAL_CONTENT_INSET_POLICY_V4 = "content-origin-inset-v1"
 CANONICAL_CONTRAST_POLICY_VERSION_V4 = "wcag-semantic-ink-v1"
 CANONICAL_ACCESSIBILITY_INK_V4 = "#111111"
 TASK_KIND_TO_PAGE_ROLE_V4 = MappingProxyType(
@@ -742,6 +743,20 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     wrap_policy: StrictStr = CANONICAL_TEXT_WRAP_POLICY_V4
     measurement_sha256: StrictStr
 
+    # Task 13 applies this versioned content-origin inset inside the complete
+    # reserved scene box; the compiler never moves or shrinks that box.
+    content_inset_policy: StrictStr = CANONICAL_CONTENT_INSET_POLICY_V4
+    content_inset_left_px: float = 0.0
+    content_inset_top_px: float = 0.0
+    content_inset_right_px: float = 0.0
+    content_inset_bottom_px: float = 0.0
+    painted_offset_x_px: float = 0.0
+    painted_offset_y_px: float = 0.0
+    painted_left_px: float = 0.0
+    painted_top_px: float = 0.0
+    painted_right_px: float = 0.0
+    painted_bottom_px: float = 0.0
+
     @field_validator("font_sha256", "measurement_sha256")
     @classmethod
     def validate_evidence_hash(cls, value: str, info) -> str:
@@ -783,6 +798,16 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
         "ink_bottom_px",
         "ascent_px",
         "descent_px",
+        "content_inset_left_px",
+        "content_inset_top_px",
+        "content_inset_right_px",
+        "content_inset_bottom_px",
+        "painted_offset_x_px",
+        "painted_offset_y_px",
+        "painted_left_px",
+        "painted_top_px",
+        "painted_right_px",
+        "painted_bottom_px",
     )
     @classmethod
     def validate_metrics(cls, value: float) -> float:
@@ -797,10 +822,29 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
             raise ValueError("text measurement wrap policy is not canonical")
         return value
 
+    @field_validator("content_inset_policy")
+    @classmethod
+    def validate_content_inset_policy(cls, value: str) -> str:
+        if value != CANONICAL_CONTENT_INSET_POLICY_V4:
+            raise ValueError("text measurement content inset policy is not canonical")
+        return value
+
     @model_validator(mode="after")
     def validate_ink_bounds(self) -> "TextMeasurementEvidenceV4":
         if self.ink_right_px < self.ink_left_px or self.ink_bottom_px < self.ink_top_px:
             raise ValueError("text measurement ink bounds are inverted")
+        if any(
+            value < 0
+            for value in (
+                self.content_inset_left_px,
+                self.content_inset_top_px,
+                self.content_inset_right_px,
+                self.content_inset_bottom_px,
+            )
+        ):
+            raise ValueError("text measurement content insets must be non-negative")
+        if self.painted_right_px < self.painted_left_px or self.painted_bottom_px < self.painted_top_px:
+            raise ValueError("text measurement painted bounds are inverted")
         return self
 
 
@@ -808,8 +852,10 @@ class AssetBindingEvidenceV4(_FrozenLayoutV4):
     """Exact asset binding facts without path/provider/provenance data."""
 
     directive_id: StrictStr = Field(min_length=1)
-    asset_id: StrictStr = Field(min_length=1)
+    asset_ref: StrictStr = Field(pattern=r"^v4-asset-[0-9a-f]{64}$")
     asset_sha256: StrictStr
+    page_id: StrictStr = Field(min_length=1)
+    region_id: StrictStr = Field(min_length=1)
     orientation: Literal["any", "portrait", "landscape", "square"]
     fit: Literal["cover", "contain"]
     box_ratio: float = Field(gt=0)
@@ -819,6 +865,11 @@ class AssetBindingEvidenceV4(_FrozenLayoutV4):
     @classmethod
     def validate_asset_hash(cls, value: str) -> str:
         return _validate_hash(value, "asset_sha256")
+
+    @field_validator("directive_id", "page_id", "region_id")
+    @classmethod
+    def validate_asset_binding_identifiers(cls, value: str, info) -> str:
+        return _validate_identifier(value, info.field_name)
 
     @field_validator("box_ratio", "crop_factor")
     @classmethod
@@ -909,6 +960,7 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
     text_measurement_evidence: dict[StrictStr, TextMeasurementEvidenceV4] = {}
     asset_binding_evidence: dict[StrictStr, AssetBindingEvidenceV4] = {}
     region_geometry_evidence: dict[StrictStr, RegionGeometryEvidenceV4]
+    element_region_bindings: dict[StrictStr, StrictStr] = {}
     canonical_sha256: StrictStr
 
     @field_validator(
@@ -1010,6 +1062,17 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
             raise ValueError("region geometry evidence keys must match region IDs")
         return checked
 
+    @field_validator("element_region_bindings")
+    @classmethod
+    def validate_element_region_bindings(cls, value: dict[str, str]):
+        checked: dict[str, str] = {}
+        for element_id, region_id in value.items():
+            checked[_validate_identifier(element_id, "element_id")] = _validate_identifier(
+                region_id,
+                "region_id",
+            )
+        return checked
+
     @field_serializer("font_sha256_by_role")
     def serialize_font_hashes(self, value):
         return deep_thaw(value)
@@ -1024,6 +1087,10 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
 
     @field_serializer("region_geometry_evidence")
     def serialize_region_evidence(self, value):
+        return deep_thaw(value)
+
+    @field_serializer("element_region_bindings")
+    def serialize_element_region_bindings(self, value):
         return deep_thaw(value)
 
     @model_validator(mode="after")
@@ -1058,6 +1125,7 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
         object.__setattr__(self, "text_measurement_evidence", deep_freeze(self.text_measurement_evidence))
         object.__setattr__(self, "asset_binding_evidence", deep_freeze(self.asset_binding_evidence))
         object.__setattr__(self, "region_geometry_evidence", deep_freeze(self.region_geometry_evidence))
+        object.__setattr__(self, "element_region_bindings", deep_freeze(self.element_region_bindings))
         expected = canonical_sha256_v4(
             self.model_dump(
                 mode="json",
@@ -1117,6 +1185,12 @@ class CompiledPageV4(_FrozenLayoutV4):
             if evidence.role != region.role or evidence.order != region.order:
                 raise ValueError("compiler provenance region geometry identity does not match program")
 
+        bindings = self.compiler_provenance.element_region_bindings
+        scene_element_ids = tuple(element.element_id for element in self.scene.elements)
+        if set(bindings) != set(scene_element_ids):
+            raise ValueError("compiled page element region bindings are incomplete")
+        region_evidence = self.compiler_provenance.region_geometry_evidence
+
         def _safe_number(value: object) -> bool:
             return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
 
@@ -1142,6 +1216,20 @@ class CompiledPageV4(_FrozenLayoutV4):
         text_refs: list[str] = []
         image_refs: list[str] = []
         for element in self.scene.elements:
+            bound_region_id = bindings.get(element.element_id)
+            if bound_region_id is None or bound_region_id not in region_evidence:
+                raise ValueError("compiled page element has no canonical region binding")
+            bound_region = region_evidence[bound_region_id]
+
+            def _inside_region(bounds: tuple[float, float, float, float]) -> bool:
+                left, top, right, bottom = bounds
+                return (
+                    left >= bound_region.x
+                    and top >= bound_region.y
+                    and right <= bound_region.x + bound_region.width
+                    and bottom <= bound_region.y + bound_region.height
+                )
+
             if isinstance(element, LineElement):
                 for endpoint in (element.start, element.end):
                     if (
@@ -1153,10 +1241,21 @@ class CompiledPageV4(_FrozenLayoutV4):
                         or endpoint[1] > self.compiler_provenance.canvas_height - self.compiler_provenance.safe_margin_px
                     ):
                         raise ValueError("compiled page line endpoint exceeds compiler safe margin")
+                if not _inside_region(
+                    (
+                        min(element.start[0], element.end[0]),
+                        min(element.start[1], element.end[1]),
+                        max(element.start[0], element.end[0]),
+                        max(element.start[1], element.end[1]),
+                    )
+                ):
+                    raise ValueError("compiled page line endpoints exceed bound region")
                 if not _safe_number(element.width) or element.width <= 0:
                     raise ValueError("compiled page line width is non-finite or non-positive")
                 continue
             box = _safe_box(element)
+            if not _inside_region((box[0], box[1], box[0] + box[2], box[1] + box[3])):
+                raise ValueError("compiled page element box exceeds bound region")
             boxes.append((element.element_id, box, tuple(element.intentional_overlap_with)))
             if isinstance(element, TextElement):
                 text_refs.append(element.content_ref)
@@ -1175,10 +1274,31 @@ class CompiledPageV4(_FrozenLayoutV4):
                 if abs(evidence.font_size_px - element.style.font_size) > 1e-6:
                     raise ValueError("compiled page text size does not match measurement evidence")
                 margin = self.compiler_provenance.safe_margin_px
-                glyph_left = box[0] + evidence.ink_left_px
-                glyph_top = box[1] + evidence.ink_top_px
-                glyph_right = box[0] + evidence.ink_right_px
-                glyph_bottom = box[1] + evidence.ink_bottom_px
+                content_left = box[0] + evidence.content_inset_left_px
+                content_top = box[1] + evidence.content_inset_top_px
+                content_right = box[0] + box[2] - evidence.content_inset_right_px
+                content_bottom = box[1] + box[3] - evidence.content_inset_bottom_px
+                content_origin_x = box[0] + evidence.content_inset_left_px
+                content_origin_y = box[1] + evidence.content_inset_top_px
+                glyph_left = content_origin_x + evidence.painted_offset_x_px + evidence.painted_left_px
+                glyph_top = content_origin_y + evidence.painted_offset_y_px + evidence.painted_top_px
+                glyph_right = content_origin_x + evidence.painted_offset_x_px + evidence.painted_right_px
+                glyph_bottom = content_origin_y + evidence.painted_offset_y_px + evidence.painted_bottom_px
+                if (
+                    content_left < box[0]
+                    or content_top < box[1]
+                    or content_right < content_left
+                    or content_bottom < content_top
+                    or content_right > box[0] + box[2]
+                    or content_bottom > box[1] + box[3]
+                    or content_origin_x > content_right
+                    or content_origin_y > content_bottom
+                    or glyph_left < box[0]
+                    or glyph_top < box[1]
+                    or glyph_right > box[0] + box[2]
+                    or glyph_bottom > box[1] + box[3]
+                ):
+                    raise ValueError("compiled page painted text exceeds reserved box inset")
                 if (
                     glyph_left < margin
                     or glyph_top < margin
@@ -1186,6 +1306,15 @@ class CompiledPageV4(_FrozenLayoutV4):
                     or glyph_bottom > self.compiler_provenance.canvas_height - margin
                 ):
                     raise ValueError("compiled page glyph ink exceeds compiler safe margin")
+                if not _inside_region((glyph_left, glyph_top, glyph_right, glyph_bottom)):
+                    raise ValueError("compiled page painted text exceeds bound region")
+                # Overlap/adjacency checks use painted bounds, not the full
+                # reserved box that the renderer adapter will pad.
+                boxes[-1] = (
+                    element.element_id,
+                    (glyph_left, glyph_top, glyph_right - glyph_left, glyph_bottom - glyph_top),
+                    tuple(element.intentional_overlap_with),
+                )
                 try:
                     from src.visual_design.v4.typography import resolve_font_file_v4
 
@@ -1208,10 +1337,41 @@ class CompiledPageV4(_FrozenLayoutV4):
             raise ValueError("compiled page asset binding evidence is incomplete")
         if len(image_refs) != len(set(image_refs)) or len(image_refs) != len(expected_directives):
             raise ValueError("compiled page asset placements are not exact-once")
+        placement_by_directive = {
+            placement.directive_id: placement
+            for placement in self.layout_program.asset_placements
+        }
+        image_by_ref = {
+            element.asset_ref: element
+            for element in self.scene.elements
+            if isinstance(element, ImageElement)
+        }
+        # Re-derive the opaque reference from durable evidence so a caller
+        # cannot rehash a page after swapping the byte digest underneath an
+        # otherwise matching image reference.
+        from src.visual_design.v4.compiler import opaque_asset_ref_v4
+
         for directive_id, asset_ref in zip(expected_directives, image_refs):
-            if evidence[directive_id].asset_id != asset_ref:
+            binding = evidence[directive_id]
+            if binding.asset_ref != asset_ref:
                 raise ValueError("compiled page asset evidence does not match scene assets")
-            if evidence[directive_id].box_ratio <= 0 or evidence[directive_id].crop_factor < 1:
+            image = image_by_ref.get(asset_ref)
+            if image is None or binding.region_id != bindings.get(image.element_id):
+                raise ValueError("compiled page asset evidence region binding is stale")
+            if binding.page_id != self.page_id:
+                raise ValueError("compiled page asset evidence page binding is stale")
+            if binding.region_id != placement_by_directive[directive_id].region_id:
+                raise ValueError("compiled page asset region does not match directive placement")
+            expected_asset_ref = opaque_asset_ref_v4(
+                candidate_id=self.compiler_provenance.candidate_id,
+                revision=self.compiler_provenance.revision,
+                page_id=self.page_id,
+                directive_id=directive_id,
+                asset_sha256=binding.asset_sha256,
+            )
+            if binding.asset_ref != expected_asset_ref:
+                raise ValueError("compiled page opaque asset reference is not evidence-bound")
+            if binding.box_ratio <= 0 or binding.crop_factor < 1:
                 raise ValueError("compiled page asset geometry evidence is invalid")
         for left_index, (left_id, left_box, left_allowed) in enumerate(boxes):
             for right_id, right_box, right_allowed in boxes[left_index + 1 :]:
@@ -1361,6 +1521,7 @@ __all__ = [
     "CompositionGrammarV4",
     "CarouselDesignPlan",
     "CarouselDesignPlanV4",
+    "CANONICAL_CONTENT_INSET_POLICY_V4",
     "CompiledPage",
     "CompiledPageV4",
     "AssetBindingEvidenceV4",

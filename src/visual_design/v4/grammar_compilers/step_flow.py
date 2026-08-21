@@ -88,6 +88,11 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
     content_bottom = asset_start - 24.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
     support_height = max(120.0, 132.0 * len(support_refs)) if support_refs else 120.0
     support_top = content_bottom - support_height if support_refs else content_bottom - 120.0
+    if context.program.asset_placements:
+        support_height = max(
+            support_height,
+            float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4) - support_top,
+        )
     sequence_top = heading_top + heading_height + 44.0
     sequence_bottom = support_top - 32.0 if support_refs else content_bottom
     sequence_height = sequence_bottom - sequence_top
@@ -133,7 +138,8 @@ def solve_step_flow(context: CompilerContextV4) -> tuple[SceneElement, ...]:
                 )
             )
     if support_refs:
-        support_slot = (support_height - 24.0 * (len(support_refs) - 1)) / len(support_refs)
+        support_content_height = content_bottom - support_top
+        support_slot = (support_content_height - 24.0 * (len(support_refs) - 1)) / len(support_refs)
         if support_slot < 72.0:
             raise LayoutCompilationError(
                 "DENSITY_EXCEEDED",

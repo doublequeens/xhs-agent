@@ -173,3 +173,121 @@ warnings; no test failed. No renderer or Chromium was invoked, and the v3
 renderer/schema behavior remains unchanged. Task 13 still owns actual CSS
 application/render verification: this round only emits the versioned,
 hash-bound wrap and measurement evidence needed to enforce that seam.
+
+## Fix round 3
+
+The third review attack tests were added first and run RED:
+
+```text
+$ pytest -q tests/visual_design/v4/test_compiler.py -k 'vacuous_pair or negative_bearing_uses_inset or opaque_ref_not_manifest or deep_bound_to_regions'
+4 failed
+```
+
+The failures showed that a comparison page containing only a heading could
+pass with empty paired regions, negative bearings were still represented by
+moving the reserved text box, resolver production asset IDs crossed into the
+scene/evidence, and scene elements had no durable element-to-region binding.
+
+The round 3 fix now provides:
+
+- non-vacuous comparison pairing: both left and right regions must contain
+  balanced content, with canonical paired geometry and executable editorial
+  focus / step ordering checks preserved;
+- versioned content-origin inset and painted bounds/offset evidence for
+  typography, with the complete requested text box retained and validator
+  checks for box, inset-adjusted ink, region containment, safe margin, and
+  painted-bound overlap safety;
+- provider-neutral `v4-asset-<sha256>` references derived from candidate,
+  revision, page, directive, and asset-byte digest. Durable asset evidence
+  stores only the opaque ref, directive/page/region, byte digest, fit,
+  orientation, and ratios. Direct page validation, aggregation, and fresh
+  recompilation all rederive and verify the opaque ref;
+- deep-frozen element-to-region evidence created at solver placement time.
+  Every scene box, painted text bound, image, icon, shape, or line endpoint is
+  checked against its canonical region and safe margin, and asset directive
+  regions must match their bound image region. The editorial, comparison, and
+  step asset lanes now contain their actual image boxes.
+
+Additional regressions cover `j`, `Åg`, combining marks, all three normal
+asset+text grammar paths, provider/path/provenance leakage, deep-freeze and
+serialization, rehashed region contradictions, rehashed asset digest
+contradictions, and opaque asset references.
+
+Fresh offline verification for this round:
+
+```text
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py
+76 passed
+
+$ pytest -q tests/schemas/v4/test_layout.py tests/visual_design/v4/test_grammars.py tests/nodes/v4/test_composition.py
+54 passed
+
+$ pytest -q tests/schemas/test_scene_graph.py tests/rendering/scene/test_compiler.py
+67 passed, 2 warnings
+
+$ pytest -q
+1714 passed, 3 skipped, 1 failed
+
+$ pytest -q -k 'not real_chromium_renders_generic_carousel_with_probes_and_manifest'
+1714 passed, 3 skipped, 1 deselected, 4 warnings
+
+$ python -m compileall -q src main.py
+$ git diff --check
+```
+
+No v3 renderer/compiler behavior, graph wiring, publish code, state, assets,
+outputs, database, or progress-ledger files were changed. The composition
+node change is limited to selecting the canonical supporting region before
+comparison/accent fallbacks so Task 11 asset placement evidence and geometry
+remain consistent. Task 13 still owns applying the inset in the renderer
+adapter; this round does not modify the v3 renderer. The single full-suite
+failure is the existing real Chromium smoke test: the local headless browser
+was detected but macOS sandbox launch failed with
+`mach_port_rendezvous ... Permission denied`. The filtered offline suite is
+green; the three skipped tests are the explicitly disabled live provider and
+Gemini smoke tests.
+
+## Fix round 3 verification refresh
+
+The required focused command was rerun from the dirty round3 worktree:
+
+```text
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py
+76 passed in 9.55s
+```
+
+The adjacent scene/compiler regression set and Task 10 contracts were also
+rerun:
+
+```text
+$ pytest -q tests/visual_design/v4/test_typography.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_layout.py tests/schemas/test_scene_graph.py tests/rendering/scene/test_compiler.py
+143 passed, 2 warnings in 10.09s
+
+$ pytest -q tests/schemas/v4/test_layout.py tests/visual_design/v4/test_grammars.py tests/nodes/v4/test_composition.py
+54 passed in 0.18s
+```
+
+Fresh full-suite verification remains blocked only by the machine's real
+Chromium launch boundary:
+
+```text
+$ pytest -q
+1714 passed, 3 skipped, 1 failed, 4 warnings in 42.59s
+FAILED tests/rendering/scene/test_chromium_smoke.py::test_real_chromium_renders_generic_carousel_with_probes_and_manifest
+TargetClosedError: ... mach_port_rendezvous ... Permission denied
+
+$ pytest -q -k 'not real_chromium_renders_generic_carousel_with_probes_and_manifest'
+1714 passed, 3 skipped, 1 deselected, 4 warnings in 42.56s
+
+$ python -m compileall -q src main.py
+$ git diff --check
+```
+
+The 3 skipped tests are the explicitly disabled live asset-provider and
+Gemini tests. The warnings are existing Pydantic tampered-fixture and pytest
+temporary-directory cleanup warnings. No code change was needed after this
+refresh: the focused and adjacent suites reproduced green against the
+inherited round3 implementation. The `src/nodes/v4/composition.py` change is
+retained because its prior last-region fallback routed editorial asset
+directives to `accent`; selecting the canonical `supporting` region is
+required for the opaque asset/directive and region-lane contracts.

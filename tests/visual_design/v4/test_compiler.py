@@ -313,6 +313,147 @@ def _rehash_provenance(
     return CompilerProvenanceV4(**raw, canonical_sha256=canonical_sha256_v4(source))
 
 
+def _comparison_inputs_for_test(
+    *,
+    with_asset: bool = False,
+) -> tuple[LayoutProgramV4, LayoutCompilerInputsV4]:
+    texts = ("对比标题", "左侧现象", "右侧现象")
+    atoms = []
+    fragments = []
+    for index, text in enumerate(texts, start=1):
+        atom_payload = {
+            "atom_id": f"comparison-atom-{index}",
+            "source_unit_id": f"comparison-unit-{index}",
+            "source_projection_sha256": "1" * 64,
+            "source_field": "content",
+            "raw_start": 0,
+            "raw_end": len(text),
+            "raw_slice_sha256": "2" * 64,
+            "text": text,
+            "role": "heading" if index == 1 else "paragraph",
+        }
+        atoms.append(ContentAtomV4(**atom_payload, sha256=canonical_sha256_v4(atom_payload)))
+        fragments.append(
+            SemanticFragmentV4(
+                fragment_id=f"comparison-fragment-{index}",
+                source_atom_id=f"comparison-atom-{index}",
+                start=0,
+                end=len(text),
+                exact_text=text,
+                semantic_role="heading" if index == 1 else "paragraph",
+                sequence_index=index - 1,
+            )
+        )
+    atom_set_payload = {"projection_sha256": "1" * 64, "atoms": tuple(atoms)}
+    atom_set = ContentAtomSetV4(
+        **atom_set_payload,
+        canonical_sha256=canonical_sha256_v4(atom_set_payload),
+    )
+    semantic_payload = {
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+        "fragments": tuple(fragments),
+        "groups": (),
+    }
+    semantic = SemanticContentModelV4(
+        **semantic_payload,
+        canonical_sha256=canonical_sha256_v4(semantic_payload),
+    )
+    refs = tuple(fragment.fragment_id for fragment in fragments)
+    directives = (
+        AssetDirectiveV4(
+            directive_id="comparison-directive-1",
+            page_id="comparison-page",
+            role="object",
+            purpose="supporting",
+            supports_fragment_refs=(refs[0],),
+            required=True,
+            preferred_source="search",
+            query_or_prompt="text-free comparison support object",
+            orientation="landscape",
+        ),
+    ) if with_asset else ()
+    page_payload = {
+        "page_id": "comparison-page",
+        "sequence": 1,
+        "narrative_role": "comparison role",
+        "beat_ref": "comparison-beat-1",
+        "fragment_refs": refs,
+        "visual_priority": (refs[0],),
+        "density_budget": "medium",
+        "preferred_compositions": ("comparison_grid",),
+        "forbidden_patterns": (),
+        "asset_directives": directives,
+        "continuity_with_previous": "none",
+    }
+    page = PageBriefV4(**page_payload, canonical_sha256=canonical_sha256_v4(page_payload))
+    beats = tuple(
+        NarrativeBeatV4(
+            beat_id=f"comparison-beat-{index}",
+            sequence=index,
+            task_kind="diagnosis",
+            fragment_refs=refs,
+            task="comparison task",
+        )
+        for index in range(1, 6)
+    )
+    narrative_payload = {
+        "template_family": "pink_red",
+        "page_count": 5,
+        "beats": beats,
+        "density_curve": ("medium",) * 5,
+        "variation_strategy": "stable",
+        "continuity_strategy": "stable",
+        "art_direction": "editorial",
+        "content_atom_set_sha256": atom_set.canonical_sha256,
+    }
+    narrative = CarouselNarrativeV4(
+        **narrative_payload,
+        canonical_sha256=canonical_sha256_v4(narrative_payload),
+    )
+    direction_plan = _direction_plan_for(page, semantic, atom_set, narrative, "pink_red")
+    program = build_layout_program(
+        page,
+        grammar_id="comparison_grid",
+        family="pink_red",
+        narrative=direction_plan.narrative,
+    )
+    manifest = AssetManifest(items=())
+    if with_asset:
+        manifest = AssetManifest(
+            items=(
+                AssetManifestItem(
+                    asset_id="resolver-production-secret-comparison",
+                    directive_id="comparison-directive-1",
+                    page_id="comparison-page",
+                    source_kind="search",
+                    provider="resolver-secret-provider",
+                    license="resolver-secret-license",
+                    local_path="/private/resolver/secret-comparison.png",
+                    width=1200,
+                    height=800,
+                    sha256="4" * 64,
+                    subject_focal_point=(0.5, 0.5),
+                    crop_guidance="center",
+                    security_status="approved",
+                    human_decision="pending",
+                    run_id="run-comparison",
+                    transaction_id="tx-comparison",
+                    internal_provenance={"provider_path": "resolver-secret"},
+                ),
+            )
+        )
+    return program, LayoutCompilerInputsV4(
+        page_brief=page,
+        semantic_content_model=semantic,
+        content_atom_set=atom_set,
+        asset_manifest=manifest,
+        candidate_id="candidate-comparison",
+        revision=1,
+        run_id="run-comparison",
+        visual_direction_plan=direction_plan,
+    )
+
+
 def _rehash_page(page: CompiledPageV4, **updates) -> CompiledPageV4:
     raw = page.model_dump(mode="python")
     raw.update(updates)
@@ -354,20 +495,21 @@ def test_compiler_is_deterministic() -> None:
 def test_each_implemented_grammar_returns_safe_flat_scene(
     grammar: str, task_kind: str
 ) -> None:
-    atom_set = _atom_set()
-    semantic = _semantic(atom_set, "这是一个可读的页面标题")
-    page = _page(grammar=grammar, task_kind=task_kind)
-    narrative = _narrative(page, task_kind=task_kind)
-    direction_plan = _direction_plan_for(page, semantic, atom_set, narrative, "pink_red")
-    program = build_layout_program(
-        page,
-        grammar_id=grammar,
-        family="pink_red",
-        narrative=direction_plan.narrative,
-    )
-    result = compile_layout(
-        program,
-        LayoutCompilerInputsV4(
+    if grammar == "comparison_grid":
+        program, compiler_inputs = _comparison_inputs_for_test()
+    else:
+        atom_set = _atom_set()
+        semantic = _semantic(atom_set, "这是一个可读的页面标题")
+        page = _page(grammar=grammar, task_kind=task_kind)
+        narrative = _narrative(page, task_kind=task_kind)
+        direction_plan = _direction_plan_for(page, semantic, atom_set, narrative, "pink_red")
+        program = build_layout_program(
+            page,
+            grammar_id=grammar,
+            family="pink_red",
+            narrative=direction_plan.narrative,
+        )
+        compiler_inputs = LayoutCompilerInputsV4(
             page_brief=page,
             semantic_content_model=semantic,
             content_atom_set=atom_set,
@@ -376,11 +518,14 @@ def test_each_implemented_grammar_returns_safe_flat_scene(
             revision=3,
             run_id="run-a",
             visual_direction_plan=direction_plan,
-        ),
+        )
+    result = compile_layout(
+        program,
+        compiler_inputs,
     )
     assert result.scene.sequence == 1
-    assert tuple(item.content_ref for item in result.scene.elements if item.kind == "text") == (
-        "fragment-1",
+    assert tuple(item.content_ref for item in result.scene.elements if item.kind == "text") == tuple(
+        item.fragment_ref for item in program.fragment_placements
     )
     for element in result.scene.elements:
         if element.kind in {"text", "image", "shape", "icon"}:
@@ -534,10 +679,13 @@ def test_display_bearings_are_safe_at_88px_for_j_and_ringed_letters() -> None:
     compiled = compile_layout(program, inputs)
     element = next(item for item in compiled.scene.elements if isinstance(item, TextElement))
     evidence = compiled.compiler_provenance.text_measurement_evidence[element.content_ref]
-    assert element.box.x + evidence.ink_left_px >= 80
-    assert element.box.x + evidence.ink_right_px <= 1000
-    assert element.box.y + evidence.ink_top_px >= 80
-    assert element.box.y + evidence.ink_bottom_px <= 1360
+    assert element.box.x == 80
+    assert element.box.y == 100
+    assert element.box.width == 920
+    assert element.box.x + evidence.content_inset_left_px + evidence.painted_offset_x_px + evidence.painted_left_px >= 80
+    assert element.box.x + evidence.content_inset_left_px + evidence.painted_offset_x_px + evidence.painted_right_px <= 1000
+    assert element.box.y + evidence.content_inset_top_px + evidence.painted_offset_y_px + evidence.painted_top_px >= 80
+    assert element.box.y + evidence.content_inset_top_px + evidence.painted_offset_y_px + evidence.painted_bottom_px <= 1360
 
 
 def test_compiler_persists_task13_wrap_policy_and_measurement_evidence_without_copy() -> None:
@@ -653,6 +801,8 @@ def test_provenance_evidence_and_font_maps_are_deeply_immutable() -> None:
         provenance.asset_binding_evidence["directive-1"] = None
     with pytest.raises((TypeError, AttributeError)):
         provenance.region_geometry_evidence.pop("hero")
+    with pytest.raises((TypeError, AttributeError)):
+        provenance.element_region_bindings["v4-text-fragment-1-0"] = "accent"
     assert page.canonical_sha256 == _rehash_page(page).canonical_sha256
 
 
@@ -703,7 +853,11 @@ def test_high_density_underfill_is_not_misclassified_as_insufficient_whitespace(
     assert compiled.scene.elements
 
 
-def _many_fragment_inputs(count: int) -> tuple[LayoutProgramV4, LayoutCompilerInputsV4]:
+def _many_fragment_inputs(
+    count: int,
+    *,
+    with_asset: bool = False,
+) -> tuple[LayoutProgramV4, LayoutCompilerInputsV4]:
     pieces = ("步骤标题", "第一步", "第二步", "第三步", "第四步")[:count]
     text = "".join(pieces)
     atom_payload = {
@@ -742,6 +896,19 @@ def _many_fragment_inputs(count: int) -> tuple[LayoutProgramV4, LayoutCompilerIn
     }
     semantic = SemanticContentModelV4(**semantic_payload, canonical_sha256=canonical_sha256_v4(semantic_payload))
     refs = tuple(fragment.fragment_id for fragment in fragments)
+    directives = (
+        AssetDirectiveV4(
+            directive_id="steps-directive-1",
+            page_id="steps-page",
+            role="object",
+            purpose="supporting",
+            supports_fragment_refs=(refs[0],),
+            required=True,
+            preferred_source="search",
+            query_or_prompt="text-free step support object",
+            orientation="landscape",
+        ),
+    ) if with_asset else ()
     page_payload = {
         "page_id": "steps-page",
         "sequence": 1,
@@ -752,7 +919,7 @@ def _many_fragment_inputs(count: int) -> tuple[LayoutProgramV4, LayoutCompilerIn
         "density_budget": "medium",
         "preferred_compositions": ("step_flow",),
         "forbidden_patterns": (),
-        "asset_directives": (),
+        "asset_directives": directives,
         "continuity_with_previous": "none",
     }
     page = PageBriefV4(**page_payload, canonical_sha256=canonical_sha256_v4(page_payload))
@@ -788,11 +955,36 @@ def _many_fragment_inputs(count: int) -> tuple[LayoutProgramV4, LayoutCompilerIn
         checked_narrative,
         "pink_red",
     )
+    manifest = AssetManifest(items=())
+    if with_asset:
+        manifest = AssetManifest(
+            items=(
+                AssetManifestItem(
+                    asset_id="resolver-production-secret-steps",
+                    directive_id="steps-directive-1",
+                    page_id="steps-page",
+                    source_kind="search",
+                    provider="resolver-secret-provider",
+                    license="resolver-secret-license",
+                    local_path="/private/resolver/secret-steps.png",
+                    width=1200,
+                    height=800,
+                    sha256="5" * 64,
+                    subject_focal_point=(0.5, 0.5),
+                    crop_guidance="center",
+                    security_status="approved",
+                    human_decision="pending",
+                    run_id="run-steps",
+                    transaction_id="tx-steps",
+                    internal_provenance={"provider_path": "resolver-secret"},
+                ),
+            )
+        )
     return program, LayoutCompilerInputsV4(
         page_brief=page,
         semantic_content_model=semantic,
         content_atom_set=atom_set,
-        asset_manifest=AssetManifest(items=()),
+        asset_manifest=manifest,
         candidate_id="candidate-steps",
         revision=1,
         run_id="run-steps",
@@ -820,3 +1012,154 @@ def test_solver_region_choice_changes_compiled_geometry() -> None:
     baseline_text = next(element for element in baseline.scene.elements if element.kind == "text")
     changed_text = next(element for element in changed.scene.elements if element.kind == "text")
     assert (changed_text.box.x, changed_text.box.y) != (baseline_text.box.x, baseline_text.box.y)
+
+
+def test_comparison_heading_only_program_is_not_a_vacuous_pair() -> None:
+    atom_set = _atom_set()
+    semantic = _semantic(atom_set, "这是一个可读的页面标题")
+    page = _page(grammar="comparison_grid", task_kind="diagnosis")
+    narrative = _narrative(page, task_kind="diagnosis")
+    direction_plan = _direction_plan_for(page, semantic, atom_set, narrative, "pink_red")
+    program = build_layout_program(
+        page,
+        grammar_id="comparison_grid",
+        family="pink_red",
+        narrative=direction_plan.narrative,
+    )
+    with pytest.raises(LayoutCompilationError) as exc:
+        compile_layout(
+            program,
+            LayoutCompilerInputsV4(
+                page_brief=page,
+                semantic_content_model=semantic,
+                content_atom_set=atom_set,
+                asset_manifest=AssetManifest(items=()),
+                candidate_id="candidate-a",
+                revision=3,
+                run_id="run-a",
+                visual_direction_plan=direction_plan,
+            ),
+        )
+    assert exc.value.code == "UNBALANCED_REGIONS"
+
+
+def test_negative_bearing_uses_inset_evidence_without_moving_reserved_box() -> None:
+    program, inputs = _inputs(text="j\nÅg", semantic_role="heading")
+    compiled = compile_layout(program, inputs)
+    element = next(item for item in compiled.scene.elements if isinstance(item, TextElement))
+    evidence = compiled.compiler_provenance.text_measurement_evidence[element.content_ref]
+    assert element.box.x == 80
+    assert element.box.width == 920
+    assert evidence.content_inset_left_px > 0
+    assert evidence.painted_offset_x_px == 0
+    assert evidence.painted_left_px <= 0
+    assert evidence.painted_right_px >= evidence.painted_left_px
+
+
+def test_combining_mark_keeps_exact_text_and_painted_bounds_safe() -> None:
+    text = "e\u0301"
+    measurement = measure_text_v4(
+        text,
+        family="pink_red",
+        role="heading",
+        font_size_px=64,
+        max_width_px=920,
+        line_height=1.15,
+    )
+    assert measurement.text == text
+    assert measurement.lines == (text,)
+    program, inputs = _inputs(text=text, semantic_role="heading")
+    compiled = compile_layout(program, inputs)
+    element = next(item for item in compiled.scene.elements if isinstance(item, TextElement))
+    evidence = compiled.compiler_provenance.text_measurement_evidence[element.content_ref]
+    painted_left = element.box.x + evidence.content_inset_left_px + evidence.painted_offset_x_px + evidence.painted_left_px
+    painted_right = element.box.x + evidence.content_inset_left_px + evidence.painted_offset_x_px + evidence.painted_right_px
+    assert painted_left >= 80
+    assert painted_right <= 1000
+
+
+def test_asset_binding_uses_versioned_opaque_ref_not_manifest_asset_id() -> None:
+    program, inputs = _inputs(with_asset=True)
+    compiled = compile_layout(program, inputs)
+    image = next(element for element in compiled.scene.elements if element.kind == "image")
+    evidence = compiled.compiler_provenance.asset_binding_evidence["directive-1"]
+    assert image.asset_ref != inputs.asset_manifest.items[0].asset_id
+    assert image.asset_ref.startswith("v4-asset-")
+    assert evidence.asset_ref == image.asset_ref
+    assert evidence.page_id == "page-1"
+    assert "asset_id" not in evidence.model_dump(mode="json")
+    assert "fixture-provider" not in compiled.model_dump_json()
+
+
+def test_rehashed_asset_digest_cannot_break_opaque_reference_binding() -> None:
+    program, inputs = _inputs(with_asset=True)
+    compiled = compile_layout(program, inputs)
+    evidence = dict(compiled.compiler_provenance.asset_binding_evidence)
+    evidence["directive-1"] = evidence["directive-1"].model_copy(
+        update={"asset_sha256": "4" * 64},
+    )
+    provenance = _rehash_provenance(
+        compiled.compiler_provenance,
+        asset_binding_evidence=evidence,
+    )
+    with pytest.raises(ValueError, match="opaque|asset|evidence"):
+        _rehash_page(compiled, compiler_provenance=provenance)
+
+
+def test_compiled_elements_are_deep_bound_to_regions_and_asset_lane_is_contained() -> None:
+    program, inputs = _inputs(with_asset=True)
+    compiled = compile_layout(program, inputs)
+    provenance = compiled.compiler_provenance
+    bindings = provenance.element_region_bindings
+    assert set(bindings) == {element.element_id for element in compiled.scene.elements}
+    for element in compiled.scene.elements:
+        region = provenance.region_geometry_evidence[bindings[element.element_id]]
+        assert element.box.x >= region.x
+        assert element.box.y >= region.y
+        assert element.box.x + element.box.width <= region.x + region.width
+        assert element.box.y + element.box.height <= region.y + region.height
+    image = next(element for element in compiled.scene.elements if element.kind == "image")
+    assert bindings[image.element_id] == "support"
+    assert image.box.y + image.box.height <= provenance.region_geometry_evidence["support"].y + provenance.region_geometry_evidence["support"].height
+
+
+def test_rehashed_region_binding_cannot_hide_region_geometry_contradiction() -> None:
+    program, inputs = _inputs(with_asset=True)
+    compiled = compile_layout(program, inputs)
+    text = next(element for element in compiled.scene.elements if isinstance(element, TextElement))
+    bindings = dict(compiled.compiler_provenance.element_region_bindings)
+    bindings[text.element_id] = "accent"
+    provenance = _rehash_provenance(
+        compiled.compiler_provenance,
+        element_region_bindings=bindings,
+    )
+    with pytest.raises(ValueError, match="region|geometry|bound"):
+        _rehash_page(compiled, compiler_provenance=provenance)
+
+
+@pytest.mark.parametrize("grammar", ("editorial_hero", "comparison_grid", "step_flow"))
+def test_all_grammars_compile_normal_asset_and_text_paths_with_opaque_bindings(
+    grammar: str,
+) -> None:
+    if grammar == "editorial_hero":
+        program, inputs = _inputs(with_asset=True)
+    elif grammar == "comparison_grid":
+        program, inputs = _comparison_inputs_for_test(with_asset=True)
+    else:
+        program, inputs = _many_fragment_inputs(3, with_asset=True)
+
+    compiled = compile_layout(program, inputs)
+    rendered = compiled.model_dump_json()
+    assert "resolver-production-secret" not in rendered
+    assert "resolver-secret-provider" not in rendered
+    assert "/private/resolver" not in rendered
+    images = [element for element in compiled.scene.elements if element.kind == "image"]
+    assert len(images) == len(program.asset_placements) == 1
+    for image in images:
+        region_id = compiled.compiler_provenance.element_region_bindings[image.element_id]
+        placement = program.asset_placements[0]
+        assert region_id == placement.region_id
+        assert image.asset_ref.startswith("v4-asset-")
+        evidence = compiled.compiler_provenance.asset_binding_evidence[placement.directive_id]
+        assert evidence.asset_ref == image.asset_ref
+        assert evidence.region_id == region_id

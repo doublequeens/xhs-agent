@@ -77,8 +77,15 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
     accent_refs = by_region.get("accent", [])
     hero_height = 430.0 if support_refs or accent_refs else 520.0
     support_top = 600.0 if not hero_refs else 650.0
-    support_width = context.width - 264.0 if accent_refs else context.width
+    support_top = max(support_top, float(SAFE_MARGIN_V4) + hero_height + 64.0 + 24.0)
+    support_text_width = context.width - 264.0 if accent_refs else context.width
+    support_region_width = context.width if context.program.asset_placements else support_text_width
     support_height = max(120.0, asset_start - support_top - 24.0)
+    if context.program.asset_placements:
+        # The support lane includes the deterministic image lane below the
+        # text lane; it must contain the actual image box through the safe
+        # bottom rather than ending before the image starts.
+        support_height = max(support_height, float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4) - support_top)
     accent_top = support_top
     accent_height = max(120.0, min(180.0, (asset_start - accent_top - 24.0) / max(1, len(accent_refs))))
     context.register_region_geometry(
@@ -88,7 +95,7 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
         x=SAFE_MARGIN_V4,
         y=SAFE_MARGIN_V4,
         width=context.width,
-        height=hero_height,
+        height=hero_height + 64.0,
     )
     context.register_region_geometry(
         region_id="support",
@@ -96,7 +103,7 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
         order=1,
         x=SAFE_MARGIN_V4,
         y=support_top,
-        width=support_width,
+        width=support_region_width,
         height=support_height,
     )
     context.register_region_geometry(
@@ -130,7 +137,9 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
                 )
             )
     if support_refs:
-        slot = support_height / len(support_refs)
+        support_content_bottom = asset_start - 24.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
+        support_content_height = support_content_bottom - support_top
+        slot = support_content_height / len(support_refs)
         if slot < 72.0:
             raise LayoutCompilationError(
                 "DENSITY_EXCEEDED",
@@ -144,7 +153,7 @@ def solve_editorial_hero(context: CompilerContextV4) -> tuple[SceneElement, ...]
                     ref,
                     x=SAFE_MARGIN_V4,
                     y=support_top + index * slot,
-                    width=support_width,
+                    width=support_text_width,
                     height=slot - 16.0,
                     region_id="support",
                 )

@@ -19,6 +19,7 @@ from src.schemas.v4.semantic import SemanticContentModelV4
 from src.visual_design.v4.compiler import (
     LayoutCompilerInputsV4,
     compile_layout,
+    opaque_asset_ref_v4,
 )
 from src.visual_design.v4.tokens import get_family_tokens
 
@@ -109,7 +110,6 @@ def _check_page_bindings(
         raise ValueError("durable page brief set semantic hash does not match semantic model")
     atom_by_id = {atom.atom_id: atom for atom in atom_set.atoms}
     fragment_by_id = {fragment.fragment_id: fragment for fragment in semantic_model.fragments}
-    asset_by_id = {item.asset_id: item for item in manifest.items}
     directive_by_id = {directive.directive_id: directive for directive in page_brief_set.asset_directives}
     for page, brief in zip(pages, page_brief_set.pages):
         program = page.layout_program
@@ -140,7 +140,7 @@ def _check_page_bindings(
         )
         expected_directives = tuple(item.directive_id for item in program.asset_placements)
         actual_asset_ids = {element.asset_ref for element in image_elements}
-        expected_asset_ids: set[str] = set()
+        expected_asset_refs: set[str] = set()
         for directive_id in expected_directives:
             directive = directive_by_id.get(directive_id)
             asset = next(
@@ -151,8 +151,16 @@ def _check_page_bindings(
                 raise ValueError("compiled page asset placement has no exact directive/manifest binding")
             if asset.page_id != brief.page_id or asset.security_status != "approved":
                 raise ValueError("compiled page asset is not same-page and security-approved")
-            expected_asset_ids.add(asset.asset_id)
-        if actual_asset_ids != expected_asset_ids:
+            expected_asset_refs.add(
+                opaque_asset_ref_v4(
+                    candidate_id=candidate_id,
+                    revision=revision,
+                    page_id=brief.page_id,
+                    directive_id=directive_id,
+                    asset_sha256=asset.sha256,
+                )
+            )
+        if actual_asset_ids != expected_asset_refs:
             raise ValueError("compiled page image references do not match approved asset placements")
         provenance = page.compiler_provenance
         if provenance.candidate_id != candidate_id:

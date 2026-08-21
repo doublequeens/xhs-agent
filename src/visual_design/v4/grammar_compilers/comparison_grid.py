@@ -81,6 +81,11 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
     column_width = (context.width - gap) / 2
     support_top = 1020.0
     support_height = max(80.0, asset_start - support_top - 24.0)
+    if context.program.asset_placements:
+        support_height = max(
+            support_height,
+            float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4) - support_top,
+        )
     context.register_region_geometry(
         region_id="heading",
         role="primary",
@@ -88,7 +93,7 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
         x=SAFE_MARGIN_V4,
         y=SAFE_MARGIN_V4,
         width=context.width,
-        height=180.0,
+        height=220.0,
     )
     context.register_region_geometry(
         region_id="left",
@@ -166,7 +171,9 @@ def solve_comparison_grid(context: CompilerContextV4) -> tuple[SceneElement, ...
             )
     support_refs = by_region.get("support", [])
     if support_refs:
-        slot = support_height / len(support_refs)
+        support_content_bottom = asset_start - 24.0 if context.program.asset_placements else float(CANVAS_HEIGHT_V4 - SAFE_MARGIN_V4)
+        support_content_height = support_content_bottom - support_top
+        slot = support_content_height / len(support_refs)
         if slot < 72.0:
             raise LayoutCompilationError(
                 "INSUFFICIENT_WHITESPACE",
