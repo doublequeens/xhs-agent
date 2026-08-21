@@ -14,10 +14,10 @@ from src.schemas.v4.direction import AuthoringQAResultV4, AuthoringIssueV4
 from src.schemas.v4.quality import (
     DesignMetricEvidenceV4,
     DesignMetricsQAResultV4,
-    DesignQualityIssueV4,
 )
 from src.schemas.v4.semantic import SemanticIssueV4
 from src.visual_design.v4.semantic_qa import evaluate_semantic_model
+from src.visual_design.v4.design_metrics import evaluate_design_plan_metrics
 from src.visual_design.v4.tokens import get_family_tokens
 
 
@@ -92,16 +92,7 @@ def _kwargs(fixture: Mapping[str, object], **updates: object) -> dict[str, objec
         "page_brief_set": fixture["page_set"],
         "visual_direction_plan": fixture["direction_plan"],
         "asset_manifest": fixture["manifest"],
-        "family_tokens": get_family_tokens("pink_red"),
     }
-    plan = fixture["plan"]
-    values["page_metrics"] = tuple(
-        __import__("src.visual_design.v4.design_metrics", fromlist=["evaluate_page_metrics"]).evaluate_page_metrics(
-            page,
-            page_brief_set=fixture["page_set"],
-        )
-        for page in plan.pages
-    )
     values.update(updates)
     return values
 
@@ -109,6 +100,36 @@ def _kwargs(fixture: Mapping[str, object], **updates: object) -> dict[str, objec
 def test_design_qa_orchestration_boundary_is_public() -> None:
     assert callable(aggregate_design_qa)
     assert callable(design_qa_node)
+
+
+def test_aggregate_rejects_external_q2_metric_payload() -> None:
+    fixture = _fixture()
+    with pytest.raises(TypeError):
+        aggregate_design_qa(**_kwargs(fixture), page_metrics=())
+
+
+def test_failed_metric_cannot_be_durable_without_exact_issue() -> None:
+    fixture = _fixture()
+    metric = evaluate_design_plan_metrics(
+        fixture["plan"],
+        page_brief_set=fixture["page_set"],
+    )[0]
+    evidence = metric.metrics[0]
+    evidence_payload = evidence.model_dump(mode="python")
+    evidence_payload.update({"actual": 0.0, "passed": False})
+    evidence_payload.pop("canonical_sha256", None)
+    failed_evidence = DesignMetricEvidenceV4(
+        **evidence_payload,
+        canonical_sha256=canonical_sha256_v4(evidence_payload),
+    )
+    page_payload = metric.model_dump(mode="python")
+    page_payload.update({"metrics": (failed_evidence, *metric.metrics[1:]), "issues": (), "passed": False})
+    page_payload.pop("canonical_sha256", None)
+    with pytest.raises(ValueError):
+        DesignMetricsQAResultV4(
+            **page_payload,
+            canonical_sha256=canonical_sha256_v4(page_payload),
+        )
 
 
 def test_failed_q0_or_q1_always_fails_aggregate() -> None:
@@ -150,49 +171,13 @@ def test_failed_q0_or_q1_always_fails_aggregate() -> None:
     assert result.authoring_qa.passed is False
 
 
-def test_one_failed_page_fails_whole_carousel() -> None:
+def test_external_q2_rehash_and_nonexistent_location_cannot_override_current_plan() -> None:
     fixture = _fixture()
-    metrics = list(_kwargs(fixture)["page_metrics"])
-    first = metrics[0]
-    evidence = first.metrics[0]
-    evidence_payload = evidence.model_dump(mode="python")
-    evidence_payload.update({"actual": 0.0, "passed": False})
-    evidence_payload.pop("canonical_sha256", None)
-    failed_evidence = DesignMetricEvidenceV4(
-        **evidence_payload,
-        canonical_sha256=canonical_sha256_v4(evidence_payload),
-    )
-    issue_payload = {
-        "code": "SAFE_MARGIN_NONCOMPLIANT",
-        "metric": "safe_margin_compliance",
-        "page_id": first.page_id,
-        "actual": 0.0,
-        "threshold": evidence.threshold,
-        "comparator": "gte",
-        "revision_target": "layout_reflow",
-        "message": "safe margin compliance is below the typed quality threshold",
-        "region_id": None,
-        "element_id": None,
-        "fragment_ref": None,
-        "policy_sha256": first.policy_sha256,
-    }
-    issue = DesignQualityIssueV4(
-        **issue_payload,
-        canonical_sha256=canonical_sha256_v4(issue_payload),
-    )
-    page_payload = first.model_dump(mode="python")
-    page_payload["metrics"] = (failed_evidence, *first.metrics[1:])
-    page_payload["issues"] = (issue,)
-    page_payload["passed"] = False
-    page_payload.pop("canonical_sha256", None)
-    metrics[0] = DesignMetricsQAResultV4(
-        **page_payload,
-        canonical_sha256=canonical_sha256_v4(page_payload),
-    )
-    result = aggregate_design_qa(**_kwargs(fixture, page_metrics=tuple(metrics)))
-    assert result.passed is False
-    assert result.page_metrics[0].passed is False
-    assert all(page.passed for page in result.page_metrics[1:])
+    with pytest.raises(TypeError):
+        aggregate_design_qa(
+            **_kwargs(fixture),
+            metrics=({"actual": 999999, "region_id": "VisibleCopyLeak"},),
+        )
 
 
 def test_stale_and_self_consistent_rehashed_q0_fail_closed() -> None:
@@ -211,25 +196,11 @@ def test_stale_and_self_consistent_rehashed_q0_fail_closed() -> None:
 
 def test_self_consistent_easier_q2_threshold_is_rejected() -> None:
     fixture = _fixture()
-    metrics = list(_kwargs(fixture)["page_metrics"])
-    first = metrics[0]
-    original = first.metrics[4]  # whitespace_ratio
-    metric_payload = original.model_dump(mode="python")
-    metric_payload["threshold"] = 0.01
-    metric_payload.pop("canonical_sha256", None)
-    easier = DesignMetricEvidenceV4(
-        **metric_payload,
-        canonical_sha256=canonical_sha256_v4(metric_payload),
-    )
-    page_payload = first.model_dump(mode="python")
-    page_payload["metrics"] = (*first.metrics[:4], easier, *first.metrics[5:])
-    page_payload.pop("canonical_sha256", None)
-    metrics[0] = DesignMetricsQAResultV4(
-        **page_payload,
-        canonical_sha256=canonical_sha256_v4(page_payload),
-    )
-    with pytest.raises(ValueError, match="policy|threshold"):
-        aggregate_design_qa(**_kwargs(fixture, page_metrics=tuple(metrics)))
+    with pytest.raises(TypeError):
+        aggregate_design_qa(
+            **_kwargs(fixture),
+            design_metrics=({"threshold": 0.01, "actual": 0.0},),
+        )
 
 
 def test_candidate_preflight_is_not_durable_q1() -> None:
@@ -255,12 +226,6 @@ def test_repeated_aggregation_is_deep_frozen_and_byte_deterministic() -> None:
 def test_design_qa_node_returns_hard_gate_route_without_renderer() -> None:
     fixture = _fixture()
     values = _kwargs(fixture)
-    state = {
-        "semantic_qa_result": values.pop("semantic_qa"),
-        "authoring_qa_result": values.pop("authoring_qa"),
-        "carousel_design_plan": values.pop("carousel_design_plan"),
-        **values,
-    }
-    result = design_qa_node(state)
+    result = design_qa_node(values)
     assert result["design_plan_qa_result_v4"].passed is True
     assert result["route"] == "render"

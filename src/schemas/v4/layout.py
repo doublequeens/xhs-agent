@@ -730,6 +730,8 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     font_sha256: StrictStr
     font_size_px: float = Field(gt=0)
     line_count: StrictInt = Field(ge=1)
+    line_widths_px: tuple[float, ...]
+    line_codepoint_counts: tuple[StrictInt, ...]
     break_offsets: tuple[StrictInt, ...] = ()
     offset_unit: Literal["unicode_codepoint_v1"] = "unicode_codepoint_v1"
     explicit_break_spans: tuple[tuple[StrictInt, StrictInt], ...] = ()
@@ -767,6 +769,23 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     def validate_font_size(cls, value: float) -> float:
         if not math.isfinite(value) or value <= 0:
             raise ValueError("text measurement font size must be finite and positive")
+        return value
+
+    @field_validator("line_widths_px")
+    @classmethod
+    def validate_line_widths(cls, value: tuple[float, ...]) -> tuple[float, ...]:
+        if any(
+            isinstance(width, bool) or not math.isfinite(float(width)) or float(width) < 0
+            for width in value
+        ):
+            raise ValueError("text measurement line widths must be finite and non-negative")
+        return tuple(float(width) for width in value)
+
+    @field_validator("line_codepoint_counts")
+    @classmethod
+    def validate_line_codepoint_counts(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if any(type(count) is not int or count < 0 for count in value):
+            raise ValueError("text measurement line codepoint counts must be non-negative integers")
         return value
 
     @field_validator("break_offsets", "inserted_break_offsets")
@@ -831,6 +850,10 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
 
     @model_validator(mode="after")
     def validate_ink_bounds(self) -> "TextMeasurementEvidenceV4":
+        if len(self.line_widths_px) != self.line_count:
+            raise ValueError("text measurement line widths must match line count")
+        if len(self.line_codepoint_counts) != self.line_count:
+            raise ValueError("text measurement line codepoint counts must match line count")
         if self.ink_right_px < self.ink_left_px or self.ink_bottom_px < self.ink_top_px:
             raise ValueError("text measurement ink bounds are inverted")
         if any(
@@ -1104,14 +1127,16 @@ class CompilerProvenanceV4(_FrozenLayoutV4):
         if self.min_body_font_px < 24 or self.min_display_font_px < 32:
             raise ValueError("compiler provenance minimum font floors are below policy")
         try:
-            from src.visual_design.v4.typography import resolve_font_file_v4
+            from src.visual_design.v4.tokens import get_family_tokens
+            from src.visual_design.v4.typography import CANONICAL_FONT_SHA256_V4
 
+            tokens = get_family_tokens(self.template_family)
             current_fonts = {
-                role: resolve_font_file_v4(self.template_family, role).sha256
+                role: CANONICAL_FONT_SHA256_V4[getattr(tokens.font_roles, role)]
                 for role in ("display", "heading", "body", "caption")
             }
-        except Exception as exc:
-            raise ValueError("current checked-in font registry is unavailable") from None
+        except Exception:
+            raise ValueError("current canonical font registry is unavailable") from None
         if dict(self.font_sha256_by_role) != current_fonts:
             raise ValueError("compiler provenance font hashes do not match current registry")
         for key, evidence in self.text_measurement_evidence.items():
@@ -1326,14 +1351,16 @@ class CompiledPageV4(_FrozenLayoutV4):
                     )
                 )
                 try:
-                    from src.visual_design.v4.typography import resolve_font_file_v4
+                    from src.visual_design.v4.tokens import get_family_tokens
+                    from src.visual_design.v4.typography import CANONICAL_FONT_NOMINAL_WEIGHTS_V4
 
-                    nominal_weight = resolve_font_file_v4(
+                    family_tokens = get_family_tokens(
                         self.compiler_provenance.template_family,
-                        element.style.font_role,
-                    ).nominal_weight
+                    )
+                    font_label = getattr(family_tokens.font_roles, element.style.font_role)
+                    nominal_weight = CANONICAL_FONT_NOMINAL_WEIGHTS_V4[font_label]
                 except Exception:
-                    raise ValueError("compiled page text font registry is unavailable") from None
+                    raise ValueError("compiled page canonical font registry is unavailable") from None
                 if element.style.weight != nominal_weight:
                     raise ValueError("compiled page text weight does not match measured font face")
             elif isinstance(element, ImageElement):

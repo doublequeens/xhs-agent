@@ -1,8 +1,16 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
-from tests.visual_design.v4.test_compiler import _comparison_inputs_for_test, _inputs
+from tests.visual_design.v4.test_compiler import (
+    _comparison_inputs_for_test,
+    _inputs,
+    _many_fragment_inputs,
+    _rehash_page,
+    _rehash_provenance,
+)
 from src.visual_design.v4.compiler import compile_layout
 from src.visual_design.v4.design_metrics import (
     DesignMetricsInvariantError,
@@ -10,6 +18,7 @@ from src.visual_design.v4.design_metrics import (
     get_quality_policy,
 )
 from src.schemas.v4.content import canonical_sha256_v4
+from src.schemas.v4.layout import RegionGeometryEvidenceV4
 
 
 def test_quality_policy_is_grammar_and_role_specific() -> None:
@@ -27,8 +36,9 @@ def test_metric_evaluator_is_public() -> None:
 def test_compiled_page_metrics_are_complete_finite_and_deterministic() -> None:
     program, inputs = _inputs()
     page = compile_layout(program, inputs)
-    first = evaluate_page_metrics(page, page_brief=inputs.page_brief)
-    second = evaluate_page_metrics(page, page_brief=inputs.page_brief)
+    page_brief_set = inputs.visual_direction_plan.page_brief_set
+    first = evaluate_page_metrics(page, page_brief_set=page_brief_set)
+    second = evaluate_page_metrics(page, page_brief_set=page_brief_set)
     assert first.passed is True
     assert first.canonical_sha256 == second.canonical_sha256
     assert first.model_dump_json() == second.model_dump_json()
@@ -54,10 +64,146 @@ def test_compiled_page_metrics_are_complete_finite_and_deterministic() -> None:
     assert all(metric.actual == metric.actual for metric in first.metrics)
 
 
+def test_canonical_asset_and_fragment_fixtures_pass_q2() -> None:
+    fixtures = (
+        ("hero-asset", _inputs, {"with_asset": True}),
+        ("comparison-asset", _comparison_inputs_for_test, {"with_asset": True}),
+        ("step-three-no-asset", _many_fragment_inputs, {"count": 3, "with_asset": False}),
+        ("step-five-no-asset", _many_fragment_inputs, {"count": 5, "with_asset": False}),
+    )
+    for name, builder, kwargs in fixtures:
+        if builder is _many_fragment_inputs:
+            program, inputs = builder(kwargs["count"], with_asset=kwargs["with_asset"])
+        else:
+            program, inputs = builder(**kwargs)
+        page = compile_layout(program, inputs)
+        result = evaluate_page_metrics(
+            page,
+            page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        )
+        assert result.passed is True, name
+
+
+def test_line_length_uses_pillow_line_width_and_has_reachable_fail_boundary() -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    widened = evidence.model_copy(
+        update={"line_widths_px": (901.0, *evidence.line_widths_px[1:])}
+    )
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        text_measurement_evidence={"fragment-1": widened},
+    )
+    tampered = _rehash_page(page, compiler_provenance=provenance)
+    result = evaluate_page_metrics(
+        tampered,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+    )
+    line_metric = next(metric for metric in result.metrics if metric.metric == "line_length")
+    assert line_metric.actual == 901.0
+    assert line_metric.threshold < 920.0
+    assert line_metric.passed is False
+    assert line_metric.element_id == "v4-text-fragment-1-0"
+
+
+def test_regional_density_has_reachable_fail_boundary_from_current_region_geometry() -> None:
+    program, inputs = _inputs(with_asset=True)
+    page = compile_layout(program, inputs)
+    image = next(element for element in page.scene.elements if element.kind == "image")
+    raw_region = page.compiler_provenance.region_geometry_evidence["support"].model_dump(
+        mode="python"
+    )
+    raw_region.update(
+        {
+            "x": image.box.x,
+            "y": image.box.y,
+            "width": image.box.width,
+            "height": image.box.height,
+        }
+    )
+    raw_region.pop("geometry_sha256", None)
+    support = RegionGeometryEvidenceV4(
+        **raw_region,
+        geometry_sha256=canonical_sha256_v4(raw_region),
+    )
+    regions = dict(page.compiler_provenance.region_geometry_evidence)
+    regions["support"] = support
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        region_geometry_evidence=regions,
+    )
+    tampered = _rehash_page(page, compiler_provenance=provenance)
+    result = evaluate_page_metrics(
+        tampered,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+    )
+    density = next(
+        metric for metric in result.metrics if metric.metric == "regional_information_density"
+    )
+    assert density.actual == 1.0
+    assert density.threshold < 1.0
+    assert density.passed is False
+    assert density.region_id == "support"
+
+
+def test_spacing_consistency_ignores_cross_region_gaps_and_unions_step_rows() -> None:
+    program, inputs = _many_fragment_inputs(5, with_asset=False)
+    page = compile_layout(program, inputs)
+    result = evaluate_page_metrics(
+        page,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+    )
+    spacing = next(metric for metric in result.metrics if metric.metric == "spacing_consistency")
+    assert spacing.actual == 0.0
+    assert spacing.passed is True
+
+
+def test_orphan_metric_keeps_auto_wrap_and_explicit_newline_lines_measurement_bound() -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    assert evidence.line_codepoint_counts[-1] == 1
+    result = evaluate_page_metrics(
+        page,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+    )
+    orphan = next(metric for metric in result.metrics if metric.metric == "orphan_line")
+    assert orphan.actual == 0.0
+
+    newline_program, newline_inputs = _inputs(text="标\n题")
+    newline_page = compile_layout(newline_program, newline_inputs)
+    newline_evidence = newline_page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    assert newline_evidence.line_codepoint_counts == (1, 1)
+    newline_result = evaluate_page_metrics(
+        newline_page,
+        page_brief_set=newline_inputs.visual_direction_plan.page_brief_set,
+    )
+    newline_orphan = next(
+        metric for metric in newline_result.metrics if metric.metric == "orphan_line"
+    )
+    assert newline_orphan.actual == 0.0
+
+
+def test_orphan_metric_rejects_empty_explicit_newline_line_in_current_provenance() -> None:
+    program, inputs = _inputs(text="标题\n")
+    page = compile_layout(program, inputs)
+    result = evaluate_page_metrics(
+        page,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+    )
+    orphan = next(metric for metric in result.metrics if metric.metric == "orphan_line")
+    assert orphan.actual == 1.0
+    assert orphan.passed is False
+
+
 def test_comparison_page_uses_its_own_metric_policy() -> None:
     program, inputs = _comparison_inputs_for_test()
     page = compile_layout(program, inputs)
-    result = evaluate_page_metrics(page, page_brief=inputs.page_brief)
+    result = evaluate_page_metrics(
+        page,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+    )
     assert result.passed is True
     assert result.policy_sha256 != get_quality_policy(
         "editorial_hero", "body", "context"
@@ -67,9 +213,9 @@ def test_comparison_page_uses_its_own_metric_policy() -> None:
 def test_page_brief_and_typed_role_are_required_for_direct_evaluation() -> None:
     program, inputs = _inputs()
     page = compile_layout(program, inputs)
-    with pytest.raises(DesignMetricsInvariantError):
+    with pytest.raises(TypeError):
         evaluate_page_metrics(page)
-    with pytest.raises(DesignMetricsInvariantError):
+    with pytest.raises(TypeError):
         evaluate_page_metrics(page, page_brief=inputs.page_brief, narrative_role="comparison")
     with pytest.raises(DesignMetricsInvariantError):
         get_quality_policy("checklist", "body", "checklist")
@@ -78,6 +224,37 @@ def test_page_brief_and_typed_role_are_required_for_direct_evaluation() -> None:
 def test_policy_page_role_cannot_be_injected_wider_than_typed_beat() -> None:
     with pytest.raises(DesignMetricsInvariantError):
         get_quality_policy("editorial_hero", "cover", "context")
+
+
+def test_public_q2_requires_exact_page_brief_set_not_single_brief() -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    with pytest.raises(TypeError):
+        evaluate_page_metrics(page, page_brief=inputs.page_brief)
+
+
+def test_public_q2_rejects_stale_page_brief_set_hash() -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    raw = inputs.visual_direction_plan.page_brief_set.model_dump(mode="python")
+    first = dict(raw["pages"][0])
+    first["canonical_sha256"] = "f" * 64
+    raw["pages"] = (first, *raw["pages"][1:])
+    with pytest.raises(DesignMetricsInvariantError):
+        evaluate_page_metrics(page, page_brief_set=raw)
+
+
+def test_q2_revalidation_does_not_read_font_files(monkeypatch: pytest.MonkeyPatch) -> None:
+    program, inputs = _inputs()
+    page = compile_layout(program, inputs)
+    page_set = inputs.visual_direction_plan.page_brief_set
+
+    def fail_read_bytes(_path: Path) -> bytes:
+        raise AssertionError("Q2 must not read font bytes")
+
+    monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
+    result = evaluate_page_metrics(page, page_brief_set=page_set)
+    assert result.passed is True
 
 
 def test_policy_rehash_is_detected() -> None:

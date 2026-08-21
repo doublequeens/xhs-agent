@@ -82,6 +82,7 @@ class TextMeasurementV4:
     text: str
     lines: tuple[str, ...]
     line_widths_px: tuple[float, ...]
+    line_codepoint_counts: tuple[int, ...]
     width_px: float
     height_px: float
     line_count: int
@@ -335,6 +336,7 @@ def measure_text_v4(
             inserted_break_offsets.append(cursor)
 
     line_count = len(lines)
+    line_codepoint_counts = tuple(len(line) for line in lines)
     try:
         ascent, descent = font.getmetrics()
     except (AttributeError, OSError, ValueError):
@@ -423,6 +425,7 @@ def measure_text_v4(
         "descent_px": float(descent),
         "inserted_break_offsets": tuple(inserted_break_offsets),
         "line_count": line_count,
+        "line_codepoint_counts": line_codepoint_counts,
         "line_height": line_height_value,
         "line_widths_px": tuple(widths),
         "max_width_px": max_width,
@@ -440,6 +443,7 @@ def measure_text_v4(
         text=text,
         lines=tuple(lines),
         line_widths_px=tuple(widths),
+        line_codepoint_counts=line_codepoint_counts,
         width_px=ink_width,
         height_px=measured_height,
         line_count=line_count,

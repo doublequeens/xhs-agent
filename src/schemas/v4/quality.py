@@ -13,11 +13,10 @@ import math
 import re
 from typing import Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
-from src.schemas.content_lock import ContentLock
 from src.schemas.v4.content import canonical_sha256_v4
-from src.schemas.v4.direction import AuthoringQAResultV4, NarrativeTaskKindV4, TemplateFamilyV4
+from src.schemas.v4.direction import AuthoringQAResultV4, NarrativeTaskKindV4
 from src.schemas.v4.layout import (
     CarouselDesignPlanV4,
     ImplementedGrammarIDV4,
@@ -115,6 +114,26 @@ QualityIssueCodeV4 = Literal[
     "Q0_FAILED",
     "Q1_FAILED",
 ]
+
+QUALITY_ISSUE_CODE_BY_METRIC_V4 = {
+    "safe_margin_compliance": "SAFE_MARGIN_NONCOMPLIANT",
+    "unintended_overlap": "UNINTENDED_OVERLAP",
+    "minimum_font_size": "MINIMUM_FONT_SIZE",
+    "contrast": "LOW_CONTRAST",
+    "whitespace_ratio": "WHITESPACE_RATIO",
+    "largest_text_block_ratio": "LARGEST_TEXT_BLOCK_RATIO",
+    "regional_information_density": "REGIONAL_INFORMATION_DENSITY",
+    "alignment_axis_deviation": "ALIGNMENT_AXIS_DEVIATION",
+    "paired_column_balance": "PAIRED_COLUMN_BALANCE",
+    "spacing_consistency": "SPACING_CONSISTENCY",
+    "heading_body_hierarchy_ratio": "HEADING_BODY_HIERARCHY_RATIO",
+    "visual_center_offset": "VISUAL_CENTER_OFFSET",
+    "emphasis_count": "EMPHASIS_COUNT",
+    "line_length": "LINE_LENGTH",
+    "orphan_line": "ORPHAN_LINE",
+    "orphan_heading": "ORPHAN_HEADING",
+    "image_text_area_ratio": "IMAGE_TEXT_AREA_RATIO",
+}
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _ZERO_SHA256 = "0" * 64
@@ -318,10 +337,7 @@ class DesignMetricsQAResultV4(_FrozenQualityV4):
     page_role: PageRoleV4
     narrative_role: NarrativeTaskKindV4
     policy_sha256: StrictStr
-    metrics: tuple[DesignMetricEvidenceV4, ...] = Field(
-        min_length=len(QUALITY_METRIC_KINDS_V4),
-        validation_alias=AliasChoices("metrics", "metric_results"),
-    )
+    metrics: tuple[DesignMetricEvidenceV4, ...] = Field(min_length=len(QUALITY_METRIC_KINDS_V4))
     issues: tuple[DesignQualityIssueV4, ...] = ()
     compiled_page_sha256: StrictStr
     layout_program_sha256: StrictStr
@@ -364,12 +380,28 @@ class DesignMetricsQAResultV4(_FrozenQualityV4):
             metric.validate_integrity()
             if metric.page_id != self.page_id or metric.policy_sha256 != self.policy_sha256:
                 raise ValueError("Q2 metric evidence is not bound to this page or policy")
+        failed_metrics = {metric.metric for metric in self.metrics if not metric.passed}
+        if len(self.issues) != len(failed_metrics) or {
+            issue.metric for issue in self.issues
+        } != failed_metrics:
+            raise ValueError("every failed Q2 metric must have exactly one actionable issue")
         for issue in self.issues:
             issue.validate_integrity()
             if issue.page_id != self.page_id:
                 raise ValueError("Q2 issue page binding does not match page result")
-            if issue.policy_sha256 is not None and issue.policy_sha256 != self.policy_sha256:
+            if issue.policy_sha256 != self.policy_sha256:
                 raise ValueError("Q2 issue policy binding does not match page result")
+            matching = next(metric for metric in self.metrics if metric.metric == issue.metric)
+            if (
+                issue.code != QUALITY_ISSUE_CODE_BY_METRIC_V4[matching.metric]
+                or issue.actual != matching.actual
+                or issue.threshold != matching.threshold
+                or issue.comparator != matching.comparator
+                or issue.region_id != matching.region_id
+                or issue.element_id != matching.element_id
+                or issue.fragment_ref != matching.fragment_ref
+            ):
+                raise ValueError("Q2 issue evidence does not match its failed metric")
         expected_passed = not self.issues and all(metric.passed for metric in self.metrics)
         if self.passed != expected_passed:
             raise ValueError("Q2 page passed must be derived from metrics and issues")
@@ -390,22 +422,10 @@ class DesignPlanQAResultV4(_FrozenQualityV4):
     """Standalone durable aggregate of Q0, Q1, exact Q2 pages and design plan."""
 
     passed: StrictBool
-    semantic_qa: SemanticQAResultV4 = Field(
-        validation_alias=AliasChoices("semantic_qa", "q0")
-    )
-    authoring_qa: AuthoringQAResultV4 = Field(
-        validation_alias=AliasChoices("authoring_qa", "q1")
-    )
-    page_metrics: tuple[DesignMetricsQAResultV4, ...] = Field(
-        min_length=5,
-        max_length=18,
-        validation_alias=AliasChoices(
-            "page_metrics", "design_metrics", "design_metrics_qa", "metrics"
-        ),
-    )
-    carousel_design_plan: CarouselDesignPlanV4 = Field(
-        validation_alias=AliasChoices("carousel_design_plan", "design_plan")
-    )
+    semantic_qa: SemanticQAResultV4
+    authoring_qa: AuthoringQAResultV4
+    page_metrics: tuple[DesignMetricsQAResultV4, ...] = Field(min_length=5, max_length=18)
+    carousel_design_plan: CarouselDesignPlanV4
     issues: tuple[DesignQualityIssueV4, ...] = ()
     content_atom_set_sha256: StrictStr
     content_lock_sha256: StrictStr
@@ -504,6 +524,10 @@ class DesignPlanQAResultV4(_FrozenQualityV4):
                 raise ValueError("Q2 page metric compiled-page binding is stale")
             if metric.layout_program_sha256 != plan_page.layout_program.canonical_sha256:
                 raise ValueError("Q2 page metric layout-program binding is stale")
+            if metric.page_brief_sha256 != plan_page.layout_program.page_brief_sha256:
+                raise ValueError("Q2 page metric page-brief binding is stale")
+            if metric.sequence != plan_page.sequence:
+                raise ValueError("Q2 page metric sequence is not plan-bound")
             if metric.grammar_id != plan_page.layout_program.grammar_id:
                 raise ValueError("Q2 page metric grammar is not plan-bound")
             if metric.narrative_role != plan_page.layout_program.beat_task_kind:
@@ -521,7 +545,7 @@ class DesignPlanQAResultV4(_FrozenQualityV4):
                 metric.candidate_id,
                 metric.revision,
                 metric.run_id,
-            ) != (
+                ) != (
                 self.content_atom_set_sha256,
                 self.semantic_content_model_sha256,
                 self.page_brief_set_sha256,
@@ -531,8 +555,32 @@ class DesignPlanQAResultV4(_FrozenQualityV4):
                 self.candidate_id,
                 self.revision,
                 self.run_id,
-            ):
+                ):
                 raise ValueError("Q2 page metric has stale or mixed source binding")
+            try:
+                from src.visual_design.v4.design_metrics import (
+                    derive_page_role_v4,
+                    get_quality_policy,
+                    threshold_for_metric_v4,
+                )
+
+                expected_policy = get_quality_policy(
+                    plan_page.layout_program.grammar_id,
+                    derive_page_role_v4(plan_page.layout_program.beat_task_kind),
+                    plan_page.layout_program.beat_task_kind,
+                )
+            except Exception:
+                raise ValueError("Q2 page metric policy cannot be resolved canonically") from None
+            if metric.policy_sha256 != expected_policy.canonical_sha256:
+                raise ValueError("Q2 page metric policy is not canonical")
+            for evidence in metric.metrics:
+                if evidence.policy_sha256 != expected_policy.canonical_sha256:
+                    raise ValueError("Q2 metric evidence policy is not canonical")
+                if abs(
+                    evidence.threshold
+                    - threshold_for_metric_v4(expected_policy, evidence.metric)
+                ) > 1e-9:
+                    raise ValueError("Q2 metric evidence threshold is not canonical")
         for issue in self.issues:
             issue.validate_integrity()
         expected_passed = (
@@ -551,44 +599,14 @@ class DesignPlanQAResultV4(_FrozenQualityV4):
     def validate_integrity(self) -> None:
         type(self).model_validate(self.model_dump(mode="python"))
 
-    @property
-    def q0(self) -> SemanticQAResultV4:
-        return self.semantic_qa
-
-    @property
-    def q1(self) -> AuthoringQAResultV4:
-        return self.authoring_qa
-
-    @property
-    def design_metrics(self) -> tuple[DesignMetricsQAResultV4, ...]:
-        return self.page_metrics
-
-    @property
-    def design_plan(self) -> CarouselDesignPlanV4:
-        return self.carousel_design_plan
-
-
-# Discoverable aliases mirror the Q0/Q1 naming style while keeping v4 explicit.
-DesignMetricEvidence = DesignMetricEvidenceV4
-MetricEvidenceV4 = DesignMetricEvidenceV4
-DesignMetricV4 = DesignMetricEvidenceV4
-DesignMetricsQAResult = DesignMetricsQAResultV4
-DesignPlanQAResult = DesignPlanQAResultV4
-DesignQualityIssue = DesignQualityIssueV4
-
-
 __all__ = [
-    "DesignMetricEvidence",
     "DesignMetricEvidenceV4",
-    "DesignMetricV4",
-    "DesignMetricsQAResult",
     "DesignMetricsQAResultV4",
-    "DesignPlanQAResult",
     "DesignPlanQAResultV4",
-    "DesignQualityIssue",
     "DesignQualityIssueV4",
     "QUALITY_COMPARATORS_V4",
     "QUALITY_ISSUE_CODES_V4",
+    "QUALITY_ISSUE_CODE_BY_METRIC_V4",
     "QUALITY_METRIC_KINDS_V4",
     "QUALITY_POLICY_VERSION_V4",
     "QualityComparatorV4",

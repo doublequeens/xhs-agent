@@ -697,6 +697,8 @@ def test_compiler_persists_task13_wrap_policy_and_measurement_evidence_without_c
     assert evidence.line_count >= 1
     assert evidence.break_offsets == tuple(sorted(evidence.break_offsets))
     assert len(evidence.measurement_sha256) == 64
+    assert len(evidence.line_widths_px) == evidence.line_count
+    assert len(evidence.line_codepoint_counts) == evidence.line_count
     assert "这是一个可读的页面标题" not in json.dumps(provenance.model_dump(mode="json"), ensure_ascii=False)
 
 

@@ -520,6 +520,8 @@ class CompilerContextV4:
             font_sha256=measurement.font_sha256,
             font_size_px=measurement.font_size_px,
             line_count=measurement.line_count,
+            line_widths_px=measurement.line_widths_px,
+            line_codepoint_counts=measurement.line_codepoint_counts,
             break_offsets=measurement.break_offsets,
             offset_unit=measurement.offset_unit,
             explicit_break_spans=measurement.explicit_break_spans,

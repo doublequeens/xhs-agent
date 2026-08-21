@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from typing import Any
 
 from src.schemas.assets import AssetManifest
@@ -10,24 +10,20 @@ from src.schemas.content_atoms import canonical_sha256 as canonical_sha256_v3
 from src.schemas.content_lock import ContentLock
 from src.schemas.v4.content import ContentAtomSetV4, canonical_sha256_v4
 from src.schemas.v4.direction import PageBriefSetV4, VisualDirectionPlanV4
-from src.schemas.v4.layout import CarouselDesignPlanV4, FamilyTokensV4
+from src.schemas.v4.layout import CarouselDesignPlanV4
 from src.schemas.v4.quality import (
-    DesignMetricsQAResultV4,
     DesignPlanQAResultV4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4, SemanticQAResultV4
 from src.visual_design.v4.design_metrics import (
     derive_page_role_v4,
-    evaluate_page_metrics,
+    evaluate_design_plan_metrics,
     get_quality_policy,
     threshold_for_metric_v4,
 )
 from src.visual_design.v4.tokens import get_family_tokens
 from src.visual_design.v4.authoring_qa import AuthoringCandidatePreflightV4
 from src.schemas.v4.direction import AuthoringQAResultV4
-
-
-_ZERO_SHA256 = "0" * 64
 
 
 class DesignPlanQAInvariantError(ValueError):
@@ -64,67 +60,37 @@ def _authoring(value: Any) -> AuthoringQAResultV4:
     return _coerce(AuthoringQAResultV4, value, "authoring QA result")
 
 
-def _page_metrics(
-    values: Sequence[DesignMetricsQAResultV4 | Mapping[str, Any]],
-) -> tuple[DesignMetricsQAResultV4, ...]:
-    checked: list[DesignMetricsQAResultV4] = []
-    for value in values:
-        checked.append(_coerce(DesignMetricsQAResultV4, value, "Q2 page result"))
-    return tuple(checked)
-
-
 def aggregate_design_qa(
     *,
-    semantic: SemanticQAResultV4 | Mapping[str, Any] | None = None,
-    semantic_qa: SemanticQAResultV4 | Mapping[str, Any] | None = None,
-    q0: SemanticQAResultV4 | Mapping[str, Any] | None = None,
-    authoring: AuthoringQAResultV4 | Mapping[str, Any] | None = None,
-    authoring_qa: AuthoringQAResultV4 | Mapping[str, Any] | None = None,
-    q1: AuthoringQAResultV4 | Mapping[str, Any] | None = None,
-    metrics: Sequence[DesignMetricsQAResultV4 | Mapping[str, Any]] | None = None,
-    page_metrics: Sequence[DesignMetricsQAResultV4 | Mapping[str, Any]] | None = None,
-    design_metrics: Sequence[DesignMetricsQAResultV4 | Mapping[str, Any]] | None = None,
-    design_plan: CarouselDesignPlanV4 | Mapping[str, Any] | None = None,
-    carousel_design_plan: CarouselDesignPlanV4 | Mapping[str, Any] | None = None,
-    content_atom_set: ContentAtomSetV4 | Mapping[str, Any] | None = None,
-    content_lock: ContentLock | Mapping[str, Any] | None = None,
-    semantic_content_model: SemanticContentModelV4 | Mapping[str, Any] | None = None,
-    page_brief_set: PageBriefSetV4 | Mapping[str, Any] | None = None,
-    visual_direction_plan: VisualDirectionPlanV4 | Mapping[str, Any] | None = None,
-    asset_manifest: AssetManifest | Mapping[str, Any] | None = None,
-    family_tokens: FamilyTokensV4 | str | None = None,
+    semantic_qa: SemanticQAResultV4 | Mapping[str, Any],
+    authoring_qa: AuthoringQAResultV4 | Mapping[str, Any],
+    carousel_design_plan: CarouselDesignPlanV4 | Mapping[str, Any],
+    content_atom_set: ContentAtomSetV4 | Mapping[str, Any],
+    content_lock: ContentLock | Mapping[str, Any],
+    semantic_content_model: SemanticContentModelV4 | Mapping[str, Any],
+    page_brief_set: PageBriefSetV4 | Mapping[str, Any],
+    visual_direction_plan: VisualDirectionPlanV4 | Mapping[str, Any],
+    asset_manifest: AssetManifest | Mapping[str, Any],
 ) -> DesignPlanQAResultV4:
-    """Revalidate exact Q0/Q1/source inputs and aggregate canonical Q2 pages.
+    """Revalidate exact Q0/Q1/source inputs and recompute canonical Q2 pages.
 
     This function performs no repair and invokes no renderer.  A deterministic
-    metric miss returns a failed immutable result; missing or contradictory
-    contracts raise at this boundary.
+    metric miss returns a failed immutable result.  Q2 evidence is never
+    accepted from a caller: it is recomputed from the current plan, exact page
+    briefs and canonical source bindings at this boundary.  Missing or
+    contradictory contracts raise before an aggregate can be returned.
     """
 
-    q0_value = semantic_qa if semantic_qa is not None else semantic if semantic is not None else q0
-    q1_value = authoring_qa if authoring_qa is not None else authoring if authoring is not None else q1
-    metric_values = page_metrics if page_metrics is not None else metrics if metrics is not None else design_metrics
-    plan_value = carousel_design_plan if carousel_design_plan is not None else design_plan
-    if any(value is None for value in (q0_value, q1_value, metric_values, plan_value, content_atom_set, content_lock, asset_manifest)):
-        raise DesignPlanQAInvariantError("design QA requires complete Q0, Q1, Q2 and source contracts")
-
-    q0_checked = _coerce(SemanticQAResultV4, q0_value, "semantic QA result")
-    q1_checked = _authoring(q1_value)
+    q0_checked = _coerce(SemanticQAResultV4, semantic_qa, "semantic QA result")
+    q1_checked = _authoring(authoring_qa)
     atom_set = _coerce(ContentAtomSetV4, content_atom_set, "content atom set")
     lock = _coerce(ContentLock, content_lock, "content lock")
-    semantic_model = _coerce(SemanticContentModelV4, semantic_content_model, "semantic content model") if semantic_content_model is not None else None
-    page_set = _coerce(PageBriefSetV4, page_brief_set, "page brief set") if page_brief_set is not None else None
-    direction_plan = _coerce(VisualDirectionPlanV4, visual_direction_plan, "visual direction plan") if visual_direction_plan is not None else None
+    semantic_model = _coerce(SemanticContentModelV4, semantic_content_model, "semantic content model")
+    page_set = _coerce(PageBriefSetV4, page_brief_set, "page brief set")
+    direction_plan = _coerce(VisualDirectionPlanV4, visual_direction_plan, "visual direction plan")
     manifest = _coerce(AssetManifest, asset_manifest, "asset manifest")
-    plan = _coerce(CarouselDesignPlanV4, plan_value, "carousel design plan")
-    if semantic_model is None or page_set is None or direction_plan is None:
-        raise DesignPlanQAInvariantError("design QA requires exact semantic model, page briefs and direction plan")
-    if isinstance(family_tokens, str):
-        family = get_family_tokens(family_tokens)
-    elif family_tokens is None:
-        family = get_family_tokens(direction_plan.template_family)
-    else:
-        family = _coerce(FamilyTokensV4, family_tokens, "family tokens")
+    plan = _coerce(CarouselDesignPlanV4, carousel_design_plan, "carousel design plan")
+    family = get_family_tokens(direction_plan.template_family)
     if family.family != direction_plan.template_family:
         raise DesignPlanQAInvariantError("family tokens do not match visual direction plan")
     if family.canonical_sha256 != get_family_tokens(direction_plan.template_family).canonical_sha256:
@@ -175,7 +141,13 @@ def aggregate_design_qa(
         if getattr(plan, field) != expected:
             raise DesignPlanQAInvariantError(f"design plan {field} binding is stale")
     plan.validate_integrity()
-    if tuple(page.page_id for page in plan.pages) != tuple(page.page_id for page in page_set.pages):
+    if (
+        tuple(page.page_id for page in plan.pages),
+        tuple(page.sequence for page in plan.pages),
+    ) != (
+        tuple(page.page_id for page in page_set.pages),
+        tuple(page.sequence for page in page_set.pages),
+    ):
         raise DesignPlanQAInvariantError("design plan pages do not match exact page brief order")
     for plan_page, brief in zip(plan.pages, page_set.pages):
         program = plan_page.layout_program
@@ -189,9 +161,11 @@ def aggregate_design_qa(
         if provenance.family_tokens_sha256 != family.canonical_sha256:
             raise DesignPlanQAInvariantError("compiled page family token binding is stale")
 
-    checked_metrics = _page_metrics(metric_values)
+    # This is the only Q2 source.  In particular, no caller-controlled metric,
+    # threshold, policy, location or passed bit can survive into the aggregate.
+    checked_metrics = evaluate_design_plan_metrics(plan, page_brief_set=page_set)
     if len(checked_metrics) != len(plan.pages):
-        raise DesignPlanQAInvariantError("Q2 page metrics must cover every compiled page exactly once")
+        raise DesignPlanQAInvariantError("Q2 evaluator did not cover every compiled page exactly once")
     for metric, plan_page in zip(checked_metrics, plan.pages):
         if metric.page_id != plan_page.page_id or metric.sequence != plan_page.sequence:
             raise DesignPlanQAInvariantError("Q2 page metric identity does not match design plan")
@@ -220,6 +194,22 @@ def aggregate_design_qa(
             raise DesignPlanQAInvariantError("Q2 page authoring binding is stale")
         if metric.asset_manifest_sha256 != asset_hash or metric.family_tokens_sha256 != family.canonical_sha256:
             raise DesignPlanQAInvariantError("Q2 page asset or family binding is stale")
+        if metric.page_brief_sha256 != plan_page.layout_program.page_brief_sha256:
+            raise DesignPlanQAInvariantError("Q2 page brief binding is stale")
+        valid_regions = set(plan_page.compiler_provenance.region_geometry_evidence)
+        valid_elements = {element.element_id for element in plan_page.scene.elements}
+        valid_fragments = {
+            element.content_ref
+            for element in plan_page.scene.elements
+            if hasattr(element, "content_ref")
+        }
+        for evidence in metric.metrics:
+            if evidence.region_id is not None and evidence.region_id not in valid_regions:
+                raise DesignPlanQAInvariantError("Q2 evidence references an unknown region")
+            if evidence.element_id is not None and evidence.element_id not in valid_elements:
+                raise DesignPlanQAInvariantError("Q2 evidence references an unknown element")
+            if evidence.fragment_ref is not None and evidence.fragment_ref not in valid_fragments:
+                raise DesignPlanQAInvariantError("Q2 evidence references an unknown fragment")
     page_metrics_tuple = checked_metrics
     payload = {
         "passed": q0_checked.passed and q1_checked.passed and all(item.passed for item in page_metrics_tuple),
@@ -251,35 +241,32 @@ def design_qa_node(state: Mapping[str, Any]) -> dict[str, Any]:
 
     if not isinstance(state, Mapping):
         raise TypeError("v4 design QA node requires a state mapping")
-    result = aggregate_design_qa(
-        semantic_qa=state.get("semantic_qa", state.get("semantic_qa_result", state.get("semantic_qa_result_v4"))),
-        authoring_qa=state.get("authoring_qa", state.get("authoring_qa_result", state.get("authoring_qa_result_v4"))),
-        page_metrics=state.get("page_metrics", state.get("design_metrics_qa", state.get("design_metrics"))),
-        carousel_design_plan=state.get("carousel_design_plan_v4", state.get("carousel_design_plan")),
-        content_atom_set=state.get("content_atom_set", state.get("atom_set")),
-        content_lock=state.get("content_lock"),
-        semantic_content_model=state.get("semantic_content_model", state.get("semantic_model")),
-        page_brief_set=state.get("page_brief_set", state.get("page_briefs")),
-        visual_direction_plan=state.get("visual_direction_plan"),
-        asset_manifest=state.get("asset_manifest", state.get("assets")),
-        family_tokens=state.get("family_tokens"),
+    required = (
+        "semantic_qa",
+        "authoring_qa",
+        "carousel_design_plan",
+        "content_atom_set",
+        "content_lock",
+        "semantic_content_model",
+        "page_brief_set",
+        "visual_direction_plan",
+        "asset_manifest",
     )
+    missing = tuple(key for key in required if key not in state)
+    if missing:
+        raise DesignPlanQAInvariantError(
+            f"v4 design QA node is missing canonical state keys: {', '.join(missing)}"
+        )
+    result = aggregate_design_qa(**{key: state[key] for key in required})
     return {
         "design_plan_qa_result_v4": result,
-        "design_plan_qa_result": result,
         "current_node": "V4_DESIGN_PLAN_QA",
         "route": "render" if result.passed else "design_reviser",
     }
-
-
-evaluate_design_plan_qa = aggregate_design_qa
-v4_design_qa_node = design_qa_node
 
 
 __all__ = [
     "DesignPlanQAInvariantError",
     "aggregate_design_qa",
     "design_qa_node",
-    "evaluate_design_plan_qa",
-    "v4_design_qa_node",
 ]
