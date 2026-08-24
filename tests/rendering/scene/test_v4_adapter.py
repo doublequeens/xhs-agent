@@ -164,6 +164,32 @@ def test_v4_adapter_module_exposes_render_boundary():
     assert issubclass(V4RenderError, Exception)
 
 
+def test_v4_adapter_builds_base_probes_for_all_page_elements(tmp_path):
+    """A multi-element page must not be validated with a single raw record."""
+
+    from tests.integration.test_v4_three_grammar_render import _world_for_grammar
+
+    fixture, qa, paths = _world_for_grammar("comparison_grid", tmp_path)
+    result = render_v4_revision(
+        design_plan=qa.carousel_design_plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+        render_page_fn=_render_stub(
+            qa.carousel_design_plan,
+            fixture["semantic_model"],
+        ),
+    )
+
+    assert any(len(page.elements) > 1 for page in result.manifest.pages)
+
+
 def test_v4_adapter_selects_strict_probe_script_for_owned_renderer(tmp_path, monkeypatch):
     import src.rendering.scene.v4_adapter as adapter
 

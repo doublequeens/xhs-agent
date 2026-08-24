@@ -622,7 +622,9 @@ class RenderIssueV4(_FrozenRenderingV4):
     @field_validator("actual", "expected")
     @classmethod
     def validate_numeric(cls, value: float | None, info) -> float | None:
-        return None if value is None else _finite(value, info.field_name)
+        # Geometry evidence may legitimately be off-canvas (negative x/y),
+        # while dimensions and tolerances retain their non-negative guards.
+        return None if value is None else _finite(value, info.field_name, minimum=-math.inf)
 
     @field_validator("evidence")
     @classmethod
@@ -658,6 +660,14 @@ class RenderQAResultV4(_FrozenRenderingV4):
     render_manifest_sha256: StrictStr
     design_plan_sha256: StrictStr
     design_plan_qa_sha256: StrictStr
+    content_atom_set_sha256: StrictStr
+    content_lock_sha256: StrictStr
+    semantic_content_model_sha256: StrictStr
+    narrative_sha256: StrictStr
+    page_brief_set_sha256: StrictStr
+    visual_direction_plan_sha256: StrictStr
+    asset_manifest_sha256: StrictStr
+    family_tokens_sha256: StrictStr
     passed: StrictBool
     issues: tuple[RenderIssueV4, ...] = ()
     content_attestation: StrictBool
@@ -671,6 +681,14 @@ class RenderQAResultV4(_FrozenRenderingV4):
         "render_manifest_sha256",
         "design_plan_sha256",
         "design_plan_qa_sha256",
+        "content_atom_set_sha256",
+        "content_lock_sha256",
+        "semantic_content_model_sha256",
+        "narrative_sha256",
+        "page_brief_set_sha256",
+        "visual_direction_plan_sha256",
+        "asset_manifest_sha256",
+        "family_tokens_sha256",
         "canonical_sha256",
     )
     @classmethod

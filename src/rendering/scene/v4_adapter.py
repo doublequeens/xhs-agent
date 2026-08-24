@@ -483,6 +483,7 @@ def _element_evidence(
     page: PageScene,
     plan_page,
     raw: Mapping[str, object],
+    raw_probes: list[Mapping[str, object]],
     fragments: Mapping[str, ContentFragment],
     assets: Mapping[str, AssetManifestItem],
     tokens: FamilyTokensV4,
@@ -494,13 +495,18 @@ def _element_evidence(
     _require_probe_shape(raw, element)
     try:
         base_probes = build_element_probes(
-            raw_probes=[dict(raw)],
+            raw_probes=[dict(item) for item in raw_probes],
             page=page,
             fragments=fragments,
             assets=assets,
             page_background=page.background,
         )
-        base = base_probes[0]
+        base = next(
+            (item for item in base_probes if item.element_id == element.element_id),
+            None,
+        )
+        if base is None:
+            raise ProbeBuildError("probe data is missing for planned element")
     except ProbeBuildError:
         raise V4RenderError("browser probe evidence is incomplete") from None
     actual_box = _raw_box(raw)
@@ -870,6 +876,7 @@ def render_v4_revision(
                     page=plan_page.scene,
                     plan_page=plan_page,
                     raw=raw[element.element_id],
+                    raw_probes=list(draft.raw_probes),
                     fragments=fragments,
                     assets=private_assets,
                     tokens=tokens,
