@@ -103,6 +103,305 @@ def _world(tmp_path: Path):
     return values
 
 
+def _world_with_text(
+    tmp_path: Path,
+    source_text: str,
+    *,
+    render_wrapped: bool = False,
+):
+    """Recompile the real fixture after changing one source fragment.
+
+    This keeps the public evaluator at the seam: atoms, semantic source,
+    direction/page hashes, compiler measurements, Q0-Q2 and immutable render
+    bytes are all rebuilt instead of calling a text helper in isolation.
+    """
+
+    import regex
+
+    from src.nodes.v4.composition import build_layout_program
+    from src.nodes.v4.design_qa import aggregate_design_qa
+    from src.nodes.v4.layout import aggregate_layout_plan
+    from src.rendering.scene.renderer import RenderedPageDraft
+    from src.schemas.content_lock import ContentLock
+    from src.schemas.v4.content import ContentAtomSetV4, ContentAtomV4
+    from src.schemas.v4.direction import (
+        AuthoringQAResultV4,
+        CarouselNarrativeV4,
+        PageBriefSetV4,
+        VisualDirectionPlanV4,
+    )
+    from src.schemas.v4.semantic import SemanticContentModelV4, SemanticFragmentV4
+    from src.visual_design.v4.compiler import LayoutCompilerInputsV4, compile_layout
+    from src.visual_design.v4.semantic_qa import evaluate_semantic_model
+    from src.visual_design.v4.tokens import get_family_tokens
+    from src.visual_design.v4.typography import reconstruct_source_lines_v4
+    from tests.rendering.scene.test_v4_adapter import _render_stub
+
+    base = _world(tmp_path / "source-base")
+    base_plan = base["design_plan"]
+    base_atoms = base["content_atom_set"]
+    base_semantic = base["semantic_content_model"]
+
+    atom_payload = base_atoms.atoms[0].model_dump(mode="python")
+    atom_payload.update(
+        {
+            "text": source_text,
+            "raw_end": len(source_text),
+            "raw_slice_sha256": sha256_text_v4(source_text),
+        }
+    )
+    atom_payload.pop("sha256", None)
+    first_atom = ContentAtomV4(
+        **atom_payload,
+        sha256=canonical_sha256_v4(atom_payload),
+    )
+    atom_set_payload = base_atoms.model_dump(mode="python")
+    atom_set_payload["atoms"] = (first_atom, *base_atoms.atoms[1:])
+    atom_set_payload.pop("canonical_sha256", None)
+    atom_set = ContentAtomSetV4(
+        **atom_set_payload,
+        canonical_sha256=canonical_sha256_v4(atom_set_payload),
+    )
+
+    fragment_payload = base_semantic.fragments[0].model_dump(mode="python")
+    fragment_payload.update(exact_text=source_text, end=len(source_text))
+    first_fragment = SemanticFragmentV4(**fragment_payload)
+    semantic_payload = base_semantic.model_dump(mode="python")
+    semantic_payload.update(
+        {
+            "content_atom_set_sha256": atom_set.canonical_sha256,
+            "fragments": (first_fragment, *base_semantic.fragments[1:]),
+        }
+    )
+    semantic_payload.pop("canonical_sha256", None)
+    semantic = SemanticContentModelV4(
+        **semantic_payload,
+        canonical_sha256=canonical_sha256_v4(semantic_payload),
+    )
+
+    page_set_payload = base["page_brief_set"].model_dump(mode="python")
+    page_set_payload.update(
+        {
+            "content_atom_set_sha256": atom_set.canonical_sha256,
+            "semantic_content_model_sha256": semantic.canonical_sha256,
+        }
+    )
+    page_set_payload.pop("canonical_sha256", None)
+    page_set = PageBriefSetV4(
+        **page_set_payload,
+        canonical_sha256=canonical_sha256_v4(page_set_payload),
+    )
+
+    narrative_payload = base["visual_direction_plan"].narrative.model_dump(mode="python")
+    narrative_payload["content_atom_set_sha256"] = atom_set.canonical_sha256
+    narrative_payload.pop("canonical_sha256", None)
+    narrative = CarouselNarrativeV4(
+        **narrative_payload,
+        canonical_sha256=canonical_sha256_v4(narrative_payload),
+    )
+    direction_payload = base["visual_direction_plan"].model_dump(mode="python")
+    direction_payload.update(
+        {
+            "narrative": narrative,
+            "semantic_content_model": semantic,
+            "page_brief_set": page_set,
+            "content_atom_set_sha256": atom_set.canonical_sha256,
+            "semantic_content_model_sha256": semantic.canonical_sha256,
+            "narrative_sha256": narrative.canonical_sha256,
+            "page_brief_set_sha256": page_set.canonical_sha256,
+        }
+    )
+    direction_payload.pop("canonical_sha256", None)
+    direction = VisualDirectionPlanV4(
+        **direction_payload,
+        canonical_sha256=canonical_sha256_v4(direction_payload),
+    )
+
+    empty_assets = AssetManifest(items=())
+    compiled_pages = []
+    for index, brief in enumerate(page_set.pages):
+        old_program = base_plan.pages[index].layout_program
+        program = build_layout_program(
+            brief,
+            grammar_id=old_program.grammar_id,
+            family=direction.template_family,
+            narrative=direction.narrative,
+        )
+        compiled_pages.append(
+            compile_layout(
+                program,
+                LayoutCompilerInputsV4(
+                    page_brief=brief,
+                    semantic_content_model=semantic,
+                    content_atom_set=atom_set,
+                    asset_manifest=empty_assets,
+                    candidate_id=base_plan.candidate_id,
+                    revision=base_plan.revision,
+                    run_id=base_plan.run_id,
+                    visual_direction_plan=direction,
+                ),
+            )
+        )
+    plan = aggregate_layout_plan(
+        compiled_pages,
+        content_atom_set=atom_set,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        asset_manifest=empty_assets,
+        family_tokens=get_family_tokens(direction.template_family),
+        revision=base_plan.revision,
+        candidate_id=base_plan.candidate_id,
+        run_id=base_plan.run_id,
+        visual_direction_plan=direction,
+    )
+
+    lock_payload = base["content_lock"].model_dump(mode="python")
+    lock_payload["content_atom_set_sha256"] = atom_set.canonical_sha256
+    lock_payload.pop("canonical_sha256", None)
+    lock = ContentLock(
+        **lock_payload,
+        canonical_sha256=canonical_sha256_v4(lock_payload),
+    )
+    semantic_qa = evaluate_semantic_model(atom_set, semantic, content_lock=lock)
+    authoring_payload = base["design_plan_qa_result"].authoring_qa.model_dump(
+        mode="python"
+    )
+    authoring_payload.update(
+        {
+            "content_atom_set_sha256": atom_set.canonical_sha256,
+            "content_lock_sha256": lock.canonical_sha256,
+            "semantic_content_model_sha256": semantic.canonical_sha256,
+            "narrative_sha256": direction.narrative_sha256,
+            "page_brief_set_sha256": page_set.canonical_sha256,
+            "visual_direction_plan_sha256": direction.canonical_sha256,
+        }
+    )
+    authoring_payload.pop("canonical_sha256", None)
+    authoring_qa = AuthoringQAResultV4(
+        **authoring_payload,
+        canonical_sha256=canonical_sha256_v4(authoring_payload),
+    )
+    aggregate = aggregate_design_qa(
+        semantic_qa=semantic_qa,
+        authoring_qa=authoring_qa,
+        carousel_design_plan=plan,
+        content_atom_set=atom_set,
+        content_lock=lock,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        visual_direction_plan=direction,
+        asset_manifest=empty_assets,
+    )
+
+    family = get_family_tokens(direction.template_family)
+    source_fragment_id = first_fragment.fragment_id
+    base_render = _render_stub(plan, semantic)
+
+    def render(compiled_page):
+        draft = base_render(compiled_page)
+        page = next(item for item in plan.pages if item.page_id == compiled_page.page_id)
+        probes = []
+        for raw, element in zip(
+            draft.raw_probes,
+            sorted(page.scene.elements, key=lambda item: item.layer),
+        ):
+            raw = dict(raw)
+            if element.kind == "text":
+                raw["font_family"] = getattr(
+                    family.font_roles,
+                    element.style.font_role,
+                )
+                if element.content_ref == source_fragment_id:
+                    measurement = page.compiler_provenance.text_measurement_evidence[
+                        element.content_ref
+                    ]
+                    actual = (
+                        "\n".join(
+                            reconstruct_source_lines_v4(
+                                source_text,
+                                explicit_break_spans=measurement.explicit_break_spans,
+                                inserted_break_offsets=measurement.inserted_break_offsets,
+                            ).lines
+                        )
+                        if render_wrapped
+                        else source_text.replace("\r\n", "\n").replace("\r", "\n")
+                    )
+                    raw["actual_text"] = actual
+                    template = dict(raw["glyph_coverage"][0])
+                    coverage = []
+                    for grapheme in regex.findall(r"\X", actual):
+                        item = dict(template)
+                        whitespace = grapheme.isspace()
+                        item["is_whitespace"] = whitespace
+                        if whitespace:
+                            item.update(
+                                visible=False,
+                                width=0.0,
+                                height=0.0,
+                                ink_pixel_count=0,
+                                raster_signature="0" * 64,
+                                fallback_ink_pixel_count=0,
+                                fallback_raster_signature="0" * 64,
+                                tofu_ink_pixel_count=0,
+                                tofu_raster_signature="0" * 64,
+                            )
+                        coverage.append(item)
+                    raw["glyph_coverage"] = coverage
+                    raw["glyph_visible"] = all(
+                        item["visible"]
+                        for item in coverage
+                        if not item["is_whitespace"]
+                    )
+                    raw["missing_codepoint_count"] = sum(
+                        1
+                        for item in coverage
+                        if not item["is_whitespace"] and not item["visible"]
+                    )
+            probes.append(raw)
+        return RenderedPageDraft(
+            page_id=draft.page_id,
+            png_bytes=draft.png_bytes,
+            raw_probes=probes,
+        )
+
+    paths = ensure_artifact_paths(
+        resolve_artifact_paths(
+            tmp_path / "rendered",
+            ArtifactIdentity(
+                plan.run_id,
+                plan.candidate_id,
+                f"revision-{plan.revision}",
+            ),
+        )
+    )
+    rendered = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=aggregate,
+        content_atom_set=atom_set,
+        content_lock=lock,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        visual_direction_plan=direction,
+        asset_manifest=empty_assets,
+        family_tokens=direction.template_family,
+        artifact_paths=paths,
+        render_page_fn=render,
+    )
+    return {
+        "render_manifest": rendered.manifest,
+        "design_plan": plan,
+        "design_plan_qa_result": aggregate,
+        "content_atom_set": atom_set,
+        "content_lock": lock,
+        "semantic_content_model": semantic,
+        "page_brief_set": page_set,
+        "visual_direction_plan": direction,
+        "asset_manifest": empty_assets,
+        "family_tokens": direction.template_family,
+        "artifact_paths": paths,
+    }
+
+
 def _rebuild_manifest(manifest: RenderManifestV4, *, pages):
     payload = manifest.model_dump(mode="python")
     payload["pages"] = tuple(pages)
@@ -263,14 +562,19 @@ def test_q3_manifest_byte_binding_is_structural_and_cannot_be_spoofed(tmp_path):
         evaluate_v4_render(**values)
 
 
-def _mutate_first_text(values, *, expected_text_sha256):
+def _mutate_first_text(
+    values,
+    *,
+    expected_text_sha256,
+    actual_text="spoofed copy",
+):
     manifest = values["render_manifest"]
     page = manifest.pages[0]
     element = page.elements[0]
     mutated = _rebuild_element(
         element,
-        actual_text="spoofed copy",
-        actual_text_sha256=sha256_text_v4("spoofed copy"),
+        actual_text=actual_text,
+        actual_text_sha256=sha256_text_v4(actual_text),
         expected_text_sha256=expected_text_sha256,
     )
     page = _rebuild_page(page, elements=(mutated, *page.elements[1:]))
@@ -327,9 +631,107 @@ def test_q3_accepts_only_compiler_approved_line_breaks_and_rejects_copy_change()
     assert not _text_matches(source, source, measurement)
 
 
+@pytest.mark.parametrize("newline", ("\n", "\r\n", "\r"))
+def test_q3_public_preserves_explicit_newline_codepoints_and_rejects_copy_mutation(
+    tmp_path, newline
+):
+    source = f"页面{newline}标题1"
+    values = _world_with_text(tmp_path / "valid", source)
+    measurement = values["design_plan"].pages[0].compiler_provenance.text_measurement_evidence[
+        "fragment-1"
+    ]
+    expected_span = (2, 4) if newline == "\r\n" else (2, 3)
+    assert measurement.exact_text_sha256 == sha256_text_v4(source)
+    assert measurement.explicit_newline_count == 1
+    assert measurement.explicit_break_spans == (expected_span,)
+
+    assert evaluate_v4_render(**values).passed is True
+
+    dropped = _world_with_text(tmp_path / "dropped", source)
+    _mutate_first_text(
+        dropped,
+        actual_text=source.replace(newline, ""),
+        expected_text_sha256=sha256_text_v4(source),
+    )
+    dropped_result = evaluate_v4_render(**dropped)
+    assert dropped_result.passed is False
+    assert any(issue.code == "RENDER_DOM_TEXT" for issue in dropped_result.issues)
+
+    changed = _world_with_text(tmp_path / "changed", source)
+    _mutate_first_text(
+        changed,
+        actual_text=f"页面{newline}标X1",
+        expected_text_sha256=sha256_text_v4(source),
+    )
+    changed_result = evaluate_v4_render(**changed)
+    assert changed_result.passed is False
+    assert any(issue.code == "RENDER_DOM_TEXT" for issue in changed_result.issues)
+
+
+def test_q3_public_accepts_only_compiler_inserted_layout_breaks(tmp_path):
+    source = "页面标题" * 8
+    values = _world_with_text(tmp_path / "wrapped", source, render_wrapped=True)
+
+    assert evaluate_v4_render(**values).passed is True
+
+    unwrapped = _world_with_text(tmp_path / "unwrapped", source)
+    result = evaluate_v4_render(**unwrapped)
+    assert result.passed is False
+    assert any(issue.code == "RENDER_DOM_TEXT" for issue in result.issues)
+
+
 def _glyph_with_missing_witness(glyph: RenderGlyphEvidenceV4):
     coverage = tuple(
         item.model_copy(update={"visible": False})
+        for item in glyph.coverage
+    )
+    missing = sum(1 for item in coverage if not item.is_whitespace)
+    return _rehash_model(
+        glyph,
+        visible=False,
+        missing_codepoint_count=missing,
+        coverage=coverage,
+    )
+
+
+def _glyph_with_face_unloaded(glyph: RenderGlyphEvidenceV4):
+    coverage = tuple(
+        item.model_copy(update={"visible": False, "face_loaded": False})
+        for item in glyph.coverage
+    )
+    missing = sum(1 for item in coverage if not item.is_whitespace)
+    return _rehash_model(
+        glyph,
+        visible=False,
+        missing_codepoint_count=missing,
+        coverage=coverage,
+    )
+
+
+def _glyph_with_font_check_failure(glyph: RenderGlyphEvidenceV4):
+    coverage = tuple(
+        item.model_copy(update={"visible": False, "font_check": False})
+        for item in glyph.coverage
+    )
+    missing = sum(1 for item in coverage if not item.is_whitespace)
+    return _rehash_model(
+        glyph,
+        visible=False,
+        missing_codepoint_count=missing,
+        coverage=coverage,
+    )
+
+
+def _glyph_with_tofu_collision(glyph: RenderGlyphEvidenceV4):
+    coverage = tuple(
+        item.model_copy(
+            update={
+                "visible": False,
+                # A tofu raster identical to the primary witness is
+                # ambiguous evidence even when the geometry remains intact.
+                "tofu_raster_signature": item.raster_signature,
+            }
+        )
         for item in glyph.coverage
     )
     missing = sum(1 for item in coverage if not item.is_whitespace)
@@ -414,6 +816,24 @@ def _glyph_with_ambiguous_fallback_or_tofu(glyph: RenderGlyphEvidenceV4):
         (
             lambda element: {
                 "glyph": _glyph_with_missing_witness(element.glyph),
+            },
+            "RENDER_GLYPH",
+        ),
+        (
+            lambda element: {
+                "glyph": _glyph_with_face_unloaded(element.glyph),
+            },
+            "RENDER_GLYPH",
+        ),
+        (
+            lambda element: {
+                "glyph": _glyph_with_font_check_failure(element.glyph),
+            },
+            "RENDER_GLYPH",
+        ),
+        (
+            lambda element: {
+                "glyph": _glyph_with_tofu_collision(element.glyph),
             },
             "RENDER_GLYPH",
         ),
@@ -630,6 +1050,308 @@ def test_q3_rejects_line_box_beyond_font_metric_leading(tmp_path):
 
     assert result.passed is False
     assert any(issue.code == "RENDER_OVERFLOW" for issue in result.issues)
+
+
+def _asset_evaluator_world(tmp_path: Path):
+    """Build a complete image-bearing comparison world at the public seam."""
+
+    from src.nodes.v4.composition import build_layout_program
+    from src.nodes.v4.design_qa import aggregate_design_qa
+    from src.nodes.v4.layout import aggregate_layout_plan
+    from src.rendering.scene.renderer import RenderedPageDraft
+    from src.schemas.content_lock import ContentLock
+    from src.schemas.v4.direction import (
+        AssetDirectiveV4,
+        PageBriefSetV4,
+        PageBriefV4,
+        VisualDirectionPlanV4,
+    )
+    from src.visual_design.v4.compiler import LayoutCompilerInputsV4, compile_layout
+    from src.visual_design.v4.semantic_qa import evaluate_semantic_model
+    from src.visual_design.v4.tokens import get_family_tokens
+    from tests.integration.test_v4_three_grammar_render import _rebuild_upstream
+    from tests.nodes.v4.test_design_qa import _fixture
+    from tests.rendering.scene.test_v4_adapter import _render_stub
+
+    atoms, semantic, original_page_set, original_direction, _, base_plan = _rebuild_upstream(
+        "comparison_grid"
+    )
+    fixture = _fixture()
+    identity = ArtifactIdentity(
+        base_plan.run_id,
+        base_plan.candidate_id,
+        f"revision-{base_plan.revision}",
+    )
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+
+    page_models: list[PageBriefV4] = []
+    manifest_items: list[AssetManifestItem] = []
+    for sequence, brief in enumerate(original_page_set.pages, start=1):
+        directive = AssetDirectiveV4(
+            directive_id=f"q3-asset-directive-{sequence}",
+            page_id=brief.page_id,
+            role="object",
+            purpose="supporting",
+            supports_fragment_refs=(brief.fragment_refs[0],),
+            required=True,
+            preferred_source="search",
+            query_or_prompt="text-free comparison support object",
+            orientation="portrait",
+        )
+        page_payload = brief.model_dump(mode="python")
+        page_payload["asset_directives"] = (directive,)
+        page_payload.pop("canonical_sha256", None)
+        page_models.append(
+            PageBriefV4(
+                **page_payload,
+                canonical_sha256=canonical_sha256_v4(page_payload),
+            )
+        )
+        raw = _png_bytes(1200, 1600, (255, 0, 0, 255))
+        source = paths.asset_root / f"q3-asset-{sequence}.png"
+        source.write_bytes(raw)
+        manifest_items.append(
+            AssetManifestItem(
+                asset_id=f"q3-asset-{sequence}",
+                directive_id=directive.directive_id,
+                page_id=brief.page_id,
+                source_kind="search",
+                provider="fixture-provider",
+                license="fixture-license",
+                local_path=str(source),
+                width=1200,
+                height=1600,
+                sha256=hashlib.sha256(raw).hexdigest(),
+                subject_focal_point=(0.5, 0.5),
+                crop_guidance="center",
+                security_status="approved",
+                human_decision="pending",
+                run_id=base_plan.run_id,
+                transaction_id=f"revision-{base_plan.revision}",
+                internal_provenance={"fixture": "q3-public-asset"},
+            )
+        )
+
+    page_set_payload = original_page_set.model_dump(mode="python")
+    page_set_payload["pages"] = tuple(page_models)
+    page_set_payload.pop("canonical_sha256", None)
+    page_set = PageBriefSetV4(
+        **page_set_payload,
+        canonical_sha256=canonical_sha256_v4(page_set_payload),
+    )
+    direction_payload = original_direction.model_dump(mode="python")
+    direction_payload["page_brief_set"] = page_set
+    direction_payload["page_brief_set_sha256"] = page_set.canonical_sha256
+    direction_payload.pop("canonical_sha256", None)
+    direction = VisualDirectionPlanV4(
+        **direction_payload,
+        canonical_sha256=canonical_sha256_v4(direction_payload),
+    )
+    asset_manifest = AssetManifest(items=tuple(manifest_items))
+    compiled_pages = []
+    for brief in page_set.pages:
+        program = build_layout_program(
+            brief,
+            grammar_id="comparison_grid",
+            family=direction.template_family,
+            narrative=direction.narrative,
+        )
+        compiled_pages.append(
+            compile_layout(
+                program,
+                LayoutCompilerInputsV4(
+                    page_brief=brief,
+                    semantic_content_model=semantic,
+                    content_atom_set=atoms,
+                    asset_manifest=asset_manifest,
+                    candidate_id=base_plan.candidate_id,
+                    revision=base_plan.revision,
+                    run_id=base_plan.run_id,
+                    visual_direction_plan=direction,
+                ),
+            )
+        )
+    plan = aggregate_layout_plan(
+        compiled_pages,
+        content_atom_set=atoms,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        asset_manifest=asset_manifest,
+        family_tokens=get_family_tokens(direction.template_family),
+        revision=base_plan.revision,
+        candidate_id=base_plan.candidate_id,
+        run_id=base_plan.run_id,
+        visual_direction_plan=direction,
+    )
+
+    lock_payload = fixture["lock"].model_dump(mode="python")
+    lock_payload["content_atom_set_sha256"] = atoms.canonical_sha256
+    lock_payload.pop("canonical_sha256", None)
+    lock = ContentLock(
+        **lock_payload,
+        canonical_sha256=canonical_sha256_v4(lock_payload),
+    )
+    q0 = evaluate_semantic_model(atoms, semantic, content_lock=lock)
+    q1_payload = fixture["q1"].model_dump(mode="python")
+    q1_payload.update(
+        {
+            "content_atom_set_sha256": atoms.canonical_sha256,
+            "content_lock_sha256": lock.canonical_sha256,
+            "semantic_content_model_sha256": semantic.canonical_sha256,
+            "narrative_sha256": direction.narrative_sha256,
+            "page_brief_set_sha256": page_set.canonical_sha256,
+            "visual_direction_plan_sha256": direction.canonical_sha256,
+        }
+    )
+    q1_payload.pop("canonical_sha256", None)
+    q1 = type(fixture["q1"])(
+        **q1_payload,
+        canonical_sha256=canonical_sha256_v4(q1_payload),
+    )
+    qa = aggregate_design_qa(
+        semantic_qa=q0,
+        authoring_qa=q1,
+        carousel_design_plan=plan,
+        content_atom_set=atoms,
+        content_lock=lock,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        visual_direction_plan=direction,
+        asset_manifest=asset_manifest,
+    )
+
+    family = get_family_tokens(direction.template_family)
+    base_render = _render_stub(plan, semantic)
+
+    def render(compiled_page):
+        draft = base_render(compiled_page)
+        text_by_id = {
+            raw["element_id"]: dict(raw)
+            for raw in draft.raw_probes
+            if raw.get("element_id")
+        }
+        page = next(item for item in plan.pages if item.page_id == compiled_page.page_id)
+        probes = []
+        for element in sorted(page.scene.elements, key=lambda item: item.layer):
+            if element.kind == "text":
+                raw = text_by_id[element.element_id]
+                raw["font_family"] = getattr(
+                    family.font_roles,
+                    element.style.font_role,
+                )
+            else:
+                raw = {
+                    "element_id": element.element_id,
+                    "content_ref": None,
+                    "asset_ref": element.asset_ref,
+                    "x": element.box.x,
+                    "y": element.box.y,
+                    "width": element.box.width,
+                    "height": element.box.height,
+                    "scroll_width": element.box.width,
+                    "scroll_height": element.box.height,
+                    "client_width": element.box.width,
+                    "client_height": element.box.height,
+                    "line_boxes": [],
+                    "asset_loaded": True,
+                    "natural_width": 1200.0,
+                    "natural_height": 1600.0,
+                    "rendered_image_width": element.box.width,
+                    "rendered_image_height": element.box.height,
+                }
+            probes.append(raw)
+        return RenderedPageDraft(
+            page_id=draft.page_id,
+            png_bytes=draft.png_bytes,
+            raw_probes=probes,
+        )
+
+    rendered = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=atoms,
+        content_lock=lock,
+        semantic_content_model=semantic,
+        page_brief_set=page_set,
+        visual_direction_plan=direction,
+        asset_manifest=asset_manifest,
+        family_tokens=direction.template_family,
+        artifact_paths=paths,
+        render_page_fn=render,
+    )
+    return {
+        "render_manifest": rendered.manifest,
+        "design_plan": plan,
+        "design_plan_qa_result": qa,
+        "content_atom_set": atoms,
+        "content_lock": lock,
+        "semantic_content_model": semantic,
+        "page_brief_set": page_set,
+        "visual_direction_plan": direction,
+        "asset_manifest": asset_manifest,
+        "family_tokens": direction.template_family,
+        "artifact_paths": paths,
+    }
+
+
+def _mutate_first_image_asset(values, **updates):
+    manifest = values["render_manifest"]
+    page = manifest.pages[0]
+    index = next(index for index, item in enumerate(page.elements) if item.kind == "image")
+    element = page.elements[index]
+    mutated = _rebuild_element(
+        element,
+        asset=_rehash_model(element.asset, **updates),
+    )
+    elements = list(page.elements)
+    elements[index] = mutated
+    mutated_page = _rebuild_page(page, elements=tuple(elements))
+    pages = list(manifest.pages)
+    pages[0] = mutated_page
+    _persist_manifest(values, _rebuild_manifest(manifest, pages=tuple(pages)))
+
+
+def test_q3_public_evaluator_accepts_a_valid_asset_world(tmp_path):
+    values = _asset_evaluator_world(tmp_path)
+
+    result = evaluate_v4_render(**values)
+
+    assert result.passed is True
+    assert result.issues == ()
+
+
+@pytest.mark.parametrize(
+    ("mutation", "expected_code"),
+    (
+        (lambda: {"asset_sha256": "0" * 64}, "RENDER_ASSET"),
+        (
+            lambda: {"asset_ref": "v4-asset-" + "1" * 64},
+            "RENDER_ASSET",
+        ),
+        (lambda: {"loaded": False}, "RENDER_ASSET"),
+        (lambda: {"crop_factor": 1.0}, "RENDER_CROP"),
+        (lambda: {"orientation": "landscape"}, "RENDER_CROP"),
+    ),
+)
+def test_q3_public_evaluator_rejects_asset_binding_mutations(
+    tmp_path, mutation, expected_code
+):
+    values = _asset_evaluator_world(tmp_path)
+    _mutate_first_image_asset(values, **mutation())
+
+    result = evaluate_v4_render(**values)
+
+    assert result.passed is False
+    assert any(issue.code == expected_code for issue in result.issues)
+
+
+def test_q3_public_evaluator_rejects_substituted_asset_bytes(tmp_path):
+    values = _asset_evaluator_world(tmp_path)
+    item = values["asset_manifest"].items[0]
+    Path(item.local_path).write_bytes(_png_bytes(1200, 1600, (0, 0, 255, 255)))
+
+    with pytest.raises(V4RenderQAInvariantError):
+        evaluate_v4_render(**values)
 
 
 def _asset_world(tmp_path: Path):

@@ -273,3 +273,71 @@ pytest -q
 The three-Grammar module itself passed all six collected tests in this local
 run; only the generic legacy smoke and strict v4 probe hit Chromium's
 `MachPortRendezvousServer ... Permission denied (1100)` launch restriction.
+
+## Fix Round 2 — public Q3 attack coverage
+
+Base for this round: `b9b997b`. The independent review found that the newline,
+glyph-witness and asset regressions did not all exercise the public
+`evaluate_v4_render` boundary. No production code was widened in this round.
+
+### TDD RED
+
+The new public-boundary tests were first run before their real fixture builders
+were added:
+
+```text
+pytest -q tests/visual_design/v4/test_v4_render_qa.py \
+  -k 'public_preserves_explicit or public_accepts_only_compiler_inserted'
+4 failed - NameError: name '_world_with_text' is not defined
+
+pytest -q tests/visual_design/v4/test_v4_render_qa.py \
+  -k 'public_evaluator_accepts_a_valid_asset_world or public_evaluator_rejects_asset_binding_mutations or public_evaluator_rejects_substituted_asset_bytes'
+7 failed - NameError: name '_asset_evaluator_world' is not defined
+```
+
+### Corrections and GREEN
+
+The test-only builders now rebuild source atoms, semantic fragments, direction,
+page briefs, compiler measurements, Q0-Q2 and immutable render evidence before
+calling the public evaluator. Explicit LF, CRLF and CR source cases assert the
+source hash and exact newline span, accept Chromium's LF normalization, reject
+dropped/changed copy, and reject an unwrapped source when the compiler recorded
+inserted layout breaks. Independent public-Q3 mutations now cover
+`face_loaded=False`, `font_check=False` and a tofu-raster collision, each with
+rehashed valid evidence and `RENDER_GLYPH` classification. A complete
+image-bearing comparison world uses real `ImageElement`, approved manifest
+bytes, compiler asset bindings and adapter publication; public evaluation
+accepts the baseline and rejects asset ref/hash/load/crop/orientation changes,
+as well as substituted source bytes fail-closed.
+
+```text
+pytest -q tests/visual_design/v4/test_v4_render_qa.py \
+  -k 'public_preserves_explicit or public_accepts_only_compiler_inserted'
+4 passed, 36 deselected in 19.11s
+
+pytest -q tests/visual_design/v4/test_v4_render_qa.py \
+  -k 'font_face_metric_and_glyph_witness'
+10 passed, 33 deselected in 12.96s
+
+pytest -q tests/visual_design/v4/test_v4_render_qa.py \
+  -k 'public_evaluator_accepts_a_valid_asset_world or public_evaluator_rejects_asset_binding_mutations or public_evaluator_rejects_substituted_asset_bytes'
+7 passed, 43 deselected in 14.46s
+
+pytest -q tests/visual_design/v4/test_v4_render_qa.py
+50 passed in 66.55s
+
+pytest -q tests/rendering/scene/test_v4_adapter.py tests/visual_design/v4/test_compiler.py tests/nodes/v4/test_assets.py
+110 passed in 15.70s
+
+python -m compileall -q tests/visual_design/v4/test_v4_render_qa.py
+git diff --check
+passed
+```
+
+### Round 2 concerns
+
+The added coverage is offline and uses deterministic fixture bytes; it does
+not replace the required real-Chromium controller rerun. The earlier external
+three-Grammar, v3 smoke, strict-probe and filtered-suite evidence remains the
+authoritative live-browser evidence, while this round leaves the production
+evaluator and Task13A adapter unchanged.
