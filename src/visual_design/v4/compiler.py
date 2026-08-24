@@ -514,8 +514,19 @@ class CompilerContextV4:
             ref=ref,
         )
         weight = measurement.font_nominal_weight
+        fragment = self.fragments.get(ref)
+        if fragment is None:
+            raise LayoutCompilationError(
+                "CONTENT_OVERFLOW",
+                page_id=self.page_id,
+                region_id=region_id,
+                ref=ref,
+                evidence="text fragment is not available for measurement binding",
+            )
         self.text_measurement_evidence[ref] = TextMeasurementEvidenceV4(
             fragment_ref=ref,
+            source_atom_id=fragment.source_atom_id,
+            exact_text_sha256=measurement.exact_text_sha256,
             font_role=role,
             font_sha256=measurement.font_sha256,
             font_nominal_weight=measurement.font_nominal_weight,
@@ -531,6 +542,7 @@ class CompilerContextV4:
             ink_height_px=measurement.ink_height_px,
             line_widths_px=measurement.line_widths_px,
             line_codepoint_counts=measurement.line_codepoint_counts,
+            line_grapheme_counts=measurement.line_grapheme_counts,
             break_offsets=measurement.break_offsets,
             offset_unit=measurement.offset_unit,
             explicit_break_spans=measurement.explicit_break_spans,

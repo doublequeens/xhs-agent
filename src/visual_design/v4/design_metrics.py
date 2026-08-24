@@ -14,7 +14,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, StrictFloat, StrictInt, StrictStr, field_validator, model_validator
 
 from src.schemas.scene_graph import ImageElement, LineElement, TextElement
-from src.schemas.v4.content import canonical_sha256_v4
+from src.schemas.v4.content import canonical_sha256_v4, sha256_text_v4
 from src.schemas.v4.direction import (
     NarrativeTaskKindV4,
     PageBriefSetV4,
@@ -31,12 +31,20 @@ from src.schemas.v4.quality import (
     DesignMetricEvidenceV4,
     DesignMetricsQAResultV4,
     DesignQualityIssueV4,
+    LINE_LENGTH_METRIC_UNIT_V4,
+    LINE_LENGTH_METRIC_VERSION_V4,
+    QUALITY_METRIC_UNIT_V4,
+    QUALITY_METRIC_VERSION_V4,
     QUALITY_ISSUE_CODE_BY_METRIC_V4,
     QUALITY_METRIC_KINDS_V4,
     QUALITY_POLICY_VERSION_V4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4
 from src.visual_design.v4.tokens import get_family_tokens
+from src.visual_design.v4.typography import (
+    SourceLineMetricsV4,
+    reconstruct_source_lines_v4,
+)
 
 
 CANVAS_WIDTH_V4 = 1080.0
@@ -73,6 +81,8 @@ class QualityPolicyV4(BaseModel):
     visual_center_offset_max: StrictFloat
     emphasis_count_max: StrictFloat
     line_length_max: StrictFloat
+    line_length_metric_unit: StrictStr = LINE_LENGTH_METRIC_UNIT_V4
+    line_length_metric_version: StrictStr = LINE_LENGTH_METRIC_VERSION_V4
     orphan_line_max: StrictFloat
     orphan_heading_max: StrictFloat
     image_text_area_ratio_max: StrictFloat
@@ -129,6 +139,10 @@ class QualityPolicyV4(BaseModel):
             raise ValueError("quality policy regional density threshold must be below one")
         if self.line_length_max >= 920.0:
             raise ValueError("quality policy line length threshold must be below legal width")
+        if self.line_length_metric_unit != LINE_LENGTH_METRIC_UNIT_V4:
+            raise ValueError("quality policy line length metric unit is not canonical")
+        if self.line_length_metric_version != LINE_LENGTH_METRIC_VERSION_V4:
+            raise ValueError("quality policy line length metric version is not canonical")
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         if self.canonical_sha256 != canonical_sha256_v4(payload):
             raise ValueError("quality policy canonical sha256 does not match payload")
@@ -228,6 +242,8 @@ def _policy_payload(grammar_id: str, page_role: str, narrative_role: str) -> dic
         "safe_margin_px": SAFE_MARGIN_V4,
         "minimum_font_px": 24.0,
         "contrast_min": 4.5,
+        "line_length_metric_unit": LINE_LENGTH_METRIC_UNIT_V4,
+        "line_length_metric_version": LINE_LENGTH_METRIC_VERSION_V4,
         **values,
     }
 
@@ -409,6 +425,16 @@ def _metric(
         "threshold": threshold,
         "comparator": comparator,
         "passed": passed,
+        "metric_unit": (
+            LINE_LENGTH_METRIC_UNIT_V4
+            if metric == "line_length"
+            else QUALITY_METRIC_UNIT_V4
+        ),
+        "metric_version": (
+            LINE_LENGTH_METRIC_VERSION_V4
+            if metric == "line_length"
+            else QUALITY_METRIC_VERSION_V4
+        ),
         "policy_sha256": policy.canonical_sha256,
         "region_id": region_id,
         "element_id": element_id,
@@ -418,6 +444,62 @@ def _metric(
         **payload,
         canonical_sha256=canonical_sha256_v4(payload),
     )
+
+
+def _source_line_metrics_by_ref(
+    page: CompiledPageV4,
+    semantic_content_model: SemanticContentModelV4,
+) -> dict[str, SourceLineMetricsV4]:
+    """Validate every compiled text evidence against exact semantic source."""
+
+    if (
+        page.compiler_provenance.semantic_content_model_sha256
+        != semantic_content_model.canonical_sha256
+    ):
+        raise DesignMetricsInvariantError(
+            "compiled page semantic source binding is stale"
+        )
+    fragments = {fragment.fragment_id: fragment for fragment in semantic_content_model.fragments}
+    if len(fragments) != len(semantic_content_model.fragments):
+        raise DesignMetricsInvariantError("semantic fragment identity is not unique")
+    result: dict[str, SourceLineMetricsV4] = {}
+    for element in page.scene.elements:
+        if not isinstance(element, TextElement):
+            continue
+        fragment = fragments.get(element.content_ref)
+        evidence = page.compiler_provenance.text_measurement_evidence.get(element.content_ref)
+        if fragment is None or evidence is None:
+            raise DesignMetricsInvariantError(
+                "compiled page text is not bound to an exact semantic fragment"
+            )
+        if evidence.fragment_ref != fragment.fragment_id:
+            raise DesignMetricsInvariantError("text measurement fragment binding is stale")
+        if evidence.source_atom_id != fragment.source_atom_id:
+            raise DesignMetricsInvariantError("text measurement source binding is stale")
+        if evidence.exact_text_sha256 != sha256_text_v4(fragment.exact_text):
+            raise DesignMetricsInvariantError(
+                "text measurement exact source hash is stale"
+            )
+        try:
+            source_metrics = reconstruct_source_lines_v4(
+                fragment.exact_text,
+                explicit_break_spans=evidence.explicit_break_spans,
+                inserted_break_offsets=evidence.inserted_break_offsets,
+            )
+        except (TypeError, ValueError):
+            raise DesignMetricsInvariantError(
+                "text measurement source line structure is invalid"
+            ) from None
+        if (
+            len(source_metrics.lines) != evidence.line_count
+            or source_metrics.codepoint_counts != evidence.line_codepoint_counts
+            or source_metrics.grapheme_counts != evidence.line_grapheme_counts
+        ):
+            raise DesignMetricsInvariantError(
+                "text measurement line counts do not match semantic source"
+            )
+        result[element.content_ref] = source_metrics
+    return result
 
 
 _ISSUE_TARGET = {
@@ -488,10 +570,12 @@ def _region_for_element(page: CompiledPageV4, element_id: str) -> str:
 def _make_metric_set(
     page: CompiledPageV4,
     policy: QualityPolicyV4,
+    semantic_content_model: SemanticContentModelV4,
 ) -> tuple[DesignMetricEvidenceV4, ...]:
     elements = tuple(page.scene.elements)
     boxes = tuple(_box(element) for element in elements)
     region_boxes = _region_boxes(page)
+    source_line_metrics = _source_line_metrics_by_ref(page, semantic_content_model)
 
     # Every metric evidence location is derived from a canonical scene
     # element/region/ref.  Global page metrics still point at the worst
@@ -766,27 +850,32 @@ def _make_metric_set(
         text_elements,
         key=lambda element: (len(element.style.emphasis_ranges), element.element_id),
     )
+    def _line_length_actual(element: TextElement) -> float:
+        evidence = page.compiler_provenance.text_measurement_evidence[element.content_ref]
+        source = source_line_metrics[element.content_ref]
+        source_upper_bound = max(
+            (count * float(element.style.font_size) for count in source.grapheme_counts),
+            default=0.0,
+        )
+        pillow_width = max(evidence.line_widths_px)
+        # Pillow remains useful drift evidence, but source-derived width is a
+        # hard lower bound so forged narrow Pillow values cannot lower Q2.
+        return max(float(pillow_width), float(source_upper_bound))
+
     line_length_element = max(
         text_elements,
-        key=lambda element: (
-            max(page.compiler_provenance.text_measurement_evidence[element.content_ref].line_widths_px),
-            element.element_id,
-        ),
+        key=lambda element: (_line_length_actual(element), element.element_id),
     )
-    line_length = max(
-        page.compiler_provenance.text_measurement_evidence[line_length_element.content_ref].line_widths_px
-    )
+    line_length = _line_length_actual(line_length_element)
     orphan_line = 0
     orphan_heading = 0
     orphan_element = None
     for element in text_elements:
         evidence = page.compiler_provenance.text_measurement_evidence[element.content_ref]
-        # Orphan detection is a semantic line-count rule, not a relative-width
-        # heuristic.  The persisted Pillow code-point counts include wrapped,
-        # final, and explicit-newline lines, so every line participates.
-        if evidence.line_count > 1 and any(
-            count <= 1 for count in evidence.line_codepoint_counts
-        ):
+        # Orphan detection uses only source-derived grapheme counts.  Persisted
+        # Pillow counts were checked against this source immediately above.
+        source = source_line_metrics[element.content_ref]
+        if len(source.lines) > 1 and any(count <= 1 for count in source.grapheme_counts):
             orphan_line += 1
             if element.style.font_role in {"display", "heading"}:
                 orphan_heading += 1
@@ -844,11 +933,17 @@ def evaluate_page_metrics(
     page: CompiledPageV4 | Mapping[str, object],
     *,
     page_brief_set: PageBriefSetV4 | Mapping[str, object],
+    semantic_content_model: SemanticContentModelV4 | Mapping[str, object],
 ) -> DesignMetricsQAResultV4:
     """Evaluate one page without mutating or repairing its scene."""
 
     checked_page = _coerce(CompiledPageV4, page, "compiled page")
     checked_set = _coerce(PageBriefSetV4, page_brief_set, "page brief set")
+    checked_semantic = _coerce(
+        SemanticContentModelV4,
+        semantic_content_model,
+        "semantic content model",
+    )
     checked_brief = next((item for item in checked_set.pages if item.page_id == checked_page.page_id), None)
     if checked_brief is None:
         raise DesignMetricsInvariantError("compiled page is absent from exact page brief set")
@@ -869,7 +964,7 @@ def evaluate_page_metrics(
     if canonical_family.canonical_sha256 != checked_page.compiler_provenance.family_tokens_sha256:
         raise DesignMetricsInvariantError("compiled page family token hash is not canonical")
     policy = get_quality_policy(selected_grammar, typed_page_role, typed_narrative_role)
-    metrics = _make_metric_set(checked_page, policy)
+    metrics = _make_metric_set(checked_page, policy, checked_semantic)
     issues = tuple(_issue(metric) for metric in metrics if not metric.passed)
     provenance = checked_page.compiler_provenance
     payload = {
@@ -905,17 +1000,27 @@ def evaluate_design_plan_metrics(
     plan: CarouselDesignPlanV4 | Mapping[str, object],
     *,
     page_brief_set: PageBriefSetV4 | Mapping[str, object],
+    semantic_content_model: SemanticContentModelV4 | Mapping[str, object],
 ) -> tuple[DesignMetricsQAResultV4, ...]:
     """Recompute Q2 for every page of one exact compiled design plan."""
 
     checked_plan = _coerce(CarouselDesignPlanV4, plan, "carousel design plan")
     checked_set = _coerce(PageBriefSetV4, page_brief_set, "page brief set")
+    checked_semantic = _coerce(
+        SemanticContentModelV4,
+        semantic_content_model,
+        "semantic content model",
+    )
     if tuple(page.page_id for page in checked_plan.pages) != tuple(
         brief.page_id for brief in checked_set.pages
     ):
         raise DesignMetricsInvariantError("design plan and page brief set order does not match")
     return tuple(
-        evaluate_page_metrics(page, page_brief_set=checked_set)
+        evaluate_page_metrics(
+            page,
+            page_brief_set=checked_set,
+            semantic_content_model=checked_semantic,
+        )
         for page in checked_plan.pages
     )
 

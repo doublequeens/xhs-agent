@@ -16,6 +16,7 @@ from src.schemas.v4.quality import (
 )
 from src.schemas.v4.semantic import SemanticContentModelV4, SemanticQAResultV4
 from src.visual_design.v4.design_metrics import (
+    DesignMetricsInvariantError,
     derive_page_role_v4,
     evaluate_design_plan_metrics,
     get_quality_policy,
@@ -24,6 +25,7 @@ from src.visual_design.v4.design_metrics import (
 from src.visual_design.v4.tokens import get_family_tokens
 from src.visual_design.v4.authoring_qa import AuthoringCandidatePreflightV4
 from src.schemas.v4.direction import AuthoringQAResultV4
+from src.visual_design.v4.semantic_qa import evaluate_semantic_model
 
 
 class DesignPlanQAInvariantError(ValueError):
@@ -115,6 +117,19 @@ def aggregate_design_qa(
         raise DesignPlanQAInvariantError("Q0 content lock binding is stale")
     if q0_checked.semantic_content_model_sha256 != semantic_model.canonical_sha256:
         raise DesignPlanQAInvariantError("Q0 semantic model binding is stale")
+    if q0_checked.passed:
+        recomputed_q0 = evaluate_semantic_model(
+            atom_set,
+            semantic_model,
+            content_lock=lock,
+        )
+        if (
+            not recomputed_q0.passed
+            or recomputed_q0.canonical_sha256 != q0_checked.canonical_sha256
+        ):
+            raise DesignPlanQAInvariantError(
+                "Q0 semantic source evidence is stale or structurally invalid"
+            )
     if q1_checked.candidate_sha256 is not None:
         raise DesignPlanQAInvariantError("Q1 candidate preflight cannot become durable QA evidence")
     q1_expected = {
@@ -163,7 +178,16 @@ def aggregate_design_qa(
 
     # This is the only Q2 source.  In particular, no caller-controlled metric,
     # threshold, policy, location or passed bit can survive into the aggregate.
-    checked_metrics = evaluate_design_plan_metrics(plan, page_brief_set=page_set)
+    try:
+        checked_metrics = evaluate_design_plan_metrics(
+            plan,
+            page_brief_set=page_set,
+            semantic_content_model=semantic_model,
+        )
+    except DesignMetricsInvariantError:
+        raise DesignPlanQAInvariantError(
+            "Q2 source-bound metric evidence is stale or structurally invalid"
+        ) from None
     if len(checked_metrics) != len(plan.pages):
         raise DesignPlanQAInvariantError("Q2 evaluator did not cover every compiled page exactly once")
     for metric, plan_page in zip(checked_metrics, plan.pages):

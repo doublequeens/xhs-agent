@@ -8,6 +8,10 @@ from src.schemas.v4.quality import (
     DesignQualityIssueV4,
     DesignPlanQAResultV4,
     QUALITY_METRIC_KINDS_V4,
+    LINE_LENGTH_METRIC_UNIT_V4,
+    LINE_LENGTH_METRIC_VERSION_V4,
+    QUALITY_METRIC_UNIT_V4,
+    QUALITY_METRIC_VERSION_V4,
 )
 from src.schemas.v4.content import canonical_sha256_v4
 
@@ -29,6 +33,16 @@ def test_every_metric_evidence_derives_a_passing_and_failing_boundary(metric: st
             "threshold": threshold,
             "comparator": "gte",
             "passed": passed,
+            "metric_unit": (
+                LINE_LENGTH_METRIC_UNIT_V4
+                if metric == "line_length"
+                else QUALITY_METRIC_UNIT_V4
+            ),
+            "metric_version": (
+                LINE_LENGTH_METRIC_VERSION_V4
+                if metric == "line_length"
+                else QUALITY_METRIC_VERSION_V4
+            ),
             "policy_sha256": "1" * 64,
             "region_id": None,
             "element_id": None,

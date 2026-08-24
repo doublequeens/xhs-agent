@@ -19,6 +19,7 @@ from typing import Final
 import regex
 from PIL import ImageFont
 
+from src.schemas.v4.content import sha256_text_v4
 from src.schemas.v4.layout import canonical_text_measurement_sha256_v4
 from src.visual_design.v4.tokens import get_family_tokens
 
@@ -80,9 +81,11 @@ class TextMeasurementV4:
     """
 
     text: str
+    exact_text_sha256: str
     lines: tuple[str, ...]
     line_widths_px: tuple[float, ...]
     line_codepoint_counts: tuple[int, ...]
+    line_grapheme_counts: tuple[int, ...]
     width_px: float
     height_px: float
     line_count: int
@@ -131,6 +134,85 @@ class TextMeasurementV4:
     @property
     def wrap_policy(self) -> str:
         return TEXT_WRAP_POLICY_V4
+
+
+@dataclass(frozen=True)
+class SourceLineMetricsV4:
+    """Source-derived line facts shared by the producer and Q2 consumer."""
+
+    lines: tuple[str, ...]
+    codepoint_counts: tuple[int, ...]
+    grapheme_counts: tuple[int, ...]
+
+
+def reconstruct_source_lines_v4(
+    exact_text: str,
+    *,
+    explicit_break_spans: tuple[tuple[int, int], ...],
+    inserted_break_offsets: tuple[int, ...],
+) -> SourceLineMetricsV4:
+    """Rebuild deterministic lines from exact source text and persisted breaks.
+
+    This function is intentionally pure.  It does not resolve fonts, inspect
+    the filesystem, or expose the source text in any returned error.  Offsets
+    are Unicode-codepoint offsets and every inserted break must fall inside an
+    explicit-newline segment at a grapheme boundary.
+    """
+
+    if not isinstance(exact_text, str):
+        raise TypeError("exact text must be a string")
+    if any(
+        type(start) is not int or type(end) is not int
+        for start, end in explicit_break_spans
+    ) or any(type(offset) is not int for offset in inserted_break_offsets):
+        raise ValueError("source break offsets must be integer codepoint offsets")
+    spans = tuple((start, end) for start, end in explicit_break_spans)
+    offsets = tuple(inserted_break_offsets)
+    actual_spans = tuple(
+        (match.start(), match.end())
+        for match in regex.finditer(r"\r\n|\n|\r", exact_text)
+    )
+    if spans != actual_spans:
+        raise ValueError("explicit newline spans do not match source")
+    if offsets != tuple(sorted(offsets)) or len(set(offsets)) != len(offsets):
+        raise ValueError("inserted break offsets must be strictly ordered")
+    if any(offset <= 0 or offset >= len(exact_text) for offset in offsets):
+        raise ValueError("inserted break offset is outside a source segment")
+    if any(
+        start <= offset < end
+        for start, end in spans
+        for offset in offsets
+    ):
+        raise ValueError("inserted break offset conflicts with an explicit newline")
+
+    grapheme_boundaries = {0, len(exact_text)}
+    grapheme_boundaries.update(
+        match.end() for match in regex.finditer(r"\X", exact_text)
+    )
+    if any(offset not in grapheme_boundaries for offset in offsets):
+        raise ValueError("inserted break offset is not a grapheme boundary")
+
+    lines: list[str] = []
+    cursor = 0
+    for newline_start, newline_end in (*spans, (len(exact_text), len(exact_text))):
+        segment_offsets = tuple(
+            offset for offset in offsets if cursor < offset < newline_start
+        )
+        line_start = cursor
+        for offset in segment_offsets:
+            lines.append(exact_text[line_start:offset])
+            line_start = offset
+        lines.append(exact_text[line_start:newline_start])
+        cursor = newline_end
+
+    line_tuple = tuple(lines)
+    return SourceLineMetricsV4(
+        lines=line_tuple,
+        codepoint_counts=tuple(len(line) for line in line_tuple),
+        grapheme_counts=tuple(
+            len(regex.findall(r"\X", line)) for line in line_tuple
+        ),
+    )
 
 
 def _finite_positive(value: object, field_name: str) -> float:
@@ -336,7 +418,15 @@ def measure_text_v4(
             inserted_break_offsets.append(cursor)
 
     line_count = len(lines)
-    line_codepoint_counts = tuple(len(line) for line in lines)
+    source_lines = reconstruct_source_lines_v4(
+        text,
+        explicit_break_spans=tuple(explicit_break_spans),
+        inserted_break_offsets=tuple(inserted_break_offsets),
+    )
+    if source_lines.lines != tuple(lines):
+        raise ValueError("font wrapping does not match source line contract")
+    line_codepoint_counts = source_lines.codepoint_counts
+    line_grapheme_counts = source_lines.grapheme_counts
     try:
         ascent, descent = font.getmetrics()
     except (AttributeError, OSError, ValueError):
@@ -430,6 +520,7 @@ def measure_text_v4(
         "ink_width_px": ink_width,
         "inserted_break_offsets": tuple(inserted_break_offsets),
         "line_codepoint_counts": line_codepoint_counts,
+        "line_grapheme_counts": line_grapheme_counts,
         "line_count": line_count,
         "line_height": line_height_value,
         "line_widths_px": tuple(widths),
@@ -443,13 +534,16 @@ def measure_text_v4(
         "painted_top_px": ink_top,
         "width_px": ink_width,
         "wrap_policy": TEXT_WRAP_POLICY_V4,
+        "exact_text_sha256": sha256_text_v4(text),
     }
     measurement_sha256 = canonical_text_measurement_sha256_v4(measurement_payload)
     return TextMeasurementV4(
         text=text,
+        exact_text_sha256=sha256_text_v4(text),
         lines=tuple(lines),
         line_widths_px=tuple(widths),
         line_codepoint_counts=line_codepoint_counts,
+        line_grapheme_counts=line_grapheme_counts,
         width_px=ink_width,
         height_px=measured_height,
         line_count=line_count,
@@ -505,12 +599,14 @@ __all__ = [
     "REPOSITORY_ROOT",
     "ResolvedFontV4",
     "ResolvedFont",
+    "SourceLineMetricsV4",
     "TextMeasurementV4",
     "TEXT_WRAP_POLICY_V4",
     "TypographyMeasurement",
     "TypographyMeasurementV4",
     "measure_text",
     "measure_text_v4",
+    "reconstruct_source_lines_v4",
     "resolve_font_file",
     "resolve_font_file_v4",
     "resolve_font_path_v4",

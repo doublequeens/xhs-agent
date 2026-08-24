@@ -5,10 +5,12 @@ from pathlib import Path
 
 import pytest
 
+from src.schemas.v4.content import sha256_text_v4
 from src.visual_design.v4.typography import (
     CANONICAL_FONT_FILES_V4,
     resolve_font_file_v4,
     measure_text_v4,
+    reconstruct_source_lines_v4,
 )
 
 
@@ -36,6 +38,8 @@ def test_measurement_preserves_unicode_and_grapheme_boundaries() -> None:
     assert first.lines == second.lines
     assert first.width_px == second.width_px
     assert first.height_px == second.height_px
+    assert first.exact_text_sha256 == sha256_text_v4(text)
+    assert len(first.line_grapheme_counts) == first.line_count
     assert any("👩‍🔬" in line for line in first.lines)
     assert all("👩" not in line.replace("👩‍🔬", "") for line in first.lines)
     assert first.explicit_newline_count == 1
@@ -117,6 +121,28 @@ def test_measurement_records_codepoint_newline_spans_separately_from_inserted_br
     assert wrapped.explicit_break_spans == ()
     assert wrapped.inserted_break_offsets
     assert wrapped.text == "ABCD"
+
+
+def test_source_line_reconstruction_is_exact_and_grapheme_derived() -> None:
+    text = "A\r\nB👩‍🔬C"
+    lines = reconstruct_source_lines_v4(
+        text,
+        explicit_break_spans=((1, 3),),
+        inserted_break_offsets=(7,),
+    )
+
+    assert lines.lines == ("A", "B👩‍🔬", "C")
+    assert lines.codepoint_counts == (1, 4, 1)
+    assert lines.grapheme_counts == (1, 2, 1)
+
+
+def test_source_line_reconstruction_rejects_non_source_breaks() -> None:
+    with pytest.raises(ValueError, match="newline|grapheme|segment"):
+        reconstruct_source_lines_v4(
+            "A\r\nB👩‍🔬C",
+            explicit_break_spans=((1, 2),),
+            inserted_break_offsets=(5,),
+        )
 
 
 def test_measurement_records_ink_bearings_and_font_metrics() -> None:

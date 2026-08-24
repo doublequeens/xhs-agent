@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 import pytest
 
+from tests.visual_design.v4.test_compiler import _rehash_page, _rehash_provenance
 from tests.nodes.v4.test_layout import _direction_upstream
 from src.nodes.v4.layout import aggregate_layout_plan
 from src.schemas.assets import AssetManifest
@@ -11,6 +12,7 @@ from src.schemas.content_lock import ContentLock
 from src.nodes.v4.design_qa import aggregate_design_qa, design_qa_node
 from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.direction import AuthoringQAResultV4, AuthoringIssueV4
+from src.schemas.v4.layout import CarouselDesignPlanV4, canonical_text_measurement_sha256_v4
 from src.schemas.v4.quality import (
     DesignMetricEvidenceV4,
     DesignMetricsQAResultV4,
@@ -113,6 +115,7 @@ def test_failed_metric_cannot_be_durable_without_exact_issue() -> None:
     metric = evaluate_design_plan_metrics(
         fixture["plan"],
         page_brief_set=fixture["page_set"],
+        semantic_content_model=fixture["semantic_model"],
     )[0]
     evidence = metric.metrics[0]
     evidence_payload = evidence.model_dump(mode="python")
@@ -178,6 +181,55 @@ def test_external_q2_rehash_and_nonexistent_location_cannot_override_current_pla
             **_kwargs(fixture),
             metrics=({"actual": 999999, "region_id": "VisibleCopyLeak"},),
         )
+
+
+def test_aggregate_rejects_self_rehashed_line_counts_against_exact_semantic_source() -> None:
+    fixture = _fixture()
+    plan = fixture["plan"]
+    page = plan.pages[0]
+    ref = next(iter(page.compiler_provenance.text_measurement_evidence))
+    evidence = page.compiler_provenance.text_measurement_evidence[ref]
+    payload = evidence.model_dump(mode="python")
+    for field in (
+        "fragment_ref",
+        "source_atom_id",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+        "measurement_sha256",
+    ):
+        payload.pop(field)
+    forged_counts = tuple(100 for _ in evidence.line_codepoint_counts)
+    forged_widths = tuple(1.0 for _ in evidence.line_widths_px)
+    payload.update(
+        {
+            "line_codepoint_counts": forged_counts,
+            "line_widths_px": forged_widths,
+        }
+    )
+    forged = evidence.model_copy(
+        update={
+            "line_codepoint_counts": forged_counts,
+            "line_widths_px": forged_widths,
+            "measurement_sha256": canonical_text_measurement_sha256_v4(payload),
+        }
+    )
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        text_measurement_evidence={ref: forged},
+    )
+    tampered_page = _rehash_page(page, compiler_provenance=provenance)
+    plan_payload = plan.model_dump(mode="python")
+    plan_payload["pages"] = (tampered_page, *plan.pages[1:])
+    plan_payload.pop("canonical_sha256", None)
+    fixture["plan"] = CarouselDesignPlanV4(
+        **plan_payload,
+        canonical_sha256=canonical_sha256_v4(plan_payload),
+    )
+
+    with pytest.raises(ValueError, match="source|measurement|semantic"):
+        aggregate_design_qa(**_kwargs(fixture))
 
 
 def test_stale_and_self_consistent_rehashed_q0_fail_closed() -> None:

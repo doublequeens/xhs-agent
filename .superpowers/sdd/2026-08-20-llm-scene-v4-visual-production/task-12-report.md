@@ -170,10 +170,70 @@ Fresh verification after round 2:
 - `python -m compileall -q src main.py`: passed.
 - `git diff --check`: passed.
 
+## Fix round 3: derive hard line metrics from exact semantic source
+
+The reviewer RED probe extended the previous attack by recomputing the
+measurement, compiler-provenance, and compiled-page hashes after replacing
+persisted widths with `(1, 1)` and line counts with `(100, 100)`. The old
+public evaluator did not accept an exact semantic model at all, so this probe
+recorded the missing source boundary before implementation. A second aggregate
+probe proves the same self-rehashed payload is rejected at the durable Q2
+boundary.
+
+The public `evaluate_page_metrics` and complete-plan evaluator now require the
+exact hash-bound `SemanticContentModelV4`. Each text element binds its
+`fragment_ref`, `source_atom_id`, and `exact_text_sha256` to the compiled page
+evidence and exact `SemanticFragmentV4`; a passed aggregate also recomputes Q0
+against the supplied atom set and lock. No visible text enters metric evidence,
+issues, or errors.
+
+`reconstruct_source_lines_v4` is one pure producer/consumer function. It
+requires explicit spans to equal the real CRLF/LF/CR locations, inserted breaks
+to be ordered, segment-contained, non-overlapping with newlines, and at
+grapheme boundaries. It reconstructs source lines and derives code-point and
+grapheme counts. The compiler persists both count sets; Q2 rejects any
+self-rehashed evidence that disagrees with those source-derived values. A
+valid changed break layout is therefore evaluated against its new source lines
+and cannot hide an orphan line through arbitrary offsets.
+
+Q2 orphan metrics use source-derived grapheme counts only. Line length uses the
+versioned conservative source bound
+`max(persisted_pillow_width_px, grapheme_count * scene_font_size_px)` with
+`metric_unit=px` and
+`metric_version=source-grapheme-em-upper-bound-v1` bound in both policy and
+metric evidence. Rehashed narrow Pillow widths therefore cannot lower the hard
+decision, while the reachable `901 px` Pillow fail boundary remains covered.
+Canonical hero/comparison/step 3/5-fragment fixtures remain passing.
+
+Round 3 policy hashes (the policy payload now includes the line metric unit and
+version) are:
+
+| grammar / narrative role | page role | policy SHA-256 |
+| --- | --- | --- |
+| editorial_hero / cover_hook | cover | `b7c10c5d0d22be3993baf08d5f6f7fd645106d273bee6d5eb1485f399357d7ad` |
+| editorial_hero / context | body | `a85f14370c469e9a8adab13779a82f7b7f9ecb1983008a38a65468189f8c29f2` |
+| editorial_hero / summary | closing | `9d31646942d0dbdbba8cd3be28eaccd164386bf2c70064b8cc0d99718a2346d1` |
+| editorial_hero / closing | closing | `6e6b50c7266ea8b921aedf1e56d3b38a5df52898289cd53e7f08fc0abeee4979` |
+| comparison_grid / diagnosis | body | `5a491a95bfbd64457017a11dcf9b98bb14cfcdedc037ed275447dc65a9a7fc02` |
+| comparison_grid / comparison | body | `e4aa06ec305fb7561f37b44a1756ba8f7bfcd8379303e0e1545a7dfb713df7e9` |
+| comparison_grid / evidence | body | `dddc90d5b96643f60c171e5b0f4108bd12325b4d37efcc035d6b92c4bcde1490` |
+| step_flow / step | body | `edc4886a0bcc26fd62e7c588d693d8bde46c73912814c74ad3c0ce927d8f0921` |
+| step_flow / checklist | body | `250bcea7bb2ef844707a3ec184c4d34d77006d5c2e99c56c86b577f4f7cd8fcf` |
+
+Fresh verification after round 3:
+
+- Task 12 focused: `51 passed`.
+- Task 11 typography/compiler plus v4 semantic/authoring/layout: `162 passed, 1 warning`.
+- Existing v3 plan/node QA: `39 passed`.
+- Filtered offline full suite (Chromium smoke excluded): `1774 passed, 2 skipped, 1 deselected, 2 warnings`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
 ## Concerns / handoff
 
 Q2 remains a deterministic layout/provenance gate and does not establish final
-DOM/PNG fidelity; that evidence belongs to Task 13 Q3. Orphan detection uses
-the compiler's persisted line counts without copying visible text. The
-controller should review/commit this Task 12 round as
-`fix: bind v4 typography metric evidence`.
+DOM/PNG fidelity; that evidence belongs to Task 13 Q3. The unfiltered suite's
+known local Chromium smoke failed at browser launch with the sandbox
+`mach_port_rendezvous` permission error; it is excluded from the offline full
+suite above. The controller should commit this Task 12 round as
+`fix: derive v4 line metrics from semantic source`.

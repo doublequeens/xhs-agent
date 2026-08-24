@@ -161,6 +161,7 @@ _TEXT_MEASUREMENT_PAYLOAD_FIELDS_V4 = frozenset(
         "ink_width_px",
         "inserted_break_offsets",
         "line_codepoint_counts",
+        "line_grapheme_counts",
         "line_count",
         "line_height",
         "line_widths_px",
@@ -174,6 +175,7 @@ _TEXT_MEASUREMENT_PAYLOAD_FIELDS_V4 = frozenset(
         "painted_top_px",
         "width_px",
         "wrap_policy",
+        "exact_text_sha256",
     }
 )
 
@@ -795,6 +797,8 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     """Non-visible measurement evidence consumed by the future CSS adapter."""
 
     fragment_ref: StrictStr = Field(min_length=1)
+    source_atom_id: StrictStr = Field(min_length=1)
+    exact_text_sha256: StrictStr
     font_role: Literal["display", "heading", "body", "caption"]
     font_sha256: StrictStr
     font_nominal_weight: StrictInt = Field(ge=1, le=1000)
@@ -810,6 +814,7 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     ink_height_px: float = Field(ge=0)
     line_widths_px: tuple[float, ...]
     line_codepoint_counts: tuple[StrictInt, ...]
+    line_grapheme_counts: tuple[StrictInt, ...]
     break_offsets: tuple[StrictInt, ...] = ()
     offset_unit: Literal["unicode_codepoint_v1"] = "unicode_codepoint_v1"
     explicit_break_spans: tuple[tuple[StrictInt, StrictInt], ...] = ()
@@ -845,7 +850,7 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     reserved_box_width_px: float = Field(gt=0)
     reserved_box_height_px: float = Field(gt=0)
 
-    @field_validator("font_sha256", "measurement_sha256")
+    @field_validator("font_sha256", "exact_text_sha256", "measurement_sha256")
     @classmethod
     def validate_evidence_hash(cls, value: str, info) -> str:
         return _validate_hash(value, info.field_name)
@@ -885,6 +890,13 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
     def validate_line_codepoint_counts(cls, value: tuple[int, ...]) -> tuple[int, ...]:
         if any(type(count) is not int or count < 0 for count in value):
             raise ValueError("text measurement line codepoint counts must be non-negative integers")
+        return value
+
+    @field_validator("line_grapheme_counts")
+    @classmethod
+    def validate_line_grapheme_counts(cls, value: tuple[int, ...]) -> tuple[int, ...]:
+        if any(type(count) is not int or count < 0 for count in value):
+            raise ValueError("text measurement line grapheme counts must be non-negative integers")
         return value
 
     @field_validator("break_offsets", "inserted_break_offsets")
@@ -953,8 +965,12 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
             raise ValueError("text measurement line widths must match line count")
         if len(self.line_codepoint_counts) != self.line_count:
             raise ValueError("text measurement line codepoint counts must match line count")
+        if len(self.line_grapheme_counts) != self.line_count:
+            raise ValueError("text measurement line grapheme counts must match line count")
         if self.explicit_newline_count != len(self.explicit_break_spans):
             raise ValueError("text measurement newline count must match explicit break spans")
+        if self.break_offsets != self.inserted_break_offsets:
+            raise ValueError("text measurement break offsets must match inserted break offsets")
         if abs(self.reserved_box_width_px - self.max_width_px) > 1e-6:
             raise ValueError("text measurement reserved width must match max width")
         if self.reserved_box_width_px <= 0 or self.reserved_box_height_px <= 0:
@@ -984,43 +1000,8 @@ class TextMeasurementEvidenceV4(_FrozenLayoutV4):
             raise ValueError("text measurement painted bounds are inverted")
         expected = canonical_text_measurement_sha256_v4(
             {
-                "advance_width_px": self.advance_width_px,
-                "ascent_px": self.ascent_px,
-                "break_offsets": self.break_offsets,
-                "content_inset_bottom_px": self.content_inset_bottom_px,
-                "content_inset_left_px": self.content_inset_left_px,
-                "content_inset_policy": self.content_inset_policy,
-                "content_inset_right_px": self.content_inset_right_px,
-                "content_inset_top_px": self.content_inset_top_px,
-                "descent_px": self.descent_px,
-                "explicit_break_spans": self.explicit_break_spans,
-                "explicit_newline_count": self.explicit_newline_count,
-                "font_nominal_weight": self.font_nominal_weight,
-                "font_role": self.font_role,
-                "font_sha256": self.font_sha256,
-                "font_size_px": self.font_size_px,
-                "height_px": self.height_px,
-                "ink_bottom_px": self.ink_bottom_px,
-                "ink_height_px": self.ink_height_px,
-                "ink_left_px": self.ink_left_px,
-                "ink_right_px": self.ink_right_px,
-                "ink_top_px": self.ink_top_px,
-                "ink_width_px": self.ink_width_px,
-                "inserted_break_offsets": self.inserted_break_offsets,
-                "line_codepoint_counts": self.line_codepoint_counts,
-                "line_count": self.line_count,
-                "line_height": self.line_height,
-                "line_widths_px": self.line_widths_px,
-                "max_width_px": self.max_width_px,
-                "offset_unit": self.offset_unit,
-                "painted_bottom_px": self.painted_bottom_px,
-                "painted_left_px": self.painted_left_px,
-                "painted_offset_x_px": self.painted_offset_x_px,
-                "painted_offset_y_px": self.painted_offset_y_px,
-                "painted_right_px": self.painted_right_px,
-                "painted_top_px": self.painted_top_px,
-                "width_px": self.width_px,
-                "wrap_policy": self.wrap_policy,
+                field_name: getattr(self, field_name)
+                for field_name in _TEXT_MEASUREMENT_PAYLOAD_FIELDS_V4
             }
         )
         if self.measurement_sha256 != expected:

@@ -40,8 +40,16 @@ def test_compiled_page_metrics_are_complete_finite_and_deterministic() -> None:
     program, inputs = _inputs(text="美" * 12)
     page = compile_layout(program, inputs)
     page_brief_set = inputs.visual_direction_plan.page_brief_set
-    first = evaluate_page_metrics(page, page_brief_set=page_brief_set)
-    second = evaluate_page_metrics(page, page_brief_set=page_brief_set)
+    first = evaluate_page_metrics(
+        page,
+        page_brief_set=page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
+    )
+    second = evaluate_page_metrics(
+        page,
+        page_brief_set=page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
+    )
     assert first.passed is True
     assert first.canonical_sha256 == second.canonical_sha256
     assert first.model_dump_json() == second.model_dump_json()
@@ -83,6 +91,7 @@ def test_canonical_asset_and_fragment_fixtures_pass_q2() -> None:
         result = evaluate_page_metrics(
             page,
             page_brief_set=inputs.visual_direction_plan.page_brief_set,
+            semantic_content_model=inputs.semantic_content_model,
         )
         assert result.passed is True, name
 
@@ -95,6 +104,7 @@ def test_line_length_uses_pillow_line_width_and_has_reachable_fail_boundary() ->
     payload = evidence.model_dump(mode="python")
     for field in (
         "fragment_ref",
+        "source_atom_id",
         "reserved_box_x_px",
         "reserved_box_y_px",
         "reserved_box_width_px",
@@ -117,12 +127,138 @@ def test_line_length_uses_pillow_line_width_and_has_reachable_fail_boundary() ->
     result = evaluate_page_metrics(
         tampered,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
     )
     line_metric = next(metric for metric in result.metrics if metric.metric == "line_length")
     assert line_metric.actual == 901.0
     assert line_metric.threshold < 920.0
     assert line_metric.passed is False
     assert line_metric.element_id == "v4-text-fragment-1-0"
+
+
+def test_q2_rejects_self_rehashed_measurements_that_disagree_with_semantic_source() -> None:
+    """A forged measurement digest must not sever Q2 from exact semantic text."""
+    program, inputs = _inputs(text="美" * 12)
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    payload = evidence.model_dump(mode="python")
+    for field in (
+        "fragment_ref",
+        "source_atom_id",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+        "measurement_sha256",
+    ):
+        payload.pop(field)
+    forged_counts = tuple(100 for _ in evidence.line_codepoint_counts)
+    forged_widths = tuple(1.0 for _ in evidence.line_widths_px)
+    payload.update(
+        {
+            "line_codepoint_counts": forged_counts,
+            "line_widths_px": forged_widths,
+        }
+    )
+    forged = evidence.model_copy(
+        update={
+            "line_codepoint_counts": forged_counts,
+            "line_widths_px": forged_widths,
+            "measurement_sha256": canonical_text_measurement_sha256_v4(payload),
+        }
+    )
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        text_measurement_evidence={"fragment-1": forged},
+    )
+    tampered = _rehash_page(page, compiler_provenance=provenance)
+
+    with pytest.raises(DesignMetricsInvariantError, match="source|measurement|semantic"):
+        evaluate_page_metrics(
+            tampered,
+            page_brief_set=inputs.visual_direction_plan.page_brief_set,
+            semantic_content_model=inputs.semantic_content_model,
+        )
+
+
+def test_q2_line_length_cannot_be_lowered_by_rehashed_pillow_widths() -> None:
+    program, inputs = _inputs(text="美" * 12)
+    page = compile_layout(program, inputs)
+    original = evaluate_page_metrics(
+        page,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
+    )
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    payload = evidence.model_dump(mode="python")
+    for field in (
+        "fragment_ref",
+        "source_atom_id",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+        "measurement_sha256",
+    ):
+        payload.pop(field)
+    forged_widths = tuple(1.0 for _ in evidence.line_widths_px)
+    payload["line_widths_px"] = forged_widths
+    forged = evidence.model_copy(
+        update={
+            "line_widths_px": forged_widths,
+            "measurement_sha256": canonical_text_measurement_sha256_v4(payload),
+        }
+    )
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        text_measurement_evidence={"fragment-1": forged},
+    )
+    tampered = _rehash_page(page, compiler_provenance=provenance)
+    result = evaluate_page_metrics(
+        tampered,
+        page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
+    )
+    original_line = next(metric for metric in original.metrics if metric.metric == "line_length")
+    forged_line = next(metric for metric in result.metrics if metric.metric == "line_length")
+    assert forged_line.actual == original_line.actual
+    assert forged_line.passed is original_line.passed
+
+
+def test_q2_rejects_rehashed_break_offsets_that_change_source_line_count() -> None:
+    program, inputs = _inputs(text="美美\n美美")
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    payload = evidence.model_dump(mode="python")
+    for field in (
+        "fragment_ref",
+        "source_atom_id",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+        "measurement_sha256",
+    ):
+        payload.pop(field)
+    payload.update({"break_offsets": (1,), "inserted_break_offsets": (1,)})
+    forged = evidence.model_copy(
+        update={
+            "break_offsets": (1,),
+            "inserted_break_offsets": (1,),
+            "measurement_sha256": canonical_text_measurement_sha256_v4(payload),
+        }
+    )
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        text_measurement_evidence={"fragment-1": forged},
+    )
+    tampered = _rehash_page(page, compiler_provenance=provenance)
+    with pytest.raises(DesignMetricsInvariantError, match="source|line"):
+        evaluate_page_metrics(
+            tampered,
+            page_brief_set=inputs.visual_direction_plan.page_brief_set,
+            semantic_content_model=inputs.semantic_content_model,
+        )
 
 
 def test_regional_density_has_reachable_fail_boundary_from_current_region_geometry() -> None:
@@ -155,6 +291,7 @@ def test_regional_density_has_reachable_fail_boundary_from_current_region_geomet
     result = evaluate_page_metrics(
         tampered,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
     )
     density = next(
         metric for metric in result.metrics if metric.metric == "regional_information_density"
@@ -171,6 +308,7 @@ def test_spacing_consistency_ignores_cross_region_gaps_and_unions_step_rows() ->
     result = evaluate_page_metrics(
         page,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
     )
     spacing = next(metric for metric in result.metrics if metric.metric == "spacing_consistency")
     assert spacing.actual == 0.0
@@ -197,6 +335,7 @@ def test_orphan_metrics_use_every_persisted_line_codepoint_count(
     result = evaluate_page_metrics(
         page,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
     )
     orphan_line = next(metric for metric in result.metrics if metric.metric == "orphan_line")
     orphan_heading = next(metric for metric in result.metrics if metric.metric == "orphan_heading")
@@ -213,6 +352,7 @@ def test_orphan_metric_rejects_empty_explicit_newline_line_in_current_provenance
     result = evaluate_page_metrics(
         page,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
     )
     orphan = next(metric for metric in result.metrics if metric.metric == "orphan_line")
     assert orphan.actual == 1.0
@@ -225,6 +365,7 @@ def test_comparison_page_uses_its_own_metric_policy() -> None:
     result = evaluate_page_metrics(
         page,
         page_brief_set=inputs.visual_direction_plan.page_brief_set,
+        semantic_content_model=inputs.semantic_content_model,
     )
     assert result.passed is True
     assert result.policy_sha256 != get_quality_policy(
@@ -263,7 +404,11 @@ def test_public_q2_rejects_stale_page_brief_set_hash() -> None:
     first["canonical_sha256"] = "f" * 64
     raw["pages"] = (first, *raw["pages"][1:])
     with pytest.raises(DesignMetricsInvariantError):
-        evaluate_page_metrics(page, page_brief_set=raw)
+        evaluate_page_metrics(
+            page,
+            page_brief_set=raw,
+            semantic_content_model=inputs.semantic_content_model,
+        )
 
 
 def test_q2_revalidation_does_not_read_font_files(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,7 +420,11 @@ def test_q2_revalidation_does_not_read_font_files(monkeypatch: pytest.MonkeyPatc
         raise AssertionError("Q2 must not read font bytes")
 
     monkeypatch.setattr(Path, "read_bytes", fail_read_bytes)
-    result = evaluate_page_metrics(page, page_brief_set=page_set)
+    result = evaluate_page_metrics(
+        page,
+        page_brief_set=page_set,
+        semantic_content_model=inputs.semantic_content_model,
+    )
     assert result.passed is True
 
 

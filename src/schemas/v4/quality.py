@@ -27,6 +27,10 @@ from src.schemas.v4.semantic import SemanticQAResultV4
 
 
 QUALITY_POLICY_VERSION_V4 = "v4-design-quality-policy-1"
+QUALITY_METRIC_UNIT_V4 = "canonical-v4"
+QUALITY_METRIC_VERSION_V4 = "v4-design-metric-1"
+LINE_LENGTH_METRIC_UNIT_V4 = "px"
+LINE_LENGTH_METRIC_VERSION_V4 = "source-grapheme-em-upper-bound-v1"
 
 QUALITY_METRIC_KINDS_V4 = (
     "safe_margin_compliance",
@@ -180,6 +184,8 @@ class DesignMetricEvidenceV4(_FrozenQualityV4):
     threshold: StrictFloat
     comparator: QualityComparatorV4
     passed: StrictBool
+    metric_unit: StrictStr
+    metric_version: StrictStr
     policy_sha256: StrictStr
     region_id: StrictStr | None = None
     element_id: StrictStr | None = None
@@ -206,6 +212,16 @@ class DesignMetricEvidenceV4(_FrozenQualityV4):
         ):
             raise ValueError(f"{info.field_name} must be a structural reference")
         return value
+
+    @model_validator(mode="after")
+    def validate_metric_unit(self) -> "DesignMetricEvidenceV4":
+        if self.metric == "line_length":
+            expected = (LINE_LENGTH_METRIC_UNIT_V4, LINE_LENGTH_METRIC_VERSION_V4)
+        else:
+            expected = (QUALITY_METRIC_UNIT_V4, QUALITY_METRIC_VERSION_V4)
+        if (self.metric_unit, self.metric_version) != expected:
+            raise ValueError("metric evidence unit/version is not canonical")
+        return self
 
     @model_validator(mode="after")
     def validate_result_and_hash(self) -> "DesignMetricEvidenceV4":
@@ -608,7 +624,11 @@ __all__ = [
     "QUALITY_ISSUE_CODES_V4",
     "QUALITY_ISSUE_CODE_BY_METRIC_V4",
     "QUALITY_METRIC_KINDS_V4",
+    "QUALITY_METRIC_UNIT_V4",
+    "QUALITY_METRIC_VERSION_V4",
     "QUALITY_POLICY_VERSION_V4",
+    "LINE_LENGTH_METRIC_UNIT_V4",
+    "LINE_LENGTH_METRIC_VERSION_V4",
     "QualityComparatorV4",
     "QualityIssueCodeV4",
     "QualityMetricKindV4",
