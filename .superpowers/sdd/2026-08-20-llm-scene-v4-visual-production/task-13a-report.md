@@ -457,3 +457,109 @@ The prior fix-round commit was successfully created as
 completed. This round's files are currently unstaged pending the requested
 commit `fix: require exact v4 glyph witnesses`; the two Task 13B stubs remain
 untracked and untouched.
+
+## Fix round 4: validate strict v4 browser glyph evidence
+
+The scoped re-review found that both strict v4 font shorthands appended `px`
+to `getComputedStyle(...).fontSize`, even though the computed value already
+contains its CSS unit. The resulting `48pxpx` strings could leave the canvas on
+its default font and make `FontFaceSet.check` throw, invalidating the exact
+primary/fallback/tofu witness.
+
+### Fix-round RED evidence
+
+The exact shorthand regression was added and run before production changes:
+
+```text
+pytest -q tests/rendering/scene/test_probes.py::test_v4_probe_font_shorthands_preserve_the_computed_size_unit
+1 failed
+AssertionError: '${style.fontSize}px' is contained here:
+fontWeight} ${style.fontSize}px ${quotedFamily}
+```
+
+The new explicit strict-v4 Chromium probe was also run before the fix. The
+installed browser executable was found, but launch was blocked by the macOS
+sandbox before JavaScript execution:
+
+```text
+pytest -q tests/rendering/scene/test_v4_chromium_probe.py
+1 failed
+FATAL:base/apple/mach_port_rendezvous_mac.cc:159] Check failed: kr == KERN_SUCCESS.
+bootstrap_check_in org.chromium.Chromium.MachPortRendezvousServer.12538:
+Permission denied (1100)
+```
+
+### Fix-round implementation
+
+- `V4_PROBE_SCRIPT` now builds both canvas and `document.fonts.check`
+  shorthands through one strict helper that preserves the computed size token
+  (`48px`) exactly once and quotes only the declared primary family.
+- The canvas-height calculation parses the computed size only for numeric
+  arithmetic; it no longer relies on multiplying a unit-bearing CSS string.
+- The legacy `PROBE_SCRIPT` body and default renderer selection are unchanged.
+- `test_v4_chromium_probe.py` explicitly evaluates `V4_PROBE_SCRIPT` against a
+  compact offline page with checked-in HarmonyOS Sans bytes embedded as a
+  local data font. It asserts script completion, boolean face/font checks,
+  measured exact DOM text, distinct non-empty primary/fallback/tofu raster
+  evidence for a supported glyph, and instruments every canvas/font-check
+  shorthand to reject invalid CSS or `pxpx`.
+- Existing negative false-DOM, ambiguous fallback/tofu, and measured fallback
+  unit coverage remains in `test_v4_adapter.py`.
+
+### Fix-round GREEN evidence
+
+The exact source-level regression and v3 separation check pass:
+
+```text
+pytest -q tests/rendering/scene/test_probes.py::test_v4_probe_font_shorthands_preserve_the_computed_size_unit tests/rendering/scene/test_probes.py::test_v3_probe_script_remains_the_default_and_v4_is_explicitly_stricter
+2 passed in 0.05s
+```
+
+The focused probe/adapter/schema/compiler/renderer/v4-node regressions pass:
+
+```text
+pytest -q tests/rendering/scene/test_probes.py tests/rendering/scene/test_v4_adapter.py tests/schemas/v4 tests/visual_design/v4/test_compiler.py tests/rendering/scene/test_compiler.py tests/rendering/scene/test_renderer.py tests/nodes/v4 tests/nodes/test_generic_scene_renderer.py
+316 passed, 1 warning in 21.25s
+```
+
+The warning is the existing intentional Pydantic serialization warning from
+`test_semantic_node_revalidates_tampered_gateway_draft_instance`.
+
+### Controller failure, diagnosis, and corrected witness
+
+The controller's first sandbox-external run reached the page and confirmed
+`font_loaded=True`, `document_fonts_status=loaded`, `dom_text_measured=True`,
+`face_loaded=True`, and `font_check=True`, but the supported `美` glyph still
+reported `visible=False`. Preserved assertion diagnostics then showed:
+
+- measured Range geometry was 48 x 57 and all three witnesses had nonzero ink
+  (`primary=1181`, `tofu=1148`, and fallback also nonzero);
+- every primary/fallback/tofu raster signature was the 64-zero sentinel;
+- the recorded canvas and FontFaceSet shorthands were valid one-unit CSS.
+
+The failure was therefore not primary-face fallback or equal real rasters.
+The compact opaque local document did not expose `crypto.subtle`, and
+`digestPixels` returned the zero sentinel without hashing any pixels. The
+strict distinctness predicate correctly failed closed, but it had no real
+signatures to compare.
+
+`digestPixels` now uses SubtleCrypto when available and otherwise runs a
+deterministic in-script SHA-256 over the exact RGBA bytes. It never converts a
+hashing failure into positive evidence. The real Chromium test retains concise
+failure diagnostics for Range geometry, all three ink counts/hashes, and every
+font call. It also includes a negative declared-missing-face element and
+asserts `font_loaded=False`, `face_loaded=False`, `font_check=False`, and
+`visible=False`, while the checked-in HarmonyOS Sans positive glyph must still
+produce three distinct nonzero hashes.
+
+Fresh browser and focused results after the corrected hash witness:
+
+```text
+pytest -q tests/rendering/scene/test_v4_chromium_probe.py
+1 passed in 1.15s
+
+pytest -q tests/rendering/scene/test_probes.py tests/rendering/scene/test_v4_adapter.py tests/schemas/v4 tests/visual_design/v4/test_compiler.py tests/rendering/scene/test_compiler.py tests/rendering/scene/test_renderer.py tests/nodes/v4 tests/nodes/test_generic_scene_renderer.py
+316 passed, 1 warning in 21.55s
+```
+
+The two untracked Task 13B stubs remain untouched.

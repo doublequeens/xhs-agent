@@ -9,6 +9,7 @@ are validated and hash-bound.
 from __future__ import annotations
 
 import hashlib
+import re
 
 import pytest
 
@@ -46,6 +47,20 @@ def test_v3_probe_script_remains_the_default_and_v4_is_explicitly_stricter():
     assert "is_whitespace" in V4_PROBE_SCRIPT
     assert "rasterEvidence(part.segment, style, primaryFamily)" in V4_PROBE_SCRIPT
     assert "rasterEvidence(part.segment, style, '__v4_missing_primary_face__')" in V4_PROBE_SCRIPT
+
+
+def test_v4_probe_font_shorthands_preserve_the_computed_size_unit():
+    """Strict font shorthands must not turn computed ``48px`` into ``48pxpx``."""
+
+    assert "${style.fontSize}px" not in V4_PROBE_SCRIPT
+    shorthand_sites = re.findall(
+        r"fontShorthand\((?:style, family|style, primaryFamily)\)",
+        V4_PROBE_SCRIPT,
+    )
+    assert shorthand_sites == [
+        "fontShorthand(style, family)",
+        "fontShorthand(style, primaryFamily)",
+    ]
 
 
 def _fragment(fragment_id: str, text: str) -> ContentFragment:
