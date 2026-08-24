@@ -841,7 +841,7 @@ def _extract_fixture(args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str,
     return dict(kwargs)
 
 
-def evaluate_v4_render(*args: Any, tolerance_px: float = RENDER_BOX_TOLERANCE_PX_V4, **kwargs: Any) -> RenderQAResultV4:
+def evaluate_v4_render(*args: Any, **kwargs: Any) -> RenderQAResultV4:
     """Independently evaluate one immutable v4 render revision.
 
     The keyword surface mirrors the adapter's source contracts.  A single
@@ -849,12 +849,11 @@ def evaluate_v4_render(*args: Any, tolerance_px: float = RENDER_BOX_TOLERANCE_PX
     tests; aliases are intentionally limited to persisted v4 names.
     """
 
-    if isinstance(tolerance_px, bool) or not isinstance(tolerance_px, (int, float)):
-        _fail()
-    tolerance = float(tolerance_px)
-    if not math.isfinite(tolerance) or tolerance < 0:
-        _fail()
+    if "tolerance_px" in kwargs:
+        _fail("v4 render QA uses a fixed 2 px geometry tolerance")
     values = _extract_fixture(args, kwargs)
+    if "tolerance_px" in values:
+        _fail("v4 render QA uses a fixed 2 px geometry tolerance")
     aliases = {
         "manifest": "render_manifest",
         "render_manifest_v4": "render_manifest",

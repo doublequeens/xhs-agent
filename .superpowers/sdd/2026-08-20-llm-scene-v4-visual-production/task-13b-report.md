@@ -181,9 +181,95 @@ git diff --check
 - Reviewed the complete changed surface; no adapter policy, graph, v3
   contract, visible copy, persistence, publisher or retired path was moved.
 - The isolated Task13B integration run passed all three real Chromium grammar
-  parameters. The full suite's two unrelated browser smoke/probe failures
-  remain the sandbox's intermittent Chromium launch permission error; the
-  controller should rerun the Task13B module externally once more before
-  committing.
+  parameters (six collected tests), and the controller supplied fresh
+  external green evidence for the three-Grammar slice, v3 smoke, strict v4
+  probe and filtered full suite. The full local suite's two unrelated browser
+  smoke/probe failures remain the sandbox's Chromium launch permission error.
 - No network, model, provider or live asset path was used by the integration
   builders.
+
+## Fix Round 1 — independent review hardening
+
+Base for this round: `333ceb2`. The review identified two boundary defects and
+an incomplete independent Q3 negative matrix. The public evaluator previously
+accepted a caller-supplied geometry tolerance, and the route helper accepted a
+duck-typed object with a boolean `passed` field. Both were corrected without
+moving policy into the Task 13A adapter.
+
+### TDD RED and implementation
+
+The first review regressions were run before their production fixes:
+
+```text
+pytest -q tests/visual_design/v4/test_v4_render_qa.py::test_q3_rejects_caller_tolerance_override \
+  tests/nodes/v4/test_render.py::test_v4_q3_route_rejects_duck_typed_spoofed_result
+FF
+FAILED ...test_q3_rejects_caller_tolerance_override - DID NOT RAISE
+FAILED ...test_v4_q3_route_rejects_duck_typed_spoofed_result - DID NOT RAISE
+```
+
+The evaluator no longer exposes `tolerance_px`; an attempted keyword or
+fixture override is rejected with the fixed sanitized Q3 invariant error, and
+all geometry checks continue to use `RENDER_BOX_TOLERANCE_PX_V4 == 2.0`. The
+route helper now accepts only an exact `RenderQAResultV4`, revalidates its
+canonical integrity, checks its artifact identity, and compares every result
+binding with the canonical render manifest, design/Q0-Q2 evidence, content
+contracts, direction, page briefs, asset manifest and family tokens still in
+state. It does not re-evaluate Q3 or route partial state. Exact pass and fail
+results still route to `visual_critic` and `design_reviser` respectively;
+spoofed, tampered and stale results fail closed.
+
+The added behavior-oriented Q3 matrix independently exercises:
+
+- DOM text mutation while retaining a spoofed expected source hash;
+- compiler-approved inserted line breaks versus dropped or changed copy;
+- absent/false font-face witnesses, computed-family, size, weight and
+  line-height mismatches;
+- false glyph coverage and fallback/tofu raster ambiguity;
+- page, contact-sheet and manifest byte mutation;
+- malformed PNG signature and dimensions, plus page-order rejection;
+- blank/fully transparent page and contact output;
+- missing and symlink-substituted render files;
+- asset hash/ref/load mismatch and crop/orientation mismatch, including a
+  Q3 byte-substitution check. Existing Task 13A adapter tests continue to
+  cover source transaction and symlink identity before Q3.
+
+The focused boundary is green after implementation:
+
+```text
+pytest -q tests/visual_design/v4/test_v4_render_qa.py
+36 passed in 28.93s
+
+pytest -q tests/nodes/v4/test_render.py
+10 passed in 6.57s
+
+pytest -q tests/schemas/v4 tests/rendering/scene/test_v4_adapter.py
+71 passed in 12.62s
+
+pytest -q tests/integration/test_v4_three_grammar_render.py
+6 passed in 6.98s
+
+pytest -q tests/visual_design/v4/test_v4_render_qa.py tests/nodes/v4/test_render.py \
+  tests/schemas/v4 tests/rendering/scene/test_v4_adapter.py
+117 passed in 47.65s
+```
+
+### Verification and fresh external evidence
+
+Controller-provided fresh external evidence after the preceding Chromium
+overflow correction is recorded here verbatim: three-Grammar integration
+`6 passed`, v3 smoke `1 passed`, strict v4 probe `1 passed`, and filtered full
+suite `1841 passed, 3 live skips`. The three-Grammar run remained a real
+Chromium path with no injected renderer.
+
+The required full offline run completed with the two unrelated legacy/browser
+smoke failures and the exact sandbox error recorded above:
+
+```text
+pytest -q
+1876 passed, 2 failed, 6 skipped, 2 warnings in 89.13s
+```
+
+The three-Grammar module itself passed all six collected tests in this local
+run; only the generic legacy smoke and strict v4 probe hit Chromium's
+`MachPortRendezvousServer ... Permission denied (1100)` launch restriction.
