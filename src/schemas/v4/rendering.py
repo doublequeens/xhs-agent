@@ -163,12 +163,19 @@ class RenderGlyphCoverageV4(_FrozenRenderingV4):
     visible: StrictBool
     width: StrictFloat = Field(ge=0)
     height: StrictFloat = Field(ge=0)
+    is_whitespace: StrictBool
     face_loaded: StrictBool
     font_check: StrictBool
     ink_pixel_count: StrictInt = Field(ge=0)
     raster_signature: StrictStr
+    fallback_ink_pixel_count: StrictInt = Field(ge=0)
+    fallback_raster_signature: StrictStr
+    tofu_ink_pixel_count: StrictInt = Field(ge=0)
+    tofu_raster_signature: StrictStr
 
-    @field_validator("raster_signature")
+    @field_validator(
+        "raster_signature", "fallback_raster_signature", "tofu_raster_signature"
+    )
     @classmethod
     def validate_raster_signature(cls, value: str) -> str:
         return _sha(value, "raster_signature")
@@ -177,13 +184,25 @@ class RenderGlyphCoverageV4(_FrozenRenderingV4):
     def validate_metrics(self) -> "RenderGlyphCoverageV4":
         if not math.isfinite(self.width) or not math.isfinite(self.height):
             raise ValueError("glyph coverage geometry must be finite")
-        if self.visible and not (
-            self.face_loaded
-            and self.font_check
-            and self.ink_pixel_count > 0
-            and self.raster_signature != "0" * 64
+        if self.visible and (
+            self.is_whitespace
+            or not self.face_loaded
+            or not self.font_check
+            or self.ink_pixel_count <= 0
+            or self.fallback_ink_pixel_count <= 0
+            or self.tofu_ink_pixel_count <= 0
+            or self.raster_signature == "0" * 64
+            or len(
+                {
+                    self.raster_signature,
+                    self.fallback_raster_signature,
+                    self.tofu_raster_signature,
+                }
+            ) != 3
         ):
-            raise ValueError("visible glyph evidence lacks face and raster witnesses")
+            raise ValueError("visible glyph evidence lacks conservative exact-face witnesses")
+        if self.is_whitespace and self.visible:
+            raise ValueError("whitespace cannot be visible glyph evidence")
         return self
 
 

@@ -40,6 +40,12 @@ def test_v3_probe_script_remains_the_default_and_v4_is_explicitly_stricter():
     assert "document.fonts.check" in V4_PROBE_SCRIPT
     assert "getImageData" in V4_PROBE_SCRIPT
     assert "raster_signature" in V4_PROBE_SCRIPT
+    assert "data-font-family" in V4_PROBE_SCRIPT
+    assert "__v4_missing_primary_face__" in V4_PROBE_SCRIPT
+    assert "tofu_raster_signature" in V4_PROBE_SCRIPT
+    assert "is_whitespace" in V4_PROBE_SCRIPT
+    assert "rasterEvidence(part.segment, style, primaryFamily)" in V4_PROBE_SCRIPT
+    assert "rasterEvidence(part.segment, style, '__v4_missing_primary_face__')" in V4_PROBE_SCRIPT
 
 
 def _fragment(fragment_id: str, text: str) -> ContentFragment:

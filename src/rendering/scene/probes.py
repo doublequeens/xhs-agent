@@ -129,11 +129,12 @@ V4_PROBE_SCRIPT = r"""
     return Array.from(new Uint8Array(digest))
       .map((value) => value.toString(16).padStart(2, '0')).join('');
   };
-  const rasterEvidence = async (text, style) => {
+  const rasterEvidence = async (text, style, family) => {
     const canvas = document.createElement('canvas');
     const context = canvas.getContext('2d', { willReadFrequently: true });
     if (!context) return { ink_pixel_count: 0, raster_signature: '0'.repeat(64) };
-    const font = `${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
+    const quotedFamily = `"${String(family).replaceAll('"', '\\"')}"`;
+    const font = `${style.fontWeight} ${style.fontSize}px ${quotedFamily}`;
     context.font = font;
     const measured = context.measureText(text);
     canvas.width = Math.max(32, Math.ceil(measured.width) + 8);
@@ -143,27 +144,27 @@ V4_PROBE_SCRIPT = r"""
     context.textBaseline = 'top';
     context.fillText(text, 2, 2);
     const data = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    const alpha = [];
+    let inkPixelCount = 0;
     for (let index = 3; index < data.length; index += 4) {
-      if (data[index] > 0) alpha.push(data[index]);
+      if (data[index] > 0) inkPixelCount += 1;
     }
     return {
-      ink_pixel_count: alpha.length,
-      raster_signature: alpha.length ? await digestPixels(alpha) : '0'.repeat(64)
+      ink_pixel_count: inkPixelCount,
+      raster_signature: inkPixelCount ? await digestPixels(data) : '0'.repeat(64)
     };
   };
-  const exactFaceLoaded = (node, style) => {
-    const expected = node.dataset.fontFamily;
-    if (!expected || document.fonts.status !== 'loaded') return false;
+  const exactFaceLoaded = (node, style, primaryFamily) => {
+    if (!primaryFamily || document.fonts.status !== 'loaded') return false;
     const computed = normalize((style.fontFamily || '').split(',')[0]);
-    if (computed !== normalize(expected)) return false;
+    if (computed !== primaryFamily) return false;
     return Array.from(document.fonts).some((face) => {
       const weight = face.weight === 'normal' ? '400' : face.weight;
-      return normalize(face.family) === normalize(expected)
+      return normalize(face.family) === primaryFamily
         && weight === String(style.fontWeight)
         && face.status === 'loaded';
     });
   };
+  const isWhitespace = (value) => /^\s+$/u.test(value);
   const graphemes = (text) => {
     if (typeof Intl !== 'undefined' && Intl.Segmenter) {
       return Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text));
@@ -176,7 +177,7 @@ V4_PROBE_SCRIPT = r"""
     }
     return result;
   };
-  const glyphCoverage = async (node, style, exactFace) => {
+  const glyphCoverage = async (node, style, primaryFamily, exactFace) => {
     const text = node.textContent || '';
     if (!text) return [];
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
@@ -198,25 +199,55 @@ V4_PROBE_SCRIPT = r"""
       if (!range) {
         return {
           visible: false, width: 0, height: 0, face_loaded: false,
-          font_check: false, ink_pixel_count: 0, raster_signature: '0'.repeat(64)
+          font_check: false, ink_pixel_count: 0, raster_signature: '0'.repeat(64),
+          fallback_ink_pixel_count: 0,
+          fallback_raster_signature: '0'.repeat(64),
+          tofu_ink_pixel_count: 0,
+          tofu_raster_signature: '0'.repeat(64),
+          is_whitespace: isWhitespace(part.segment)
         };
       }
       range.setStart(first.node, start - first.start);
       range.setEnd(last.node, end - last.start);
       const rects = Array.from(range.getClientRects());
       const visible = rects.some((rect) => rect.width > 0 && rect.height > 0);
-      const fontSpec = `${style.fontWeight} ${style.fontSize}px ${style.fontFamily}`;
-      const fontCheck = exactFace && document.fonts.check(fontSpec, part.segment);
-      const raster = await rasterEvidence(part.segment, style);
+      const whitespace = isWhitespace(part.segment);
+      const fontSpec = `${style.fontWeight} ${style.fontSize}px "${primaryFamily}"`;
+      const fontCheck = !whitespace
+        && exactFace
+        && document.fonts.check(fontSpec, part.segment);
+      const primaryRaster = whitespace
+        ? { ink_pixel_count: 0, raster_signature: '0'.repeat(64) }
+        : await rasterEvidence(part.segment, style, primaryFamily);
+      const fallbackRaster = whitespace
+        ? { ink_pixel_count: 0, raster_signature: '0'.repeat(64) }
+        : await rasterEvidence(part.segment, style, '__v4_missing_primary_face__');
+      const tofuRaster = whitespace
+        ? { ink_pixel_count: 0, raster_signature: '0'.repeat(64) }
+        : await rasterEvidence('\uFFFD', style, primaryFamily);
+      const distinctRaster = new Set([
+        primaryRaster.raster_signature,
+        fallbackRaster.raster_signature,
+        tofuRaster.raster_signature
+      ]).size === 3;
       return {
-        visible: visible && fontCheck && raster.ink_pixel_count > 0
-          && raster.raster_signature !== '0'.repeat(64),
+        visible: !whitespace && visible && fontCheck
+          && primaryRaster.ink_pixel_count > 0
+          && fallbackRaster.ink_pixel_count > 0
+          && tofuRaster.ink_pixel_count > 0
+          && primaryRaster.raster_signature !== '0'.repeat(64)
+          && distinctRaster,
         width: rects.reduce((total, rect) => total + rect.width, 0),
         height: rects.reduce((maximum, rect) => Math.max(maximum, rect.height), 0),
         face_loaded: exactFace,
         font_check: fontCheck,
-        ink_pixel_count: raster.ink_pixel_count,
-        raster_signature: raster.raster_signature
+        ink_pixel_count: primaryRaster.ink_pixel_count,
+        raster_signature: primaryRaster.raster_signature,
+        fallback_ink_pixel_count: fallbackRaster.ink_pixel_count,
+        fallback_raster_signature: fallbackRaster.raster_signature,
+        tofu_ink_pixel_count: tofuRaster.ink_pixel_count,
+        tofu_raster_signature: tofuRaster.raster_signature,
+        is_whitespace: whitespace
       };
     }));
   };
@@ -227,8 +258,14 @@ V4_PROBE_SCRIPT = r"""
     const inner = node.querySelector('img.scene-image-inner');
     const innerRect = inner ? inner.getBoundingClientRect() : null;
     const isText = node.classList.contains('scene-text');
-    const exactFace = isText && exactFaceLoaded(node, style);
-    const coverage = isText ? await glyphCoverage(node, style, exactFace) : null;
+    const primaryFamily = normalize(node.getAttribute('data-font-family'));
+    const exactFace = isText && exactFaceLoaded(node, style, primaryFamily);
+    const coverage = isText
+      ? await glyphCoverage(node, style, primaryFamily, exactFace)
+      : null;
+    const nonWhitespace = isText
+      ? coverage.filter((item) => !item.is_whitespace)
+      : [];
     const range = document.createRange();
     if (isText) range.selectNodeContents(node);
     return {
@@ -251,8 +288,12 @@ V4_PROBE_SCRIPT = r"""
       dom_text_measured: isText,
       font_loaded: isText ? exactFace : null,
       document_fonts_status: document.fonts.status,
-      glyph_visible: isText ? coverage.length > 0 && coverage.every((item) => item.visible) : null,
-      missing_codepoint_count: isText ? coverage.filter((item) => !item.visible).length : null,
+      glyph_visible: isText
+        ? nonWhitespace.length > 0 && nonWhitespace.every((item) => item.visible)
+        : null,
+      missing_codepoint_count: isText
+        ? nonWhitespace.filter((item) => !item.visible).length
+        : null,
       glyph_coverage: coverage,
       asset_loaded: inner ? Boolean(inner.complete && inner.naturalWidth > 0) : null,
       line_boxes: isText ? Array.from(range.getClientRects()).map(rectPayload) : []

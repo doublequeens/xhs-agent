@@ -381,3 +381,79 @@ fatal: Unable to create '/Users/qinqiang/Documents/Workspace/Projects/xhs-agent/
 
 No index lock was removed or bypassed. All fix-round files remain unstaged;
 the two delayed Task 13B stubs remain untracked and untouched.
+
+## Fix round 3: require exact v4 glyph witnesses
+
+The scoped re-review found one remaining boundary: v4 canvas evidence still
+used the complete computed fallback stack, and the adapter overwrote a raw
+`dom_text_measured=False` observation with `True`. This round changes only
+that exact-face/glyph measurement boundary and preserves the v3 script.
+
+### Fix-round RED evidence
+
+The new tests were run before the production changes:
+
+```text
+pytest -q tests/rendering/scene/test_probes.py::test_v3_probe_script_remains_the_default_and_v4_is_explicitly_stricter tests/rendering/scene/test_v4_adapter.py::test_v4_render_rejects_false_dom_text_measurement tests/rendering/scene/test_v4_adapter.py::test_v4_render_rejects_ambiguous_primary_glyph_raster tests/rendering/scene/test_v4_adapter.py::test_v4_render_accepts_conservative_exact_primary_raster_witness tests/rendering/scene/test_v4_adapter.py::test_v4_render_does_not_turn_all_whitespace_into_painted_glyphs
+6 failed
+```
+
+The failures were the intended RED boundary: no primary/fallback/tofu fields
+existed, false DOM measurement was silently promoted, and whitespace was
+counted as missing glyphs.
+
+### Fix-round implementation
+
+- `V4_PROBE_SCRIPT` now obtains `data-font-family` as the declared primary
+  family and uses that family alone for `FontFaceSet.check` and primary canvas
+  rasterization. It separately rasterizes the same grapheme with the
+  deliberately missing `__v4_missing_primary_face__` family and rasterizes
+  U+FFFD with the primary family as a tofu/replacement witness. Each witness
+  carries ink count and SHA-256 pixel hash. A non-whitespace glyph is visible
+  only when all three witnesses have ink, all signatures are distinct, the
+  exact face is loaded, the primary face check passes, and the measured Range
+  has geometry. Equal or ambiguous signatures become measured `visible=False`
+  evidence for Q3; they cannot become a hard visual success.
+- Whitespace/newline graphemes are explicitly marked `is_whitespace`, skip
+  paint checks, never count as missing codepoints, and cannot make an
+  all-whitespace fragment visible. Empty text remains an empty measured
+  coverage sequence.
+- `_element_evidence` now consumes raw `dom_text_measured` with strict boolean
+  validation and rejects false as well as absent/null values. It stores the
+  observed boolean instead of assigning a success default.
+- `RenderGlyphCoverageV4` durably carries primary/fallback/tofu raster hashes,
+  ink counts, exact-face/font-check status and whitespace status; its visible
+  validator rejects conservative-witness violations. Existing measured false
+  evidence remains representable for Q3.
+- The v3 `PROBE_SCRIPT` was compared against the pre-v4 baseline and remains
+  byte-identical.
+
+### Fix-round GREEN evidence
+
+The requested focused covering suite passed:
+
+```text
+pytest -q tests/rendering/scene/test_v4_adapter.py tests/rendering/scene/test_probes.py tests/rendering/scene/test_renderer.py tests/rendering/scene/test_compiler.py tests/visual_runtime/test_artifact_identity.py tests/nodes/v4 tests/nodes/test_generic_scene_renderer.py
+234 passed, 1 warning in 18.59s
+
+pytest -q tests/schemas/v4 tests/rendering/scene/test_chromium_smoke.py
+41 passed, 1 failed in 0.76s
+
+python -m compileall -q src main.py
+git diff --check
+node (V4 probe JavaScript parse check)
+V4 probe JavaScript parses
+```
+
+The one failure is the existing generic Chromium smoke at browser launch in
+the restricted macOS sandbox (`mach_port_rendezvous_mac ... bootstrap_check_in
+... Permission denied (1100)`). No v4 unit or contract test failed; the
+controller will rerun browser coverage externally.
+
+### Fix-round commit handoff
+
+The prior fix-round commit was successfully created as
+`655cc54 fix: close v4 render race windows` after the escalated index operation
+completed. This round's files are currently unstaged pending the requested
+commit `fix: require exact v4 glyph witnesses`; the two Task 13B stubs remain
+untracked and untouched.

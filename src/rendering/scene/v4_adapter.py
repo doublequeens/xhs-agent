@@ -283,6 +283,17 @@ def _required_int(raw: Mapping[str, object], key: str) -> int:
     return int(value)
 
 
+def _required_hash(raw: Mapping[str, object], key: str) -> str:
+    value = _required_raw(raw, key)
+    if type(value) is not str or len(value) != 64:
+        raise V4RenderError(f"browser probe field is not a sha256: {key}")
+    try:
+        int(value, 16)
+    except ValueError:
+        raise V4RenderError(f"browser probe field is not a sha256: {key}") from None
+    return value.lower()
+
+
 def _raw_box(raw: Mapping[str, object]) -> RenderBoxV4:
     return RenderBoxV4(
         x=_required_float(raw, "x"),
@@ -360,29 +371,39 @@ def _make_glyph(
     for item in coverage_raw:
         if not isinstance(item, Mapping) or type(item.get("visible")) is not bool:
             raise V4RenderError("browser glyph coverage is malformed")
-        raster_signature = _required_raw(item, "raster_signature")
-        if type(raster_signature) is not str:
-            raise V4RenderError("browser raster signature is not a string")
+        raster_signature = _required_hash(item, "raster_signature")
         try:
             coverage.append(
                 RenderGlyphCoverageV4(
                     visible=item["visible"],
                     width=_required_float(item, "width"),
                     height=_required_float(item, "height"),
+                    is_whitespace=_required_bool(item, "is_whitespace"),
                     face_loaded=_required_bool(item, "face_loaded"),
                     font_check=_required_bool(item, "font_check"),
                     ink_pixel_count=_required_int(item, "ink_pixel_count"),
                     raster_signature=raster_signature,
+                    fallback_ink_pixel_count=_required_int(
+                        item, "fallback_ink_pixel_count"
+                    ),
+                    fallback_raster_signature=_required_hash(
+                        item, "fallback_raster_signature"
+                    ),
+                    tofu_ink_pixel_count=_required_int(item, "tofu_ink_pixel_count"),
+                    tofu_raster_signature=_required_hash(item, "tofu_raster_signature"),
                 )
             )
         except V4RenderError:
             raise
         except Exception:
             raise V4RenderError("browser glyph coverage is malformed") from None
-    expected_visible = bool(coverage) and all(item.visible for item in coverage)
+    non_whitespace = [item for item in coverage if not item.is_whitespace]
+    expected_visible = bool(non_whitespace) and all(
+        item.visible for item in non_whitespace
+    )
     if visible != expected_visible:
         raise V4RenderError("browser glyph visibility disagrees with coverage")
-    missing = sum(1 for item in coverage if not item.visible)
+    missing = sum(1 for item in non_whitespace if not item.visible)
     if _required_int(raw, "missing_codepoint_count") != missing:
         raise V4RenderError("browser missing-codepoint count disagrees with coverage")
     payload = {
@@ -518,6 +539,9 @@ def _element_evidence(
         raw_text = _required_raw(raw, "actual_text")
         if not isinstance(raw_text, str):
             raise V4RenderError("browser text probe is not a string")
+        dom_text_measured = _required_bool(raw, "dom_text_measured")
+        if not dom_text_measured:
+            raise V4RenderError("browser DOM text was not measured")
         measured_text = raw_text
         evidence = plan_page.compiler_provenance.text_measurement_evidence.get(element.content_ref)
         if evidence is None:
@@ -528,7 +552,7 @@ def _element_evidence(
             expected_text_sha256=sha256_text_v4(fragment.text),
             actual_text_sha256=sha256_text_v4(measured_text),
             actual_text=measured_text,
-            dom_text_measured=True,
+            dom_text_measured=dom_text_measured,
             computed_font=_make_font(
                 element=element,
                 raw=raw,

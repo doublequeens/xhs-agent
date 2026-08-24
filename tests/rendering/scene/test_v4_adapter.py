@@ -55,9 +55,11 @@ def _render_stub(
     *,
     actual_text=_UNSET,
     missing_field=None,
+    dom_text_measured=True,
     font_loaded=True,
     glyph_face_loaded=True,
     glyph_font_check=True,
+    raster_mode="exact",
 ):
     png = _png_bytes()
     fragments = {item.fragment_id: item for item in semantic_model.fragments}
@@ -73,15 +75,31 @@ def _render_stub(
                 )
                 coverage = [
                     {
-                        "visible": bool(glyph_face_loaded and glyph_font_check),
+                        "visible": bool(
+                            glyph_face_loaded
+                            and glyph_font_check
+                            and not _grapheme.isspace()
+                            and raster_mode == "exact"
+                        ),
                         "width": 12.0,
                         "height": 24.0,
+                        "is_whitespace": _grapheme.isspace(),
                         "face_loaded": glyph_face_loaded,
                         "font_check": glyph_font_check,
                         "ink_pixel_count": 42 if glyph_face_loaded else 0,
                         "raster_signature": (
                             "a" * 64 if glyph_face_loaded else "0" * 64
                         ),
+                        "fallback_ink_pixel_count": 42 if glyph_face_loaded else 0,
+                        "fallback_raster_signature": (
+                            "a" * 64
+                            if raster_mode == "fallback"
+                            else "b" * 64
+                        ) if glyph_face_loaded else "0" * 64,
+                        "tofu_ink_pixel_count": 42 if glyph_face_loaded else 0,
+                        "tofu_raster_signature": (
+                            "a" * 64 if raster_mode == "tofu" else "c" * 64
+                        ) if glyph_face_loaded else "0" * 64,
                     }
                     for _grapheme in measured_text
                 ] if measured_text else []
@@ -106,10 +124,12 @@ def _render_stub(
                         "font_loaded": font_loaded,
                         "document_fonts_status": "loaded",
                         "actual_text": measured_text,
-                        "dom_text_measured": True,
+                        "dom_text_measured": dom_text_measured,
                         "glyph_visible": visible,
                         "missing_codepoint_count": sum(
-                            1 for item in coverage if not item["visible"]
+                            1
+                            for item in coverage
+                            if not item["is_whitespace"] and not item["visible"]
                         ),
                         "glyph_coverage": coverage,
                         "color": "rgb(17, 17, 17)",
@@ -455,6 +475,113 @@ def test_v4_render_rejects_missing_browser_observation(tmp_path):
             ),
         )
     assert not paths.render_root.exists()
+
+
+def test_v4_render_rejects_false_dom_text_measurement(tmp_path):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    with pytest.raises(V4RenderError, match="DOM text|dom_text_measured"):
+        render_v4_revision(
+            design_plan=plan,
+            design_plan_qa_result=qa,
+            content_atom_set=fixture["atom_set"],
+            content_lock=fixture["lock"],
+            semantic_content_model=fixture["semantic_model"],
+            page_brief_set=fixture["page_set"],
+            visual_direction_plan=fixture["direction_plan"],
+            asset_manifest=fixture["manifest"],
+            family_tokens="pink_red",
+            artifact_paths=paths,
+            render_page_fn=_render_stub(
+                plan, fixture["semantic_model"], dom_text_measured=False
+            ),
+        )
+    assert not paths.render_root.exists()
+
+
+@pytest.mark.parametrize("raster_mode", ["fallback", "tofu"])
+def test_v4_render_fails_closed_on_ambiguous_primary_glyph_raster(tmp_path, raster_mode):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    result = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+        render_page_fn=_render_stub(
+            plan, fixture["semantic_model"], raster_mode=raster_mode
+        ),
+    )
+    glyph = result.manifest.pages[0].elements[0].glyph
+    assert glyph is not None and glyph.visible is False
+    coverage = glyph.coverage[0]
+    if raster_mode == "fallback":
+        assert coverage.raster_signature == coverage.fallback_raster_signature
+    else:
+        assert coverage.raster_signature == coverage.tofu_raster_signature
+
+
+def test_v4_render_accepts_conservative_exact_primary_raster_witness(tmp_path):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    result = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+        render_page_fn=_render_stub(plan, fixture["semantic_model"]),
+    )
+    glyph = result.manifest.pages[0].elements[0].glyph
+    assert glyph is not None and glyph.visible is True
+    assert len({
+        glyph.coverage[0].raster_signature,
+        glyph.coverage[0].fallback_raster_signature,
+        glyph.coverage[0].tofu_raster_signature,
+    }) == 3
+
+
+def test_v4_render_does_not_turn_all_whitespace_into_painted_glyphs(tmp_path):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    result = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+        render_page_fn=_render_stub(
+            plan, fixture["semantic_model"], actual_text="   \n"
+        ),
+    )
+    glyph = result.manifest.pages[0].elements[0].glyph
+    assert glyph is not None
+    assert glyph.visible is False
+    assert glyph.missing_codepoint_count == 0
 
 
 @pytest.mark.parametrize("missing_field", ["dom_text_measured", "glyph_coverage"])
