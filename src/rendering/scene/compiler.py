@@ -105,6 +105,7 @@ _PAGE_DOCUMENT = (
     "position:relative;overflow:hidden;}}\n"
     ".scene-element{{position:absolute;}}\n"
     ".scene-image-inner{{display:block;width:100%;height:100%;}}\n"
+    "{font_faces}"
     "</style>\n"
     "</head>\n"
     "<body>\n"
@@ -207,6 +208,26 @@ def _safe_local_file_uri(local_path: str) -> str:
         ) from error
 
 
+def _safe_font_file_uri(font_path: Path) -> str:
+    """Return a no-follow local URI for a checked-in v4 font file.
+
+    The generic v3 compiler never calls this helper.  The optional v4 seam
+    supplies already-resolved repository font paths and uses this final
+    defense-in-depth check before a path reaches Chromium CSS.
+    """
+
+    if not isinstance(font_path, Path) or not font_path.is_absolute():
+        raise SceneCompilationError("v4 font source must be an absolute path")
+    if ".." in font_path.parts or font_path.is_symlink():
+        raise SceneCompilationError("v4 font source must not traverse or follow symlinks")
+    try:
+        if not font_path.is_file():
+            raise SceneCompilationError("v4 font source must be a regular file")
+        return font_path.as_uri()
+    except OSError as error:
+        raise SceneCompilationError("v4 font source is not readable") from error
+
+
 # ---------------------------------------------------------------------------
 # Text emphasis (applied to the ORIGINAL text so fragment indices stay valid)
 # ---------------------------------------------------------------------------
@@ -262,6 +283,7 @@ def _render_text(
     *,
     fragments: Mapping[str, ContentFragment],
     style: FamilyStyleProfile,
+    text_render_options: Mapping[str, object] | None = None,
 ) -> str:
     fragment = fragments.get(element.content_ref)
     if fragment is None:
@@ -271,6 +293,12 @@ def _render_text(
         )
     text_style = element.style
     font_stack = resolve_font_stack(text_style.font_role, style)
+    options = (text_render_options or {}).get(element.content_ref, {})
+    if not isinstance(options, Mapping):
+        options = {}
+    rendered_text = options.get("text", fragment.text)
+    if not isinstance(rendered_text, str):
+        raise SceneCompilationError("v4 text render option must be a string")
     declarations = (
         _box_position(element.box)
         + f"font-family:{format_font_family(font_stack)};"
@@ -280,7 +308,37 @@ def _render_text(
         + f"text-align:{text_style.align};"
         + f"font-weight:{_num(text_style.weight)};"
     )
-    inner = _render_text_with_emphasis(fragment.text, text_style.emphasis_ranges)
+    if bool(options.get("preformatted")):
+        declarations += "white-space:pre-wrap;overflow-wrap:anywhere;"
+    inset = options.get("content_inset")
+    if inset is not None:
+        if (
+            not isinstance(inset, (tuple, list))
+            or len(inset) != 4
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or float(value) < 0
+                or not math.isfinite(float(value))
+                for value in inset
+            )
+        ):
+            raise SceneCompilationError("v4 content inset must contain four finite values")
+        left, top, right, bottom = (float(value) for value in inset)
+        declarations += (
+            f"padding-left:{_num(left)}px;"
+            f"padding-top:{_num(top)}px;"
+            f"padding-right:{_num(right)}px;"
+            f"padding-bottom:{_num(bottom)}px;"
+        )
+    # A v4 break layout is generated from the original fragment.  Emphasis
+    # ranges are source offsets, so the adapter only enables them when no
+    # inserted break offsets are present; ordinary v3 text keeps its exact
+    # historical path.
+    inner = _render_text_with_emphasis(
+        rendered_text,
+        text_style.emphasis_ranges if rendered_text == fragment.text else (),
+    )
     # HTML-escape the declarations at the attribute boundary so the literal
     # double quotes ``format_font_family`` emits around multi-word family
     # names (e.g. ``"Source Han Sans SC"``) cannot terminate the style
@@ -442,6 +500,7 @@ def compile_element(
     fragments: Mapping[str, ContentFragment],
     assets: Mapping[str, AssetManifestItem],
     style: FamilyStyleProfile,
+    text_render_options: Mapping[str, object] | None = None,
 ) -> str:
     """Render one scene element to HTML via generic primitive dispatch.
 
@@ -449,7 +508,12 @@ def compile_element(
     """
     kind = getattr(element, "kind", None)
     if kind == "text":
-        return _render_text(element, fragments=fragments, style=style)
+        return _render_text(
+            element,
+            fragments=fragments,
+            style=style,
+            text_render_options=text_render_options,
+        )
     if kind == "image":
         return _render_image(element, assets=assets)
     if kind == "shape":
@@ -467,6 +531,8 @@ def compile_page_scene(
     fragments: Mapping[str, ContentFragment],
     assets: Mapping[str, AssetManifestItem],
     style: FamilyStyleProfile,
+    font_face_sources: Mapping[str, tuple[Path, int]] | None = None,
+    text_render_options: Mapping[str, object] | None = None,
 ) -> CompiledPage:
     """Compile one :class:`PageScene` into a self-contained HTML document.
 
@@ -475,13 +541,46 @@ def compile_page_scene(
     deterministic for identical inputs.
     """
     body = "\n".join(
-        compile_element(element, fragments=fragments, assets=assets, style=style)
+        compile_element(
+            element,
+            fragments=fragments,
+            assets=assets,
+            style=style,
+            text_render_options=text_render_options,
+        )
         for element in sorted(page.elements, key=lambda item: item.layer)
     )
+    font_faces = ""
+    if font_face_sources:
+        declarations: list[str] = []
+        for family_name, source in sorted(font_face_sources.items()):
+            if (
+                not isinstance(family_name, str)
+                or not family_name.strip()
+                or not isinstance(source, tuple)
+                or len(source) != 2
+                or not isinstance(source[0], Path)
+                or type(source[1]) is not int
+                or source[1] < 1
+                or source[1] > 1000
+            ):
+                raise SceneCompilationError("invalid v4 font-face source")
+            uri = _safe_font_file_uri(source[0])
+            family_css = format_font_family((family_name,))
+            declarations.append(
+                "@font-face{"
+                f"font-family:{family_css};"
+                f"src:url('{_html.escape(uri, quote=True)}') format('truetype');"
+                f"font-weight:{source[1]};font-style:normal;font-display:block;"
+                "}"
+            )
+        font_faces = "\n".join(declarations) + "\n"
     return CompiledPage(
         page_id=page.page_id,
         html=_PAGE_DOCUMENT.format(
-            background=_format_color(page.background), body=body
+            background=_format_color(page.background),
+            body=body,
+            font_faces=font_faces,
         ),
         expected_element_ids=tuple(
             element.element_id for element in page.elements

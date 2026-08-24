@@ -94,12 +94,25 @@ PROBE_SCRIPT = r"""
       font_family: style.fontFamily,
       font_size: parseFloat(style.fontSize),
       line_height: parseFloat(style.lineHeight),
+      font_weight: parseInt(style.fontWeight, 10),
       color: style.color,
       background_color: style.backgroundColor,
       natural_width: inner ? inner.naturalWidth : null,
       natural_height: inner ? inner.naturalHeight : null,
       rendered_image_width: innerRect ? innerRect.width : null,
       rendered_image_height: innerRect ? innerRect.height : null,
+      // v4 consumes these measured values directly.  The existing v3 probe
+      // builder intentionally ignores the extra keys, preserving its public
+      // RenderedElementProbe contract.
+      actual_text: node.classList.contains('scene-text') ? node.textContent : null,
+      font_loaded: node.classList.contains('scene-text')
+        ? document.fonts.check(`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`)
+        : null,
+      document_fonts_status: document.fonts.status,
+      glyph_visible: node.classList.contains('scene-text')
+        ? rect.width > 0 && rect.height > 0 && node.textContent.length > 0
+        : null,
+      asset_loaded: inner ? Boolean(inner.complete && inner.naturalWidth > 0) : null,
       line_boxes: lineRects
     };
   });
