@@ -12,7 +12,9 @@ from src.visual_runtime.artifact_identity import (
     ArtifactIdentity,
     _open_absolute_directory,
     _read_file_at,
+    bind_staged_directory,
     bind_reused_artifact,
+    read_verified_artifact,
     resolve_artifact_paths,
 )
 
@@ -156,6 +158,47 @@ def test_reuse_rejects_symlinked_source_ancestor(tmp_path: Path):
             destination=revision_root / "copy.bin",
             revision_root=revision_root,
         )
+
+
+def test_read_verified_artifact_is_contained_and_byte_bound(tmp_path: Path):
+    root = tmp_path / "assets"
+    root.mkdir()
+    source = root / "sentinel.bin"
+    source.write_bytes(b"sentinel")
+    digest = hashlib.sha256(b"sentinel").hexdigest()
+
+    assert read_verified_artifact(source, digest, containment_root=root) == b"sentinel"
+
+    source.write_bytes(b"substituted")
+    with pytest.raises(ArtifactBindingError, match="sha256"):
+        read_verified_artifact(source, digest, containment_root=root)
+
+    outside = tmp_path / "outside.bin"
+    outside.write_bytes(b"outside")
+    link = root / "link.bin"
+    link.symlink_to(outside)
+    outside_digest = hashlib.sha256(b"outside").hexdigest()
+    with pytest.raises(ArtifactBindingError, match="containment|symlink"):
+        read_verified_artifact(link, outside_digest, containment_root=root)
+
+
+def test_staged_directory_publishes_once_without_replacement(tmp_path: Path):
+    revision = tmp_path / "revision"
+    revision.mkdir()
+    staged = revision / ".staged"
+    staged.mkdir()
+    (staged / "page.png").write_bytes(b"page")
+    destination = revision / "render"
+
+    assert bind_staged_directory(staged, destination, revision_root=revision) == destination
+    assert (destination / "page.png").read_bytes() == b"page"
+
+    second = revision / ".staged-second"
+    second.mkdir()
+    (second / "page.png").write_bytes(b"replacement")
+    with pytest.raises(ArtifactBindingError, match="already exists"):
+        bind_staged_directory(second, destination, revision_root=revision)
+    assert (destination / "page.png").read_bytes() == b"page"
 
 
 def test_reuse_close_failure_is_typed_and_never_retries_fd(tmp_path: Path, monkeypatch):

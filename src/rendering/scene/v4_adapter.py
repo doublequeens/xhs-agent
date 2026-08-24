@@ -10,7 +10,7 @@ absolute path is allowed into the durable v4 manifest.
 from __future__ import annotations
 
 import hashlib
-import os
+import math
 import shutil
 import sys
 import tempfile
@@ -43,22 +43,18 @@ from src.schemas.v4.content import (
     sha256_text_v4,
 )
 from src.schemas.v4.direction import PageBriefSetV4, VisualDirectionPlanV4
-from src.schemas.v4.layout import (
-    CarouselDesignPlanV4,
-    FamilyTokensV4,
-    TextMeasurementEvidenceV4,
-)
+from src.schemas.v4.layout import CarouselDesignPlanV4, FamilyTokensV4
 from src.schemas.v4.quality import DesignPlanQAResultV4
 from src.schemas.v4.rendering import (
     ArtifactIdentityV4,
     RenderAssetEvidenceV4,
     RenderElementEvidenceV4,
     RenderFontEvidenceV4,
+    RenderGlyphCoverageV4,
     RenderGlyphEvidenceV4,
-    RenderIssueV4,
     RenderManifestV4,
     RenderPageEvidenceV4,
-    RenderQAResultV4,
+    RenderBoxV4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4
 from src.visual_design.v4.tokens import get_family_tokens
@@ -70,8 +66,9 @@ from src.visual_design.v4.typography import (
 from src.visual_runtime.artifact_identity import (
     ArtifactBindingError,
     ArtifactPaths,
-    bind_reused_artifact,
+    bind_staged_directory,
     ensure_artifact_paths,
+    read_verified_artifact,
     revalidate_artifact_paths,
     resolve_artifact_paths,
 )
@@ -85,7 +82,6 @@ class V4RenderError(RuntimeError):
 @dataclass(frozen=True)
 class V4RenderResult:
     manifest: RenderManifestV4
-    qa: RenderQAResultV4
     artifact_paths: ArtifactPaths
 
 
@@ -149,22 +145,10 @@ def _private_fragments(model: SemanticContentModelV4) -> dict[str, ContentFragme
     }
 
 
-def _read_verified_asset(item: AssetManifestItem) -> bytes:
-    path = Path(item.local_path)
-    if not path.is_absolute() or ".." in path.parts or path.is_symlink():
-        raise V4RenderError("asset source path is unsafe")
-    try:
-        body = path.read_bytes()
-    except OSError:
-        raise V4RenderError("approved asset source is unreadable") from None
-    if hashlib.sha256(body).hexdigest() != item.sha256:
-        raise V4RenderError("approved asset source bytes do not match manifest")
-    return body
-
-
 def _private_assets(
     plan: CarouselDesignPlanV4,
     manifest: AssetManifest,
+    paths: ArtifactPaths,
 ) -> dict[str, AssetManifestItem]:
     """Map opaque scene refs to private resolver items after byte validation."""
 
@@ -174,15 +158,29 @@ def _private_assets(
         evidence = page.compiler_provenance.asset_binding_evidence
         for directive_id, binding in evidence.items():
             item = by_directive.get(directive_id)
-            if item is None or item.page_id != page.page_id:
+            if (
+                item is None
+                or item.page_id != page.page_id
+                or binding.directive_id != directive_id
+                or binding.page_id != page.page_id
+            ):
                 raise V4RenderError("scene asset directive is not bound to the exact manifest")
             if item.run_id != plan.run_id:
                 raise V4RenderError("scene asset transaction is bound to a different run")
+            if item.transaction_id != paths.identity.revision_id:
+                raise V4RenderError("scene asset transaction is bound to a different revision")
             if item.security_status != "approved" or item.human_decision != "pending":
                 raise V4RenderError("scene asset is not approved and pending human review")
             if item.sha256 != binding.asset_sha256:
                 raise V4RenderError("scene asset byte hash is stale")
-            _read_verified_asset(item)
+            try:
+                read_verified_artifact(
+                    item.local_path,
+                    item.sha256,
+                    containment_root=paths.asset_root,
+                )
+            except ArtifactBindingError:
+                raise V4RenderError("approved asset source is unsafe or unstable") from None
             private[binding.asset_ref] = item.model_copy(update={"asset_id": binding.asset_ref})
     return private
 
@@ -190,9 +188,9 @@ def _private_assets(
 def _text_options(
     plan: CarouselDesignPlanV4,
     semantic_model: SemanticContentModelV4,
-) -> dict[str, dict[str, object]]:
+) -> dict[tuple[str, str], dict[str, object]]:
     fragments = {item.fragment_id: item for item in semantic_model.fragments}
-    options: dict[str, dict[str, object]] = {}
+    options: dict[tuple[str, str], dict[str, object]] = {}
     for page in plan.pages:
         for ref, evidence in page.compiler_provenance.text_measurement_evidence.items():
             fragment = fragments.get(ref)
@@ -206,7 +204,7 @@ def _text_options(
                 )
             except Exception:
                 raise V4RenderError("text measurement break evidence is stale") from None
-            options[ref] = {
+            options[(page.page_id, ref)] = {
                 "text": "\n".join(lines.lines),
                 "preformatted": True,
                 "content_inset": (
@@ -241,28 +239,129 @@ def _raw_by_id(raw_probes: list[dict]) -> dict[str, dict]:
     return result
 
 
-def _box(value: object, fallback):
-    if isinstance(value, Mapping):
-        try:
-            return type(fallback)(
-                x=float(value.get("x")),
-                y=float(value.get("y")),
-                width=float(value.get("width")),
-                height=float(value.get("height")),
+def _required_raw(raw: Mapping[str, object], key: str) -> object:
+    if key not in raw or raw[key] is None:
+        raise V4RenderError(f"browser probe is missing measured field: {key}")
+    return raw[key]
+
+
+def _required_float(raw: Mapping[str, object], key: str) -> float:
+    value = _required_raw(raw, key)
+    if isinstance(value, bool):
+        raise V4RenderError(f"browser probe field is not numeric: {key}")
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        raise V4RenderError(f"browser probe field is not numeric: {key}") from None
+    if not math.isfinite(result):
+        raise V4RenderError(f"browser probe field is not finite: {key}")
+    return result
+
+
+def _required_bool(raw: Mapping[str, object], key: str) -> bool:
+    value = _required_raw(raw, key)
+    if type(value) is not bool:
+        raise V4RenderError(f"browser probe field is not boolean: {key}")
+    return value
+
+
+def _required_int(raw: Mapping[str, object], key: str) -> int:
+    value = _required_float(raw, key)
+    if value != int(value):
+        raise V4RenderError(f"browser probe field is not integral: {key}")
+    return int(value)
+
+
+def _raw_box(raw: Mapping[str, object]) -> RenderBoxV4:
+    return RenderBoxV4(
+        x=_required_float(raw, "x"),
+        y=_required_float(raw, "y"),
+        width=_required_float(raw, "width"),
+        height=_required_float(raw, "height"),
+    )
+
+
+def _scene_box(box) -> RenderBoxV4:
+    return RenderBoxV4(
+        x=float(box.x),
+        y=float(box.y),
+        width=float(box.width),
+        height=float(box.height),
+    )
+
+
+def _raw_line_boxes(raw: Mapping[str, object]) -> tuple[RenderBoxV4, ...]:
+    value = _required_raw(raw, "line_boxes")
+    if not isinstance(value, (list, tuple)):
+        raise V4RenderError("browser line-box evidence is not a sequence")
+    boxes: list[RenderBoxV4] = []
+    for item in value:
+        if not isinstance(item, Mapping):
+            raise V4RenderError("browser line-box evidence is malformed")
+        boxes.append(
+            RenderBoxV4(
+                x=_required_float(item, "x"),
+                y=_required_float(item, "y"),
+                width=_required_float(item, "width"),
+                height=_required_float(item, "height"),
             )
-        except (TypeError, ValueError):
-            return fallback
-    return fallback
+        )
+    return tuple(boxes)
 
 
-def _make_glyph(*, raw: Mapping[str, object], measured: bool) -> RenderGlyphEvidenceV4:
-    loaded = bool(raw.get("font_loaded", True))
-    visible = bool(raw.get("glyph_visible", True))
-    missing = int(raw.get("missing_codepoint_count", 0) or 0)
+def _require_probe_shape(raw: Mapping[str, object], element) -> None:
+    common = (
+        "x", "y", "width", "height", "scroll_width", "scroll_height",
+        "client_width", "client_height", "line_boxes",
+    )
+    required = list(common)
+    if isinstance(element, TextElement):
+        required.extend(
+            (
+                "actual_text", "font_family", "font_size", "line_height",
+                "font_weight", "font_loaded", "document_fonts_status",
+                "glyph_visible", "missing_codepoint_count", "glyph_coverage",
+            )
+        )
+    elif isinstance(element, ImageElement):
+        required.extend(
+            (
+                "asset_loaded", "natural_width", "natural_height",
+                "rendered_image_width", "rendered_image_height",
+            )
+        )
+    for key in required:
+        _required_raw(raw, key)
+
+
+def _make_glyph(*, raw: Mapping[str, object]) -> RenderGlyphEvidenceV4:
+    loaded = _required_bool(raw, "font_loaded")
+    visible = _required_bool(raw, "glyph_visible")
+    coverage_raw = _required_raw(raw, "glyph_coverage")
+    if not isinstance(coverage_raw, (list, tuple)):
+        raise V4RenderError("browser glyph coverage is not a sequence")
+    coverage: list[RenderGlyphCoverageV4] = []
+    for item in coverage_raw:
+        if not isinstance(item, Mapping) or type(item.get("visible")) is not bool:
+            raise V4RenderError("browser glyph coverage is malformed")
+        coverage.append(
+            RenderGlyphCoverageV4(
+                visible=item["visible"],
+                width=_required_float(item, "width"),
+                height=_required_float(item, "height"),
+            )
+        )
+    expected_visible = bool(coverage) and all(item.visible for item in coverage)
+    if visible != expected_visible:
+        raise V4RenderError("browser glyph visibility disagrees with coverage")
+    missing = sum(1 for item in coverage if not item.visible)
+    if _required_int(raw, "missing_codepoint_count") != missing:
+        raise V4RenderError("browser missing-codepoint count disagrees with coverage")
     payload = {
         "visible": visible,
         "loaded": loaded,
         "missing_codepoint_count": missing,
+        "coverage": tuple(coverage),
     }
     return RenderGlyphEvidenceV4(
         **payload,
@@ -279,22 +378,22 @@ def _make_font(
 ) -> RenderFontEvidenceV4:
     expected_family = getattr(tokens.font_roles, element.style.font_role)
     expected_weight = CANONICAL_FONT_NOMINAL_WEIGHTS_V4[expected_family]
-    status = raw.get("document_fonts_status", "loaded")
+    status = _required_raw(raw, "document_fonts_status")
     if status not in {"loaded", "loading", "unloaded", "error", "unknown"}:
-        status = "unknown"
+        raise V4RenderError("browser font status is not recognized")
+    family = _required_raw(raw, "font_family")
+    if type(family) is not str or not family.strip():
+        raise V4RenderError("browser computed font family is missing")
     payload = {
         "role": element.style.font_role,
         "expected_family": expected_family,
-        "computed_family": str(raw.get("font_family") or expected_family),
+        "computed_family": family,
         "expected_font_sha256": font_sha256,
-        "computed_weight": int(raw.get("font_weight", element.style.weight) or element.style.weight),
+        "computed_weight": _required_int(raw, "font_weight"),
         "expected_weight": expected_weight,
-        "font_size_px": float(raw.get("font_size", element.style.font_size) or element.style.font_size),
-        "line_height_px": float(
-            raw.get("line_height", element.style.font_size * element.style.line_height)
-            or element.style.font_size * element.style.line_height
-        ),
-        "font_loaded": bool(raw.get("font_loaded", True)),
+        "font_size_px": _required_float(raw, "font_size"),
+        "line_height_px": _required_float(raw, "line_height"),
+        "font_loaded": _required_bool(raw, "font_loaded"),
         "document_fonts_status": status,
     }
     return RenderFontEvidenceV4(
@@ -310,26 +409,17 @@ def _make_asset(
     binding,
     asset_sha256: str,
 ) -> RenderAssetEvidenceV4:
-    def _optional_float(key: str) -> float | None:
-        value = raw.get(key)
-        if value is None:
-            return None
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
-
     payload = {
         "directive_id": binding.directive_id,
         "asset_ref": element.asset_ref,
         "asset_sha256": asset_sha256,
         "fit": element.fit,
         "orientation": binding.orientation,
-        "loaded": bool(raw.get("asset_loaded", True)),
-        "natural_width": _optional_float("natural_width"),
-        "natural_height": _optional_float("natural_height"),
-        "rendered_width": _optional_float("rendered_image_width"),
-        "rendered_height": _optional_float("rendered_image_height"),
+        "loaded": _required_bool(raw, "asset_loaded"),
+        "natural_width": _required_float(raw, "natural_width"),
+        "natural_height": _required_float(raw, "natural_height"),
+        "rendered_width": _required_float(raw, "rendered_image_width"),
+        "rendered_height": _required_float(raw, "rendered_image_height"),
         "box_ratio": float(binding.box_ratio),
         "crop_factor": float(binding.crop_factor),
     }
@@ -352,6 +442,7 @@ def _element_evidence(
     element = next((item for item in page.elements if item.element_id == element_id), None)
     if element is None:
         raise V4RenderError("browser probe references an unknown scene element")
+    _require_probe_shape(raw, element)
     try:
         base_probes = build_element_probes(
             raw_probes=[dict(raw)],
@@ -363,20 +454,12 @@ def _element_evidence(
         base = base_probes[0]
     except ProbeBuildError:
         raise V4RenderError("browser probe evidence is incomplete") from None
-    actual_box = _box(
-        {
-            "x": raw.get("x"),
-            "y": raw.get("y"),
-            "width": raw.get("width"),
-            "height": raw.get("height"),
-        },
-        base.actual_box,
-    )
-    expected_box = getattr(element, "box", actual_box)
-    scroll_width = float(raw.get("scroll_width", actual_box.width) or actual_box.width)
-    scroll_height = float(raw.get("scroll_height", actual_box.height) or actual_box.height)
-    client_width = float(raw.get("client_width", actual_box.width) or actual_box.width)
-    client_height = float(raw.get("client_height", actual_box.height) or actual_box.height)
+    actual_box = _raw_box(raw)
+    expected_box = _scene_box(getattr(element, "box", actual_box))
+    scroll_width = _required_float(raw, "scroll_width")
+    scroll_height = _required_float(raw, "scroll_height")
+    client_width = _required_float(raw, "client_width")
+    client_height = _required_float(raw, "client_height")
     common = {
         "page_id": page.page_id,
         "element_id": element.element_id,
@@ -398,21 +481,16 @@ def _element_evidence(
         "computed_font": None,
         "glyph": None,
         "asset": None,
-        "line_boxes": tuple(base.line_boxes or ()),
+        "line_boxes": _raw_line_boxes(raw),
     }
     if isinstance(element, TextElement):
         fragment = fragments.get(element.content_ref)
         if fragment is None:
             raise V4RenderError("text probe references an unknown source fragment")
-        raw_text = raw.get("actual_text")
-        # The offline injection seam may omit this v4-only field (or set it to
-        # null) while exercising the v3 probe contract.  An explicitly
-        # measured empty string must remain empty: treating it as the expected
-        # source would let a DOM text deletion pass conservation QA.
-        measured = raw_text is not None
-        if measured and not isinstance(raw_text, str):
+        raw_text = _required_raw(raw, "actual_text")
+        if not isinstance(raw_text, str):
             raise V4RenderError("browser text probe is not a string")
-        measured_text = raw_text if measured else fragment.text
+        measured_text = raw_text
         evidence = plan_page.compiler_provenance.text_measurement_evidence.get(element.content_ref)
         if evidence is None:
             raise V4RenderError("text probe has no hash-bound measurement evidence")
@@ -422,14 +500,14 @@ def _element_evidence(
             expected_text_sha256=sha256_text_v4(fragment.text),
             actual_text_sha256=sha256_text_v4(measured_text),
             actual_text=measured_text,
-            dom_text_measured=measured,
+            dom_text_measured=True,
             computed_font=_make_font(
                 element=element,
                 raw=raw,
                 tokens=tokens,
                 font_sha256=font_sha,
             ),
-            glyph=_make_glyph(raw=raw, measured=measured),
+            glyph=_make_glyph(raw=raw),
         )
     elif isinstance(element, ImageElement):
         binding = next(
@@ -468,33 +546,6 @@ def _png_dimensions(data: bytes) -> tuple[int, int]:
             return image.size
     except Exception:
         raise V4RenderError("rendered page is not a readable PNG") from None
-
-
-def _issue(
-    *,
-    code: str,
-    page_id: str,
-    element_id: str | None = None,
-    fragment_ref: str | None = None,
-    actual: float | None = None,
-    expected: float | None = None,
-    tolerance_px: float | None = None,
-    revision_target: str = "renderer_retry",
-) -> RenderIssueV4:
-    payload = {
-        "code": code,
-        "message": f"{code.lower().replace('_', ' ')} requires deterministic render review",
-        "page_id": page_id,
-        "element_id": element_id,
-        "fragment_ref": fragment_ref,
-        "asset_ref": None,
-        "actual": actual,
-        "expected": expected,
-        "tolerance_px": tolerance_px,
-        "evidence": "measured browser evidence is outside the render contract",
-        "revision_target": revision_target,
-    }
-    return RenderIssueV4(**payload, canonical_sha256=canonical_sha256_v4(payload))
 
 
 def _validate_inputs(
@@ -641,23 +692,28 @@ def _publish_staged(
     manifest_source = stage_root / "render-manifest.json"
     manifest_bytes = canonical_json_v4(manifest).encode("utf-8")
     files.append((manifest_source, "render/render-manifest.json", manifest_bytes))
-    for source, relative, body in files:
-        _atomic_write_bytes(source, body)
+    try:
+        for source, relative, body in files:
+            _atomic_write_bytes(source, body)
+    except Exception as error:
+        raise V4RenderError("staged render artifact write failed") from error
+    # One descriptor-relative directory publication keeps pages, contact sheet
+    # and manifest invisible until the complete canonical tree exists.
+    bind_staged_directory(
+        stage_root,
+        paths.render_root,
+        revision_root=paths.revision_root,
+    )
+    for _source, relative, body in files:
         target = paths.revision_root / relative
-        if target.exists() or target.is_symlink():
-            raise ArtifactBindingError("artifact destination already exists")
-    for source, relative, body in files:
-        binding = bind_reused_artifact(
-            source,
-            hashlib.sha256(body).hexdigest(),
-            paths.revision_root / relative,
-            revision_root=paths.revision_root,
-        )
-        if binding.sha256 != hashlib.sha256(body).hexdigest():
-            raise V4RenderError("published artifact byte hash changed")
-        target = paths.revision_root / relative
-        if target.is_symlink() or hashlib.sha256(target.read_bytes()).hexdigest() != binding.sha256:
-            raise V4RenderError("published artifact failed byte revalidation")
+        try:
+            read_verified_artifact(
+                target,
+                hashlib.sha256(body).hexdigest(),
+                containment_root=paths.render_root,
+            )
+        except ArtifactBindingError:
+            raise V4RenderError("published artifact failed byte revalidation") from None
 
 
 def render_v4_revision(
@@ -701,7 +757,7 @@ def render_v4_revision(
     )
     paths = _validate_paths(artifact_paths, plan)
     fragments = _private_fragments(semantic)
-    private_assets = _private_assets(plan, manifest)
+    private_assets = _private_assets(plan, manifest, paths)
     style = _private_style(tokens)
     text_options = _text_options(plan, semantic)
     font_sources = _font_sources(tokens)
@@ -784,7 +840,10 @@ def render_v4_revision(
                     canonical_sha256=canonical_sha256_v4(page_payload),
                 )
             )
-        contact_bytes = sheet_fn(tuple(page_paths))
+        try:
+            contact_bytes = sheet_fn(tuple(page_paths))
+        except Exception as error:
+            raise V4RenderError("contact sheet renderer failed") from error
         if not isinstance(contact_bytes, bytes):
             raise V4RenderError("contact sheet seam must return PNG bytes")
         cw, ch = _png_dimensions(contact_bytes)
@@ -827,98 +886,6 @@ def render_v4_revision(
             **manifest_payload,
             canonical_sha256=canonical_sha256_v4(manifest_payload),
         )
-        issues: list[RenderIssueV4] = []
-        content_attestation = True
-        geometry_attestation = True
-        font_attestation = True
-        asset_attestation = True
-        for element in all_elements:
-            if element.kind == "text":
-                expected_source_text = fragments[element.content_ref].text if element.content_ref else ""
-                expected_rendered_text = str(
-                    text_options.get(element.content_ref or "", {}).get(
-                        "text", expected_source_text
-                    )
-                )
-                measured_text_matches = element.actual_text in {
-                    expected_source_text,
-                    expected_rendered_text,
-                }
-                if element.dom_text_measured and not measured_text_matches:
-                    content_attestation = False
-                    issues.append(
-                        _issue(
-                            code="RENDER_DOM_TEXT",
-                            page_id=element.page_id,
-                            element_id=element.element_id,
-                            fragment_ref=element.content_ref,
-                        )
-                    )
-                if element.computed_font is not None:
-                    font_attestation = font_attestation and element.computed_font.font_loaded
-                if element.glyph is not None and (
-                    not element.glyph.loaded
-                    or not element.glyph.visible
-                    or element.glyph.missing_codepoint_count
-                ):
-                    font_attestation = False
-                    issues.append(
-                        _issue(
-                            code="RENDER_GLYPH",
-                            page_id=element.page_id,
-                            element_id=element.element_id,
-                            fragment_ref=element.content_ref,
-                            revision_target="font_binding",
-                        )
-                    )
-            if element.actual_box is not None and element.expected_box is not None:
-                drift = max(
-                    abs(element.actual_box.x - element.expected_box.x),
-                    abs(element.actual_box.y - element.expected_box.y),
-                    abs(element.actual_box.width - element.expected_box.width),
-                    abs(element.actual_box.height - element.expected_box.height),
-                )
-                if drift > 2:
-                    geometry_attestation = False
-                    issues.append(
-                        _issue(
-                            code="RENDER_BOX_DRIFT",
-                            page_id=element.page_id,
-                            element_id=element.element_id,
-                            actual=drift,
-                            expected=2.0,
-                            tolerance_px=2.0,
-                            revision_target="layout_reflow",
-                        )
-                    )
-            geometry_attestation = geometry_attestation and not element.clipped and not element.overflow
-            if element.asset is not None:
-                asset_attestation = asset_attestation and element.asset.loaded
-        if not font_attestation:
-            issues.append(_issue(code="RENDER_FONT", page_id=pages[0].page_id, revision_target="font_binding"))
-        if not asset_attestation:
-            issues.append(_issue(code="RENDER_ASSET", page_id=pages[0].page_id, revision_target="asset_rebind"))
-        if not geometry_attestation and not any(issue.code == "RENDER_BOX_DRIFT" for issue in issues):
-            issues.append(_issue(code="RENDER_OVERFLOW", page_id=pages[0].page_id, revision_target="layout_reflow"))
-        bytes_attestation = True
-        qa_payload = {
-            "workflow_version": "llm_scene_v4",
-            "artifact_identity": identity,
-            "render_manifest_sha256": render_manifest.canonical_sha256,
-            "design_plan_sha256": plan.canonical_sha256,
-            "design_plan_qa_sha256": aggregate.canonical_sha256,
-            "passed": not issues and content_attestation and geometry_attestation and font_attestation and asset_attestation and bytes_attestation,
-            "issues": tuple(issues),
-            "content_attestation": content_attestation,
-            "geometry_attestation": geometry_attestation,
-            "font_attestation": font_attestation,
-            "asset_attestation": asset_attestation,
-            "bytes_attestation": bytes_attestation,
-        }
-        render_qa = RenderQAResultV4(
-            **qa_payload,
-            canonical_sha256=canonical_sha256_v4(qa_payload),
-        )
         _publish_staged(
             stage_root=stage_root,
             paths=paths,
@@ -927,7 +894,7 @@ def render_v4_revision(
             contact_bytes=contact_bytes,
         )
         revalidate_artifact_paths(paths)
-        return V4RenderResult(manifest=render_manifest, qa=render_qa, artifact_paths=paths)
+        return V4RenderResult(manifest=render_manifest, artifact_paths=paths)
     except BaseException as error:
         primary = error
         raise
@@ -935,7 +902,8 @@ def render_v4_revision(
         if owned_renderer is not None:
             owned_renderer.__exit__(*sys.exc_info())
         try:
-            shutil.rmtree(stage_root)
+            if stage_root.exists():
+                shutil.rmtree(stage_root)
         except OSError as cleanup_error:
             if primary is not None:
                 primary.add_note(f"v4 render staging cleanup failed: {cleanup_error}")

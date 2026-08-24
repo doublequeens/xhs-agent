@@ -169,3 +169,102 @@ The owned adapter tests verify that:
   the raw evidence and immutable byte bindings needed for that evaluator.
 - No graph wiring, publisher, ContentLock, database, output package or retired
   visual path was changed.
+
+## Fix round 1: harden v4 render evidence publication
+
+The independent review rejected the initial implementation on browser-evidence
+fallbacks, path-based asset reads, per-file publication, durable path identity,
+provisional Q3 routing, and page-global text options. This fix round addresses
+each finding while preserving the two delayed Task 13B stubs unchanged.
+
+### Fix-round TDD evidence
+
+The first fix-round run of the owned command was RED: 5 failed and 4 passed.
+The failures were the expected stale owned seams after the contract change:
+the adapter still called `_private_assets` with its old signature, and the
+owned renderer fixture did not provide the newly required measured
+`actual_text`/glyph fields. The exact command was:
+
+```text
+pytest -q tests/rendering/scene/test_v4_adapter.py tests/nodes/v4/test_render.py
+5 failed, 4 passed
+```
+
+After each vertical fix and fixture adaptation, the covering owned/artifact
+command is GREEN:
+
+```text
+pytest -q tests/rendering/scene/test_v4_adapter.py tests/nodes/v4/test_render.py tests/visual_runtime/test_artifact_identity.py
+43 passed
+```
+
+### Review finding resolutions
+
+- Browser evidence now rejects absent/null v4 probe fields instead of using
+  planned geometry, expected text/font values, or successful defaults. The
+  browser script awaits `document.fonts.ready`, checks the exact declared face
+  and weight, records per-grapheme Range coverage, and uses text Range line
+  boxes. The adapter preserves only those raw measured values. It no longer
+  computes `RenderQAResultV4`, attestations, issues, or issue-derived routing;
+  the node returns the immutable manifest and routes unconditionally to
+  `render_qa` after publication. Q3 remains Task 13B's sole policy factory.
+- Asset bindings require exact directive/page binding, plan run, revision
+  transaction identity, approved/pending status, and byte hash. Reads now use
+  descriptor-relative no-follow traversal with pinned ancestor/file identity,
+  containment beneath the revalidated `asset_root`, and byte revalidation.
+  Sentinel tests cover valid traversal, substitution, symlink escape, and
+  transaction mismatch.
+- Pages, contact sheet, and manifest are built in a private staging directory,
+  fsynced as a complete tree, and published once by a descriptor-relative
+  directory bind with no replacement. Injected page/contact/manifest failures
+  leave no canonical `render/` directory; a second revision attempt cannot
+  replace the first bytes. Primary failures remain primary during staging
+  cleanup.
+- Durable render paths reject absolute, backslash, empty, `.`, `..`, and
+  non-canonical components. Manifest identity enforces
+  `artifact_identity.revision_id == revision_id == f"revision-{revision}"` and
+  exact run/candidate bindings.
+- Text break/inset options are keyed by `(page_id, fragment_ref)` and reduced
+  to a page-local map at the generic compiler boundary, preventing reused
+  fragment refs from inheriting another page's measurements.
+
+### Fix-round verification
+
+Fresh covering checks after the final edit:
+
+```text
+pytest -q tests/nodes/v4
+96 passed, 1 warning
+
+pytest -q tests/rendering/scene/test_compiler.py tests/rendering/scene/test_probes.py tests/rendering/scene/test_renderer.py
+79 passed
+
+pytest -q tests/rendering/scene/test_chromium_smoke.py
+1 passed
+
+python -m compileall -q src main.py
+git diff --check
+```
+
+The filtered offline suite (excluding only the two preserved delayed Task 13B
+stubs) completed with 1813 passed and 3 skipped; its one real-Chromium smoke
+attempt failed only at browser launch in the restricted sandbox with
+`mach_port_rendezvous_mac ... Permission denied (1100)`. The standalone smoke
+command passed, and the controller also recorded a sandbox-external Chromium
+smoke pass. The preserved stubs were not modified, renamed, or deleted.
+
+The fix-round commit is `fix: harden v4 render evidence publication`.
+
+### Commit handoff
+
+Implementation, tests, compileall, diff check, and this report are complete.
+The requested commit could not be created because the sandbox denied the Git
+worktree index lock:
+
+```text
+fatal: Unable to create '/Users/qinqiang/Documents/Workspace/Projects/xhs-agent/.git/worktrees/llm-scene-v4-visual-production/index.lock': Operation not permitted
+```
+
+No index lock was removed or bypassed. The intended Task 13A files remain
+unstaged in this worktree; the two delayed Task 13B stubs remain untracked and
+untouched.

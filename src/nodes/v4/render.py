@@ -10,7 +10,6 @@ from src.rendering.scene.v4_adapter import V4RenderResult, render_v4_revision
 
 _CURRENT_NODE = "V4_RENDER"
 _NEXT_ROUTE = "render_qa"
-_FAIL_ROUTE = "design_reviser"
 
 
 def _value(state: Mapping[str, Any], *names: str) -> Any:
@@ -86,12 +85,14 @@ def render_node(
         contact_sheet_fn=contact_sheet_fn,
         playwright_factory=playwright_factory,
     )
-    route = _NEXT_ROUTE if result.qa.passed else _FAIL_ROUTE
+    # Task 13A only publishes immutable browser observations.  Q3 owns every
+    # policy decision and must see the manifest even when those observations
+    # later prove actionable.  Structural failures are raised by the adapter
+    # above and therefore fail closed before this route is returned.
+    route = _NEXT_ROUTE
     return {
         "render_manifest_v4": result.manifest,
         "render_manifest": result.manifest,
-        "render_qa_result_v4": result.qa,
-        "render_qa_result": result.qa,
         "artifact_paths": result.artifact_paths,
         "route": route,
         "visual_route": route,

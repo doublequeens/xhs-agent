@@ -66,19 +66,86 @@ _BOX_MIN: Final[float] = 1e-3
 # ---------------------------------------------------------------------------
 
 PROBE_SCRIPT = r"""
-(() => {
+(async () => {
+  // The v4 adapter consumes only observations made after the exact local
+  // @font-face set reaches document.fonts.ready.  No planned value is used as
+  // a probe fallback.
+  await document.fonts.ready;
+
+  const rectPayload = (r) => ({
+    x: r.x, y: r.y, width: r.width, height: r.height
+  });
+
+  const textLineRects = (node) => {
+    const range = document.createRange();
+    range.selectNodeContents(node);
+    return Array.from(range.getClientRects()).map(rectPayload);
+  };
+
+  const glyphCoverage = (node) => {
+    const text = node.textContent || '';
+    if (!text) return [];
+    const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    let current;
+    while ((current = walker.nextNode())) textNodes.push(current);
+    const offsets = [];
+    let cursor = 0;
+    for (const textNode of textNodes) {
+      offsets.push({ node: textNode, start: cursor, end: cursor + textNode.data.length });
+      cursor += textNode.data.length;
+    }
+    let fallbackIndex = 0;
+    const segments = (typeof Intl !== 'undefined' && Intl.Segmenter)
+      ? Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text))
+      : Array.from(text).map((segment) => {
+          const part = { segment, index: fallbackIndex };
+          fallbackIndex += segment.length;
+          return part;
+        });
+    return segments.map((part) => {
+      const start = part.index;
+      const end = start + part.segment.length;
+      const first = offsets.find((item) => start >= item.start && start < item.end);
+      const last = offsets.find((item) => end > item.start && end <= item.end);
+      if (!first || !last) return { visible: false, width: 0, height: 0 };
+      const range = document.createRange();
+      range.setStart(first.node, start - first.start);
+      range.setEnd(last.node, end - last.start);
+      const rects = Array.from(range.getClientRects());
+      const visible = rects.some((rect) => rect.width > 0 && rect.height > 0);
+      return {
+        visible,
+        width: rects.reduce((total, rect) => total + rect.width, 0),
+        height: rects.reduce((maximum, rect) => Math.max(maximum, rect.height), 0)
+      };
+    });
+  };
+
+  const exactFaceLoaded = (node, style) => {
+    const expected = node.dataset.fontFamily;
+    if (!expected || document.fonts.status !== 'loaded') return false;
+    const normalize = (value) => value.trim().replace(/^['"]|['"]$/g, '');
+    const computed = normalize((style.fontFamily || '').split(',')[0]);
+    if (computed !== expected) return false;
+    return Array.from(document.fonts).some((face) => {
+      const weight = face.weight === 'normal' ? '400' : face.weight;
+      return normalize(face.family) === expected
+        && weight === String(style.fontWeight)
+        && face.status === 'loaded';
+    });
+  };
+
   const nodes = document.querySelectorAll('[data-element-id]');
   return Array.from(nodes).map((node) => {
     const rect = node.getBoundingClientRect();
     const style = getComputedStyle(node);
     const inner = node.querySelector('img.scene-image-inner');
     const innerRect = inner ? inner.getBoundingClientRect() : null;
-    // Per CSS line-box rectangles (text probes). For text nodes getClientRects
-    // yields one rect per wrapped line; for other nodes it yields the border
-    // box(es). Read geometry only.
-    const lineRects = Array.from(node.getClientRects()).map((r) => ({
-      x: r.x, y: r.y, width: r.width, height: r.height
-    }));
+    // Range rectangles are the actual painted text line boxes. Element rects
+    // are not a substitute because they collapse all wrapped lines to one.
+    const isText = node.classList.contains('scene-text');
+    const coverage = isText ? glyphCoverage(node) : null;
     return {
       element_id: node.dataset.elementId,
       content_ref: node.dataset.contentRef || null,
@@ -101,19 +168,16 @@ PROBE_SCRIPT = r"""
       natural_height: inner ? inner.naturalHeight : null,
       rendered_image_width: innerRect ? innerRect.width : null,
       rendered_image_height: innerRect ? innerRect.height : null,
-      // v4 consumes these measured values directly.  The existing v3 probe
-      // builder intentionally ignores the extra keys, preserving its public
-      // RenderedElementProbe contract.
-      actual_text: node.classList.contains('scene-text') ? node.textContent : null,
-      font_loaded: node.classList.contains('scene-text')
-        ? document.fonts.check(`${style.fontWeight} ${style.fontSize} ${style.fontFamily}`)
-        : null,
+      // v4 consumes these measured values directly. The existing v3 probe
+      // builder intentionally ignores the extra keys.
+      actual_text: isText ? node.textContent : null,
+      font_loaded: isText ? exactFaceLoaded(node, style) : null,
       document_fonts_status: document.fonts.status,
-      glyph_visible: node.classList.contains('scene-text')
-        ? rect.width > 0 && rect.height > 0 && node.textContent.length > 0
-        : null,
+      glyph_visible: isText ? coverage.length > 0 && coverage.every((item) => item.visible) : null,
+      missing_codepoint_count: isText ? coverage.filter((item) => !item.visible).length : null,
+      glyph_coverage: coverage,
       asset_loaded: inner ? Boolean(inner.complete && inner.naturalWidth > 0) : null,
-      line_boxes: lineRects
+      line_boxes: isText ? textLineRects(node) : []
     };
   });
 })();

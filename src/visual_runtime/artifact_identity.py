@@ -548,6 +548,54 @@ def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnaps
             raise ArtifactBindingError("directory descriptor close failed") from close_errors[0]
 
 
+def read_verified_artifact(
+    source: str | os.PathLike[str],
+    declared_sha256: str,
+    *,
+    containment_root: str | os.PathLike[str] | None = None,
+) -> bytes:
+    """Read one immutable artifact through pinned no-follow descriptors.
+
+    The caller may provide a root (for example a revision's ``assets``
+    directory); both lexical and resolved containment are checked before the
+    source's parent chain is opened descriptor-relatively.  The file and its
+    directory entry are snapshotted before and after the read by
+    :func:`_read_file_at`, so a path substitution cannot be mistaken for the
+    declared bytes.
+    """
+
+    try:
+        source_path = _lexical_absolute(source)
+    except ArtifactIdentityError as error:
+        raise ArtifactBindingError(str(error)) from error
+    if type(declared_sha256) is not str or len(declared_sha256) != 64:
+        raise ArtifactBindingError("declared sha256 must be a 64-character digest")
+    try:
+        int(declared_sha256, 16)
+    except ValueError as error:
+        raise ArtifactBindingError("declared sha256 must be hexadecimal") from error
+    if containment_root is not None:
+        try:
+            root = _canonical_open_path(_lexical_absolute(containment_root))
+            _check_existing_chain(root, require_directory=True)
+            source_path.relative_to(root)
+            source_path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        except (ArtifactIdentityError, OSError, RuntimeError, ValueError) as error:
+            raise ArtifactBindingError("source path escapes its containment root") from error
+    try:
+        source_parent = _open_absolute_directory(source_path.parent, create=False)
+        with _lease_context(source_parent) as lease:
+            snapshot = _read_file_at(lease.fd, (source_path.name,))
+            lease.assert_intact()
+    except ArtifactBindingError:
+        raise
+    except (ArtifactIdentityError, OSError) as error:
+        raise ArtifactBindingError("source artifact is unreadable or unstable") from error
+    if snapshot.sha256 != declared_sha256.lower():
+        raise ArtifactBindingError("source sha256 does not match declared sha256")
+    return snapshot.raw
+
+
 @contextmanager
 def _open_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> Iterator[int]:
     """Yield one regular file descriptor opened below a pinned directory."""
@@ -798,6 +846,85 @@ def bind_reused_artifact(
     return ArtifactBinding(destination=target, sha256=source_snapshot.sha256, size=source_snapshot.size)
 
 
+def bind_staged_directory(
+    source: str | os.PathLike[str],
+    destination: str | os.PathLike[str],
+    *,
+    revision_root: str | os.PathLike[str],
+) -> Path:
+    """Atomically install one complete staged directory without replacement.
+
+    ``source`` and ``destination`` must be direct children of the same pinned
+    revision root.  All canonical render files are written below ``source``
+    first; this primitive performs the sole directory-level publication step,
+    so a failure before the rename leaves no visible destination directory.
+    The destination is checked through the pinned parent descriptor and the
+    rename is performed relative to that descriptor, never through an
+    untrusted ancestor path.
+    """
+
+    try:
+        source_path = _lexical_absolute(source)
+        destination_path = _lexical_absolute(destination)
+        revision_path = _lexical_absolute(revision_root)
+    except ArtifactIdentityError as error:
+        raise ArtifactBindingError(str(error)) from error
+    if source_path.parent != revision_path or destination_path.parent != revision_path:
+        raise ArtifactBindingError("staged directory must be a direct revision child")
+    if source_path.name == destination_path.name:
+        raise ArtifactBindingError("staged and destination directory names must differ")
+    try:
+        lease = _open_absolute_directory(revision_path, create=False)
+        with _lease_context(lease):
+            lease.assert_intact()
+            source_info = os.stat(source_path.name, dir_fd=lease.fd, follow_symlinks=False)
+            if stat.S_ISLNK(source_info.st_mode) or not stat.S_ISDIR(source_info.st_mode):
+                raise ArtifactBindingError("staged render is not a regular directory")
+            _fsync_staged_tree(lease.fd, source_path.name)
+            try:
+                os.stat(destination_path.name, dir_fd=lease.fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                raise ArtifactBindingError("artifact destination directory already exists")
+            os.rename(
+                source_path.name,
+                destination_path.name,
+                src_dir_fd=lease.fd,
+                dst_dir_fd=lease.fd,
+            )
+            lease.assert_intact()
+            os.fsync(lease.fd)
+    except ArtifactBindingError:
+        raise
+    except (ArtifactIdentityError, OSError) as error:
+        raise ArtifactBindingError("staged directory publication failed") from error
+    return destination_path
+
+
+def _fsync_staged_tree(parent_fd: int, name: str) -> None:
+    """Fsync a complete staged directory tree through one pinned parent fd."""
+
+    root_fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
+    try:
+        for child in os.listdir(root_fd):
+            try:
+                child_fd = os.open(child, _DIR_FLAGS, dir_fd=root_fd)
+            except NotADirectoryError:
+                continue
+            try:
+                os.fsync(child_fd)
+            finally:
+                close_error = _close_fd_once(child_fd)
+                if close_error is not None:
+                    raise ArtifactBindingError("staged directory close failed") from close_error
+        os.fsync(root_fd)
+    finally:
+        close_error = _close_fd_once(root_fd)
+        if close_error is not None:
+            raise ArtifactBindingError("staged directory close failed") from close_error
+
+
 def _create_staging_directory(asset_fd: int, name: str) -> int:
     _safe_name(name)
     os.mkdir(name, mode=0o700, dir_fd=asset_fd)
@@ -839,7 +966,9 @@ __all__ = [
     "ArtifactIdentityError",
     "ArtifactPaths",
     "bind_reused_artifact",
+    "bind_staged_directory",
     "ensure_artifact_paths",
+    "read_verified_artifact",
     "revalidate_artifact_paths",
     "resolve_artifact_paths",
 ]

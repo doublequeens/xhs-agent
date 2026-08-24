@@ -25,7 +25,6 @@ from pydantic import (
     model_validator,
 )
 
-from src.schemas.scene_graph import Box
 from src.schemas.v4.content import canonical_sha256_v4, sha256_text_v4
 
 
@@ -116,6 +115,21 @@ def _finite(value: float, field_name: str, *, minimum: float = 0.0) -> float:
     return value
 
 
+def _relative_render_path(value: str, field_name: str) -> str:
+    """Validate a canonical POSIX path below the revision's render root."""
+
+    if type(value) is not str or not _PATH_RE.fullmatch(value):
+        raise ValueError(f"{field_name} must be a canonical revision-relative POSIX path")
+    if value.startswith("/") or "\\" in value:
+        raise ValueError(f"{field_name} must not be absolute or contain backslashes")
+    components = value.split("/")
+    if not components or components[0] != "render" or any(
+        component in {"", ".", ".."} for component in components
+    ):
+        raise ValueError(f"{field_name} contains a non-canonical path component")
+    return value
+
+
 def _canonical_payload(value: BaseModel) -> dict[str, object]:
     return value.model_dump(mode="json", exclude={"canonical_sha256"})
 
@@ -137,12 +151,27 @@ class ArtifactIdentityV4(_FrozenRenderingV4):
         return _identifier(value, info.field_name)
 
 
+class RenderGlyphCoverageV4(_FrozenRenderingV4):
+    """One browser-measured grapheme coverage rectangle."""
+
+    visible: StrictBool
+    width: StrictFloat = Field(ge=0)
+    height: StrictFloat = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_metrics(self) -> "RenderGlyphCoverageV4":
+        if not math.isfinite(self.width) or not math.isfinite(self.height):
+            raise ValueError("glyph coverage geometry must be finite")
+        return self
+
+
 class RenderGlyphEvidenceV4(_FrozenRenderingV4):
     """Measured glyph visibility for one text element."""
 
     visible: StrictBool
     loaded: StrictBool
     missing_codepoint_count: StrictInt = Field(ge=0)
+    coverage: tuple[RenderGlyphCoverageV4, ...] = ()
     canonical_sha256: StrictStr
 
     @field_validator("canonical_sha256")
@@ -261,6 +290,23 @@ class RenderAssetEvidenceV4(_FrozenRenderingV4):
         type(self).model_validate(self.model_dump(mode="python"))
 
 
+class RenderBoxV4(_FrozenRenderingV4):
+    """Finite measured geometry, including intentionally off-canvas boxes."""
+
+    x: StrictFloat
+    y: StrictFloat
+    width: StrictFloat = Field(gt=0)
+    height: StrictFloat = Field(gt=0)
+
+    @model_validator(mode="after")
+    def validate_box(self) -> "RenderBoxV4":
+        for name in ("x", "y", "width", "height"):
+            value = getattr(self, name)
+            if not math.isfinite(value):
+                raise ValueError(f"measured box {name} must be finite")
+        return self
+
+
 class RenderElementEvidenceV4(_FrozenRenderingV4):
     """One measured DOM element, retaining expected and actual geometry."""
 
@@ -273,8 +319,8 @@ class RenderElementEvidenceV4(_FrozenRenderingV4):
     actual_text_sha256: StrictStr | None = None
     actual_text: StrictStr | None = None
     dom_text_measured: StrictBool = False
-    expected_box: Box
-    actual_box: Box
+    expected_box: RenderBoxV4
+    actual_box: RenderBoxV4
     scroll_width: StrictFloat = Field(ge=0)
     scroll_height: StrictFloat = Field(ge=0)
     client_width: StrictFloat = Field(ge=0)
@@ -284,7 +330,7 @@ class RenderElementEvidenceV4(_FrozenRenderingV4):
     computed_font: RenderFontEvidenceV4 | None = None
     glyph: RenderGlyphEvidenceV4 | None = None
     asset: RenderAssetEvidenceV4 | None = None
-    line_boxes: tuple[Box, ...] = ()
+    line_boxes: tuple[RenderBoxV4, ...] = ()
     canonical_sha256: StrictStr
 
     @field_validator("page_id", "element_id")
@@ -367,9 +413,9 @@ class RenderPageEvidenceV4(_FrozenRenderingV4):
     @field_validator("path")
     @classmethod
     def validate_path(cls, value: str) -> str:
-        if not _PATH_RE.fullmatch(value) or value == "render/contact-sheet.png":
+        if value == "render/contact-sheet.png":
             raise ValueError("render page path must be revision-relative under render/")
-        return value
+        return _relative_render_path(value, "path")
 
     @field_validator("sha256", "canonical_sha256")
     @classmethod
@@ -463,6 +509,8 @@ class RenderManifestV4(_FrozenRenderingV4):
             identity.revision_id,
         ):
             raise ValueError("render manifest identity fields do not match artifact identity")
+        if self.revision_id != f"revision-{self.revision}":
+            raise ValueError("render manifest revision identity is not canonical")
         ids = tuple(page.page_id for page in self.pages)
         sequences = tuple(page.sequence for page in self.pages)
         if sequences != tuple(range(1, len(self.pages) + 1)):
@@ -606,6 +654,7 @@ class RenderQAResultV4(_FrozenRenderingV4):
 
 # Friendly names for downstream Q3 and review consumers.
 RenderArtifactIdentityV4 = ArtifactIdentityV4
+MeasuredBoxV4 = RenderBoxV4
 RenderPageV4 = RenderPageEvidenceV4
 RenderedPageV4 = RenderPageEvidenceV4
 RenderElementProbeV4 = RenderElementEvidenceV4
@@ -613,6 +662,7 @@ RenderedElementProbeV4 = RenderElementEvidenceV4
 FontEvidenceV4 = RenderFontEvidenceV4
 FontLoadEvidenceV4 = RenderFontEvidenceV4
 GlyphEvidenceV4 = RenderGlyphEvidenceV4
+GlyphCoverageEvidenceV4 = RenderGlyphCoverageV4
 AssetCropEvidenceV4 = RenderAssetEvidenceV4
 RenderIssueEvidenceV4 = RenderIssueV4
 
@@ -623,6 +673,8 @@ __all__ = [
     "FontEvidenceV4",
     "FontLoadEvidenceV4",
     "GlyphEvidenceV4",
+    "GlyphCoverageEvidenceV4",
+    "MeasuredBoxV4",
     "RENDER_BOX_TOLERANCE_PX_V4",
     "RENDER_ISSUE_CODES_V4",
     "RENDER_REVISION_TARGETS_V4",
@@ -632,10 +684,12 @@ __all__ = [
     "RenderElementProbeV4",
     "RenderFontEvidenceV4",
     "RenderGlyphEvidenceV4",
+    "RenderGlyphCoverageV4",
     "RenderIssueEvidenceV4",
     "RenderIssueV4",
     "RenderManifestV4",
     "RenderPageEvidenceV4",
+    "RenderBoxV4",
     "RenderPageV4",
     "RenderedElementProbeV4",
     "RenderedPageV4",

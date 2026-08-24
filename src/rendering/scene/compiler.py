@@ -347,10 +347,20 @@ def _render_text(
     # parser, so ``font-family:"Source Han Sans SC"`` round-trips intact
     # AND the attribute stays XSS-safe by construction (defense in depth:
     # this must hold even if a future schema validator loosens font names).
+    probe_attrs = ""
+    if text_render_options is not None:
+        # v4-only probe metadata makes the browser prove the exact role face;
+        # the default v3 compiler output remains byte-compatible.
+        probe_attrs = (
+            f' data-font-role="{_escape_text(element.style.font_role)}"'
+            f' data-font-family="{_escape_text(font_stack[0])}"'
+            f' data-font-weight="{_num(text_style.weight)}"'
+        )
     return (
         f'<div class="scene-element scene-text"'
         f' data-element-id="{_escape_text(element.element_id)}"'
         f' data-content-ref="{_escape_text(element.content_ref)}"'
+        f'{probe_attrs}'
         f' style="{_html.escape(declarations, quote=True)}">{inner}</div>'
     )
 
@@ -540,13 +550,25 @@ def compile_page_scene(
     stable, so source order is preserved within a layer). The output is
     deterministic for identical inputs.
     """
+    page_text_options: Mapping[str, object] | None = text_render_options
+    if text_render_options is not None:
+        # v4 adapters may pass a plan-wide `(page_id, fragment_ref)` map.
+        # Reduce it to this page only at the compiler boundary so a fragment
+        # reused on multiple pages cannot inherit another page's breaks.
+        page_text_options = {}
+        for key, value in text_render_options.items():
+            if isinstance(key, tuple) and len(key) == 2:
+                if key[0] == page.page_id:
+                    page_text_options[key[1]] = value
+            else:
+                page_text_options[key] = value
     body = "\n".join(
         compile_element(
             element,
             fragments=fragments,
             assets=assets,
             style=style,
-            text_render_options=text_render_options,
+            text_render_options=page_text_options,
         )
         for element in sorted(page.elements, key=lambda item: item.layer)
     )
