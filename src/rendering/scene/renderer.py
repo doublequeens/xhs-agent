@@ -212,8 +212,12 @@ class _ChromiumPageRenderer:
         self,
         *,
         playwright_factory: Callable = sync_playwright,
+        probe_script: str = PROBE_SCRIPT,
     ) -> None:
         self._playwright_factory = playwright_factory
+        if not isinstance(probe_script, str) or not probe_script.strip():
+            raise ValueError("probe_script must be a non-empty JavaScript string")
+        self._probe_script = probe_script
         self._tmpdir: Path | None = None
         self._playwright = None
         self._browser = None
@@ -243,7 +247,7 @@ class _ChromiumPageRenderer:
         html_path.write_text(compiled_page.html, encoding="utf-8")
         try:
             self._page.goto(html_path.as_uri(), wait_until="load")
-            raw_probes = self._page.evaluate(PROBE_SCRIPT)
+            raw_probes = self._page.evaluate(self._probe_script)
             png_bytes = self._page.locator(".scene-page").screenshot()
         except Exception as exc:  # pragma: no cover — exercised via smoke test
             raise SceneRenderError(

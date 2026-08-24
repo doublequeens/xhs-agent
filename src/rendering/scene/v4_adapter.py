@@ -24,7 +24,11 @@ from PIL import Image
 
 from src.nodes.v4.design_qa import aggregate_design_qa
 from src.rendering.scene.compiler import CompiledPage, compile_page_scene
-from src.rendering.scene.probes import ProbeBuildError, build_element_probes
+from src.rendering.scene.probes import (
+    V4_PROBE_SCRIPT,
+    ProbeBuildError,
+    build_element_probes,
+)
 from src.rendering.scene.renderer import (
     RenderedPageDraft,
     _ChromiumPageRenderer,
@@ -149,6 +153,8 @@ def _private_assets(
     plan: CarouselDesignPlanV4,
     manifest: AssetManifest,
     paths: ArtifactPaths,
+    *,
+    verified_bytes: dict[str, bytes] | None = None,
 ) -> dict[str, AssetManifestItem]:
     """Map opaque scene refs to private resolver items after byte validation."""
 
@@ -174,13 +180,18 @@ def _private_assets(
             if item.sha256 != binding.asset_sha256:
                 raise V4RenderError("scene asset byte hash is stale")
             try:
-                read_verified_artifact(
+                body = read_verified_artifact(
                     item.local_path,
                     item.sha256,
                     containment_root=paths.asset_root,
                 )
             except ArtifactBindingError:
                 raise V4RenderError("approved asset source is unsafe or unstable") from None
+            existing = verified_bytes.get(binding.asset_ref) if verified_bytes is not None else None
+            if existing is not None and existing != body:
+                raise V4RenderError("opaque asset ref is bound to conflicting bytes")
+            if verified_bytes is not None:
+                verified_bytes[binding.asset_ref] = body
             private[binding.asset_ref] = item.model_copy(update={"asset_id": binding.asset_ref})
     return private
 
@@ -320,7 +331,8 @@ def _require_probe_shape(raw: Mapping[str, object], element) -> None:
             (
                 "actual_text", "font_family", "font_size", "line_height",
                 "font_weight", "font_loaded", "document_fonts_status",
-                "glyph_visible", "missing_codepoint_count", "glyph_coverage",
+                "dom_text_measured", "glyph_visible", "missing_codepoint_count",
+                "glyph_coverage",
             )
         )
     elif isinstance(element, ImageElement):
@@ -334,23 +346,39 @@ def _require_probe_shape(raw: Mapping[str, object], element) -> None:
         _required_raw(raw, key)
 
 
-def _make_glyph(*, raw: Mapping[str, object]) -> RenderGlyphEvidenceV4:
+def _make_glyph(
+    *, raw: Mapping[str, object], actual_text: str
+) -> RenderGlyphEvidenceV4:
     loaded = _required_bool(raw, "font_loaded")
     visible = _required_bool(raw, "glyph_visible")
     coverage_raw = _required_raw(raw, "glyph_coverage")
     if not isinstance(coverage_raw, (list, tuple)):
         raise V4RenderError("browser glyph coverage is not a sequence")
+    if actual_text and not coverage_raw:
+        raise V4RenderError("browser glyph coverage is missing for measured text")
     coverage: list[RenderGlyphCoverageV4] = []
     for item in coverage_raw:
         if not isinstance(item, Mapping) or type(item.get("visible")) is not bool:
             raise V4RenderError("browser glyph coverage is malformed")
-        coverage.append(
-            RenderGlyphCoverageV4(
-                visible=item["visible"],
-                width=_required_float(item, "width"),
-                height=_required_float(item, "height"),
+        raster_signature = _required_raw(item, "raster_signature")
+        if type(raster_signature) is not str:
+            raise V4RenderError("browser raster signature is not a string")
+        try:
+            coverage.append(
+                RenderGlyphCoverageV4(
+                    visible=item["visible"],
+                    width=_required_float(item, "width"),
+                    height=_required_float(item, "height"),
+                    face_loaded=_required_bool(item, "face_loaded"),
+                    font_check=_required_bool(item, "font_check"),
+                    ink_pixel_count=_required_int(item, "ink_pixel_count"),
+                    raster_signature=raster_signature,
+                )
             )
-        )
+        except V4RenderError:
+            raise
+        except Exception:
+            raise V4RenderError("browser glyph coverage is malformed") from None
     expected_visible = bool(coverage) and all(item.visible for item in coverage)
     if visible != expected_visible:
         raise V4RenderError("browser glyph visibility disagrees with coverage")
@@ -507,7 +535,7 @@ def _element_evidence(
                 tokens=tokens,
                 font_sha256=font_sha,
             ),
-            glyph=_make_glyph(raw=raw),
+            glyph=_make_glyph(raw=raw, actual_text=measured_text),
         )
     elif isinstance(element, ImageElement):
         binding = next(
@@ -757,7 +785,10 @@ def render_v4_revision(
     )
     paths = _validate_paths(artifact_paths, plan)
     fragments = _private_fragments(semantic)
-    private_assets = _private_assets(plan, manifest, paths)
+    verified_asset_bytes: dict[str, bytes] = {}
+    private_assets = _private_assets(
+        plan, manifest, paths, verified_bytes=verified_asset_bytes
+    )
     style = _private_style(tokens)
     text_options = _text_options(plan, semantic)
     font_sources = _font_sources(tokens)
@@ -769,6 +800,7 @@ def render_v4_revision(
             style=style,
             font_face_sources=font_sources,
             text_render_options=text_options,
+            asset_bytes=verified_asset_bytes,
         )
         for page in plan.pages
     ]
@@ -783,6 +815,7 @@ def render_v4_revision(
 
             owned_renderer = _ChromiumPageRenderer(
                 playwright_factory=playwright_factory or sync_playwright,
+                probe_script=V4_PROBE_SCRIPT,
             )
             render_page_fn = owned_renderer.__enter__()
         sheet_fn = contact_sheet_fn or _default_contact_sheet

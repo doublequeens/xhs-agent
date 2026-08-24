@@ -21,6 +21,7 @@ import pytest
 from PIL import Image
 
 from src.rendering.scene.compiler import CompiledPage
+from src.rendering.scene.probes import PROBE_SCRIPT, V4_PROBE_SCRIPT
 from src.rendering.scene.renderer import (
     RenderedPageDraft,
     SceneRenderError,
@@ -50,6 +51,14 @@ from src.schemas.visual_director import (
     VisualDirectionPlan,
 )
 from src.schemas.visual_style import FamilyStyleProfile
+
+
+def test_chromium_renderer_keeps_v3_probe_default_and_accepts_v4_seam():
+    default = _ChromiumPageRenderer()
+    strict = _ChromiumPageRenderer(probe_script=V4_PROBE_SCRIPT)
+
+    assert default._probe_script == PROBE_SCRIPT
+    assert strict._probe_script == V4_PROBE_SCRIPT
 
 
 # ---------------------------------------------------------------------------

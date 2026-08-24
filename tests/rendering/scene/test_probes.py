@@ -12,7 +12,7 @@ import hashlib
 
 import pytest
 
-from src.rendering.scene.probes import build_element_probes
+from src.rendering.scene.probes import PROBE_SCRIPT, V4_PROBE_SCRIPT, build_element_probes
 from src.schemas.assets import AssetManifestItem
 from src.schemas.content_atoms import ContentFragment
 from src.schemas.scene_graph import (
@@ -28,6 +28,18 @@ from src.schemas.scene_graph import (
 
 
 PAGE_BACKGROUND = "#FFFFFF"
+
+
+def test_v3_probe_script_remains_the_default_and_v4_is_explicitly_stricter():
+    """The v3 browser contract must not silently inherit v4 timing/coverage."""
+
+    assert "document.fonts.ready" not in PROBE_SCRIPT
+    assert "glyph_coverage" not in PROBE_SCRIPT
+    assert V4_PROBE_SCRIPT != PROBE_SCRIPT
+    assert "document.fonts.ready" in V4_PROBE_SCRIPT
+    assert "document.fonts.check" in V4_PROBE_SCRIPT
+    assert "getImageData" in V4_PROBE_SCRIPT
+    assert "raster_signature" in V4_PROBE_SCRIPT
 
 
 def _fragment(fragment_id: str, text: str) -> ContentFragment:

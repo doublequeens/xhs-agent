@@ -32,7 +32,10 @@ import from and no per-family branch in this module.
 from __future__ import annotations
 
 import html as _html
+import base64
+import hashlib
 import math
+import mimetypes
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -369,6 +372,7 @@ def _render_image(
     element: ImageElement,
     *,
     assets: Mapping[str, AssetManifestItem],
+    asset_bytes: Mapping[str, bytes] | None = None,
 ) -> str:
     asset = assets.get(element.asset_ref)
     if asset is None:
@@ -380,7 +384,21 @@ def _render_image(
             "image element references a non-approved asset: "
             f"{element.asset_ref!r}"
         )
-    src_uri = _safe_local_file_uri(asset.local_path)
+    verified = None if asset_bytes is None else asset_bytes.get(element.asset_ref)
+    if verified is None:
+        src_uri = _safe_local_file_uri(asset.local_path)
+    else:
+        if not isinstance(verified, bytes):
+            raise SceneAssetError("verified asset bytes must be immutable bytes")
+        if hashlib.sha256(verified).hexdigest() != asset.sha256:
+            raise SceneAssetError("verified asset bytes do not match declared sha256")
+        mime_type = mimetypes.guess_type(asset.local_path)[0] or "image/png"
+        if not mime_type.startswith("image/"):
+            mime_type = "image/png"
+        src_uri = (
+            f"data:{mime_type};base64,"
+            f"{base64.b64encode(verified).decode('ascii')}"
+        )
     fit_x, fit_y = element.focal_point
     declarations = (
         _box_position(element.box)
@@ -511,6 +529,7 @@ def compile_element(
     assets: Mapping[str, AssetManifestItem],
     style: FamilyStyleProfile,
     text_render_options: Mapping[str, object] | None = None,
+    asset_bytes: Mapping[str, bytes] | None = None,
 ) -> str:
     """Render one scene element to HTML via generic primitive dispatch.
 
@@ -525,7 +544,7 @@ def compile_element(
             text_render_options=text_render_options,
         )
     if kind == "image":
-        return _render_image(element, assets=assets)
+        return _render_image(element, assets=assets, asset_bytes=asset_bytes)
     if kind == "shape":
         return _render_shape(element)
     if kind == "line":
@@ -543,6 +562,7 @@ def compile_page_scene(
     style: FamilyStyleProfile,
     font_face_sources: Mapping[str, tuple[Path, int]] | None = None,
     text_render_options: Mapping[str, object] | None = None,
+    asset_bytes: Mapping[str, bytes] | None = None,
 ) -> CompiledPage:
     """Compile one :class:`PageScene` into a self-contained HTML document.
 
@@ -569,6 +589,7 @@ def compile_page_scene(
             assets=assets,
             style=style,
             text_render_options=page_text_options,
+            asset_bytes=asset_bytes,
         )
         for element in sorted(page.elements, key=lambda item: item.layer)
     )

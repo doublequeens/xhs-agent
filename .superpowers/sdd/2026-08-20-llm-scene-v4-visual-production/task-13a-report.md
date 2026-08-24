@@ -268,3 +268,116 @@ fatal: Unable to create '/Users/qinqiang/Documents/Workspace/Projects/xhs-agent/
 No index lock was removed or bypassed. The intended Task 13A files remain
 unstaged in this worktree; the two delayed Task 13B stubs remain untracked and
 untouched.
+
+## Fix round 2: close v4 render race windows
+
+This round addresses the scoped re-review findings for browser glyph evidence,
+asset byte TOCTOU, focused race tests, exclusive directory publication, and
+the v3 probe regression. The two delayed Task 13B stubs remain unchanged and
+uncommitted.
+
+### Fix-round RED evidence
+
+Tests were written before the production seams. The first fresh red command
+failed during collection because the new explicit v4 probe seam did not yet
+exist:
+
+```text
+pytest -q tests/rendering/scene/test_probes.py::test_v3_probe_script_remains_the_default_and_v4_is_explicitly_stricter tests/rendering/scene/test_renderer.py::test_chromium_renderer_keeps_v3_probe_default_and_accepts_v4_seam tests/rendering/scene/test_compiler.py::test_verified_asset_bytes_render_as_stable_data_uri_after_source_substitution tests/rendering/scene/test_v4_adapter.py -q tests/visual_runtime/test_artifact_identity.py::test_staged_directory_destination_creation_race_is_exclusive tests/visual_runtime/test_artifact_identity.py::test_staged_directory_source_substitution_race_fails_closed
+ERROR collecting tests/rendering/scene/test_probes.py
+ImportError: cannot import name 'V4_PROBE_SCRIPT' from 'src.rendering.scene.probes'
+ERROR collecting tests/rendering/scene/test_renderer.py
+ImportError: cannot import name 'V4_PROBE_SCRIPT' from 'src.rendering.scene.probes'
+```
+
+The first implementation attempt then reached the intended runtime race
+assertions with `3 failed, 5 passed`: macOS `RENAME_EXCL` used the wrong native
+flag, and the destination-race error discarded `EEXIST` detail. Those were
+corrected before the final green run.
+
+### Fix-round implementation
+
+- Restored the v3 `PROBE_SCRIPT` body byte-for-byte from its pre-v4 revision.
+  `_ChromiumPageRenderer` now defaults to that script and accepts an explicit
+  `probe_script`; the v4 adapter selects `V4_PROBE_SCRIPT` only for its owned
+  renderer. The strict v4 script awaits `document.fonts.ready`, checks the
+  exact declared face and `FontFaceSet.check(font, grapheme)`, obtains Range
+  geometry, and records per-grapheme canvas ink count plus SHA-256 raster
+  evidence. Missing fields fail closed; false face/font/raster observations
+  are retained for Q3 rather than converted to success.
+- `RenderElementEvidenceV4` now requires `dom_text_measured=True` and a
+  non-null actual DOM text value for text evidence. Glyph coverage requires
+  face-loaded, font-check, ink-pixel-count and raster-signature observations;
+  visible glyphs cannot be declared from geometry alone. Fallback/tofu-like
+  false measurements remain publishable evidence.
+- `_private_assets` retains the descriptor-relative, no-follow verified bytes
+  and `compile_page_scene` accepts an optional byte map. v4 image sources are
+  emitted as hash-checked data URIs, so Chromium never reopens the original
+  `local_path` after validation. The compiler regression mutates the source
+  after validation and proves the rendered HTML remains the verified bytes.
+- `bind_staged_directory` now pins the source directory inode, fsyncs every
+  staged file and directory, uses macOS `renameatx_np(..., RENAME_EXCL)` or
+  Linux `renameat2(..., RENAME_NOREPLACE)`, fails closed when unavailable,
+  checks destination inode identity after rename, fsyncs the parent, and
+  preserves the primary error during cleanup. Destination-creation and
+  source-substitution race tests prove no replacement and no canonical output.
+- The path regression now validates an otherwise-complete page evidence model
+  before replacing only its path, so failures are attributable to the exact
+  noncanonical path rather than unrelated missing fields. Tests also cover
+  missing DOM/glyph observations and measured fallback glyph evidence.
+
+### Fix-round GREEN evidence
+
+The requested covering tests passed:
+
+```text
+pytest -q tests/rendering/scene/test_v4_adapter.py tests/nodes/v4/test_render.py tests/visual_runtime/test_artifact_identity.py tests/rendering/scene/test_probes.py tests/rendering/scene/test_renderer.py tests/rendering/scene/test_compiler.py tests/nodes/test_generic_scene_renderer.py
+135 passed in 11.55s
+
+pytest -q tests/nodes/v4 tests/nodes/test_generic_scene_renderer.py
+100 passed, 1 warning in 4.49s
+
+pytest -q tests/rendering/scene/test_chromium_smoke.py
+1 passed in 0.73s
+
+python -m compileall -q src main.py
+git diff --check
+node (V4 probe JavaScript parse check)
+V4 probe JavaScript parses
+```
+
+The full offline run, excluding only the two preserved delayed Task 13B
+stubs, produced:
+
+```text
+pytest -q --ignore=tests/visual_design/v4/test_render_qa.py --ignore=tests/integration/test_v4_three_grammar_render.py
+1822 passed, 1 failed, 3 skipped, 2 warnings in 50.79s
+```
+
+The single failure is the existing real generic-Chromium smoke at browser
+launch. Chromium exits in this restricted macOS sandbox with
+`mach_port_rendezvous_mac ... bootstrap_check_in ... Permission denied
+(1100)`; the standalone smoke command above passed, and the controller has
+already recorded a sandbox-external Chromium smoke pass. No test failure is
+from the v4 adapter or evidence contracts.
+
+### Fix-round concerns
+
+- Real v4 Chromium glyph/font/image observations remain controller-owned in a
+  sandbox-external run; this environment cannot provide an independent strict
+  v4 browser smoke.
+- Q3 policy construction remains deferred to Task 13B. Task 13A publishes only
+  the immutable `RenderManifestV4` and routes unconditionally to `render_qa`.
+- The two delayed Task 13B stubs were not modified, renamed, deleted, staged,
+  or committed.
+
+The fix-round commit attempt was blocked by the same worktree index permission
+boundary as the prior round. Exact fresh command/error:
+
+```text
+git add .superpowers/sdd/2026-08-20-llm-scene-v4-visual-production/task-13a-report.md src/rendering/scene/compiler.py src/rendering/scene/probes.py src/rendering/scene/renderer.py src/rendering/scene/v4_adapter.py src/schemas/v4/rendering.py src/visual_runtime/artifact_identity.py tests/rendering/scene/test_compiler.py tests/rendering/scene/test_probes.py tests/rendering/scene/test_renderer.py tests/rendering/scene/test_v4_adapter.py tests/visual_runtime/test_artifact_identity.py
+fatal: Unable to create '/Users/qinqiang/Documents/Workspace/Projects/xhs-agent/.git/worktrees/llm-scene-v4-visual-production/index.lock': Operation not permitted
+```
+
+No index lock was removed or bypassed. All fix-round files remain unstaged;
+the two delayed Task 13B stubs remain untracked and untouched.

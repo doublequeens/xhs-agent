@@ -201,6 +201,68 @@ def test_staged_directory_publishes_once_without_replacement(tmp_path: Path):
     assert (destination / "page.png").read_bytes() == b"page"
 
 
+def test_staged_directory_destination_creation_race_is_exclusive(
+    tmp_path: Path, monkeypatch
+):
+    from src.visual_runtime import artifact_identity as module
+
+    revision = tmp_path / "revision"
+    revision.mkdir()
+    staged = revision / ".staged-race"
+    staged.mkdir()
+    (staged / "page.png").write_bytes(b"staged")
+    destination = revision / "render"
+    original = getattr(module, "_rename_noreplace", None)
+
+    def create_destination_then_publish(*args, **kwargs):
+        _source_name, destination_name, _source_fd, destination_fd = args
+        os.mkdir(destination_name, dir_fd=destination_fd)
+        (destination / "racer.txt").write_bytes(b"racer")
+        assert original is not None
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module, "_rename_noreplace", create_destination_then_publish, raising=False
+    )
+    with pytest.raises(ArtifactBindingError, match="exists|exclusive"):
+        bind_staged_directory(staged, destination, revision_root=revision)
+    assert (destination / "racer.txt").read_bytes() == b"racer"
+    assert not (destination / "page.png").exists()
+
+
+def test_staged_directory_source_substitution_race_fails_closed(
+    tmp_path: Path, monkeypatch
+):
+    from src.visual_runtime import artifact_identity as module
+
+    revision = tmp_path / "revision"
+    revision.mkdir()
+    staged = revision / ".staged-source-race"
+    staged.mkdir()
+    (staged / "page.png").write_bytes(b"verified-stage")
+    destination = revision / "render"
+    original = getattr(module, "_rename_noreplace", None)
+
+    def substitute_source_then_publish(*args, **kwargs):
+        source_name, _destination_name, source_fd, _destination_fd = args
+        backup_name = source_name + ".verified"
+        os.rename(source_name, backup_name, src_dir_fd=source_fd, dst_dir_fd=source_fd)
+        os.mkdir(source_name, dir_fd=source_fd)
+        replacement = revision / source_name / "page.png"
+        replacement.write_bytes(b"substituted-stage")
+        assert original is not None
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        module, "_rename_noreplace", substitute_source_then_publish, raising=False
+    )
+    with pytest.raises(ArtifactBindingError, match="source|identity|staged"):
+        bind_staged_directory(staged, destination, revision_root=revision)
+    assert not destination.exists()
+    assert (revision / ".staged-source-race.verified" / "page.png").read_bytes() == (
+        b"verified-stage"
+    )
+
 def test_reuse_close_failure_is_typed_and_never_retries_fd(tmp_path: Path, monkeypatch):
     from src.visual_runtime import artifact_identity as module
 

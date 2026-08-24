@@ -10,6 +10,7 @@ import pytest
 from PIL import Image
 
 from src.rendering.scene.renderer import RenderedPageDraft
+from src.rendering.scene.probes import V4_PROBE_SCRIPT
 from src.rendering.scene.v4_adapter import (
     V4RenderError,
     _private_assets,
@@ -18,6 +19,7 @@ from src.rendering.scene.v4_adapter import (
 )
 from src.schemas.assets import AssetManifest, AssetManifestItem
 from src.schemas.v4.layout import AssetBindingEvidenceV4
+from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.rendering import RenderPageEvidenceV4
 from src.visual_runtime.artifact_identity import (
     ArtifactBindingError,
@@ -47,7 +49,16 @@ def _png_bytes() -> bytes:
     return output.getvalue()
 
 
-def _render_stub(plan, semantic_model, *, actual_text=_UNSET, missing_field=None):
+def _render_stub(
+    plan,
+    semantic_model,
+    *,
+    actual_text=_UNSET,
+    missing_field=None,
+    font_loaded=True,
+    glyph_face_loaded=True,
+    glyph_font_check=True,
+):
     png = _png_bytes()
     fragments = {item.fragment_id: item for item in semantic_model.fragments}
 
@@ -60,11 +71,21 @@ def _render_stub(plan, semantic_model, *, actual_text=_UNSET, missing_field=None
                 measured_text = (
                     fragment.exact_text if actual_text is _UNSET else actual_text
                 )
-                coverage = (
-                    [{"visible": True, "width": 12.0, "height": 24.0}]
-                    if measured_text
-                    else []
-                )
+                coverage = [
+                    {
+                        "visible": bool(glyph_face_loaded and glyph_font_check),
+                        "width": 12.0,
+                        "height": 24.0,
+                        "face_loaded": glyph_face_loaded,
+                        "font_check": glyph_font_check,
+                        "ink_pixel_count": 42 if glyph_face_loaded else 0,
+                        "raster_signature": (
+                            "a" * 64 if glyph_face_loaded else "0" * 64
+                        ),
+                    }
+                    for _grapheme in measured_text
+                ] if measured_text else []
+                visible = bool(coverage) and all(item["visible"] for item in coverage)
                 raw.append(
                     {
                         "element_id": element.element_id,
@@ -82,11 +103,14 @@ def _render_stub(plan, semantic_model, *, actual_text=_UNSET, missing_field=None
                         "font_size": element.style.font_size,
                         "line_height": element.style.font_size * element.style.line_height,
                         "font_weight": element.style.weight,
-                        "font_loaded": True,
+                        "font_loaded": font_loaded,
                         "document_fonts_status": "loaded",
                         "actual_text": measured_text,
-                        "glyph_visible": bool(coverage),
-                        "missing_codepoint_count": 0,
+                        "dom_text_measured": True,
+                        "glyph_visible": visible,
+                        "missing_codepoint_count": sum(
+                            1 for item in coverage if not item["visible"]
+                        ),
                         "glyph_coverage": coverage,
                         "color": "rgb(17, 17, 17)",
                         "background_color": "rgb(255, 255, 255)",
@@ -118,6 +142,43 @@ def _render_stub(plan, semantic_model, *, actual_text=_UNSET, missing_field=None
 def test_v4_adapter_module_exposes_render_boundary():
     assert callable(render_v4_revision)
     assert issubclass(V4RenderError, Exception)
+
+
+def test_v4_adapter_selects_strict_probe_script_for_owned_renderer(tmp_path, monkeypatch):
+    import src.rendering.scene.v4_adapter as adapter
+
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    seen: list[str] = []
+    stub = _render_stub(plan, fixture["semantic_model"])
+
+    class Recorder:
+        def __init__(self, *, playwright_factory, probe_script):
+            del playwright_factory
+            seen.append(probe_script)
+
+        def __enter__(self):
+            return stub
+
+        def __exit__(self, *args):
+            return None
+
+    monkeypatch.setattr(adapter, "_ChromiumPageRenderer", Recorder)
+    render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+    )
+    assert seen == [V4_PROBE_SCRIPT]
 
 
 def test_v4_render_publishes_relative_immutable_revision_artifacts(tmp_path):
@@ -264,9 +325,30 @@ def test_v4_render_serialization_and_page_scoped_options_are_deterministic(tmp_p
         "render/pages/",
     ],
 )
-def test_v4_render_evidence_rejects_noncanonical_paths(path):
-    with pytest.raises(ValueError):
-        RenderPageEvidenceV4.model_validate({"path": path})
+def test_v4_render_evidence_rejects_noncanonical_paths(tmp_path, path):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    result = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+        render_page_fn=_render_stub(plan, fixture["semantic_model"]),
+    )
+    payload = result.manifest.pages[0].model_dump(mode="python")
+    payload["path"] = path
+    payload.pop("canonical_sha256")
+    payload["canonical_sha256"] = canonical_sha256_v4(payload)
+    with pytest.raises(ValueError, match="path|canonical"):
+        RenderPageEvidenceV4.model_validate(payload)
 
 
 def test_v4_adapter_compiles_private_font_faces_and_layout_break_options(tmp_path):
@@ -373,6 +455,63 @@ def test_v4_render_rejects_missing_browser_observation(tmp_path):
             ),
         )
     assert not paths.render_root.exists()
+
+
+@pytest.mark.parametrize("missing_field", ["dom_text_measured", "glyph_coverage"])
+def test_v4_render_rejects_missing_required_dom_and_glyph_observations(
+    tmp_path, missing_field
+):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    with pytest.raises(V4RenderError, match=missing_field):
+        render_v4_revision(
+            design_plan=plan,
+            design_plan_qa_result=qa,
+            content_atom_set=fixture["atom_set"],
+            content_lock=fixture["lock"],
+            semantic_content_model=fixture["semantic_model"],
+            page_brief_set=fixture["page_set"],
+            visual_direction_plan=fixture["direction_plan"],
+            asset_manifest=fixture["manifest"],
+            family_tokens="pink_red",
+            artifact_paths=paths,
+            render_page_fn=_render_stub(
+                plan, fixture["semantic_model"], missing_field=missing_field
+            ),
+        )
+
+
+def test_v4_render_preserves_measured_fallback_glyph_failure_for_q3(tmp_path):
+    fixture, qa = _fixture_world()
+    plan = qa.carousel_design_plan
+    identity = ArtifactIdentity(plan.run_id, plan.candidate_id, f"revision-{plan.revision}")
+    paths = ensure_artifact_paths(resolve_artifact_paths(tmp_path, identity))
+    result = render_v4_revision(
+        design_plan=plan,
+        design_plan_qa_result=qa,
+        content_atom_set=fixture["atom_set"],
+        content_lock=fixture["lock"],
+        semantic_content_model=fixture["semantic_model"],
+        page_brief_set=fixture["page_set"],
+        visual_direction_plan=fixture["direction_plan"],
+        asset_manifest=fixture["manifest"],
+        family_tokens="pink_red",
+        artifact_paths=paths,
+        render_page_fn=_render_stub(
+            plan,
+            fixture["semantic_model"],
+            font_loaded=False,
+            glyph_face_loaded=False,
+            glyph_font_check=False,
+        ),
+    )
+    glyph = result.manifest.pages[0].elements[0].glyph
+    assert glyph is not None
+    assert glyph.loaded is False
+    assert glyph.coverage and glyph.coverage[0].face_loaded is False
+    assert glyph.coverage[0].ink_pixel_count == 0
 
 
 @pytest.mark.parametrize("failure_boundary", ["page", "contact", "manifest"])
@@ -493,10 +632,12 @@ def _asset_fixture(tmp_path: Path, *, transaction_id: str = "revision-1"):
 
 def test_v4_asset_binding_reads_real_sentinel_and_rejects_substitution(tmp_path):
     source, _digest, plan, manifest, paths = _asset_fixture(tmp_path)
-    assets = _private_assets(plan, manifest, paths)
+    verified_bytes: dict[str, bytes] = {}
+    assets = _private_assets(plan, manifest, paths, verified_bytes=verified_bytes)
     assert assets[next(iter(assets))].local_path == str(source)
 
     source.write_bytes(b"substituted-asset")
+    assert verified_bytes[next(iter(verified_bytes))] == b"asset-sentinel"
     with pytest.raises(V4RenderError, match="unsafe|stale"):
         _private_assets(plan, manifest, paths)
 

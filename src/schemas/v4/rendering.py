@@ -152,16 +152,38 @@ class ArtifactIdentityV4(_FrozenRenderingV4):
 
 
 class RenderGlyphCoverageV4(_FrozenRenderingV4):
-    """One browser-measured grapheme coverage rectangle."""
+    """One browser-measured grapheme observation.
+
+    A non-empty Range rectangle is not sufficient evidence that the declared
+    face painted the grapheme: tofu and fallback glyphs also have geometry.
+    v4 therefore retains exact-face, FontFaceSet and raster witnesses together
+    with the geometry, including false witnesses for Q3 to diagnose.
+    """
 
     visible: StrictBool
     width: StrictFloat = Field(ge=0)
     height: StrictFloat = Field(ge=0)
+    face_loaded: StrictBool
+    font_check: StrictBool
+    ink_pixel_count: StrictInt = Field(ge=0)
+    raster_signature: StrictStr
+
+    @field_validator("raster_signature")
+    @classmethod
+    def validate_raster_signature(cls, value: str) -> str:
+        return _sha(value, "raster_signature")
 
     @model_validator(mode="after")
     def validate_metrics(self) -> "RenderGlyphCoverageV4":
         if not math.isfinite(self.width) or not math.isfinite(self.height):
             raise ValueError("glyph coverage geometry must be finite")
+        if self.visible and not (
+            self.face_loaded
+            and self.font_check
+            and self.ink_pixel_count > 0
+            and self.raster_signature != "0" * 64
+        ):
+            raise ValueError("visible glyph evidence lacks face and raster witnesses")
         return self
 
 
@@ -371,11 +393,17 @@ class RenderElementEvidenceV4(_FrozenRenderingV4):
         if self.kind == "text":
             if self.content_ref is None or self.expected_text_sha256 is None:
                 raise ValueError("text evidence requires content and expected hash")
-            if self.actual_text_sha256 is None or self.computed_font is None or self.glyph is None:
+            if (
+                self.actual_text is None
+                or not self.dom_text_measured
+                or self.actual_text_sha256 is None
+                or self.computed_font is None
+                or self.glyph is None
+            ):
                 raise ValueError("text evidence requires actual text, font and glyph evidence")
             if self.asset_ref is not None or self.asset is not None:
                 raise ValueError("text evidence cannot carry asset evidence")
-            if self.actual_text is not None and self.actual_text_sha256 != sha256_text_v4(self.actual_text):
+            if self.actual_text_sha256 != sha256_text_v4(self.actual_text):
                 raise ValueError("text evidence actual text hash does not match")
         elif self.kind == "image":
             if self.asset_ref is None or self.asset is None:

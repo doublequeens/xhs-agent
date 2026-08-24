@@ -7,8 +7,11 @@ never followed by an unrelated path-based write.
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import os
+import platform
 import stat
 import sys
 import uuid
@@ -789,6 +792,101 @@ def _resolve_destination(
     return target, _relative_parts(target, revision)
 
 
+def _rename_noreplace(
+    source_name: str,
+    destination_name: str,
+    source_dir_fd: int,
+    destination_dir_fd: int,
+) -> None:
+    """Atomically rename a directory without replacing a destination.
+
+    The operation intentionally has no portable ``os.rename`` fallback:
+    absence of a kernel primitive would reopen the destination-creation race
+    this boundary is responsible for closing.
+    """
+
+    source = os.fsencode(source_name)
+    destination = os.fsencode(destination_name)
+    libc = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        function = getattr(libc, "renameatx_np", None)
+        if function is None:
+            raise OSError(errno.ENOTSUP, "renameatx_np is unavailable")
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        function.restype = ctypes.c_int
+        result = function(
+            source_dir_fd,
+            source,
+            destination_dir_fd,
+            destination,
+            ctypes.c_uint(0x00000004),  # RENAME_EXCL
+        )
+    elif sys.platform == "linux":
+        # renameat2 is exposed as a libc symbol on some distributions and as
+        # a syscall on others. Both forms are descriptor-relative.
+        function = getattr(libc, "renameat2", None)
+        if function is not None:
+            function.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            function.restype = ctypes.c_int
+            result = function(
+                source_dir_fd,
+                source,
+                destination_dir_fd,
+                destination,
+                ctypes.c_uint(0x00000001),  # RENAME_NOREPLACE
+            )
+        else:
+            syscall_number = {
+                "x86_64": 316,
+                "amd64": 316,
+                "aarch64": 276,
+                "arm64": 276,
+                "i386": 353,
+                "i686": 353,
+                "armv7l": 382,
+            }.get(platform.machine().lower())
+            syscall = getattr(libc, "syscall", None)
+            if syscall_number is None or syscall is None:
+                raise OSError(errno.ENOTSUP, "renameat2 is unavailable")
+            syscall.argtypes = [
+                ctypes.c_long,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            syscall.restype = ctypes.c_long
+            result = syscall(
+                ctypes.c_long(syscall_number),
+                source_dir_fd,
+                source,
+                destination_dir_fd,
+                destination,
+                ctypes.c_uint(0x00000001),  # RENAME_NOREPLACE
+            )
+    else:
+        raise OSError(errno.ENOTSUP, "exclusive descriptor-relative rename is unavailable")
+    if result != 0:
+        error_number = ctypes.get_errno()
+        raise OSError(
+            error_number or errno.EIO,
+            os.strerror(error_number or errno.EIO),
+        )
+
+
 def bind_reused_artifact(
     source: str | os.PathLike[str],
     declared_sha256: str,
@@ -873,32 +971,67 @@ def bind_staged_directory(
         raise ArtifactBindingError("staged directory must be a direct revision child")
     if source_path.name == destination_path.name:
         raise ArtifactBindingError("staged and destination directory names must differ")
+    primary: BaseException | None = None
+    source_fd: int | None = None
     try:
         lease = _open_absolute_directory(revision_path, create=False)
         with _lease_context(lease):
             lease.assert_intact()
-            source_info = os.stat(source_path.name, dir_fd=lease.fd, follow_symlinks=False)
+            source_fd = os.open(source_path.name, _DIR_FLAGS, dir_fd=lease.fd)
+            source_info = os.fstat(source_fd)
             if stat.S_ISLNK(source_info.st_mode) or not stat.S_ISDIR(source_info.st_mode):
                 raise ArtifactBindingError("staged render is not a regular directory")
-            _fsync_staged_tree(lease.fd, source_path.name)
+            source_identity = (source_info.st_dev, source_info.st_ino)
+            _fsync_staged_tree_fd(source_fd)
             try:
                 os.stat(destination_path.name, dir_fd=lease.fd, follow_symlinks=False)
             except FileNotFoundError:
                 pass
             else:
                 raise ArtifactBindingError("artifact destination directory already exists")
-            os.rename(
+            _rename_noreplace(
                 source_path.name,
                 destination_path.name,
-                src_dir_fd=lease.fd,
-                dst_dir_fd=lease.fd,
+                lease.fd,
+                lease.fd,
             )
+            try:
+                destination_info = os.stat(
+                    destination_path.name,
+                    dir_fd=lease.fd,
+                    follow_symlinks=False,
+                )
+            except OSError as error:
+                raise ArtifactBindingError(
+                    "published destination could not be revalidated"
+                ) from error
+            destination_identity = (destination_info.st_dev, destination_info.st_ino)
+            if destination_identity != source_identity:
+                try:
+                    _remove_tree_at(lease.fd, destination_path.name)
+                except Exception as cleanup_error:  # noqa: BLE001
+                    cleanup_error.add_note(
+                        "primary staged directory identity mismatch was preserved"
+                    )
+                raise ArtifactBindingError(
+                    "published destination identity differs from staged source"
+                )
             lease.assert_intact()
             os.fsync(lease.fd)
-    except ArtifactBindingError:
+    except ArtifactBindingError as error:
+        primary = error
         raise
     except (ArtifactIdentityError, OSError) as error:
-        raise ArtifactBindingError("staged directory publication failed") from error
+        primary = ArtifactBindingError(f"staged directory publication failed: {error}")
+        raise primary from error
+    finally:
+        if source_fd is not None:
+            close_error = _close_fd_once(source_fd)
+            if close_error is not None:
+                if primary is not None:
+                    primary.add_note(f"staged source close failed: {close_error}")
+                else:
+                    raise ArtifactBindingError("staged source close failed") from close_error
     return destination_path
 
 
@@ -907,22 +1040,36 @@ def _fsync_staged_tree(parent_fd: int, name: str) -> None:
 
     root_fd = os.open(name, _DIR_FLAGS, dir_fd=parent_fd)
     try:
-        for child in os.listdir(root_fd):
-            try:
-                child_fd = os.open(child, _DIR_FLAGS, dir_fd=root_fd)
-            except NotADirectoryError:
-                continue
-            try:
-                os.fsync(child_fd)
-            finally:
-                close_error = _close_fd_once(child_fd)
-                if close_error is not None:
-                    raise ArtifactBindingError("staged directory close failed") from close_error
-        os.fsync(root_fd)
+        _fsync_staged_tree_fd(root_fd)
     finally:
         close_error = _close_fd_once(root_fd)
         if close_error is not None:
             raise ArtifactBindingError("staged directory close failed") from close_error
+
+
+def _fsync_staged_tree_fd(root_fd: int) -> None:
+    """Fsync every file and directory beneath an already pinned root fd."""
+
+    for child in os.listdir(root_fd):
+        try:
+            child_fd = os.open(child, _DIR_FLAGS, dir_fd=root_fd)
+        except NotADirectoryError:
+            file_fd = os.open(child, os.O_RDONLY | _NOFOLLOW, dir_fd=root_fd)
+            try:
+                os.fsync(file_fd)
+            finally:
+                close_error = _close_fd_once(file_fd)
+                if close_error is not None:
+                    raise ArtifactBindingError("staged file close failed") from close_error
+            continue
+        try:
+            _fsync_staged_tree_fd(child_fd)
+            os.fsync(child_fd)
+        finally:
+            close_error = _close_fd_once(child_fd)
+            if close_error is not None:
+                raise ArtifactBindingError("staged directory close failed") from close_error
+    os.fsync(root_fd)
 
 
 def _create_staging_directory(asset_fd: int, name: str) -> int:

@@ -8,6 +8,8 @@ layout branch; all six ``TemplateFamily`` values pass through the same
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import re
 from html.parser import HTMLParser
 from pathlib import Path
@@ -352,6 +354,37 @@ def test_approved_asset_path_becomes_safe_local_file_uri(tmp_path):
     expected_uri = asset_path.as_uri()
     assert f'src="{expected_uri}"' in html
     assert "file://" in html
+
+
+def test_verified_asset_bytes_render_as_stable_data_uri_after_source_substitution(tmp_path):
+    original = b"verified-png-bytes"
+    source = tmp_path / "photo.png"
+    source.write_bytes(original)
+    digest = hashlib.sha256(original).hexdigest()
+    asset = _asset("asset-1", local_path=str(source)).model_copy(
+        update={"sha256": digest}
+    )
+    page = _page([_image("image-1", "asset-1")])
+    first = compile_page_scene(
+        page,
+        fragments={},
+        assets={"asset-1": asset},
+        asset_bytes={"asset-1": original},
+        style=_style(),
+    ).html
+
+    source.write_bytes(b"substituted-source-bytes")
+    second = compile_page_scene(
+        page,
+        fragments={},
+        assets={"asset-1": asset},
+        asset_bytes={"asset-1": original},
+        style=_style(),
+    ).html
+    expected_uri = "data:image/png;base64," + base64.b64encode(original).decode()
+    assert first == second
+    assert expected_uri in first
+    assert source.as_uri() not in first
 
 
 @pytest.mark.parametrize(
