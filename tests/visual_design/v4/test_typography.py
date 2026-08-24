@@ -145,6 +145,73 @@ def test_source_line_reconstruction_rejects_non_source_breaks() -> None:
         )
 
 
+@pytest.mark.parametrize("newline", ("\n", "\r\n", "\r"))
+def test_source_line_reconstruction_consumes_each_segment_internal_offset_once(
+    newline: str,
+) -> None:
+    text = f"美美{newline}美美"
+    newline_start = 2
+    newline_end = newline_start + len(newline)
+
+    lines = reconstruct_source_lines_v4(
+        text,
+        explicit_break_spans=((newline_start, newline_end),),
+        inserted_break_offsets=(1, newline_end + 1),
+    )
+
+    assert lines.lines == ("美", "美", "美", "美")
+    assert lines.codepoint_counts == (1, 1, 1, 1)
+    assert lines.grapheme_counts == (1, 1, 1, 1)
+
+
+@pytest.mark.parametrize("newline", ("\n", "\r\n", "\r"))
+def test_source_line_reconstruction_rejects_unconsumed_offset_at_segment_start(
+    newline: str,
+) -> None:
+    visible_text = f"VisibleCopySentinel{newline}美美"
+    newline_start = len("VisibleCopySentinel")
+    newline_end = newline_start + len(newline)
+
+    with pytest.raises(ValueError) as exc_info:
+        reconstruct_source_lines_v4(
+            visible_text,
+            explicit_break_spans=((newline_start, newline_end),),
+            inserted_break_offsets=(newline_end,),
+        )
+
+    assert visible_text not in str(exc_info.value)
+    assert "VisibleCopySentinel" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("newline", "offsets"),
+    (
+        ("\n", (0,)),
+        ("\n", (5,)),
+        ("\n", (2,)),
+        ("\r\n", (2,)),
+        ("\r\n", (3,)),
+        ("\r", (2,)),
+        ("\n", (1, 1)),
+        ("\n", (4, 1)),
+    ),
+)
+def test_source_line_reconstruction_rejects_boundary_newline_and_order_errors(
+    newline: str,
+    offsets: tuple[int, ...],
+) -> None:
+    text = f"美美{newline}美美"
+    newline_start = 2
+    newline_end = newline_start + len(newline)
+
+    with pytest.raises(ValueError, match="offset|newline|segment|ordered"):
+        reconstruct_source_lines_v4(
+            text,
+            explicit_break_spans=((newline_start, newline_end),),
+            inserted_break_offsets=offsets,
+        )
+
+
 def test_measurement_records_ink_bearings_and_font_metrics() -> None:
     measurement = measure_text_v4(
         "j\nÅg",

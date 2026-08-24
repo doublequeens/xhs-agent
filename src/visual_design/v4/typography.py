@@ -194,16 +194,20 @@ def reconstruct_source_lines_v4(
 
     lines: list[str] = []
     cursor = 0
+    offset_index = 0
     for newline_start, newline_end in (*spans, (len(exact_text), len(exact_text))):
-        segment_offsets = tuple(
-            offset for offset in offsets if cursor < offset < newline_start
-        )
         line_start = cursor
-        for offset in segment_offsets:
+        while offset_index < len(offsets) and offsets[offset_index] < newline_start:
+            offset = offsets[offset_index]
+            if not cursor < offset < newline_start:
+                raise ValueError("inserted break offset is outside a source segment")
             lines.append(exact_text[line_start:offset])
             line_start = offset
+            offset_index += 1
         lines.append(exact_text[line_start:newline_start])
         cursor = newline_end
+    if offset_index != len(offsets):
+        raise ValueError("inserted break offset is outside a source segment")
 
     line_tuple = tuple(lines)
     return SourceLineMetricsV4(

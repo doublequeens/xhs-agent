@@ -229,11 +229,45 @@ Fresh verification after round 3:
 - `python -m compileall -q src main.py`: passed.
 - `git diff --check`: passed.
 
+## Fix round 4: reject unconsumed line-break offsets
+
+The fresh RED used `美美\n美美` with a self-rehashed inserted offset `(3,)`,
+which is the first source position after the explicit LF. The old
+`reconstruct_source_lines_v4` selected offsets independently for each segment
+with `cursor < offset < segment_end`; `(3,)` matched neither segment and was
+silently discarded. The same probe failed for LF, CRLF and CR, while the
+rehash-bound measurement/provenance/page still passed the complete Q2 page
+evaluation. The targeted RED command reported `4 failed` for those three
+separator cases plus the Q2 attack.
+
+The reconstruction loop now owns one monotonic consumption index. An inserted
+offset is consumed exactly once only when it strictly satisfies
+`segment_start < offset < segment_end`; segment starts, segment ends, newline
+spans, source offset zero/end, duplicates, unsorted offsets and any final
+unconsumed offset fail closed. The terminal consumption assertion prevents a
+future filtering change from silently dropping offsets. Errors remain
+sanitized and contain no visible source text. Legal grapheme-boundary offsets
+inside both explicit segments reconstruct the exact lines and code-point /
+grapheme counts for LF, CRLF and CR.
+
+Fresh verification after round 4:
+
+- Typography plus design-metrics regression: `47 passed`.
+- Typography/design-metrics/quality/design-QA focused: `77 passed`.
+- Adjacent v4 typography/design-metrics/design-QA/semantic/authoring/compiler:
+  `147 passed, 1 warning`.
+- Existing v3 plan/node QA: `39 passed`.
+- `python -m compileall -q src main.py`: passed.
+- `git diff --check`: passed.
+
+The warning is the existing Pydantic serializer warning from the intentionally
+tampered nested semantic-model fixture; no Task 12 assertion failed.
+
 ## Concerns / handoff
 
 Q2 remains a deterministic layout/provenance gate and does not establish final
 DOM/PNG fidelity; that evidence belongs to Task 13 Q3. The unfiltered suite's
 known local Chromium smoke failed at browser launch with the sandbox
 `mach_port_rendezvous` permission error; it is excluded from the offline full
-suite above. The controller should commit this Task 12 round as
-`fix: derive v4 line metrics from semantic source`.
+suite above. This round is ready for commit as
+`fix: reject unconsumed v4 line break offsets`.

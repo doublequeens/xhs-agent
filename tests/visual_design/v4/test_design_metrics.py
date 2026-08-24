@@ -261,6 +261,43 @@ def test_q2_rejects_rehashed_break_offsets_that_change_source_line_count() -> No
         )
 
 
+def test_q2_rejects_self_rehashed_unconsumed_break_at_explicit_segment_start() -> None:
+    program, inputs = _inputs(text="美美\n美美")
+    page = compile_layout(program, inputs)
+    evidence = page.compiler_provenance.text_measurement_evidence["fragment-1"]
+    payload = evidence.model_dump(mode="python")
+    for field in (
+        "fragment_ref",
+        "source_atom_id",
+        "reserved_box_x_px",
+        "reserved_box_y_px",
+        "reserved_box_width_px",
+        "reserved_box_height_px",
+        "measurement_sha256",
+    ):
+        payload.pop(field)
+    payload.update({"break_offsets": (3,), "inserted_break_offsets": (3,)})
+    forged = evidence.model_copy(
+        update={
+            "break_offsets": (3,),
+            "inserted_break_offsets": (3,),
+            "measurement_sha256": canonical_text_measurement_sha256_v4(payload),
+        }
+    )
+    provenance = _rehash_provenance(
+        page.compiler_provenance,
+        text_measurement_evidence={"fragment-1": forged},
+    )
+    tampered = _rehash_page(page, compiler_provenance=provenance)
+
+    with pytest.raises(DesignMetricsInvariantError, match="source|line|structure"):
+        evaluate_page_metrics(
+            tampered,
+            page_brief_set=inputs.visual_direction_plan.page_brief_set,
+            semantic_content_model=inputs.semantic_content_model,
+        )
+
+
 def test_regional_density_has_reachable_fail_boundary_from_current_region_geometry() -> None:
     program, inputs = _inputs(with_asset=True)
     page = compile_layout(program, inputs)
