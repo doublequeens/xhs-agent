@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
+import re
 from typing import Any, Literal, Mapping
 
 from src.schemas.v4.critique import (
@@ -16,6 +18,13 @@ from src.visual_ai.protocols import InvocationPolicy, InvocationRequest
 
 _PROMPT = (Path(__file__).resolve().parents[1] / "prompts/base/v4_aesthetic_critic.txt").read_text(encoding="utf-8").strip()
 _PASS = Literal["page", "set"]
+_BLIND_TEXT = re.compile(r"(?:provider|provenance|licen[cs]e|prompt|revision|attempt|history|https?://|(?:^|[/\\])(?:users|private|home|tmp)(?:[/\\])|[A-Za-z]:[\\/])", re.I)
+
+
+def _blind_text(value: str, name: str) -> str:
+    if type(value) is not str or not value.strip() or len(value) > 240 or "\n" in value or "\r" in value or _BLIND_TEXT.search(value):
+        raise ValueError(f"aesthetic {name} is not allowlisted blind text")
+    return value.strip()
 
 
 def build_aesthetic_request(
@@ -45,13 +54,15 @@ def build_aesthetic_request(
         raise ValueError("page pass cannot receive prior observations")
     if pass_kind == "set" and tuple(item.page_id for item in pass_one_observations) != page_ids:
         raise ValueError("set pass must consume complete ordered page observations")
+    pages = tuple(
+        {"page_id": _blind_text(page_id, "page id"), "role": _blind_text(role, "role"), "duty": _blind_text(duty, "duty")}
+        for page_id, role, duty in zip(page_ids, page_roles, page_duties, strict=True)
+    )
+    prompt = _PROMPT + "\nEvaluator page context:\n" + json.dumps(pages, ensure_ascii=False, separators=(",", ":"))
     payload: dict[str, Any] = {
-        "evaluator_prompt": _PROMPT,
+        "prompt": prompt,
         "pass_kind": pass_kind,
-        "pages": tuple(
-            {"page_id": page_id, "role": role, "duty": duty}
-            for page_id, role, duty in zip(page_ids, page_roles, page_duties, strict=True)
-        ),
+        "pages": pages,
         "image_mime_types": image_mime_types,
     }
     # Hashes identify the immutable review subject without supplying prompts,
@@ -68,6 +79,8 @@ def build_aesthetic_request(
         payload["page_observations"] = tuple(
             item.model_dump(mode="json") for item in pass_one_observations
         )
+        prompt += "\nFinalized page observations:\n" + json.dumps(payload["page_observations"], ensure_ascii=False, separators=(",", ":"))
+        payload["prompt"] = prompt
     return InvocationRequest(
         run_id=run_id,
         run_mode=run_mode,

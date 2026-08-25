@@ -73,7 +73,7 @@ def test_v4_critic_runs_q3_before_two_blind_evaluator_passes(tmp_path):
 
     assert result["route"] == "human_review"
     assert [request.payload["pass_kind"] for request in gateway.calls] == ["page", "set"]
-    assert result["visual_critique"].critic_independence == "independent"
+    assert result["visual_critique"].critic_independence == "degraded"
 
 
 def test_v4_critic_failed_page_routes_exact_normalized_aesthetic_failure(tmp_path):

@@ -119,3 +119,33 @@ def test_revision_node_rejects_same_fingerprint_with_tampered_payload() -> None:
         revision_node(
             {"normalized_failures_v4": (failure, forged), "candidate_id": "candidate-a", "revision_history_v4": ()}
         )
+
+
+def test_revision_node_accepts_only_critic_failure_with_retained_passed_hard_gates(tmp_path) -> None:
+    from tests.visual_design.v4.test_v4_render_qa import _world
+    from tests.nodes.v4.test_design_qa import _fixture
+    from src.visual_design.v4.render_qa import evaluate_v4_render
+    from src.nodes.v4.design_qa import aggregate_design_qa
+
+    values = _world(tmp_path)
+    fixture = _fixture()
+    q2 = aggregate_design_qa(
+        semantic_qa=fixture["q0"], authoring_qa=fixture["q1"], carousel_design_plan=values["design_plan"],
+        content_atom_set=values["content_atom_set"], content_lock=values["content_lock"],
+        semantic_content_model=values["semantic_content_model"], page_brief_set=values["page_brief_set"],
+        visual_direction_plan=values["visual_direction_plan"], asset_manifest=values["asset_manifest"],
+    )
+    assert q2.passed
+    q3 = evaluate_v4_render(**values)
+    failure = NormalizedFailureV4.from_fingerprint(FailureFingerprintV4.create(
+        node="V4_VISUAL_CRITIC", page_id="page-1", failure_code="AESTHETIC_REVIEW_FAILED",
+        affected_fragment_ids=(), geometry_region=None,
+    ))
+    result = revision_node({
+        **values,
+        "normalized_failures_v4": (failure,), "candidate_id": values["render_manifest"].candidate_id,
+        "revision_history_v4": (), "semantic_qa_result_v4": fixture["q0"],
+        "authoring_qa_result_v4": fixture["q1"], "design_plan_qa_result_v4": q2,
+        "render_qa_result_v4": q3,
+    })
+    assert result["revision_request_v4"].target_layer == "AESTHETIC"

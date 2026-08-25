@@ -32,6 +32,28 @@ def test_critic_request_omits_revision_round_and_authoring_prompt():
     assert "authoring_prompt" not in payload
 
 
+def test_blind_provider_prompt_contains_allowlisted_page_context_not_hashes_or_paths():
+    request = build_aesthetic_request(
+        run_id="run-1", run_mode="shadow", candidate_id="candidate-1", revision_id="revision-1",
+        page_ids=("page-1",), page_roles=("cover",), page_duties=("state semantic promise",),
+        image_bytes=(b"png-bytes",), image_mime_types=("image/png",), pass_kind="page",
+        source_bindings={
+            "render_manifest_sha256": "a" * 64, "render_qa_result_sha256": "b" * 64,
+            "page_brief_set_sha256": "c" * 64, "semantic_content_model_sha256": "d" * 64,
+        },
+    )
+    assert "prompt" in request.payload
+    assert "cover" in request.payload["prompt"]
+    assert "state semantic promise" in request.payload["prompt"]
+    assert "a" * 64 not in request.payload["prompt"]
+    with pytest.raises(ValueError):
+        build_aesthetic_request(
+            run_id="run-1", run_mode="shadow", candidate_id="candidate-1", revision_id="revision-1",
+            page_ids=("page-1",), page_roles=("/private/tmp",), page_duties=("safe duty",),
+            image_bytes=(b"png-bytes",), image_mime_types=("image/png",), pass_kind="page",
+        )
+
+
 @dataclass
 class _Gateway:
     calls: list = field(default_factory=list)
@@ -101,3 +123,29 @@ def test_evaluator_rejects_missing_duplicate_or_reordered_page_observations():
             page_brief_set_sha256="c" * 64, semantic_content_model_sha256="d" * 64,
             authoring_model_identity="author", evaluator_model_identity="critic",
         )
+
+
+def test_v4_gemini_provider_seam_receives_the_blind_prompt(monkeypatch):
+    from types import SimpleNamespace
+    from src.visual_ai import v4_gemini
+    from src.visual_ai.protocols import ProviderConfig
+
+    request = build_aesthetic_request(
+        run_id="run-1", run_mode="shadow", candidate_id="candidate-1", revision_id="revision-1",
+        page_ids=("page-1",), page_roles=("cover",), page_duties=("state semantic promise",),
+        image_bytes=(b"png-bytes",), image_mime_types=("image/png",), pass_kind="page",
+    )
+
+    class Models:
+        def __init__(self): self.contents = None
+        def generate_content(self, **kwargs):
+            self.contents = kwargs["contents"]
+            return SimpleNamespace(text="{}")
+    models = Models()
+    monkeypatch.setattr(v4_gemini, "_client", lambda _config: SimpleNamespace(models=models))
+    result = v4_gemini._text_call(ProviderConfig(), request)
+
+    assert not isinstance(result, v4_gemini.ProviderFailure)
+    assert models.contents[0] == request.payload["prompt"]
+    assert "cover" in models.contents[0]
+    assert "state semantic promise" in models.contents[0]

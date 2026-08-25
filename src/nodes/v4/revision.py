@@ -7,7 +7,9 @@ from typing import Any
 
 from src.schemas.v4.direction import AuthoringQAResultV4
 from src.schemas.v4.quality import DesignPlanQAResultV4
-from src.schemas.v4.rendering import RenderQAResultV4
+from src.schemas.v4.rendering import RenderManifestV4, RenderQAResultV4
+from src.schemas.v4.direction import PageBriefSetV4
+from src.schemas.v4.semantic import SemanticContentModelV4
 from src.schemas.v4.revision import FailureFingerprintV4, NormalizedFailureV4, RevisionEventV4
 from src.schemas.v4.semantic import SemanticQAResultV4
 from src.visual_design.v4.revisions import append_revision_event, layer_for_failure_code, route_revision
@@ -62,13 +64,40 @@ def _result_from_state(state: Mapping[str, Any]) -> object:
 def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[NormalizedFailureV4, ...]:
     if "normalized_failures_v4" not in state:
         return _failures_from_result(_result_from_state(state))
-    if any(state.get(key) is not None for key in ("render_qa_result_v4", "design_plan_qa_result_v4", "authoring_qa_result_v4", "semantic_qa_result_v4")):
-        raise ValueError("v4 revision node cannot mix normalized and Q0-Q3 inputs")
     values = state["normalized_failures_v4"]
     if type(values) is not tuple or not values or any(type(item) is not NormalizedFailureV4 for item in values):
         raise ValueError("v4 revision node requires exact normalized failure tuple")
     for value in values:
         value.validate_contract()
+    q_keys = ("render_qa_result_v4", "design_plan_qa_result_v4", "authoring_qa_result_v4", "semantic_qa_result_v4")
+    retained = tuple(state.get(key) for key in q_keys)
+    if all(item is None for item in retained) and all(item.fingerprint.node == "V4_VISUAL_CRITIC" for item in values):
+        raise ValueError("v4 aesthetic revision requires retained passed Q0-Q3 evidence")
+    if any(item is not None for item in retained):
+        # Q4 is the one valid normalized consumer that follows passed Q0-Q3.
+        # It must carry only the exact closed critic failure and every retained
+        # hard gate must still be exact, validated and passed.
+        if any(item.fingerprint.node != "V4_VISUAL_CRITIC" or item.failure_code != "AESTHETIC_REVIEW_FAILED" for item in values):
+            raise ValueError("v4 revision node cannot mix non-aesthetic normalized failures with hard-QA evidence")
+        expected = (RenderQAResultV4, DesignPlanQAResultV4, AuthoringQAResultV4, SemanticQAResultV4)
+        if any(type(item) is not model for item, model in zip(retained, expected, strict=True)):
+            raise ValueError("v4 aesthetic revision requires all exact retained Q0-Q3 evidence")
+        try:
+            for item in retained:
+                item.validate_integrity()
+                if not item.passed:
+                    raise ValueError
+            manifest = state.get("render_manifest_v4", state.get("render_manifest"))
+            page_set = state.get("page_brief_set", state.get("page_briefs"))
+            semantic = state.get("semantic_content_model", state.get("semantic_model"))
+            if type(manifest) is not RenderManifestV4 or type(page_set) is not PageBriefSetV4 or type(semantic) is not SemanticContentModelV4:
+                raise ValueError
+            manifest.validate_integrity(); page_set.validate_integrity(); semantic.validate_integrity()
+            q3, q2 = retained[0], retained[1]
+            if (q3.render_manifest_sha256 != manifest.canonical_sha256 or q3.design_plan_qa_sha256 != q2.canonical_sha256 or q3.page_brief_set_sha256 != page_set.canonical_sha256 or q3.semantic_content_model_sha256 != semantic.canonical_sha256):
+                raise ValueError
+        except Exception:
+            raise ValueError("v4 aesthetic revision requires fresh passed Q0-Q3 evidence") from None
     return values
 
 

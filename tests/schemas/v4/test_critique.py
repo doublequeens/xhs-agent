@@ -108,3 +108,15 @@ def test_sub_quality_score_without_same_dimension_issue_is_rejected():
         set_evaluation=result,
     )
     assert critique.passed is False
+
+
+def test_page_and_set_issue_dimensions_are_closed_by_container():
+    rhythm = AestheticIssueV4.create(
+        severity="major", dimension="rhythm", page_ids=("page-1",),
+        evidence="adjacent pages repeat the same text column rhythm",
+    )
+    with pytest.raises(ValueError, match="page.*dimension"):
+        AestheticPageEvaluationV4.create(
+            page_id="page-1", hierarchy=90, readability=90, composition=90,
+            whitespace=90, visual_focus=90, asset_integration=90, issues=(rhythm,),
+        )

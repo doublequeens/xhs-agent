@@ -124,6 +124,8 @@ class AestheticPageEvaluationV4(_Frozen):
             issue.validate_integrity()
             if self.page_id not in issue.page_ids:
                 raise ValueError("page evaluation issue must reference its page")
+            if issue.dimension not in PAGE_AESTHETIC_DIMENSIONS_V4:
+                raise ValueError("page evaluation issue has an invalid page dimension")
         seen = set()
         for issue in self.issues:
             key = issue.canonical_sha256
@@ -201,6 +203,8 @@ class SetAestheticEvaluationV4(_Frozen):
     def integrity(self):
         for issue in self.issues:
             issue.validate_integrity()
+            if issue.dimension not in SET_AESTHETIC_DIMENSIONS_V4:
+                raise ValueError("set evaluation issue has an invalid set dimension")
         if len({issue.canonical_sha256 for issue in self.issues}) != len(self.issues):
             raise ValueError("duplicate aesthetic issue")
         for dimension in SET_AESTHETIC_DIMENSIONS_V4:
@@ -268,6 +272,9 @@ class CarouselAestheticEvaluationV4(_Frozen):
         for page in self.pages:
             page.validate_integrity()
         self.set_evaluation.validate_integrity()
+        issue_hashes = tuple(issue.canonical_sha256 for page in self.pages for issue in page.issues) + tuple(issue.canonical_sha256 for issue in self.set_evaluation.issues)
+        if len(issue_hashes) != len(set(issue_hashes)):
+            raise ValueError("duplicate aesthetic issue across critique containers")
         actual = set(ids)
         if any(page_id not in actual for page in self.pages for issue in page.issues for page_id in issue.page_ids) or any(page_id not in actual for issue in self.set_evaluation.issues for page_id in issue.page_ids):
             raise ValueError("aesthetic issue references an unknown page")

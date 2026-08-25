@@ -129,14 +129,20 @@ def _q3_sources(state: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _model_identity(gateway: Any, state: Mapping[str, Any]) -> tuple[str | None, str | None]:
-    authoring = state.get("authoring_model_identity")
-    if authoring is not None and type(authoring) is not str:
-        raise ValueError("authoring model identity must be a string or None")
+    # No current v4 durable authoring attestation carries a model identity.
+    # State is untrusted workflow input, so it cannot promote independence.
+    authoring = None
     configured = getattr(getattr(gateway, "provider_config", None), "model", None)
-    evaluator = configured if type(configured) is str else state.get("evaluator_model_identity")
-    if evaluator is not None and type(evaluator) is not str:
-        raise ValueError("evaluator model identity must be a string or None")
+    evaluator = configured if type(configured) is str else None
     return authoring, evaluator
+
+
+def _page_duties(direction: VisualDirectionPlanV4, page_set: PageBriefSetV4) -> tuple[str, ...]:
+    tasks = {beat.beat_id: beat.task for beat in direction.narrative.beats}
+    try:
+        return tuple(tasks[page.beat_ref] for page in page_set.pages)
+    except KeyError:
+        raise ValueError("v4 aesthetic critic page brief beat binding is stale") from None
 
 
 def aesthetic_critic_node(state: Mapping[str, Any], *, gateway: Any | None = None, policy=None) -> dict[str, Any]:
@@ -157,7 +163,7 @@ def aesthetic_critic_node(state: Mapping[str, Any], *, gateway: Any | None = Non
         gateway=gateway, run_id=run_id, run_mode=run_mode, candidate_id=candidate_id, revision_id=revision_id,
         parent_revision_id=state.get("parent_revision_id"), page_ids=manifest.page_ids,
         page_roles=tuple(page.narrative_role for page in page_set.pages),
-        page_duties=tuple(page.beat_ref for page in page_set.pages), image_bytes=images,
+        page_duties=_page_duties(sources["visual_direction_plan"], page_set), image_bytes=images,
         image_mime_types=("image/png",) * len(images), render_manifest_sha256=manifest.canonical_sha256,
         render_qa_result_sha256=sources["render_qa_result"].canonical_sha256,
         page_brief_set_sha256=page_set.canonical_sha256,
@@ -176,8 +182,16 @@ def aesthetic_critic_node(state: Mapping[str, Any], *, gateway: Any | None = Non
                 "hierarchy", "readability", "composition", "whitespace", "visual_focus", "asset_integration"
             )) >= 2
         ) or tuple(page_id for issue in critique.set_evaluation.issues for page_id in issue.page_ids)
-        fingerprint = FailureFingerprintV4.create(node="V4_VISUAL_CRITIC", page_id=issue_pages[0] if issue_pages else critique.pages[0].page_id, failure_code="AESTHETIC_REVIEW_FAILED", geometry_region=None)
-        route, failures = "revision", (NormalizedFailureV4.from_fingerprint(fingerprint),)
+        if critique.set_evaluation.rhythm < 70 or critique.set_evaluation.repetition < 70:
+            issue_pages += tuple(page.page_id for page in critique.pages)
+        selected = set(issue_pages)
+        failures = tuple(
+            NormalizedFailureV4.from_fingerprint(FailureFingerprintV4.create(
+                node="V4_VISUAL_CRITIC", page_id=page_id, failure_code="AESTHETIC_REVIEW_FAILED", geometry_region=None,
+            ))
+            for page_id in manifest.page_ids if page_id in selected
+        )
+        route = "revision"
     return {"visual_critique_v4": critique, "visual_critique": critique, "normalized_failures_v4": failures, "route": route, "visual_route": route, "critic_route": route, "current_node": "V4_VISUAL_CRITIC"}
 
 
@@ -186,6 +200,15 @@ def route_after_aesthetic_critic(state: Mapping[str, Any]) -> str:
     if type(critique) is not CarouselAestheticEvaluationV4:
         raise ValueError("v4 aesthetic route requires exact critique")
     critique.validate_integrity()
+    sources = _q3_sources(state)
+    expected = {
+        "render_manifest_sha256": sources["render_manifest"].canonical_sha256,
+        "render_qa_result_sha256": sources["render_qa_result"].canonical_sha256,
+        "page_brief_set_sha256": sources["page_brief_set"].canonical_sha256,
+        "semantic_content_model_sha256": sources["semantic_content_model"].canonical_sha256,
+    }
+    if any(getattr(critique, key) != value for key, value in expected.items()):
+        raise ValueError("v4 aesthetic route critique source bindings are stale")
     return "human_review" if critique.passed else "revision"
 
 
