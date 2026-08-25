@@ -86,3 +86,36 @@ def test_revision_node_selects_earliest_layer_and_drops_downstream_failures() ->
 
     assert result["revision_request_v4"].target_layer == "SEMANTIC"
     assert result["revision_request_v4"].failure_codes == ("VISIBLE_TEXT_MUTATED",)
+
+
+def test_revision_node_deduplicates_exact_normalized_failures_before_budgeting() -> None:
+    """Would fail if duplicate QA evidence formed two event fingerprints or spent two slots."""
+    failure = NormalizedFailureV4.from_fingerprint(
+        FailureFingerprintV4.create(
+            node="V4_RENDER_QA", page_id="page-1", failure_code="RENDER_OVERFLOW",
+            affected_fragment_ids=(), geometry_region=None,
+        )
+    )
+
+    result = revision_node(
+        {"normalized_failures_v4": (failure, failure), "candidate_id": "candidate-a", "revision_history_v4": ()}
+    )
+
+    assert len(result["revision_request_v4"].failure_fingerprints) == 1
+    assert len(result["revision_history_v4"][0].failure_fingerprints) == 1
+
+
+def test_revision_node_rejects_same_fingerprint_with_tampered_payload() -> None:
+    """Would fail if hash-key dedup hid a non-canonical duplicate payload attack."""
+    failure = NormalizedFailureV4.from_fingerprint(
+        FailureFingerprintV4.create(
+            node="V4_RENDER_QA", page_id="page-1", failure_code="RENDER_OVERFLOW",
+            affected_fragment_ids=(), geometry_region=None,
+        )
+    )
+    forged = failure.model_copy(update={"page_id": "page-2"})
+
+    with pytest.raises(ValueError):
+        revision_node(
+            {"normalized_failures_v4": (failure, forged), "candidate_id": "candidate-a", "revision_history_v4": ()}
+        )

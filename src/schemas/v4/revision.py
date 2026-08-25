@@ -41,6 +41,13 @@ REVISION_FAILURE_CODES_V4 = tuple(
     sorted(set(SEMANTIC_ISSUE_CODES_V4 + get_args(AuthoringIssueCodeV4) + QUALITY_ISSUE_CODES_V4 + RENDER_ISSUE_CODES_V4 + _AESTHETIC_CODES))
 )
 RevisionFailureCodeV4 = Literal[*REVISION_FAILURE_CODES_V4]
+_NODE_FAILURE_CODES_V4 = {
+    "V4_SEMANTIC_QA": frozenset(SEMANTIC_ISSUE_CODES_V4),
+    "V4_AUTHORING_QA": frozenset(get_args(AuthoringIssueCodeV4)),
+    "V4_DESIGN_QA": frozenset(QUALITY_ISSUE_CODES_V4),
+    "V4_RENDER_QA": frozenset(RENDER_ISSUE_CODES_V4),
+    "V4_VISUAL_CRITIC": frozenset(_AESTHETIC_CODES),
+}
 
 _HASH_RE = re.compile(r"^[0-9a-f]{64}$")
 _REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
@@ -122,6 +129,8 @@ class FailureFingerprintV4(_FrozenRevisionV4):
 
     @model_validator(mode="after")
     def validate_integrity(self) -> "FailureFingerprintV4":
+        if self.failure_code not in _NODE_FAILURE_CODES_V4[self.node]:
+            raise ValueError("failure code is not compatible with its closed v4 node")
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         if self.canonical_sha256 != canonical_sha256_v4(payload):
             raise ValueError("failure fingerprint canonical sha256 does not match payload")
@@ -293,6 +302,14 @@ class RevisionRequestV4(_FrozenRevisionV4):
             return None
         return _sha(value, "routing source sha256")
 
+    @field_validator("approved_grammar_alternatives")
+    @classmethod
+    def validate_alternatives(cls, value: tuple[ApprovedGrammarAlternativeV4, ...]) -> tuple[ApprovedGrammarAlternativeV4, ...]:
+        page_ids = tuple(item.page_id for item in value)
+        if page_ids != tuple(sorted(page_ids)) or len(page_ids) != len(set(page_ids)):
+            raise ValueError("grammar alternatives must be sorted and page-unique")
+        return value
+
     @field_validator("canonical_sha256")
     @classmethod
     def validate_canonical_hash(cls, value: str) -> str:
@@ -307,7 +324,7 @@ class RevisionRequestV4(_FrozenRevisionV4):
             raise ValueError("grammar alternatives require both source hashes and vice versa")
         if has_context and (self.page_brief_set_sha256 is None or self.carousel_design_plan_sha256 is None):
             raise ValueError("grammar alternatives require both source hashes")
-        if self.target_layer == "LAYOUT" and self.permitted_operations == ("CHANGE_GRAMMAR",):
+        if self.permitted_operations == ("CHANGE_GRAMMAR",):
             if not self.approved_grammar_alternatives:
                 raise ValueError("grammar change requires approved alternatives")
             if {item.page_id for item in self.approved_grammar_alternatives} != set(self.affected_pages):
@@ -341,6 +358,9 @@ class RevisionEventV4(_FrozenRevisionV4):
     target_layer: RevisionLayerV4
     affected_pages: tuple[StrictStr, ...] = Field(min_length=1)
     operation: RevisionOperationV4
+    page_brief_set_sha256: StrictStr | None = None
+    carousel_design_plan_sha256: StrictStr | None = None
+    approved_grammar_alternatives: tuple[ApprovedGrammarAlternativeV4, ...] = ()
     canonical_sha256: StrictStr
 
     @classmethod
@@ -356,6 +376,12 @@ class RevisionEventV4(_FrozenRevisionV4):
         for fingerprint in fingerprints:
             fingerprint.validate_contract()
         raw["affected_pages"] = tuple(raw["affected_pages"])
+        # Optional fields participate in canonical Pydantic serialization.  Make
+        # their absence explicit before deriving the digest so ordinary events
+        # remain byte-stable alongside grammar-authorized events.
+        raw.setdefault("page_brief_set_sha256", None)
+        raw.setdefault("carousel_design_plan_sha256", None)
+        raw.setdefault("approved_grammar_alternatives", ())
         return cls(**raw, canonical_sha256=canonical_sha256_v4(raw))
 
     @field_validator("candidate_id", "revision_id", "prior_revision_id")
@@ -382,10 +408,37 @@ class RevisionEventV4(_FrozenRevisionV4):
     def validate_hash(cls, value: str) -> str:
         return _sha(value, "canonical_sha256")
 
+    @field_validator("page_brief_set_sha256", "carousel_design_plan_sha256")
+    @classmethod
+    def validate_optional_hashes(cls, value: str | None, info) -> str | None:
+        return None if value is None else _sha(value, info.field_name)
+
+    @field_validator("approved_grammar_alternatives")
+    @classmethod
+    def validate_alternatives(cls, value: tuple[ApprovedGrammarAlternativeV4, ...]) -> tuple[ApprovedGrammarAlternativeV4, ...]:
+        page_ids = tuple(item.page_id for item in value)
+        if page_ids != tuple(sorted(page_ids)) or len(page_ids) != len(set(page_ids)):
+            raise ValueError("grammar event witnesses must be sorted and page-unique")
+        return value
+
     @model_validator(mode="after")
     def validate_integrity(self) -> "RevisionEventV4":
         for fingerprint in self.fingerprints:
             fingerprint.validate_contract()
+        if self.affected_pages != tuple(sorted({item.page_id for item in self.fingerprints})):
+            raise ValueError("revision event affected pages must bind exactly its fingerprints")
+        has_context = self.page_brief_set_sha256 is not None or self.carousel_design_plan_sha256 is not None
+        if has_context != bool(self.approved_grammar_alternatives):
+            raise ValueError("grammar event witnesses require both source hashes")
+        if self.operation == "CHANGE_GRAMMAR":
+            if self.page_brief_set_sha256 is None or self.carousel_design_plan_sha256 is None:
+                raise ValueError("grammar event requires durable source hashes")
+            if {item.page_id for item in self.approved_grammar_alternatives} != set(self.affected_pages):
+                raise ValueError("grammar event witnesses must cover affected pages")
+        elif self.approved_grammar_alternatives:
+            raise ValueError("only grammar events may carry grammar witnesses")
+        for alternative in self.approved_grammar_alternatives:
+            alternative.validate_integrity()
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         if self.canonical_sha256 != canonical_sha256_v4(payload):
             raise ValueError("revision event canonical sha256 does not match payload")

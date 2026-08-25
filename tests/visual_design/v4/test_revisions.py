@@ -10,7 +10,7 @@ from src.schemas.v4.revision import (
     RevisionEventV4,
     VisualExecutionInterrupted,
 )
-from src.visual_design.v4.revisions import route_revision
+from src.visual_design.v4.revisions import append_revision_event, deserialize_revision_state, route_revision, serialize_revision_state
 
 
 def _approved_layout_context():
@@ -57,8 +57,16 @@ def _approved_layout_context():
 
 
 def _failure(*, page_id: str = "page-9", code: str = "RENDER_OVERFLOW") -> NormalizedFailureV4:
+    nodes = {
+        "VISIBLE_TEXT_MUTATED": "V4_SEMANTIC_QA",
+        "PAGE_BRIEF_DUTY_EMPTY": "V4_AUTHORING_QA",
+        "ASSET_DIRECTIVE_MISMATCH": "V4_AUTHORING_QA",
+        "COMPOSITION_REPEATED": "V4_AUTHORING_QA",
+        "FAMILY_MISMATCH": "V4_AUTHORING_QA",
+        "AESTHETIC_REVIEW_FAILED": "V4_VISUAL_CRITIC",
+    }
     fingerprint = FailureFingerprintV4.create(
-        node="V4_RENDER_QA",
+        node=nodes.get(code, "V4_RENDER_QA"),
         page_id=page_id,
         failure_code=code,
         affected_fragment_ids=("fragment-1",),
@@ -74,7 +82,7 @@ def _event(failure: NormalizedFailureV4, operation: str, revision_id: str, prior
         prior_revision_id=prior_revision_id,
         fingerprint=failure.fingerprint,
         target_layer="LAYOUT",
-        affected_pages=("page-9",),
+        affected_pages=(failure.page_id,),
         operation=operation,
     )
 
@@ -111,10 +119,20 @@ def test_second_layout_uses_only_hash_bound_page_brief_alternative() -> None:
 
 def test_third_same_fingerprint_exhausts_candidate() -> None:
     """Would fail if a third identical failure silently repaginates."""
-    failure = _failure()
+    failure = _failure(page_id="page-1")
+    page_set, plan = _approved_layout_context()
+    first = _event(failure, "REFLOW", "revision-1")
+    second_request = route_revision(
+        failure, history=(first,), candidate_id="candidate-a", prior_revision_id="revision-1",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+    second = append_revision_event(
+        second_request, failure, candidate_id="candidate-a", revision_id="revision-2",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
     history = (
-        _event(failure, "REFLOW", "revision-1"),
-        _event(failure, "CHANGE_GRAMMAR", "revision-2", "revision-1"),
+        first,
+        second,
     )
 
     with pytest.raises(VisualExecutionInterrupted) as exc:
@@ -184,22 +202,38 @@ def test_second_identical_nonlayout_failure_never_repeats_operation(node: str, c
             geometry_region=None,
         )
     )
-    event = RevisionEventV4.create(
-        candidate_id="candidate-a",
-        revision_id="revision-1",
-        prior_revision_id=None,
-        fingerprint=failure.fingerprint,
-        target_layer={
-            "VISIBLE_TEXT_MUTATED": "SEMANTIC",
-            "PAGE_BRIEF_DUTY_EMPTY": "AUTHORING",
-            "ASSET_DIRECTIVE_MISMATCH": "ASSET",
-            "COMPOSITION_REPEATED": "COMPOSITION",
-            "RENDER_FONT": "RENDER",
-            "AESTHETIC_REVIEW_FAILED": "AESTHETIC",
-        }[code],
-        affected_pages=("page-9",),
-        operation=first_operation,
-    )
+    if code == "COMPOSITION_REPEATED":
+        failure = NormalizedFailureV4.from_fingerprint(
+            FailureFingerprintV4.create(
+                node=node, page_id="page-1", failure_code=code,
+                affected_fragment_ids=(), geometry_region=None,
+            )
+        )
+        page_set, plan = _approved_layout_context()
+        request = route_revision(
+            failure, history=(), candidate_id="candidate-a", prior_revision_id=None,
+            page_brief_set=page_set, carousel_design_plan=plan,
+        )
+        event = append_revision_event(
+            request, failure, candidate_id="candidate-a", revision_id="revision-1",
+            page_brief_set=page_set, carousel_design_plan=plan,
+        )
+    else:
+        event = RevisionEventV4.create(
+            candidate_id="candidate-a",
+            revision_id="revision-1",
+            prior_revision_id=None,
+            fingerprint=failure.fingerprint,
+            target_layer={
+                "VISIBLE_TEXT_MUTATED": "SEMANTIC",
+                "PAGE_BRIEF_DUTY_EMPTY": "AUTHORING",
+                "ASSET_DIRECTIVE_MISMATCH": "ASSET",
+                "RENDER_FONT": "RENDER",
+                "AESTHETIC_REVIEW_FAILED": "AESTHETIC",
+            }[code],
+            affected_pages=(failure.page_id,),
+            operation=first_operation,
+        )
 
     with pytest.raises(VisualExecutionInterrupted):
         route_revision(failure, history=(event,), candidate_id="candidate-a", prior_revision_id="revision-1")
@@ -219,10 +253,15 @@ def test_second_identical_nonlayout_failure_never_repeats_operation(node: str, c
 )
 def test_layer_aware_invalidation_matrix(failure: NormalizedFailureV4, contracts: tuple[str, ...]) -> None:
     """Would fail if a repair invalidated too little or used one generic downstream set."""
-    request = route_revision(failure, history=(), candidate_id="candidate-a", prior_revision_id=None)
+    context = {}
+    if failure.failure_code == "COMPOSITION_REPEATED":
+        page_set, plan = _approved_layout_context()
+        failure = _failure(page_id="page-1", code="COMPOSITION_REPEATED")
+        context = {"page_brief_set": page_set, "carousel_design_plan": plan}
+    request = route_revision(failure, history=(), candidate_id="candidate-a", prior_revision_id=None, **context)
 
     assert request.invalidation.downstream_contracts == contracts
-    assert request.invalidation.rebuild_page_ids == ("page-9",)
+    assert request.invalidation.rebuild_page_ids == (failure.page_id,)
     assert "content_lock" not in request.invalidation.downstream_contracts
     assert "content_atom_set" not in request.invalidation.downstream_contracts
 
@@ -237,3 +276,114 @@ def test_direct_router_rejects_stale_prior_identity() -> None:
             candidate_id="candidate-a",
             prior_revision_id="revision-stale",
         )
+
+
+@pytest.mark.parametrize(
+    ("node", "code"),
+    [
+        ("V4_SEMANTIC_QA", "VISIBLE_TEXT_MUTATED"),
+        ("V4_AUTHORING_QA", "PAGE_BRIEF_DUTY_EMPTY"),
+        ("V4_DESIGN_QA", "SAFE_MARGIN_NONCOMPLIANT"),
+        ("V4_RENDER_QA", "RENDER_FONT"),
+        ("V4_VISUAL_CRITIC", "AESTHETIC_REVIEW_FAILED"),
+    ],
+)
+def test_failure_fingerprint_accepts_only_compatible_closed_node_code_pairs(node: str, code: str) -> None:
+    """Would fail if a valid closed code could be attributed to the wrong QA boundary."""
+    fingerprint = FailureFingerprintV4.create(
+        node=node, page_id="page-1", failure_code=code,
+        affected_fragment_ids=(), geometry_region=None,
+    )
+    assert fingerprint.node == node
+
+
+@pytest.mark.parametrize(
+    ("node", "code"),
+    [
+        ("V4_RENDER_QA", "VISIBLE_TEXT_MUTATED"),
+        ("V4_SEMANTIC_QA", "PAGE_BRIEF_DUTY_EMPTY"),
+        ("V4_DESIGN_QA", "RENDER_FONT"),
+        ("V4_VISUAL_CRITIC", "SAFE_MARGIN_NONCOMPLIANT"),
+    ],
+)
+def test_failure_fingerprint_rejects_incompatible_closed_node_code_pairs(node: str, code: str) -> None:
+    with pytest.raises(ValueError):
+        FailureFingerprintV4.create(
+            node=node, page_id="page-1", failure_code=code,
+            affected_fragment_ids=(), geometry_region=None,
+        )
+
+
+def test_change_grammar_event_persists_revalidated_witnesses_across_resume() -> None:
+    """Would fail if a durable grammar repair event lost its source-bound authorization."""
+    failure = _failure(page_id="page-1")
+    page_set, plan = _approved_layout_context()
+    request = route_revision(
+        failure, history=(_event(failure, "REFLOW", "revision-1"),),
+        candidate_id="candidate-a", prior_revision_id="revision-1",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+
+    event = append_revision_event(
+        request, failure, candidate_id="candidate-a", revision_id="revision-2",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+    resumed = deserialize_revision_state(serialize_revision_state({"revision_history_v4": (event,)}))
+
+    assert resumed["revision_history_v4"][0].page_brief_set_sha256 == page_set.canonical_sha256
+    assert resumed["revision_history_v4"][0].approved_grammar_alternatives == request.approved_grammar_alternatives
+
+
+def test_append_change_grammar_rejects_forged_or_stale_context() -> None:
+    """Would fail if append trusted a self-hashed grammar witness instead of live contracts."""
+    failure = _failure(page_id="page-1")
+    page_set, plan = _approved_layout_context()
+    request = route_revision(
+        failure, history=(_event(failure, "REFLOW", "revision-1"),),
+        candidate_id="candidate-a", prior_revision_id="revision-1",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+    forged = request.model_copy(update={"approved_grammar_alternatives": ()})
+
+    with pytest.raises(ValueError):
+        append_revision_event(
+            forged, failure, candidate_id="candidate-a", revision_id="revision-2",
+            page_brief_set=page_set, carousel_design_plan=plan,
+        )
+    with pytest.raises(ValueError):
+        append_revision_event(
+            request, failure, candidate_id="candidate-a", revision_id="revision-2",
+        )
+
+
+def test_resume_rejects_grammar_event_missing_durable_witness() -> None:
+    """Would fail if serialization permitted a grammar event whose audit witness was stripped."""
+    failure = _failure(page_id="page-1")
+    page_set, plan = _approved_layout_context()
+    request = route_revision(
+        failure, history=(_event(failure, "REFLOW", "revision-1"),),
+        candidate_id="candidate-a", prior_revision_id="revision-1",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+    event = append_revision_event(
+        request, failure, candidate_id="candidate-a", revision_id="revision-2",
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+
+    with pytest.raises(ValueError):
+        serialize_revision_state({"revision_history_v4": (event.model_copy(update={"approved_grammar_alternatives": ()}),)})
+
+
+def test_composition_grammar_change_requires_same_approved_context() -> None:
+    """Would fail if the first composition grammar repair bypassed Page Brief approval."""
+    failure = _failure(page_id="page-1", code="COMPOSITION_REPEATED")
+    page_set, plan = _approved_layout_context()
+
+    with pytest.raises(VisualExecutionInterrupted):
+        route_revision(failure, history=(), candidate_id="candidate-a", prior_revision_id=None)
+
+    request = route_revision(
+        failure, history=(), candidate_id="candidate-a", prior_revision_id=None,
+        page_brief_set=page_set, carousel_design_plan=plan,
+    )
+    assert request.approved_grammar_alternatives[0].grammar_id == "comparison_grid"

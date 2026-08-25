@@ -75,14 +75,20 @@ def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[Normalize
 def _select_upstream_failures(failures: tuple[NormalizedFailureV4, ...]) -> tuple[NormalizedFailureV4, ...]:
     """Repair the earliest layer; its exact failures invalidate later symptoms."""
     ordered_layers = ("SEMANTIC", "AUTHORING", "ASSET", "COMPOSITION", "LAYOUT", "RENDER", "AESTHETIC")
+    unique: dict[str, NormalizedFailureV4] = {}
+    for item in failures:
+        key = item.fingerprint.canonical_sha256
+        previous = unique.get(key)
+        if previous is not None and previous.model_dump(mode="json") != item.model_dump(mode="json"):
+            raise ValueError("same v4 revision fingerprint has inconsistent normalized payload")
+        unique[key] = item
+    deduplicated = tuple(unique[key] for key in sorted(unique))
     layer_by_failure = {
         item.fingerprint.canonical_sha256: layer_for_failure_code(item.failure_code, node=item.fingerprint.node)
-        for item in failures
+        for item in deduplicated
     }
     target = next(layer for layer in ordered_layers if layer in layer_by_failure.values())
-    selected = tuple(sorted((item for item in failures if layer_by_failure[item.fingerprint.canonical_sha256] == target), key=lambda item: item.fingerprint.canonical_sha256))
-    if len({item.fingerprint.canonical_sha256 for item in selected}) != len(selected):
-        raise ValueError("v4 revision normalized failures must be unique")
+    selected = tuple(item for item in deduplicated if layer_by_failure[item.fingerprint.canonical_sha256] == target)
     return selected
 
 
@@ -109,7 +115,11 @@ def revision_node(state: Mapping[str, Any]) -> dict[str, Any]:
         page_brief_set=state.get("page_brief_set", state.get("page_briefs")),
         carousel_design_plan=state.get("carousel_design_plan_v4", state.get("carousel_design_plan")),
     )
-    event = append_revision_event(request, failures, candidate_id=candidate_id, revision_id=f"revision-{len(history) + 1}")
+    event = append_revision_event(
+        request, failures, candidate_id=candidate_id, revision_id=f"revision-{len(history) + 1}",
+        page_brief_set=state.get("page_brief_set", state.get("page_briefs")),
+        carousel_design_plan=state.get("carousel_design_plan_v4", state.get("carousel_design_plan")),
+    )
     route = _ROUTE_FOR_LAYER[request.target_layer]
     return {
         "revision_request_v4": request, "revision_history_v4": (*history, event),

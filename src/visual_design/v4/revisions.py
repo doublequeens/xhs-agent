@@ -48,12 +48,16 @@ def _checked_failures(value: NormalizedFailureV4 | Sequence[NormalizedFailureV4]
     raw = (value,) if type(value) is NormalizedFailureV4 else tuple(value)
     if not raw or any(type(item) is not NormalizedFailureV4 for item in raw):
         raise ValueError("revision router requires exact normalized failures")
-    checked = tuple(sorted(raw, key=lambda item: item.fingerprint.canonical_sha256))
-    if len({item.fingerprint.canonical_sha256 for item in checked}) != len(checked):
-        raise ValueError("revision failures must have unique fingerprints")
-    for item in checked:
+    for item in raw:
         item.validate_contract()
-    return checked
+    unique: dict[str, NormalizedFailureV4] = {}
+    for item in raw:
+        fingerprint = item.fingerprint.canonical_sha256
+        prior = unique.get(fingerprint)
+        if prior is not None and prior.model_dump(mode="json") != item.model_dump(mode="json"):
+            raise ValueError("same revision fingerprint has inconsistent normalized payload")
+        unique[fingerprint] = item
+    return tuple(unique[key] for key in sorted(unique))
 
 
 def _first_operation(layer: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
@@ -105,7 +109,7 @@ def _approved_alternatives(failures: tuple[NormalizedFailureV4, ...], page_brief
         raise ValueError("revision grammar context has stale page-brief binding")
     briefs = {page.page_id: page for page in page_brief_set.pages}
     plans = {page.page_id: page for page in carousel_design_plan.pages}
-    alternatives = []
+    alternatives: dict[str, ApprovedGrammarAlternativeV4] = {}
     for failure in failures:
         brief, plan = briefs.get(failure.page_id), plans.get(failure.page_id)
         if brief is None or plan is None:
@@ -113,8 +117,8 @@ def _approved_alternatives(failures: tuple[NormalizedFailureV4, ...], page_brief
         approved = tuple(grammar for grammar in brief.preferred_compositions if grammar in GRAMMAR_IDS_V4 and grammar != plan.layout_program.grammar_id)
         if not approved:
             return (), None, None
-        alternatives.append(ApprovedGrammarAlternativeV4.create(page_id=failure.page_id, grammar_id=approved[0]))
-    return tuple(sorted(alternatives, key=lambda item: item.page_id)), page_brief_set.canonical_sha256, carousel_design_plan.canonical_sha256
+        alternatives.setdefault(failure.page_id, ApprovedGrammarAlternativeV4.create(page_id=failure.page_id, grammar_id=approved[0]))
+    return tuple(alternatives[page_id] for page_id in sorted(alternatives)), page_brief_set.canonical_sha256, carousel_design_plan.canonical_sha256
 
 
 def _invalidation(layer: str, codes: tuple[str, ...], pages: tuple[str, ...]) -> RevisionInvalidationV4:
@@ -141,7 +145,7 @@ def route_revision(failure: NormalizedFailureV4 | Sequence[NormalizedFailureV4],
     alternatives: tuple[ApprovedGrammarAlternativeV4, ...] = ()
     brief_hash: str | None = None
     plan_hash: str | None = None
-    if layer == "LAYOUT" and permitted == ("CHANGE_GRAMMAR",):
+    if permitted == ("CHANGE_GRAMMAR",):
         alternatives, brief_hash, plan_hash = _approved_alternatives(failures, page_brief_set, carousel_design_plan)
         if not alternatives:
             raise VisualExecutionInterrupted(failure_node=failures[0].fingerprint.node, candidate_id=candidate_id, revision_id=expected_prior, repeated_fingerprints=tuple(sorted(counts)), consumed_budget=prior + 1, recovery_action="START_NEW_CANDIDATE")
@@ -150,7 +154,7 @@ def route_revision(failure: NormalizedFailureV4 | Sequence[NormalizedFailureV4],
     return RevisionRequestV4(**payload, canonical_sha256=canonical_sha256_v4(payload))
 
 
-def append_revision_event(request: RevisionRequestV4, failure: NormalizedFailureV4 | Sequence[NormalizedFailureV4], *, candidate_id: str, revision_id: str) -> RevisionEventV4:
+def append_revision_event(request: RevisionRequestV4, failure: NormalizedFailureV4 | Sequence[NormalizedFailureV4], *, candidate_id: str, revision_id: str, page_brief_set: PageBriefSetV4 | None = None, carousel_design_plan: CarouselDesignPlanV4 | None = None) -> RevisionEventV4:
     if type(request) is not RevisionRequestV4:
         raise ValueError("revision event requires an exact request")
     request.validate_contract()
@@ -158,7 +162,29 @@ def append_revision_event(request: RevisionRequestV4, failure: NormalizedFailure
     fingerprints = tuple(item.fingerprint for item in failures)
     if request.failure_fingerprints != tuple(item.canonical_sha256 for item in fingerprints):
         raise ValueError("revision request does not bind all failure fingerprints")
-    return RevisionEventV4.create(candidate_id=candidate_id, revision_id=revision_id, prior_revision_id=request.prior_revision_id, fingerprints=fingerprints, target_layer=request.target_layer, affected_pages=request.affected_pages, operation=request.permitted_operations[0])
+    pages = tuple(sorted({item.page_id for item in failures}))
+    codes = tuple(sorted({item.failure_code for item in failures}))
+    layer = {layer_for_failure_code(item.failure_code, node=item.fingerprint.node) for item in failures}
+    if (
+        layer != {request.target_layer}
+        or request.affected_pages != pages
+        or request.failure_codes != codes
+        or request.sanitized_evidence != tuple(item.sanitized_evidence for item in failures)
+        or request.invalidation != _invalidation(request.target_layer, tuple(item.failure_code for item in failures), pages)
+    ):
+        raise ValueError("revision request does not exactly bind normalized failures")
+    alternatives: tuple[ApprovedGrammarAlternativeV4, ...] = ()
+    brief_hash: str | None = None
+    plan_hash: str | None = None
+    if request.permitted_operations == ("CHANGE_GRAMMAR",):
+        alternatives, brief_hash, plan_hash = _approved_alternatives(failures, page_brief_set, carousel_design_plan)
+        if not alternatives or (
+            request.page_brief_set_sha256 != brief_hash
+            or request.carousel_design_plan_sha256 != plan_hash
+            or request.approved_grammar_alternatives != alternatives
+        ):
+            raise ValueError("grammar request authorization is stale or forged")
+    return RevisionEventV4.create(candidate_id=candidate_id, revision_id=revision_id, prior_revision_id=request.prior_revision_id, fingerprints=fingerprints, target_layer=request.target_layer, affected_pages=request.affected_pages, operation=request.permitted_operations[0], page_brief_set_sha256=brief_hash, carousel_design_plan_sha256=plan_hash, approved_grammar_alternatives=alternatives)
 
 
 def serialize_revision_state(state: Mapping[str, Any]) -> bytes:

@@ -73,7 +73,7 @@ def test_invalidation_is_whole_set_only_for_family_or_page_order_changes() -> No
         FailureFingerprintV4.create(
             node="V4_AUTHORING_QA",
             page_id="page-2",
-            failure_code="FAMILY_MISMATCH",
+            failure_code="PAGE_COUNT_INVALID",
             affected_fragment_ids=(),
             geometry_region=None,
         )

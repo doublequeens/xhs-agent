@@ -77,3 +77,36 @@ The implementation adds no graph edge, no run-registry mutation, no Attempt Ledg
 - `pytest -q tests/integration/test_v4_revision_state_machine.py tests/visual_runtime/test_attempt_ledger.py tests/integration/test_visual_loop_regression.py`: `79 passed in 6.03s`.
 - `pytest -q tests/schemas/v4 tests/nodes/v4`: `149 passed, 1 warning in 16.96s`; warning is the existing deliberately-tampered semantic draft serializer fixture.
 - `python -m compileall -q src main.py` and `git diff --check`: completed with no output.
+
+## Fix Round 2/5: durable grammar witnesses and closed attribution
+
+### TDD RED/GREEN
+
+- RED: before the round-2 fixes, `pytest -q tests/visual_design/v4/test_revisions.py tests/nodes/v4/test_revision.py tests/integration/test_v4_revision_state_machine.py` reported `16 failed, 23 passed`. The failures exposed duplicate normalized failures being rejected, unauditable grammar event context, Composition grammar requests rejected by the layout-only guard, and the event canonical digest omitting default optional fields.
+- GREEN focused: after the fixes and regressions, the same command completed as `41 passed in 3.32s`.
+- Resume/ledger: `pytest -q tests/integration/test_v4_revision_state_machine.py tests/visual_runtime/test_attempt_ledger.py tests/integration/test_visual_loop_regression.py` completed as `79 passed in 6.20s`.
+- Adjacent v4 contracts/nodes: `pytest -q tests/schemas/v4 tests/nodes/v4` completed as `151 passed, 1 warning in 16.96s`; the warning is the existing deliberately tampered semantic serializer fixture.
+- Static: `python -m compileall -q src main.py` and `git diff --check` completed with no output.
+
+### Contract changes and review closures
+
+| Finding | Closed behavior |
+| --- | --- |
+| Exact duplicate normalized issue | Router and node compare revalidated canonical payloads, de-duplicate same digest deterministically, then sort by digest. A same digest with differing payload fails closed; one event has one fingerprint and consumes one budget slot. |
+| Closed node/code mismatch | `FailureFingerprintV4` has a closed node-to-code matrix: Q0 semantic, Q1 authoring, Q2 quality, Q3 rendering and critic-only aesthetic. Shared `HASH_BINDING_MISMATCH` is permitted only where its source schema declares it. Construction and revalidation reject every wrong pair. |
+| Grammar authorization durability | `RevisionEventV4` stores the PageBriefSet hash, plan hash and page-unique sorted approved alternatives. These fields participate in its canonical hash and canonical resume bytes. |
+| Caller-forged/stale grammar request | `append_revision_event` requires the current exact PageBriefSet and plan for every `CHANGE_GRAMMAR`, revalidates their binding, re-derives page-local allowed alternatives, and requires exact equality with the request witness/hashes. Missing, forged or stale context fails closed. |
+| Composition first operation | Composition's only authorized first operation is also `CHANGE_GRAMMAR`; it is therefore governed by the same Page Brief `preferred_compositions` witness, must differ from the current grammar, and exhausts if none exists. |
+
+The event additionally binds affected pages exactly to its fingerprints, and grammar alternatives are sorted and unique by page. Optional event fields are made explicit before canonical hashing, which preserves byte-identical ordinary (non-grammar) events as well as witness-bearing events.
+
+### Resume and architecture evidence
+
+- The grammar request → append event → serialize → deserialize regression proves both source hashes and witness objects survive byte-identically; a model-copied event with a removed witness is rejected during serialization.
+- The node passes the current `PageBriefSetV4` and `CarouselDesignPlanV4` into both route and append boundaries. No graph, Attempt Ledger, registry, ContentLock, producer, v3-path or persistence implementation changed.
+- The added node/code matrix narrows attribution at the Task 14 boundary only; it does not modify any Q0–Q3 producer issue vocabulary. Existing mapping/invalidation tests were updated to use legal source node/code pairs.
+
+### Self-review / concerns
+
+- Rechecked deterministic ordering, duplicate payload attacks, direct stale prior rejection, no-alternative termination, Composition authorization, and event/request fingerprint binding. Routing, hashing and serialization use no clock or random value.
+- Focused, resume/ledger and adjacent schema/node verification passed. No broader Chromium/live-provider suite was run because this change is isolated to pure contracts/routing and the existing requested regression coverage covers the v4 state boundary.
