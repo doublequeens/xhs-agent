@@ -120,3 +120,11 @@ def test_page_and_set_issue_dimensions_are_closed_by_container():
             page_id="page-1", hierarchy=90, readability=90, composition=90,
             whitespace=90, visual_focus=90, asset_integration=90, issues=(rhythm,),
         )
+
+
+@pytest.mark.parametrize("evidence", ("/etc/passwd", r"C:\\secret\\x", r"\\\\server\\share", "../assets/x", "assets/layout.json", "prompt history"))
+def test_blind_text_rejects_path_and_private_metadata(evidence):
+    with pytest.raises(ValueError):
+        AestheticIssueV4.create(
+            severity="major", dimension="composition", page_ids=("page-1",), evidence=evidence,
+        )

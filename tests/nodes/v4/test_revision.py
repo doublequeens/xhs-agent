@@ -144,8 +144,8 @@ def test_revision_node_accepts_only_critic_failure_with_retained_passed_hard_gat
     result = revision_node({
         **values,
         "normalized_failures_v4": (failure,), "candidate_id": values["render_manifest"].candidate_id,
-        "revision_history_v4": (), "semantic_qa_result_v4": fixture["q0"],
-        "authoring_qa_result_v4": fixture["q1"], "design_plan_qa_result_v4": q2,
+        "revision_history_v4": (), "semantic_qa_result": fixture["q0"],
+        "authoring_qa_result": fixture["q1"], "design_plan_qa_result_v4": q2,
         "render_qa_result_v4": q3,
     })
     assert result["revision_request_v4"].target_layer == "AESTHETIC"

@@ -55,7 +55,11 @@ def _failures_from_result(result: object) -> tuple[NormalizedFailureV4, ...]:
 
 
 def _result_from_state(state: Mapping[str, Any]) -> object:
-    values = tuple(value for key in ("render_qa_result_v4", "design_plan_qa_result_v4", "authoring_qa_result_v4", "semantic_qa_result_v4") if (value := state.get(key)) is not None)
+    values = tuple(value for value in (
+        state.get("render_qa_result_v4", state.get("render_qa_result")),
+        state.get("design_plan_qa_result_v4", state.get("design_plan_qa_result")),
+        state.get("authoring_qa_result"), state.get("semantic_qa_result"),
+    ) if value is not None)
     if len(values) != 1:
         raise ValueError("v4 revision node requires exactly one failed Q0-Q3 state result")
     return values[0]
@@ -69,8 +73,11 @@ def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[Normalize
         raise ValueError("v4 revision node requires exact normalized failure tuple")
     for value in values:
         value.validate_contract()
-    q_keys = ("render_qa_result_v4", "design_plan_qa_result_v4", "authoring_qa_result_v4", "semantic_qa_result_v4")
-    retained = tuple(state.get(key) for key in q_keys)
+    retained = (
+        state.get("render_qa_result_v4", state.get("render_qa_result")),
+        state.get("design_plan_qa_result_v4", state.get("design_plan_qa_result")),
+        state.get("authoring_qa_result"), state.get("semantic_qa_result"),
+    )
     if all(item is None for item in retained) and all(item.fingerprint.node == "V4_VISUAL_CRITIC" for item in values):
         raise ValueError("v4 aesthetic revision requires retained passed Q0-Q3 evidence")
     if any(item is not None for item in retained):
@@ -94,6 +101,8 @@ def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[Normalize
                 raise ValueError
             manifest.validate_integrity(); page_set.validate_integrity(); semantic.validate_integrity()
             q3, q2 = retained[0], retained[1]
+            if q2.semantic_qa != retained[3] or q2.authoring_qa != retained[2]:
+                raise ValueError
             if (q3.render_manifest_sha256 != manifest.canonical_sha256 or q3.design_plan_qa_sha256 != q2.canonical_sha256 or q3.page_brief_set_sha256 != page_set.canonical_sha256 or q3.semantic_content_model_sha256 != semantic.canonical_sha256):
                 raise ValueError
         except Exception:

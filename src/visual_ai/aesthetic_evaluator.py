@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import re
 from typing import Any, Literal, Mapping
 
 from src.schemas.v4.critique import (
@@ -13,18 +12,12 @@ from src.schemas.v4.critique import (
     AestheticIssueV4,
     CarouselAestheticEvaluationV4,
     SetAestheticEvaluationV4,
+    validate_blind_text_v4,
 )
 from src.visual_ai.protocols import InvocationPolicy, InvocationRequest
 
 _PROMPT = (Path(__file__).resolve().parents[1] / "prompts/base/v4_aesthetic_critic.txt").read_text(encoding="utf-8").strip()
 _PASS = Literal["page", "set"]
-_BLIND_TEXT = re.compile(r"(?:provider|provenance|licen[cs]e|prompt|revision|attempt|history|https?://|(?:^|[/\\])(?:users|private|home|tmp)(?:[/\\])|[A-Za-z]:[\\/])", re.I)
-
-
-def _blind_text(value: str, name: str) -> str:
-    if type(value) is not str or not value.strip() or len(value) > 240 or "\n" in value or "\r" in value or _BLIND_TEXT.search(value):
-        raise ValueError(f"aesthetic {name} is not allowlisted blind text")
-    return value.strip()
 
 
 def build_aesthetic_request(
@@ -55,7 +48,7 @@ def build_aesthetic_request(
     if pass_kind == "set" and tuple(item.page_id for item in pass_one_observations) != page_ids:
         raise ValueError("set pass must consume complete ordered page observations")
     pages = tuple(
-        {"page_id": _blind_text(page_id, "page id"), "role": _blind_text(role, "role"), "duty": _blind_text(duty, "duty")}
+        {"page_id": validate_blind_text_v4(page_id, "aesthetic page id"), "role": validate_blind_text_v4(role, "aesthetic role"), "duty": validate_blind_text_v4(duty, "aesthetic duty")}
         for page_id, role, duty in zip(page_ids, page_roles, page_duties, strict=True)
     )
     prompt = _PROMPT + "\nEvaluator page context:\n" + json.dumps(pages, ensure_ascii=False, separators=(",", ":"))
