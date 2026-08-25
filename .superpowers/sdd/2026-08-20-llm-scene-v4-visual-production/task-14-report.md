@@ -54,3 +54,26 @@ The implementation adds no graph edge, no run-registry mutation, no Attempt Ledg
 - Reviewed failure-forgery, unknown-code, duck-typed, stale-hash, history-lineage, budget-isolation, invalidation and ordinary-resume paths. The event operation is re-derived from the full prior history so a syntactically valid but ladder-inconsistent event cannot spend budget.
 - Scope intentionally stops at this typed node boundary: later Task graph integration must connect the emitted constrained route names and consume `revision_invalidation_v4`; this task does not modify graph, Q0–Q3 producers or existing persistence APIs.
 - The complete visual-design directory was separately verified except the existing Chromium-heavy `test_v4_render_qa.py`; its Q3 node/schema neighbours are covered by the focused and node suites, while the requested ledger/resume regression passed.
+
+## Fix Round 1/5: review findings
+
+### TDD RED/GREEN
+
+- RED: after adding layer-ladder, invalidation, normalized/multi-failure, cross-layer and stale-prior regressions, `pytest -q tests/visual_design/v4/test_revisions.py tests/nodes/v4/test_revision.py tests/integration/test_v4_revision_state_machine.py` produced `16 failed, 9 passed`. Failures demonstrated repeated non-layout operations, one generic invalidation set, stale prior acceptance and normalized/multi-failure rejection.
+- GREEN: the same focused command completed as `26 passed in 0.64s` after the routing/state-machine changes.
+- Grammar approval proof: `pytest -q tests/visual_design/v4/test_revisions.py::test_second_layout_uses_only_hash_bound_page_brief_alternative` completed as `1 passed in 0.62s`. The test recompiled a source-bound plan whose affected Page Brief permits `comparison_grid`; the second request binds that exact alternative and the PageBrief/plan hashes. A no-context/no-alternative second layout case terminates fail-closed.
+
+### Changes and evidence
+
+- **No repeated second operation:** only layout has an authorized second operation. Its first event is `REFLOW`, its second is source-bound `CHANGE_GRAMMAR`; every other layer exhausts on the second identical fingerprint because no independent safe action is authorized. The third identical layout fingerprint remains `INTERRUPTED_EXHAUSTED`.
+- **Layer-aware invalidation:** `SEMANTIC` starts at semantic model/Q0; `AUTHORING` starts at page briefs/direction/Q1; `ASSET` starts at asset manifest; `COMPOSITION` and `LAYOUT` start at layout/design-plan Q2; `RENDER` starts at render manifest/Q3; `AESTHETIC` starts at critique/review. Each list includes its exact downstream contracts through final attestation. Content atoms and ContentLock occur in none. Family/page-count/page-order codes are the only whole-set cases; all other routes retain exact affected pages.
+- **Strict aggregation:** the node accepts only a non-empty tuple of exact, revalidated `NormalizedFailureV4` values or one exact Q0–Q3 result. It canonical-sorts/de-duplicates failures, selects the earliest layer (`SEMANTIC → AUTHORING → ASSET → COMPOSITION → LAYOUT → RENDER → AESTHETIC`), and drops downstream symptoms because the selected repair invalidates them. Same-layer requests/events carry every page, code and fingerprint; the event is bound to all request fingerprints. A mixed or tampered identity fails closed.
+- **Budget and resume:** history validates candidate, lineage, exact source-derived layer and operation before it contributes to any fingerprint count. The public router derives `prior_revision_id` from the durable tail and rejects stale caller values. Per-fingerprint counts use every fingerprint in batch events; any exhausted fingerprint exhausts the candidate. Canonical serialize/deserialize retains those events and therefore retains the budget.
+- **Approved grammar source context:** a second layout route requires exact `PageBriefSetV4` and `CarouselDesignPlanV4`, revalidates both and their page-brief binding, then emits only each affected page's first already-listed implemented composition that differs from the plan's current grammar. `RevisionRequestV4` hashes both inputs and has frozen `ApprovedGrammarAlternativeV4` witnesses. No approved alternative terminates; it never chooses arbitrary grammar.
+
+### Fix-round verification
+
+- Focused revision/node/state suite: `26 passed in 0.64s`.
+- `pytest -q tests/integration/test_v4_revision_state_machine.py tests/visual_runtime/test_attempt_ledger.py tests/integration/test_visual_loop_regression.py`: `79 passed in 6.03s`.
+- `pytest -q tests/schemas/v4 tests/nodes/v4`: `149 passed, 1 warning in 16.96s`; warning is the existing deliberately-tampered semantic draft serializer fixture.
+- `python -m compileall -q src main.py` and `git diff --check`: completed with no output.

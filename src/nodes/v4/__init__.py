@@ -1,4 +1,4 @@
-"""Canonical Task 6 nodes for the isolated v4 content boundary."""
+"""Canonical nodes for the isolated v4 content and revision boundaries."""
 
 from .content import (
     content_atomizer_node,

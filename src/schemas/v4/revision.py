@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, Strict
 
 from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.direction import AuthoringIssueCodeV4
+from src.schemas.v4.layout import ImplementedGrammarIDV4
 from src.schemas.v4.quality import QUALITY_ISSUE_CODES_V4
 from src.schemas.v4.rendering import RENDER_ISSUE_CODES_V4
 from src.schemas.v4.semantic import SEMANTIC_ISSUE_CODES_V4
@@ -217,6 +218,36 @@ class RevisionInvalidationV4(_FrozenRevisionV4):
         return cls(**payload, canonical_sha256=canonical_sha256_v4(payload))
 
 
+class ApprovedGrammarAlternativeV4(_FrozenRevisionV4):
+    """One page-local, Page-Brief-approved alternative to the current grammar."""
+
+    page_id: StrictStr = Field(min_length=1)
+    grammar_id: ImplementedGrammarIDV4
+    canonical_sha256: StrictStr
+
+    @classmethod
+    def create(cls, *, page_id: str, grammar_id: ImplementedGrammarIDV4) -> "ApprovedGrammarAlternativeV4":
+        payload = {"page_id": page_id, "grammar_id": grammar_id}
+        return cls(**payload, canonical_sha256=canonical_sha256_v4(payload))
+
+    @field_validator("page_id")
+    @classmethod
+    def validate_page(cls, value: str) -> str:
+        return _ref(value, "page_id")
+
+    @field_validator("canonical_sha256")
+    @classmethod
+    def validate_hash(cls, value: str) -> str:
+        return _sha(value, "canonical_sha256")
+
+    @model_validator(mode="after")
+    def validate_integrity(self) -> "ApprovedGrammarAlternativeV4":
+        payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
+        if self.canonical_sha256 != canonical_sha256_v4(payload):
+            raise ValueError("approved grammar alternative canonical sha256 does not match payload")
+        return self
+
+
 class RevisionRequestV4(_FrozenRevisionV4):
     """One constrained repair command; operations are derived by the router."""
 
@@ -228,6 +259,9 @@ class RevisionRequestV4(_FrozenRevisionV4):
     permitted_operations: tuple[RevisionOperationV4, ...] = Field(min_length=1)
     forbidden_operations: tuple[RevisionOperationV4, ...] = ()
     prior_revision_id: StrictStr | None = None
+    page_brief_set_sha256: StrictStr | None = None
+    carousel_design_plan_sha256: StrictStr | None = None
+    approved_grammar_alternatives: tuple[ApprovedGrammarAlternativeV4, ...] = ()
     invalidation: RevisionInvalidationV4
     canonical_sha256: StrictStr
 
@@ -252,15 +286,36 @@ class RevisionRequestV4(_FrozenRevisionV4):
     def validate_fingerprints(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         return tuple(_sha(item, "failure_fingerprints") for item in value)
 
-    @field_validator("canonical_sha256")
+    @field_validator("page_brief_set_sha256", "carousel_design_plan_sha256")
     @classmethod
     def validate_hash(cls, value: str) -> str:
+        if value is None:
+            return None
+        return _sha(value, "routing source sha256")
+
+    @field_validator("canonical_sha256")
+    @classmethod
+    def validate_canonical_hash(cls, value: str) -> str:
         return _sha(value, "canonical_sha256")
 
     @model_validator(mode="after")
     def validate_integrity(self) -> "RevisionRequestV4":
         if set(self.permitted_operations).intersection(self.forbidden_operations):
             raise ValueError("revision operations cannot be both permitted and forbidden")
+        has_context = self.page_brief_set_sha256 is not None or self.carousel_design_plan_sha256 is not None
+        if has_context != bool(self.approved_grammar_alternatives):
+            raise ValueError("grammar alternatives require both source hashes and vice versa")
+        if has_context and (self.page_brief_set_sha256 is None or self.carousel_design_plan_sha256 is None):
+            raise ValueError("grammar alternatives require both source hashes")
+        if self.target_layer == "LAYOUT" and self.permitted_operations == ("CHANGE_GRAMMAR",):
+            if not self.approved_grammar_alternatives:
+                raise ValueError("grammar change requires approved alternatives")
+            if {item.page_id for item in self.approved_grammar_alternatives} != set(self.affected_pages):
+                raise ValueError("grammar alternatives must cover exactly affected pages")
+        elif self.approved_grammar_alternatives:
+            raise ValueError("only grammar change may carry approved alternatives")
+        for alternative in self.approved_grammar_alternatives:
+            alternative.validate_integrity()
         self.invalidation.validate_integrity()
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         if self.canonical_sha256 != canonical_sha256_v4(payload):
@@ -282,7 +337,7 @@ class RevisionEventV4(_FrozenRevisionV4):
     candidate_id: StrictStr = Field(min_length=1)
     revision_id: StrictStr = Field(min_length=1)
     prior_revision_id: StrictStr | None = None
-    fingerprint: FailureFingerprintV4
+    fingerprints: tuple[FailureFingerprintV4, ...] = Field(min_length=1)
     target_layer: RevisionLayerV4
     affected_pages: tuple[StrictStr, ...] = Field(min_length=1)
     operation: RevisionOperationV4
@@ -290,11 +345,16 @@ class RevisionEventV4(_FrozenRevisionV4):
 
     @classmethod
     def create(cls, **payload) -> "RevisionEventV4":
-        fingerprint = payload["fingerprint"]
-        if type(fingerprint) is not FailureFingerprintV4:
-            raise ValueError("revision event requires an exact failure fingerprint")
-        fingerprint.validate_contract()
         raw = dict(payload)
+        if "fingerprints" not in raw:
+            raw["fingerprints"] = (raw.pop("fingerprint"),)
+        elif "fingerprint" in raw:
+            raise ValueError("revision event cannot mix single and batch fingerprints")
+        fingerprints = raw["fingerprints"]
+        if not isinstance(fingerprints, tuple) or not fingerprints or any(type(item) is not FailureFingerprintV4 for item in fingerprints):
+            raise ValueError("revision event requires exact failure fingerprints")
+        for fingerprint in fingerprints:
+            fingerprint.validate_contract()
         raw["affected_pages"] = tuple(raw["affected_pages"])
         return cls(**raw, canonical_sha256=canonical_sha256_v4(raw))
 
@@ -309,6 +369,14 @@ class RevisionEventV4(_FrozenRevisionV4):
         _unique(value, "affected_pages")
         return tuple(_ref(item, "affected_pages") for item in value)
 
+    @field_validator("fingerprints")
+    @classmethod
+    def validate_fingerprints(cls, value: tuple[FailureFingerprintV4, ...]) -> tuple[FailureFingerprintV4, ...]:
+        hashes = tuple(item.canonical_sha256 for item in value)
+        if hashes != tuple(sorted(hashes)) or len(hashes) != len(set(hashes)):
+            raise ValueError("revision event fingerprints must be sorted and unique")
+        return value
+
     @field_validator("canonical_sha256")
     @classmethod
     def validate_hash(cls, value: str) -> str:
@@ -316,7 +384,8 @@ class RevisionEventV4(_FrozenRevisionV4):
 
     @model_validator(mode="after")
     def validate_integrity(self) -> "RevisionEventV4":
-        self.fingerprint.validate_contract()
+        for fingerprint in self.fingerprints:
+            fingerprint.validate_contract()
         payload = self.model_dump(mode="json", exclude={"canonical_sha256"})
         if self.canonical_sha256 != canonical_sha256_v4(payload):
             raise ValueError("revision event canonical sha256 does not match payload")
@@ -324,6 +393,15 @@ class RevisionEventV4(_FrozenRevisionV4):
 
     def validate_contract(self) -> None:
         type(self).model_validate(self.model_dump(mode="python"))
+
+    @property
+    def fingerprint(self) -> FailureFingerprintV4:
+        """Compatibility projection for single-failure callers."""
+        return self.fingerprints[0]
+
+    @property
+    def failure_fingerprints(self) -> tuple[str, ...]:
+        return tuple(item.canonical_sha256 for item in self.fingerprints)
 
 
 class VisualExecutionInterrupted(RuntimeError):
@@ -342,6 +420,6 @@ class VisualExecutionInterrupted(RuntimeError):
 
 
 __all__ = [
-    "FailureFingerprintV4", "NormalizedFailureV4", "RevisionEventV4", "RevisionInvalidationV4", "RevisionRequestV4", "VisualExecutionInterrupted",
+    "ApprovedGrammarAlternativeV4", "FailureFingerprintV4", "NormalizedFailureV4", "RevisionEventV4", "RevisionInvalidationV4", "RevisionRequestV4", "VisualExecutionInterrupted",
     "REVISION_FAILURE_CODES_V4", "REVISION_LAYERS_V4", "REVISION_NODES_V4", "REVISION_OPERATIONS_V4",
 ]

@@ -41,6 +41,7 @@ from .rendering import (
     RenderRevisionTargetV4,
 )
 from .revision import (
+    ApprovedGrammarAlternativeV4,
     FailureFingerprintV4,
     NormalizedFailureV4,
     RevisionEventV4,
@@ -90,4 +91,5 @@ __all__ = [
     "RevisionInvalidationV4",
     "RevisionRequestV4",
     "VisualExecutionInterrupted",
+    "ApprovedGrammarAlternativeV4",
 ]

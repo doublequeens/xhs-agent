@@ -10,7 +10,7 @@ from src.schemas.v4.quality import DesignPlanQAResultV4
 from src.schemas.v4.rendering import RenderQAResultV4
 from src.schemas.v4.revision import FailureFingerprintV4, NormalizedFailureV4, RevisionEventV4
 from src.schemas.v4.semantic import SemanticQAResultV4
-from src.visual_design.v4.revisions import append_revision_event, route_revision
+from src.visual_design.v4.revisions import append_revision_event, layer_for_failure_code, route_revision
 
 
 _ROUTE_FOR_LAYER = {
@@ -59,6 +59,33 @@ def _result_from_state(state: Mapping[str, Any]) -> object:
     return values[0]
 
 
+def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[NormalizedFailureV4, ...]:
+    if "normalized_failures_v4" not in state:
+        return _failures_from_result(_result_from_state(state))
+    if any(state.get(key) is not None for key in ("render_qa_result_v4", "design_plan_qa_result_v4", "authoring_qa_result_v4", "semantic_qa_result_v4")):
+        raise ValueError("v4 revision node cannot mix normalized and Q0-Q3 inputs")
+    values = state["normalized_failures_v4"]
+    if type(values) is not tuple or not values or any(type(item) is not NormalizedFailureV4 for item in values):
+        raise ValueError("v4 revision node requires exact normalized failure tuple")
+    for value in values:
+        value.validate_contract()
+    return values
+
+
+def _select_upstream_failures(failures: tuple[NormalizedFailureV4, ...]) -> tuple[NormalizedFailureV4, ...]:
+    """Repair the earliest layer; its exact failures invalidate later symptoms."""
+    ordered_layers = ("SEMANTIC", "AUTHORING", "ASSET", "COMPOSITION", "LAYOUT", "RENDER", "AESTHETIC")
+    layer_by_failure = {
+        item.fingerprint.canonical_sha256: layer_for_failure_code(item.failure_code, node=item.fingerprint.node)
+        for item in failures
+    }
+    target = next(layer for layer in ordered_layers if layer in layer_by_failure.values())
+    selected = tuple(sorted((item for item in failures if layer_by_failure[item.fingerprint.canonical_sha256] == target), key=lambda item: item.fingerprint.canonical_sha256))
+    if len({item.fingerprint.canonical_sha256 for item in selected}) != len(selected):
+        raise ValueError("v4 revision normalized failures must be unique")
+    return selected
+
+
 def revision_node(state: Mapping[str, Any]) -> dict[str, Any]:
     """Derive one repair request, append one event, and publish no human route."""
     if not isinstance(state, Mapping):
@@ -76,11 +103,13 @@ def revision_node(state: Mapping[str, Any]) -> dict[str, Any]:
     prior = state.get("prior_revision_id", inferred_prior)
     if prior != inferred_prior:
         raise ValueError("v4 revision prior identity does not match durable history")
-    failures = _failures_from_result(_result_from_state(state))
-    if len(failures) != 1:
-        raise ValueError("v4 revision node requires exactly one actionable failure")
-    request = route_revision(failures[0], history, candidate_id=candidate_id, prior_revision_id=prior)
-    event = append_revision_event(request, failures[0], candidate_id=candidate_id, revision_id=f"revision-{len(history) + 1}")
+    failures = _select_upstream_failures(_normalized_failures_from_state(state))
+    request = route_revision(
+        failures, history, candidate_id=candidate_id, prior_revision_id=prior,
+        page_brief_set=state.get("page_brief_set", state.get("page_briefs")),
+        carousel_design_plan=state.get("carousel_design_plan_v4", state.get("carousel_design_plan")),
+    )
+    event = append_revision_event(request, failures, candidate_id=candidate_id, revision_id=f"revision-{len(history) + 1}")
     route = _ROUTE_FOR_LAYER[request.target_layer]
     return {
         "revision_request_v4": request, "revision_history_v4": (*history, event),

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from src.schemas.v4.revision import FailureFingerprintV4, NormalizedFailureV4, RevisionEventV4
+import pytest
+
+from src.schemas.v4.revision import FailureFingerprintV4, NormalizedFailureV4, RevisionEventV4, VisualExecutionInterrupted
 from src.visual_design.v4.revisions import deserialize_revision_state, route_revision, serialize_revision_state
 
 
@@ -37,15 +39,15 @@ def test_resume_serialization_preserves_budget_and_canonical_bytes() -> None:
 
     serialized = serialize_revision_state(state)
     resumed = deserialize_revision_state(serialized)
-    request = route_revision(
-        failure,
-        history=resumed["revision_history_v4"],
-        candidate_id="candidate-a",
-        prior_revision_id="revision-1",
-    )
+    with pytest.raises(VisualExecutionInterrupted):
+        route_revision(
+            failure,
+            history=resumed["revision_history_v4"],
+            candidate_id="candidate-a",
+            prior_revision_id="revision-1",
+        )
 
     assert serialize_revision_state(resumed) == serialized
-    assert request.permitted_operations == ("CHANGE_GRAMMAR",)
 
 
 def test_different_fingerprint_does_not_share_candidate_budget() -> None:
