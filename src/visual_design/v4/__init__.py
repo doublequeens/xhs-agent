@@ -15,6 +15,13 @@ from .render_qa import (
     V4RenderQAInvariantError,
     evaluate_v4_render,
 )
+from .revisions import (
+    append_revision_event,
+    deserialize_revision_state,
+    layer_for_failure_code,
+    route_revision,
+    serialize_revision_state,
+)
 
 __all__ = [
     "DesignMetricsInvariantError",
@@ -29,4 +36,9 @@ __all__ = [
     "evaluate_semantic_qa",
     "get_quality_policy",
     "threshold_for_metric_v4",
+    "append_revision_event",
+    "deserialize_revision_state",
+    "layer_for_failure_code",
+    "route_revision",
+    "serialize_revision_state",
 ]

@@ -40,6 +40,14 @@ from .rendering import (
     RenderQAResultV4,
     RenderRevisionTargetV4,
 )
+from .revision import (
+    FailureFingerprintV4,
+    NormalizedFailureV4,
+    RevisionEventV4,
+    RevisionInvalidationV4,
+    RevisionRequestV4,
+    VisualExecutionInterrupted,
+)
 
 __all__ = [
     "ATTEMPT_STATUSES",
@@ -76,4 +84,10 @@ __all__ = [
     "RenderPageV4",
     "RenderQAResultV4",
     "RenderRevisionTargetV4",
+    "FailureFingerprintV4",
+    "NormalizedFailureV4",
+    "RevisionEventV4",
+    "RevisionInvalidationV4",
+    "RevisionRequestV4",
+    "VisualExecutionInterrupted",
 ]
