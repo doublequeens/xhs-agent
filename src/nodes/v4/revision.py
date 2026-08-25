@@ -21,6 +21,13 @@ _ROUTE_FOR_LAYER = {
 }
 
 
+def _first_value(state: Mapping[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in state and state[key] is not None:
+            return state[key]
+    return None
+
+
 def _issue_failure(*, node: str, code: str, page_id: str | None, fragment_id: str | None, region: str | None) -> NormalizedFailureV4:
     fingerprint = FailureFingerprintV4.create(
         node=node, page_id=page_id or "all", failure_code=code,
@@ -56,9 +63,9 @@ def _failures_from_result(result: object) -> tuple[NormalizedFailureV4, ...]:
 
 def _result_from_state(state: Mapping[str, Any]) -> object:
     values = tuple(value for value in (
-        state.get("render_qa_result_v4", state.get("render_qa_result")),
-        state.get("design_plan_qa_result_v4", state.get("design_plan_qa_result")),
-        state.get("authoring_qa_result"), state.get("semantic_qa_result"),
+        _first_value(state, "render_qa_result_v4", "render_qa_result"),
+        _first_value(state, "design_plan_qa_result_v4", "design_plan_qa_result"),
+        _first_value(state, "authoring_qa_result"), _first_value(state, "semantic_qa_result"),
     ) if value is not None)
     if len(values) != 1:
         raise ValueError("v4 revision node requires exactly one failed Q0-Q3 state result")
@@ -74,9 +81,9 @@ def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[Normalize
     for value in values:
         value.validate_contract()
     retained = (
-        state.get("render_qa_result_v4", state.get("render_qa_result")),
-        state.get("design_plan_qa_result_v4", state.get("design_plan_qa_result")),
-        state.get("authoring_qa_result"), state.get("semantic_qa_result"),
+        _first_value(state, "render_qa_result_v4", "render_qa_result"),
+        _first_value(state, "design_plan_qa_result_v4", "design_plan_qa_result"),
+        _first_value(state, "authoring_qa_result"), _first_value(state, "semantic_qa_result"),
     )
     if all(item is None for item in retained) and all(item.fingerprint.node == "V4_VISUAL_CRITIC" for item in values):
         raise ValueError("v4 aesthetic revision requires retained passed Q0-Q3 evidence")
@@ -94,9 +101,9 @@ def _normalized_failures_from_state(state: Mapping[str, Any]) -> tuple[Normalize
                 item.validate_integrity()
                 if not item.passed:
                     raise ValueError
-            manifest = state.get("render_manifest_v4", state.get("render_manifest"))
-            page_set = state.get("page_brief_set", state.get("page_briefs"))
-            semantic = state.get("semantic_content_model", state.get("semantic_model"))
+            manifest = _first_value(state, "render_manifest_v4", "render_manifest")
+            page_set = _first_value(state, "page_brief_set", "page_briefs")
+            semantic = _first_value(state, "semantic_content_model", "semantic_model")
             if type(manifest) is not RenderManifestV4 or type(page_set) is not PageBriefSetV4 or type(semantic) is not SemanticContentModelV4:
                 raise ValueError
             manifest.validate_integrity(); page_set.validate_integrity(); semantic.validate_integrity()
@@ -150,13 +157,13 @@ def revision_node(state: Mapping[str, Any]) -> dict[str, Any]:
     failures = _select_upstream_failures(_normalized_failures_from_state(state))
     request = route_revision(
         failures, history, candidate_id=candidate_id, prior_revision_id=prior,
-        page_brief_set=state.get("page_brief_set", state.get("page_briefs")),
-        carousel_design_plan=state.get("carousel_design_plan_v4", state.get("carousel_design_plan")),
+        page_brief_set=_first_value(state, "page_brief_set", "page_briefs"),
+        carousel_design_plan=_first_value(state, "carousel_design_plan_v4", "carousel_design_plan"),
     )
     event = append_revision_event(
         request, failures, candidate_id=candidate_id, revision_id=f"revision-{len(history) + 1}",
-        page_brief_set=state.get("page_brief_set", state.get("page_briefs")),
-        carousel_design_plan=state.get("carousel_design_plan_v4", state.get("carousel_design_plan")),
+        page_brief_set=_first_value(state, "page_brief_set", "page_briefs"),
+        carousel_design_plan=_first_value(state, "carousel_design_plan_v4", "carousel_design_plan"),
     )
     route = _ROUTE_FOR_LAYER[request.target_layer]
     return {

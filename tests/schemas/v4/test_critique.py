@@ -122,7 +122,7 @@ def test_page_and_set_issue_dimensions_are_closed_by_container():
         )
 
 
-@pytest.mark.parametrize("evidence", ("/etc/passwd", r"C:\\secret\\x", r"\\\\server\\share", "../assets/x", "assets/layout.json", "prompt history"))
+@pytest.mark.parametrize("evidence", ("/etc/passwd", r"C:\\secret\\x", "C:work.txt", r"\\\\server\\share", "../assets/x", "assets/layout.json", "layout.json", "prompt history"))
 def test_blind_text_rejects_path_and_private_metadata(evidence):
     with pytest.raises(ValueError):
         AestheticIssueV4.create(

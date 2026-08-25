@@ -30,7 +30,8 @@ _REF = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _PRIVATE = re.compile(r"(?:provider|provenance|licen[cs]e|authoring[_ -]?prompt|generation[_ -]?prompt|api[_ -]?key|secret|password|https?://|(?:^|[/\\])(?:users|private|home|tmp)(?:[/\\]))", re.I)
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _BLIND_METADATA = re.compile(r"(?:provider|provenance|licen[cs]e|prompt|revision|attempt|history|api[_ -]?key|secret|password|https?://)", re.I)
-_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:[\\/]")
+_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
+_BARE_PATH_FILE = re.compile(r"^[A-Za-z0-9_.-]+\.(?:json|ya?ml|txt|png|jpe?g|webp|csv|xml|html?|css|js)$", re.I)
 
 
 class _Frozen(BaseModel):
@@ -54,7 +55,7 @@ def validate_blind_text_v4(value: str, field_name: str) -> str:
     if type(value) is not str or not value.strip() or len(value) > 240 or "\n" in value or "\r" in value:
         raise ValueError(f"{field_name} is not allowlisted blind text")
     value = value.strip()
-    if _BLIND_METADATA.search(value) or _WINDOWS_DRIVE.match(value) or value.startswith(("/", "\\")) or "\\" in value or "/" in value or ".." in value:
+    if _BLIND_METADATA.search(value) or _WINDOWS_DRIVE.match(value) or _BARE_PATH_FILE.fullmatch(value) or value.startswith(("/", "\\")) or "\\" in value or "/" in value or ".." in value:
         raise ValueError(f"{field_name} is not allowlisted blind text")
     return value
 
