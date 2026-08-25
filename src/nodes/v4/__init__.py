@@ -7,6 +7,7 @@ from .content import (
     project_visible_copy,
 )
 from .revision import revision_node, v4_revision_node
+from .critic import aesthetic_critic_node, route_after_aesthetic_critic, v4_aesthetic_critic_node
 
 __all__ = [
     "content_atomizer_node",
@@ -15,4 +16,7 @@ __all__ = [
     "project_visible_copy",
     "revision_node",
     "v4_revision_node",
+    "aesthetic_critic_node",
+    "route_after_aesthetic_critic",
+    "v4_aesthetic_critic_node",
 ]

@@ -49,6 +49,15 @@ from .revision import (
     RevisionRequestV4,
     VisualExecutionInterrupted,
 )
+from .critique import (
+    AestheticCritiqueV4,
+    AestheticIssueV4,
+    AestheticPageEvaluationV4,
+    AestheticPagePassV4,
+    SetAestheticEvaluationV4,
+    AestheticSetPassV4,
+    CarouselAestheticEvaluationV4,
+)
 
 __all__ = [
     "ATTEMPT_STATUSES",
@@ -92,4 +101,11 @@ __all__ = [
     "RevisionRequestV4",
     "VisualExecutionInterrupted",
     "ApprovedGrammarAlternativeV4",
+    "AestheticCritiqueV4",
+    "AestheticIssueV4",
+    "AestheticPageEvaluationV4",
+    "AestheticPagePassV4",
+    "SetAestheticEvaluationV4",
+    "AestheticSetPassV4",
+    "CarouselAestheticEvaluationV4",
 ]

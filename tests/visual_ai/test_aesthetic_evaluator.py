@@ -1,0 +1,103 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import pytest
+
+from src.schemas.v4.critique import (
+    AestheticIssueDraftV4,
+    AestheticPageDraftV4,
+    AestheticPagePassV4,
+    AestheticSetDraftV4,
+    AestheticSetPassV4,
+)
+from src.visual_ai.aesthetic_evaluator import build_aesthetic_request, evaluate_aesthetics
+
+
+def test_critic_request_omits_revision_round_and_authoring_prompt():
+    request = build_aesthetic_request(
+        run_id="run-1",
+        run_mode="shadow",
+        candidate_id="candidate-1",
+        revision_id="revision-1",
+        page_ids=("page-1",),
+        page_roles=("cover",),
+        page_duties=("state the skincare promise",),
+        image_bytes=(b"png-bytes",),
+        image_mime_types=("image/png",),
+        pass_kind="page",
+    )
+
+    payload = dict(request.payload)
+    assert "revision_round" not in payload
+    assert "authoring_prompt" not in payload
+
+
+@dataclass
+class _Gateway:
+    calls: list = field(default_factory=list)
+
+    def evaluate_images(self, request, response_model, *args):
+        self.calls.append((request, response_model))
+        if response_model is AestheticPagePassV4:
+            return AestheticPagePassV4(pages=tuple(
+                AestheticPageDraftV4(
+                    page_id=page_id, hierarchy=90, readability=90, composition=90,
+                    whitespace=90, visual_focus=90, asset_integration=90,
+                ) for page_id in request.page_ids
+            ))
+        return AestheticSetPassV4(set_evaluation=AestheticSetDraftV4(
+            rhythm=90, repetition=90, family_consistency=90, cover_body_consistency=90,
+        ))
+
+
+def test_evaluator_calls_page_then_set_with_only_blind_payloads():
+    gateway = _Gateway()
+    page_ids = tuple(f"page-{index}" for index in range(1, 6))
+
+    result = evaluate_aesthetics(
+        gateway=gateway, run_id="run-1", run_mode="shadow", candidate_id="candidate-1",
+        revision_id="revision-1", page_ids=page_ids, page_roles=("cover",) * 5,
+        page_duties=("semantic-duty",) * 5, image_bytes=(b"bytes",) * 5,
+        image_mime_types=("image/png",) * 5, render_manifest_sha256="a" * 64,
+        render_qa_result_sha256="b" * 64, page_brief_set_sha256="c" * 64,
+        semantic_content_model_sha256="d" * 64, authoring_model_identity="author",
+        evaluator_model_identity="evaluator",
+    )
+
+    assert result.passed is True
+    assert [item[0].payload["pass_kind"] for item in gateway.calls] == ["page", "set"]
+    assert "page_observations" not in gateway.calls[0][0].payload
+    assert tuple(item["page_id"] for item in gateway.calls[1][0].payload["page_observations"]) == page_ids
+    for request, _model in gateway.calls:
+        rendered = repr(request.payload).lower()
+        assert "revision_round" not in rendered
+        assert "authoring_prompt" not in rendered
+        assert "image_paths" not in request.payload
+        assert set(request.payload["source_bindings"]) == {
+            "render_manifest_sha256", "render_qa_result_sha256",
+            "page_brief_set_sha256", "semantic_content_model_sha256",
+        }
+
+
+def test_evaluator_rejects_missing_duplicate_or_reordered_page_observations():
+    class BadGateway(_Gateway):
+        def evaluate_images(self, request, response_model, *args):
+            if response_model is AestheticPagePassV4:
+                return AestheticPagePassV4(pages=tuple(
+                    AestheticPageDraftV4(
+                        page_id="page-1", hierarchy=90, readability=90, composition=90,
+                        whitespace=90, visual_focus=90, asset_integration=90,
+                    ) for _ in request.page_ids
+                ))
+            return super().evaluate_images(request, response_model, *args)
+
+    with pytest.raises(ValueError, match="exactly once in order"):
+        evaluate_aesthetics(
+            gateway=BadGateway(), run_id="run-1", run_mode="shadow", candidate_id="candidate-1",
+            revision_id="revision-1", page_ids=tuple(f"page-{i}" for i in range(1, 6)),
+            page_roles=("cover",) * 5, page_duties=("semantic-duty",) * 5,
+            image_bytes=(b"bytes",) * 5, image_mime_types=("image/png",) * 5,
+            render_manifest_sha256="a" * 64, render_qa_result_sha256="b" * 64,
+            page_brief_set_sha256="c" * 64, semantic_content_model_sha256="d" * 64,
+            authoring_model_identity="author", evaluator_model_identity="critic",
+        )
