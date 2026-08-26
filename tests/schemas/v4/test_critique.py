@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from src.schemas.v4.critique import (
+    AestheticIssueDraftV4,
     AestheticIssueV4,
     AestheticPageEvaluationV4,
     CarouselAestheticEvaluationV4,
@@ -122,8 +123,31 @@ def test_page_and_set_issue_dimensions_are_closed_by_container():
         )
 
 
-@pytest.mark.parametrize("evidence", ("/etc/passwd", r"C:\\secret\\x", "C:work.txt", r"\\\\server\\share", "../assets/x", "assets/layout.json", "layout.json", "prompt history"))
+@pytest.mark.parametrize("evidence", ("/etc/passwd", r"C:\\secret\\x", "C:work.txt", r"\\\\server\\share", "../assets/x", "assets/layout.json", "layout.json", "config.toml", "main.py", "report.pdf", "icon.svg", "封面.svg", ".env", "README", "prompt history"))
 def test_blind_text_rejects_path_and_private_metadata(evidence):
+    with pytest.raises(ValueError):
+        AestheticIssueV4.create(
+            severity="major", dimension="composition", page_ids=("page-1",), evidence=evidence,
+        )
+
+
+def test_blind_text_allows_normal_chinese_observable_prose():
+    issue = AestheticIssueV4.create(
+        severity="major", dimension="composition", page_ids=("page-1",),
+        evidence="标题与主图距离过近，视觉重心偏向右侧。",
+    )
+    assert issue.evidence.endswith("。")
+
+
+@pytest.mark.parametrize("evidence", (
+    "assets/layout.json", "C:work.txt", "provider metadata", "prompt history",
+))
+def test_draft_and_durable_issues_share_the_same_blind_text_boundary(evidence):
+    """Pass-1 observations cannot use a weaker evidence vocabulary than Q4."""
+    with pytest.raises(ValueError):
+        AestheticIssueDraftV4(
+            severity="major", dimension="composition", page_ids=("page-1",), evidence=evidence,
+        )
     with pytest.raises(ValueError):
         AestheticIssueV4.create(
             severity="major", dimension="composition", page_ids=("page-1",), evidence=evidence,

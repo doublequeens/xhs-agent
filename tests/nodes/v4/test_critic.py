@@ -119,6 +119,65 @@ def test_v4_critic_failed_page_routes_exact_normalized_aesthetic_failure(tmp_pat
     assert failure.page_id == "page-3"
 
 
+def test_public_critic_failure_composes_into_revision_with_fresh_hard_gates(tmp_path):
+    """Only real critic output may carry a passed Q0--Q3 state into repair."""
+    from tests.nodes.v4.test_design_qa import _fixture
+    from tests.visual_design.v4.test_v4_render_qa import _world
+    from src.nodes.v4.critic import aesthetic_critic_node
+    from src.nodes.v4.design_qa import aggregate_design_qa
+    from src.nodes.v4.revision import revision_node
+    from src.visual_design.v4.render_qa import evaluate_v4_render
+
+    values = _world(tmp_path)
+    fixture = _fixture()
+    q2 = aggregate_design_qa(
+        semantic_qa=fixture["q0"], authoring_qa=fixture["q1"],
+        carousel_design_plan=values["design_plan"], content_atom_set=values["content_atom_set"],
+        content_lock=values["content_lock"], semantic_content_model=values["semantic_content_model"],
+        page_brief_set=values["page_brief_set"], visual_direction_plan=values["visual_direction_plan"],
+        asset_manifest=values["asset_manifest"],
+    )
+    q3 = evaluate_v4_render(**values)
+    assert q2.passed and q3.passed
+
+    class Gateway:
+        provider_config = SimpleNamespace(model="critic-model")
+
+        def evaluate_images(self, request, response_model, *args):
+            if response_model is AestheticPagePassV4:
+                return AestheticPagePassV4(pages=tuple(
+                    AestheticPageDraftV4(
+                        page_id=page_id, hierarchy=90, readability=90, composition=90,
+                        whitespace=90, visual_focus=90, asset_integration=90,
+                    ) for page_id in request.page_ids
+                ))
+            return AestheticSetPassV4(set_evaluation=AestheticSetDraftV4(
+                rhythm=60, repetition=90, family_consistency=90, cover_body_consistency=90,
+                issues=(AestheticIssueDraftV4(
+                    severity="major", dimension="rhythm", page_ids=tuple(request.page_ids),
+                    evidence="all pages repeat the same centered text stack without pacing",
+                ),),
+            ))
+
+    state = {
+        **values, "carousel_design_plan": values["design_plan"],
+        "run_id": q3.artifact_identity.run_id, "run_mode": "shadow",
+        "candidate_id": q3.artifact_identity.candidate_id,
+        "revision_id": q3.artifact_identity.revision_id,
+        "semantic_qa_result": fixture["q0"], "authoring_qa_result": fixture["q1"],
+        "design_plan_qa_result_v4": q2, "render_qa_result_v4": q3,
+        "revision_history_v4": (),
+    }
+    critic_result = aesthetic_critic_node(state, gateway=Gateway())
+    assert critic_result["route"] == "revision"
+
+    revision_result = revision_node({**state, **critic_result})
+
+    assert revision_result["revision_request_v4"].target_layer == "AESTHETIC"
+    assert revision_result["revision_request_v4"].affected_pages == values["render_manifest"].page_ids
+    assert len(critic_result["normalized_failures_v4"]) == len(values["render_manifest"].page_ids)
+
+
 @pytest.mark.parametrize("attack", ("changed_bytes", "symlink"))
 def test_v4_critic_rejects_hash_and_symlink_png_attacks_before_gateway(tmp_path, attack):
     from tests.visual_design.v4.test_v4_render_qa import _world

@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.nodes.v4.revision import revision_node
+from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.revision import FailureFingerprintV4, NormalizedFailureV4
 
 
@@ -149,3 +150,47 @@ def test_revision_node_accepts_only_critic_failure_with_retained_passed_hard_gat
         "design_plan_qa_result": q2, "render_qa_result_v4": None, "render_qa_result": q3,
     })
     assert result["revision_request_v4"].target_layer == "AESTHETIC"
+
+
+@pytest.mark.parametrize("retained_key, changed_field", (
+    ("semantic_qa_result", "semantic_content_model_sha256"),
+    ("authoring_qa_result", "narrative_sha256"),
+))
+def test_revision_node_rejects_self_consistent_unrelated_retained_q0_or_q1(
+    tmp_path, retained_key, changed_field,
+) -> None:
+    """A standalone valid, rehashed gate cannot be substituted for Q2's exact input."""
+    from tests.visual_design.v4.test_v4_render_qa import _world
+    from tests.nodes.v4.test_design_qa import _fixture
+    from src.visual_design.v4.render_qa import evaluate_v4_render
+    from src.nodes.v4.design_qa import aggregate_design_qa
+
+    values = _world(tmp_path)
+    fixture = _fixture()
+    q2 = aggregate_design_qa(
+        semantic_qa=fixture["q0"], authoring_qa=fixture["q1"], carousel_design_plan=values["design_plan"],
+        content_atom_set=values["content_atom_set"], content_lock=values["content_lock"],
+        semantic_content_model=values["semantic_content_model"], page_brief_set=values["page_brief_set"],
+        visual_direction_plan=values["visual_direction_plan"], asset_manifest=values["asset_manifest"],
+    )
+    q3 = evaluate_v4_render(**values)
+    failure = NormalizedFailureV4.from_fingerprint(FailureFingerprintV4.create(
+        node="V4_VISUAL_CRITIC", page_id="page-1", failure_code="AESTHETIC_REVIEW_FAILED",
+        affected_fragment_ids=(), geometry_region=None,
+    ))
+    original = fixture["q0"] if retained_key == "semantic_qa_result" else fixture["q1"]
+    payload = original.model_dump(mode="python", exclude={"canonical_sha256"})
+    payload[changed_field] = "e" * 64
+    payload["canonical_sha256"] = canonical_sha256_v4(payload)
+    unrelated = type(original).model_validate(payload)
+    unrelated.validate_integrity()
+
+    state = {
+        **values, "normalized_failures_v4": (failure,),
+        "candidate_id": values["render_manifest"].candidate_id, "revision_history_v4": (),
+        "semantic_qa_result": unrelated if retained_key == "semantic_qa_result" else fixture["q0"],
+        "authoring_qa_result": unrelated if retained_key == "authoring_qa_result" else fixture["q1"],
+        "design_plan_qa_result_v4": q2, "render_qa_result_v4": q3,
+    }
+    with pytest.raises(ValueError, match="fresh passed Q0-Q3"):
+        revision_node(state)

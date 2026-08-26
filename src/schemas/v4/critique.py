@@ -31,7 +31,11 @@ _PRIVATE = re.compile(r"(?:provider|provenance|licen[cs]e|authoring[_ -]?prompt|
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$")
 _BLIND_METADATA = re.compile(r"(?:provider|provenance|licen[cs]e|prompt|revision|attempt|history|api[_ -]?key|secret|password|https?://)", re.I)
 _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
-_BARE_PATH_FILE = re.compile(r"^[A-Za-z0-9_.-]+\.(?:json|ya?ml|txt|png|jpe?g|webp|csv|xml|html?|css|js)$", re.I)
+# A filename has no whitespace or path separators.  Do not maintain an
+# extension allow/deny list: any safe extension is metadata rather than an
+# observable visual fact.  A Unicode basename is intentional (a page reviewer
+# can receive localized filenames), while the extension remains conservative.
+_BARE_PATH_FILE = re.compile(r"^(?:\.[^\s/\\]+|[^\s./\\]+(?:\.[A-Za-z0-9_-]+)+|README|LICENSE|Makefile|Dockerfile)$", re.I)
 
 
 class _Frozen(BaseModel):
