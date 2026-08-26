@@ -18,7 +18,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterator
+from typing import Any, Iterator
 
 
 class ArtifactIdentityError(ValueError):
@@ -641,6 +641,37 @@ def read_verified_artifact_snapshot(
     return VerifiedArtifact(snapshot.raw, snapshot.sha256, snapshot.size, snapshot.identity)
 
 
+def read_verified_artifact_snapshot_at(
+    parent_fd: int,
+    relative_parts: tuple[str, ...],
+    declared_sha256: str | None,
+    *,
+    require_nlink_one: bool = True,
+) -> VerifiedArtifact:
+    """Read one file below a caller-owned pinned descriptor.
+
+    This is the descriptor-relative counterpart used by transactions which
+    must keep verification and publication on the same directory lease.  The
+    caller owns the lease and must assert it before and after this call.
+    """
+
+    try:
+        if not relative_parts or any(type(part) is not str for part in relative_parts):
+            raise ArtifactBindingError("relative file path must contain safe components")
+        if declared_sha256 is not None:
+            if type(declared_sha256) is not str or len(declared_sha256) != 64:
+                raise ArtifactBindingError("declared sha256 must be a 64-character digest")
+            int(declared_sha256, 16)
+        snapshot = _read_file_at(parent_fd, tuple(_safe_name(part, "file path component") for part in relative_parts))
+    except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError) as error:
+        raise ArtifactBindingError("descriptor-relative artifact is unreadable or unstable") from error
+    if declared_sha256 is not None and snapshot.sha256 != declared_sha256.lower():
+        raise ArtifactBindingError("source sha256 does not match declared sha256")
+    if require_nlink_one and snapshot.link_count != 1:
+        raise ArtifactBindingError("source artifact has unsafe hardlink count")
+    return VerifiedArtifact(snapshot.raw, snapshot.sha256, snapshot.size, snapshot.identity)
+
+
 @contextmanager
 def _open_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> Iterator[int]:
     """Yield one regular file descriptor opened below a pinned directory."""
@@ -1114,6 +1145,89 @@ def _fsync_staged_tree_fd(root_fd: int) -> None:
     os.fsync(root_fd)
 
 
+def publish_staged_directory_at(
+    lease: Any,
+    source_name: str,
+    destination_name: str,
+    *,
+    expected_source_identity: tuple[int, int] | None = None,
+) -> Path:
+    """Publish a staged directory using the exact caller-owned lease.
+
+    Verification must retain the lease returned by ``_open_absolute_directory``
+    until this function returns.  The source inode is checked immediately
+    before the no-replace rename, closing the staging-entry substitution race.
+    """
+
+    _safe_name(source_name, "staging directory")
+    _safe_name(destination_name, "destination directory")
+    if source_name == destination_name:
+        raise ArtifactBindingError("staged and destination directory names must differ")
+    source_fd: int | None = None
+    primary: BaseException | None = None
+    try:
+        lease.assert_intact()
+        source_fd = os.open(source_name, _DIR_FLAGS, dir_fd=lease.fd)
+        info = os.fstat(source_fd)
+        if stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode):
+            raise ArtifactBindingError("staged directory is not a regular directory")
+        source_identity = (info.st_dev, info.st_ino)
+        if expected_source_identity is not None and source_identity != expected_source_identity:
+            raise ArtifactBindingError("staging directory identity changed before publication")
+        _fsync_staged_tree_fd(source_fd)
+        lease.assert_intact()
+        latest = os.stat(source_name, dir_fd=lease.fd, follow_symlinks=False)
+        if (latest.st_dev, latest.st_ino) != source_identity:
+            raise ArtifactBindingError("staging entry was replaced before publication")
+        try:
+            os.stat(destination_name, dir_fd=lease.fd, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise ArtifactBindingError("artifact destination directory already exists")
+        _rename_noreplace(source_name, destination_name, lease.fd, lease.fd)
+        destination_info = os.stat(destination_name, dir_fd=lease.fd, follow_symlinks=False)
+        destination_identity = (destination_info.st_dev, destination_info.st_ino)
+        if destination_identity != source_identity:
+            try:
+                _remove_tree_at(lease.fd, destination_name)
+            except BaseException as cleanup_error:
+                cleanup_error.add_note("primary staged directory identity mismatch was preserved")
+            raise ArtifactBindingError("published destination identity differs from staged source")
+        lease.assert_intact()
+        os.fsync(lease.fd)
+        return lease.paths[-1] / destination_name
+    except BaseException as error:
+        primary = error
+        if isinstance(error, ArtifactBindingError):
+            raise
+        raise ArtifactBindingError("staged directory publication failed") from error
+    finally:
+        close_error = _close_fd_once(source_fd)
+        if close_error is not None:
+            if primary is not None:
+                primary.add_note(f"staged source close failed: {close_error}")
+            else:
+                raise ArtifactBindingError("staged source close failed") from close_error
+
+
+def quarantine_directory_at(
+    lease: Any,
+    source_name: str,
+    quarantine_name: str,
+    *,
+    expected_source_identity: tuple[int, int] | None = None,
+) -> Path:
+    """Move one failed directory to a unique sibling without replacement."""
+
+    return publish_staged_directory_at(
+        lease,
+        source_name,
+        quarantine_name,
+        expected_source_identity=expected_source_identity,
+    )
+
+
 def _create_staging_directory(asset_fd: int, name: str) -> int:
     _safe_name(name)
     os.mkdir(name, mode=0o700, dir_fd=asset_fd)
@@ -1160,6 +1274,9 @@ __all__ = [
     "ensure_artifact_paths",
     "read_verified_artifact",
     "read_verified_artifact_snapshot",
+    "read_verified_artifact_snapshot_at",
+    "publish_staged_directory_at",
+    "quarantine_directory_at",
     "revalidate_artifact_paths",
     "resolve_artifact_paths",
 ]

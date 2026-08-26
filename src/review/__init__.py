@@ -3,11 +3,13 @@
 from .v4_workspace import (
     ReviewBindingError,
     ReviewWorkspaceInputsV4,
+    ReviewWorkspaceV4,
     build_review_workspace,
+    read_review_intent,
     verify_review_workspace,
 )
 
 __all__ = [
-    "ReviewBindingError", "ReviewWorkspaceInputsV4", "build_review_workspace",
-    "verify_review_workspace",
+    "ReviewBindingError", "ReviewWorkspaceInputsV4", "ReviewWorkspaceV4",
+    "build_review_workspace", "read_review_intent", "verify_review_workspace",
 ]

@@ -148,3 +148,65 @@ def test_review_timestamp_is_strict_utc_and_hashes_normalized_payload():
     assert decision.rationale == "reviewed"
     with pytest.raises(ValueError):
         HumanReviewDecisionV4.create(**{**payload, "decided_at": "2026-08-26T00:00:00+00:00"})
+
+
+def test_decision_factory_hashes_omitted_defaults_and_roundtrips():
+    payload = {
+        "decision_id": "decision-defaults",
+        "decided_at": "2026-08-26T00:00:00Z",
+        "run_id": "run-1",
+        "candidate_id": "candidate-1",
+        "revision_id": "revision-0",
+        "action": "APPROVE",
+        "content_lock_sha256": SHA,
+        "asset_manifest_sha256": SHA,
+        "carousel_design_plan_sha256": SHA,
+        "design_plan_qa_sha256": SHA,
+        "render_manifest_sha256": SHA,
+        "render_qa_sha256": SHA,
+        "visual_critique_sha256": SHA,
+        "page_sha256": {"pages/01-page-1.png": SHA},
+        "contact_sheet_sha256": SHA,
+    }
+    decision = HumanReviewDecisionV4.create(**payload)
+    assert decision.rationale is None
+    assert decision.asset_decisions == ()
+    assert decision.workflow_version == "llm_scene_v4"
+    assert HumanReviewDecisionV4.model_validate_json(decision.model_dump_json()) == decision
+
+
+@pytest.mark.parametrize(
+    "action,field,value",
+    [
+        ("REQUEST_REVISION", "feedback", "x"),
+        ("AESTHETIC_OVERRIDE", "rationale", "x"),
+        ("VISIBLE_COPY_EDIT", "visible_copy_payload", "x"),
+    ],
+)
+def test_intent_requires_substantive_text_for_action_payloads(action, field, value):
+    with pytest.raises(ValidationError):
+        HumanReviewIntentV4(action=action, **{field: value})
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("feedback", "See /Users/qinqiang/private/notes"),
+        ("feedback", "See /var/log/xhs-agent/review.log"),
+        ("feedback", r"\\\\server\\share\\review.txt"),
+        ("feedback", "read ../secrets.txt"),
+        ("rationale", "api_key=super-secret-value"),
+        ("visible_copy_payload", "Bearer abcdefghijklmnop"),
+    ],
+)
+def test_intent_rejects_private_paths_and_credentials(field, value):
+    with pytest.raises(ValidationError):
+        HumanReviewIntentV4(action="REQUEST_REVISION" if field == "feedback" else "VISIBLE_COPY_EDIT", **{field: value})
+
+
+def test_normal_bilingual_review_prose_is_not_misclassified_as_private_data():
+    intent = HumanReviewIntentV4(
+        action="REQUEST_REVISION",
+        feedback="请把第 2 页的标题层级拉开，让重点更清楚。 Please improve the title hierarchy.",
+    )
+    assert "标题层级" in intent.feedback

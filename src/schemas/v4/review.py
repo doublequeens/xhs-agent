@@ -32,6 +32,25 @@ _ASSET_PATH = re.compile(r"^assets/[A-Za-z0-9_.-]+\.(?:png|jpe?g|webp|gif|bin)$"
 _RFC3339_UTC = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
+_PRIVATE_PATH = re.compile(
+    r"(?:"
+    r"(?:^|[\s(])/(?:users|home|private|tmp)(?:[/\\]|$)"
+    r"|(?:^|[\s(])/(?:[^/\s]+(?:/[^/\s]+)*)"
+    r"|(?:^|[\s(])[A-Za-z]:[/\\]"
+    r"|(?:^|[\s(])\\{2,}[^\\/\s]+[/\\]"
+    r"|(?:^|[\s/\\])\.\.(?:[\s/\\]|$)"
+    r")",
+    re.IGNORECASE,
+)
+_CREDENTIAL = re.compile(
+    r"(?:"
+    r"\b(?:api[_ -]?key|secret(?:[_ -]?key)?|password|passwd|authorization|"
+    r"access[_ -]?token|refresh[_ -]?token)\b\s*[:=]\s*\S+"
+    r"|\bbearer\s+\S{16,}"
+    r"|\b(?:sk-[A-Za-z0-9]{16,}|gh[pousr]_[A-Za-z0-9_]{20,}|AKIA[0-9A-Z]{16})\b"
+    r")",
+    re.IGNORECASE,
+)
 _ACTIONS = (
     "APPROVE", "AESTHETIC_OVERRIDE", "REQUEST_REVISION",
     "REJECT_OR_REPLACE_ASSET", "VISIBLE_COPY_EDIT",
@@ -65,14 +84,24 @@ def _text(
     *,
     max_length: int = 1000,
     required: bool = False,
+    min_length: int = 1,
 ) -> str | None:
     if value is None:
         if required:
             raise ValueError(f"{name} is required")
         return None
-    if type(value) is not str or not value.strip() or len(value) > max_length or "\x00" in value:
+    normalized = value.strip() if type(value) is str else value
+    if (
+        type(value) is not str
+        or not normalized
+        or len(normalized) < min_length
+        or len(normalized) > max_length
+        or "\x00" in value
+        or _PRIVATE_PATH.search(normalized)
+        or _CREDENTIAL.search(normalized)
+    ):
         raise ValueError(f"{name} must be bounded text")
-    return value.strip()
+    return normalized
 
 
 def _timestamp(value: str) -> str:
@@ -98,6 +127,11 @@ def _normalized_payload(
     result = dict(payload)
     if workflow_version is not None:
         result.setdefault("workflow_version", workflow_version)
+    if not workspace and "action" in result:
+        # Model defaults are part of the canonical payload, even when callers
+        # omit them from a factory request.
+        result.setdefault("rationale", None)
+        result.setdefault("asset_decisions", ())
     for name, limit in (("rationale", 1000), ("feedback", 4000), ("visible_copy_payload", 20000)):
         value = result.get(name)
         if isinstance(value, str):
@@ -157,7 +191,7 @@ class AssetReviewDecisionV4(_FrozenReviewV4):
     @field_validator("rationale")
     @classmethod
     def rationale_text(cls, value: str | None) -> str | None:
-        return _text(value, "rationale", max_length=1000)
+        return _text(value, "rationale", max_length=1000, min_length=2)
 
     @model_validator(mode="after")
     def integrity(self) -> "AssetReviewDecisionV4":
@@ -181,7 +215,7 @@ class HumanReviewIntentV4(_FrozenReviewV4):
     @classmethod
     def intent_text(cls, value: str | None, info) -> str | None:
         limits = {"rationale": 1000, "feedback": 4000, "visible_copy_payload": 20000}
-        return _text(value, info.field_name, max_length=limits[info.field_name])
+        return _text(value, info.field_name, max_length=limits[info.field_name], min_length=2)
 
     @field_validator("asset_ids")
     @classmethod
@@ -256,7 +290,7 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
     @field_validator("rationale")
     @classmethod
     def decision_text(cls, value: str | None) -> str | None:
-        return _text(value, "rationale", max_length=1000)
+        return _text(value, "rationale", max_length=1000, min_length=2)
 
     @field_validator("content_lock_sha256", "asset_manifest_sha256", "carousel_design_plan_sha256",
                      "design_plan_qa_sha256", "render_manifest_sha256", "render_qa_sha256",
