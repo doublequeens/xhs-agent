@@ -15,6 +15,7 @@ import html
 import json
 import os
 import re
+import stat
 import uuid
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -31,13 +32,22 @@ from src.schemas.v4.direction import CarouselNarrativeV4, PageBriefSetV4, Visual
 from src.schemas.v4.layout import CarouselDesignPlanV4
 from src.schemas.v4.quality import DesignPlanQAResultV4
 from src.schemas.v4.rendering import RenderManifestV4, RenderQAResultV4
-from src.schemas.v4.review import HumanReviewIntentV4, ReviewWorkspaceManifestV4
+from src.schemas.v4.review import (
+    HumanReviewIntentV4,
+    ReviewWorkspaceAnchorV4,
+    ReviewWorkspaceFingerprintEntryV4,
+    ReviewWorkspaceManifestV4,
+)
 from src.schemas.v4.semantic import SemanticContentModelV4
 from src.visual_runtime.artifact_identity import (
     ArtifactBindingError,
     ArtifactIdentityError,
     ArtifactPaths,
+    DirectoryTreeEntry,
+    DirectoryTreeFingerprint,
+    _DIR_FLAGS,
     _atomic_write_at,
+    _close_fd_once,
     _lease_context,
     _open_absolute_directory,
     _remove_tree_at,
@@ -88,6 +98,51 @@ def _asset_display_text(value: str, field_name: str) -> str:
     return " ".join(value.split())
 
 
+def _asset_source_evidence(value: object, field_name: str) -> str:
+    """Allow only bounded source URL/ID evidence for the offline UI.
+
+    Source URLs are displayed as escaped text only; CSP and the local-only
+    resource checks still prevent the review page from fetching them.
+    """
+
+    if (
+        type(value) is not str
+        or not value.strip()
+        or len(value.strip()) > 240
+        or "\x00" in value
+        or "\n" in value
+        or "\r" in value
+        or re.search(r"(?:^|[\s/\\])\.\.(?:[\s/\\]|$)", value)
+        or re.search(
+            r"\b(?:api[_ -]?key|secret(?:[_ -]?key)?|password|passwd|authorization|"
+            r"access[_ -]?token|refresh[_ -]?token)\b\s*[:=]\s*\S+",
+            value,
+            re.IGNORECASE,
+        )
+    ):
+        raise ReviewBindingError(f"asset {field_name} evidence is not sanitized")
+    normalized = " ".join(value.split())
+    if field_name == "source_url" and not re.fullmatch(
+        r"https?://[^\s<>]+", normalized, re.IGNORECASE
+    ):
+        raise ReviewBindingError("asset source_url evidence is not a canonical URL")
+    if field_name == "source_id" and not re.fullmatch(
+        r"[A-Za-z0-9_.:@-]+", normalized
+    ):
+        raise ReviewBindingError("asset source_id evidence is not a public identifier")
+    return normalized
+
+
+def _asset_license_evidence(value: object) -> str:
+    """Validate bounded license terms, including a displayed license URL."""
+
+    if type(value) is str and re.fullmatch(
+        r"https?://[^\s<>]+", value.strip(), re.IGNORECASE
+    ):
+        return _asset_source_evidence(value, "license_url")
+    return _asset_display_text(value, "license")
+
+
 @dataclass(frozen=True, slots=True)
 class ReviewCleanupOutcomeV4:
     """Bounded immutable evidence for post-publish cleanup/recovery."""
@@ -99,6 +154,14 @@ class ReviewCleanupOutcomeV4:
     quarantine_path: str | None = None
     cleanup_error: str | None = None
     recovery_error: str | None = None
+    observed_source_exists: bool | None = None
+    observed_quarantine_exists: bool | None = None
+    move_succeeded: bool = False
+    durability_succeeded: bool = False
+    durability_error: str | None = None
+    anchor_removal_attempted: bool = False
+    anchor_removal_succeeded: bool = False
+    anchor_cleanup_error: str | None = None
 
     def payload(self) -> dict[str, object]:
         return {
@@ -109,6 +172,14 @@ class ReviewCleanupOutcomeV4:
             "quarantine_path": self.quarantine_path,
             "cleanup_error": self.cleanup_error,
             "recovery_error": self.recovery_error,
+            "observed_source_exists": self.observed_source_exists,
+            "observed_quarantine_exists": self.observed_quarantine_exists,
+            "move_succeeded": self.move_succeeded,
+            "durability_succeeded": self.durability_succeeded,
+            "durability_error": self.durability_error,
+            "anchor_removal_attempted": self.anchor_removal_attempted,
+            "anchor_removal_succeeded": self.anchor_removal_succeeded,
+            "anchor_cleanup_error": self.anchor_cleanup_error,
         }
 
 
@@ -159,10 +230,153 @@ class _PreviousReview:
 
 
 _REVISION_ID = re.compile(r"^revision-(\d+)$")
+_REVIEW_ANCHOR_NAME = "review-anchor.json"
+_MUTABLE_INTAKE_POLICY = "decision-json-uncommitted-v1"
 
 
 def _sha(raw: bytes) -> str:
     return hashlib.sha256(raw).hexdigest()
+
+
+def _static_tree_fingerprint(fingerprint: DirectoryTreeFingerprint) -> DirectoryTreeFingerprint:
+    """Exclude only the mutable intake file from the immutable review tree."""
+
+    return fingerprint.without_paths({"decision.json"})
+
+
+def _anchor_entries(
+    fingerprint: DirectoryTreeFingerprint,
+) -> tuple[ReviewWorkspaceFingerprintEntryV4, ...]:
+    return tuple(
+        ReviewWorkspaceFingerprintEntryV4(
+            kind=entry.kind,
+            relative_path=entry.relative_path,
+            sha256=entry.sha256,
+            size=entry.size,
+            device=entry.device,
+            inode=entry.inode,
+            nlink=entry.nlink,
+        )
+        for entry in fingerprint.entries
+    )
+
+
+def _artifact_fingerprint(
+    entries: tuple[ReviewWorkspaceFingerprintEntryV4, ...],
+) -> DirectoryTreeFingerprint:
+    return DirectoryTreeFingerprint(
+        entries=tuple(
+            DirectoryTreeEntry(
+                kind=entry.kind,
+                relative_path=entry.relative_path,
+                sha256=entry.sha256,
+                size=entry.size,
+                device=entry.device,
+                inode=entry.inode,
+                nlink=entry.nlink,
+            )
+            for entry in entries
+        )
+    )
+
+
+def _capture_review_anchor(
+    paths: ArtifactPaths,
+    manifest: ReviewWorkspaceManifestV4,
+    manifest_raw: bytes,
+    *,
+    expected_root_identity: tuple[int, int] | None = None,
+    expected_fingerprint: DirectoryTreeFingerprint | None = None,
+) -> ReviewWorkspaceAnchorV4:
+    """Capture the exact post-rename static review tree for the completion marker."""
+
+    with _lease_context(_open_absolute_directory(paths.review_root, create=False)) as lease:
+        lease.assert_intact()
+        root_info = os.fstat(lease.fd)
+        fingerprint = _static_tree_fingerprint(fingerprint_directory_at(lease.fd))
+        if expected_root_identity is not None and (
+            root_info.st_dev,
+            root_info.st_ino,
+        ) != expected_root_identity:
+            raise ReviewBindingError("review workspace root changed before completion anchor")
+        if expected_fingerprint is not None and fingerprint != expected_fingerprint:
+            raise ReviewBindingError("review static tree changed before completion anchor")
+        lease.assert_intact()
+    entries = _anchor_entries(fingerprint)
+    return ReviewWorkspaceAnchorV4.create(
+        run_id=paths.identity.run_id,
+        candidate_id=paths.identity.candidate_id,
+        revision_id=paths.identity.revision_id,
+        workspace_manifest_canonical_sha256=manifest.canonical_sha256,
+        workspace_manifest_raw_sha256=_sha(manifest_raw),
+        tree_fingerprint=entries,
+        tree_fingerprint_sha256=fingerprint.canonical_sha256,
+        mutable_intake_policy=_MUTABLE_INTAKE_POLICY,
+        review_root_device=root_info.st_dev,
+        review_root_inode=root_info.st_ino,
+    )
+
+
+def _write_review_anchor(paths: ArtifactPaths, raw: bytes) -> None:
+    """Atomically write and fsync the revision-level completion marker last."""
+
+    with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
+        lease.assert_intact()
+        _atomic_write_at(lease.fd, (_REVIEW_ANCHOR_NAME,), raw)
+        lease.assert_intact()
+
+
+def _prepare_review_destination(paths: ArtifactPaths) -> None:
+    """Reject complete prior workspaces and remove only a stale failed anchor."""
+
+    with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
+        lease.assert_intact()
+        review_exists = False
+        try:
+            review_info = os.stat("review", dir_fd=lease.fd, follow_symlinks=False)
+            review_exists = True
+            if not stat.S_ISDIR(review_info.st_mode) or stat.S_ISLNK(review_info.st_mode):
+                raise ReviewBindingError("review destination is unsafe")
+        except FileNotFoundError:
+            pass
+        try:
+            anchor_info = os.stat(
+                _REVIEW_ANCHOR_NAME, dir_fd=lease.fd, follow_symlinks=False
+            )
+        except FileNotFoundError:
+            anchor_info = None
+        if review_exists:
+            if anchor_info is not None:
+                raise ReviewBindingError("an immutable review workspace already exists for this revision")
+            # A review tree without the external completion marker is an
+            # uncommitted crash/failure residue, never a consumable result.
+            # Remove only this exact revision child so the next build can
+            # retry; if direct deletion fails, quarantine that same child
+            # under the pinned parent and preserve both errors.
+            try:
+                _remove_tree_at(lease.fd, "review")
+                review_exists = False
+            except FileNotFoundError:
+                review_exists = False
+            except BaseException as primary:
+                try:
+                    stale_info = os.stat("review", dir_fd=lease.fd, follow_symlinks=False)
+                    quarantine_name = ".review-recovery-" + uuid.uuid4().hex
+                    quarantine_directory_at(
+                        lease,
+                        "review",
+                        quarantine_name,
+                        expected_source_identity=(stale_info.st_dev, stale_info.st_ino),
+                    )
+                    review_exists = False
+                except BaseException as cleanup_error:
+                    primary.add_note(f"uncommitted review quarantine failed: {_sanitize_error(cleanup_error)}")
+                    raise ReviewBindingError("uncommitted review workspace could not be quarantined") from primary
+        if anchor_info is not None:
+            if stat.S_ISDIR(anchor_info.st_mode) or stat.S_ISLNK(anchor_info.st_mode):
+                raise ReviewBindingError("review anchor is unsafe")
+            _remove_tree_at(lease.fd, _REVIEW_ANCHOR_NAME)
+        lease.assert_intact()
 
 
 def _contract_hash(value: object) -> str:
@@ -184,10 +398,20 @@ def _check_asset_resolution_evidence(
     inputs: ReviewWorkspaceInputsV4,
     paths: ArtifactPaths,
 ) -> None:
+    current_directives: dict[str, Any] = {}
+    current_order: list[str] = []
+    for page in inputs.page_brief_set.pages:
+        for directive in page.asset_directives:
+            if directive.directive_id in current_directives:
+                raise ReviewBindingError("current asset directives are duplicated")
+            if directive.page_id != page.page_id:
+                raise ReviewBindingError("asset directive page ownership is stale")
+            current_directives[directive.directive_id] = directive
+            current_order.append(directive.directive_id)
     result = inputs.asset_resolution_result
     if result is None:
-        if inputs.asset_manifest.items:
-            raise ReviewBindingError("external assets require typed resolution evidence")
+        if current_directives or inputs.asset_manifest.items:
+            raise ReviewBindingError("external asset directives require typed resolution evidence")
         return
     try:
         result.manifest.require_unique_bindings()
@@ -195,25 +419,59 @@ def _check_asset_resolution_evidence(
         identity = paths.identity
         if result.manifest != inputs.asset_manifest:
             raise ReviewBindingError("asset resolution manifest differs from AssetManifest")
+        resolved_items = tuple(result.manifest.items)
+        resolved_ids = tuple(item.directive_id for item in resolved_items)
+        unresolved_items = tuple(result.unresolved_optional_assets)
+        unresolved_ids = tuple(item.directive_id for item in unresolved_items)
+        if len(set(resolved_ids)) != len(resolved_ids) or len(set(unresolved_ids)) != len(unresolved_ids):
+            raise ReviewBindingError("asset resolution directive evidence is duplicated")
+        if set(resolved_ids) & set(unresolved_ids):
+            raise ReviewBindingError("asset resolution directive is both resolved and unresolved")
+        if set(resolved_ids) | set(unresolved_ids) != set(current_directives):
+            raise ReviewBindingError("asset resolution directives do not exactly partition current Page Brief directives")
+        for item in resolved_items:
+            directive = current_directives.get(item.directive_id)
+            if directive is None or item.page_id != directive.page_id:
+                raise ReviewBindingError("asset manifest item has stale directive/page ownership")
+            if item.security_status != "approved" or item.human_decision != "pending":
+                raise ReviewBindingError("asset manifest item is not approved and pending")
+            if item.run_id != paths.identity.run_id or item.transaction_id != paths.identity.revision_id:
+                raise ReviewBindingError("asset manifest item transaction identity is stale")
+        for unresolved in unresolved_items:
+            directive = current_directives.get(unresolved.directive_id)
+            if directive is None or unresolved.page_id != directive.page_id:
+                raise ReviewBindingError("unresolved asset directive ownership is stale")
+            if directive.required:
+                raise ReviewBindingError("required asset directive cannot remain unresolved")
         for item in inputs.asset_manifest.items:
             _asset_display_text(item.provider, "provider")
-            _asset_display_text(item.license, "license")
+            _asset_license_evidence(item.license)
+            for field_name in ("source_url", "source_id"):
+                source_value = item.internal_provenance.get(field_name)
+                if source_value is not None:
+                    _asset_source_evidence(source_value, field_name)
         if (tx.run_id, tx.transaction_id) != (identity.run_id, identity.revision_id):
             raise ReviewBindingError("asset transaction identity differs from ArtifactPaths")
         if Path(tx.transaction_root) != paths.asset_root:
             raise ReviewBindingError("asset transaction root is not the bound asset root")
         if Path(tx.journal_path) != paths.asset_root / "recovery.json":
             raise ReviewBindingError("asset transaction journal path is not canonical")
-        resolved = tuple(item.directive_id for item in result.manifest.items)
+        resolved = resolved_ids
         if tuple(tx.resolved_directive_ids) != resolved:
             raise ReviewBindingError("asset transaction resolved directives are stale")
-        unresolved = tuple(
-            item.directive_id for item in result.unresolved_optional_assets
-        )
+        unresolved = unresolved_ids
         if tuple(tx.unresolved_optional_directive_ids) != unresolved:
             raise ReviewBindingError("asset transaction unresolved directives are stale")
         if set(tx.unresolved_optional_directive_ids) & set(resolved):
             raise ReviewBindingError("asset transaction has conflicting directive evidence")
+        expected_resolved_order = tuple(
+            directive_id for directive_id in current_order if directive_id in set(resolved)
+        )
+        expected_unresolved_order = tuple(
+            directive_id for directive_id in current_order if directive_id in set(unresolved)
+        )
+        if resolved != expected_resolved_order or unresolved != expected_unresolved_order:
+            raise ReviewBindingError("asset transaction directive ordering is stale")
         if tx.status == "interrupted":
             read_verified_artifact_snapshot(
                 Path(tx.journal_path), None, containment_root=paths.asset_root
@@ -668,8 +926,16 @@ def _html_page(
     for item in inputs.asset_manifest.items:
         asset_id = _asset_display_text(item.asset_id, "asset_id")
         provider = _asset_display_text(item.provider, "provider")
-        license_text = _asset_display_text(item.license, "license")
+        license_text = _asset_license_evidence(item.license)
         transaction_id = _asset_display_text(item.transaction_id, "transaction_id")
+        source_evidence_parts: list[str] = []
+        for field_name in ("source_url", "source_id"):
+            source_value = item.internal_provenance.get(field_name)
+            if source_value is not None:
+                source_evidence_parts.append(
+                    field_name + "=" + _asset_source_evidence(source_value, field_name)
+                )
+        source_evidence = " ".join(source_evidence_parts) or "unavailable"
         preview = rendered_paths.get(item.asset_id)
         if preview and not preview.endswith(".bin"):
             image = ('<img class="asset-preview" src="' + html.escape(preview, quote=True)
@@ -682,8 +948,10 @@ def _html_page(
             '<li class="asset-item"><b>' + html.escape(asset_id, quote=True) + '</b>' + image
             + '<span>provider=' + html.escape(provider, quote=True)
             + ' source_kind=' + html.escape(item.source_kind, quote=True)
+            + ' source=' + html.escape(source_evidence, quote=True)
             + ' license=' + html.escape(license_text, quote=True)
             + ' security=' + html.escape(item.security_status, quote=True)
+            + ' containment=no-follow evidence unavailable'
             + ' transaction_id=' + html.escape(transaction_id, quote=True)
             + ' transaction_status=' + html.escape(transaction_status, quote=True)
             + ' recovery=' + html.escape(recovery_status, quote=True)
@@ -829,7 +1097,7 @@ def _publish_stage(
     lease: Any,
     stage: str,
     expected_source_identity: tuple[int, int],
-    expected_source_fingerprint: tuple[tuple[object, ...], ...],
+    expected_source_fingerprint: DirectoryTreeFingerprint,
 ) -> None:
     """Publish the already verified stage without reopening its pathname."""
 
@@ -980,13 +1248,34 @@ def _verify_workspace_root(
         raise ReviewBindingError("workspace root is invalid or unsafe") from error
 
 
+def _verify_review_contents(
+    workspace: ReviewWorkspaceV4,
+) -> tuple[tuple[int, int], DirectoryTreeFingerprint]:
+    """Verify a just-renamed review and return its pinned static evidence."""
+
+    try:
+        with _lease_context(_open_absolute_directory(workspace.root, create=False)) as lease:
+            lease.assert_intact()
+            root_info = os.fstat(lease.fd)
+            _verify_workspace_fd(
+                lease.fd,
+                workspace.manifest,
+                expected_manifest_raw=workspace.manifest_raw,
+            )
+            fingerprint = _static_tree_fingerprint(fingerprint_directory_at(lease.fd))
+            lease.assert_intact()
+            return (root_info.st_dev, root_info.st_ino), fingerprint
+    except (OSError, ArtifactBindingError, ArtifactIdentityError) as error:
+        raise ReviewBindingError("published review workspace is invalid or unsafe") from error
+
+
 def _verify_staging(
     paths: ArtifactPaths,
     stage: str,
     manifest: ReviewWorkspaceManifestV4,
     raw: bytes,
     lease: Any,
-) -> tuple[tuple[int, int], tuple[tuple[object, ...], ...]]:
+) -> tuple[tuple[int, int], DirectoryTreeFingerprint]:
     """Verify staging through the same pinned revision lease used to publish."""
 
     if type(stage) is not str or not stage or Path(stage).name != stage or stage in {".", ".."}:
@@ -1055,41 +1344,106 @@ def _remove_published_review(paths: ArtifactPaths) -> ReviewCleanupOutcomeV4:
 
     removal_error: str | None = None
     quarantine_error: str | None = None
+    anchor_cleanup_error: str | None = None
     quarantine_path: str | None = None
     removal_succeeded = False
     quarantine_attempted = False
     quarantine_succeeded = False
+    observed_source_exists: bool | None = None
+    observed_quarantine_exists: bool | None = None
+    move_succeeded = False
+    durability_succeeded = False
+    durability_error: str | None = None
+    anchor_removal_attempted = False
+    anchor_removal_succeeded = False
     try:
         with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
             lease.assert_intact()
             try:
                 _remove_tree_at(lease.fd, "review")
                 removal_succeeded = True
+                observed_source_exists = False
             except FileNotFoundError:
                 removal_succeeded = True
+                observed_source_exists = False
             except BaseException as primary:
                 removal_error = _sanitize_error(primary)
                 try:
                     info = os.stat("review", dir_fd=lease.fd, follow_symlinks=False)
+                    observed_source_exists = True
                     quarantine_path = ".review-recovery-" + uuid.uuid4().hex
                     quarantine_attempted = True
-                    quarantine_directory_at(
-                        lease,
-                        "review",
-                        quarantine_path,
-                        expected_source_identity=(info.st_dev, info.st_ino),
-                    )
-                    quarantine_succeeded = True
+                    try:
+                        quarantine_directory_at(
+                            lease,
+                            "review",
+                            quarantine_path,
+                            expected_source_identity=(info.st_dev, info.st_ino),
+                        )
+                        quarantine_succeeded = True
+                        observed_source_exists = False
+                        observed_quarantine_exists = True
+                        move_succeeded = True
+                        durability_succeeded = True
+                    except BaseException as error:
+                        quarantine_error = _sanitize_error(error)
+                        durability_error = _sanitize_error(error)
+                        try:
+                            os.stat("review", dir_fd=lease.fd, follow_symlinks=False)
+                            observed_source_exists = True
+                        except FileNotFoundError:
+                            observed_source_exists = False
+                        except OSError as stat_error:
+                            observed_source_exists = None
+                            durability_error = (
+                                (durability_error or "")
+                                + "; source re-stat failed: "
+                                + (_sanitize_error(stat_error) or "unknown")
+                            ).strip("; ")
+                        try:
+                            os.stat(
+                                quarantine_path,
+                                dir_fd=lease.fd,
+                                follow_symlinks=False,
+                            )
+                            observed_quarantine_exists = True
+                        except FileNotFoundError:
+                            observed_quarantine_exists = False
+                        except OSError as stat_error:
+                            observed_quarantine_exists = None
+                            durability_error = (
+                                (durability_error or "")
+                                + "; quarantine re-stat failed: "
+                                + (_sanitize_error(stat_error) or "unknown")
+                            ).strip("; ")
+                        move_succeeded = (
+                            observed_source_exists is False
+                            and observed_quarantine_exists is True
+                        )
                 except BaseException as error:
-                    quarantine_error = _sanitize_error(error)
+                    if quarantine_error is None:
+                        quarantine_error = _sanitize_error(error)
             lease.assert_intact()
+            try:
+                os.stat(_REVIEW_ANCHOR_NAME, dir_fd=lease.fd, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                anchor_removal_attempted = True
+                try:
+                    _remove_tree_at(lease.fd, _REVIEW_ANCHOR_NAME)
+                    anchor_removal_succeeded = True
+                except BaseException as error:
+                    anchor_cleanup_error = _sanitize_error(error)
     except BaseException as error:
         if removal_error is None:
             removal_error = _sanitize_error(error)
         elif quarantine_error is None:
             quarantine_error = _sanitize_error(error)
+        elif anchor_cleanup_error is None and anchor_removal_attempted:
+            anchor_cleanup_error = _sanitize_error(error)
     cleanup_error = "; ".join(
-        item for item in (removal_error, quarantine_error) if item
+        item for item in (removal_error, quarantine_error, anchor_cleanup_error) if item
     ) or None
     return ReviewCleanupOutcomeV4(
         removal_attempted=True,
@@ -1098,6 +1452,14 @@ def _remove_published_review(paths: ArtifactPaths) -> ReviewCleanupOutcomeV4:
         quarantine_succeeded=quarantine_succeeded,
         quarantine_path=quarantine_path,
         cleanup_error=cleanup_error,
+        observed_source_exists=observed_source_exists,
+        observed_quarantine_exists=observed_quarantine_exists,
+        move_succeeded=move_succeeded,
+        durability_succeeded=durability_succeeded,
+        durability_error=durability_error,
+        anchor_removal_attempted=anchor_removal_attempted,
+        anchor_removal_succeeded=anchor_removal_succeeded,
+        anchor_cleanup_error=anchor_cleanup_error,
     )
 
 
@@ -1124,9 +1486,8 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
     rendered_assets = _rendered_assets(inputs, paths)
     previous = _previous_files(inputs)
     try:
-        if paths.review_root.is_symlink() or paths.review_root.exists():
-            raise ReviewBindingError("an immutable review workspace already exists for this revision")
-    except OSError as error:
+        _prepare_review_destination(paths)
+    except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
         raise ReviewBindingError("cannot inspect review workspace destination") from error
 
     pages = _page_paths(inputs.render_manifest)
@@ -1137,7 +1498,7 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
     manifest: ReviewWorkspaceManifestV4 | None = None
     manifest_raw = b""
     stage_identity: tuple[int, int] | None = None
-    stage_fingerprint: tuple[tuple[object, ...], ...] | None = None
+    stage_fingerprint: DirectoryTreeFingerprint | None = None
     try:
         with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
             lease.assert_intact()
@@ -1235,7 +1596,17 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
     assert manifest is not None
     workspace = ReviewWorkspaceV4(paths.review_root, manifest, paths, manifest_raw)
     try:
-        verify_review_workspace(workspace)
+        verified_root_identity, verified_fingerprint = _verify_review_contents(workspace)
+        anchor = _capture_review_anchor(
+            paths,
+            manifest,
+            manifest_raw,
+            expected_root_identity=verified_root_identity,
+            expected_fingerprint=verified_fingerprint,
+        )
+        anchor_raw = canonical_json_v4(anchor.model_dump(mode="json")).encode("utf-8")
+        _write_review_anchor(paths, anchor_raw)
+        return load_review_workspace(paths)
     except BaseException as error:
         cleanup = _remove_published_review(paths)
         try:
@@ -1246,44 +1617,113 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
             error.add_note(f"recovery outcome: {canonical_json_v4(cleanup.payload())}")
             error.add_note(f"recovery journal failed: {_sanitize_error(recovery_error)}")
         raise ReviewBindingError("published review workspace failed post-publish verification") from error
-    return load_review_workspace(paths)
 
 
 def load_review_workspace(paths: ArtifactPaths) -> ReviewWorkspaceV4:
-    """Rehydrate one published workspace from its persisted canonical evidence."""
+    """Rehydrate one published workspace from its external completion anchor.
+
+    The revision-level anchor is intentionally read before any evidence in
+    ``review/``.  A manifest and tree can be made self-consistent after a
+    post-publish edit; only the independently persisted anchor is allowed to
+    establish which canonical bytes and static tree were actually committed.
+    """
 
     try:
         checked_paths = revalidate_artifact_paths(paths)
     except (ArtifactIdentityError, OSError) as error:
         raise ReviewBindingError("review workspace artifact root changed") from error
-    root = checked_paths.review_root
     try:
-        if root.is_symlink() or not root.is_dir():
-            raise ReviewBindingError("review workspace root is unsafe")
-        with _lease_context(_open_absolute_directory(root, create=False)) as lease:
-            lease.assert_intact()
-            snapshot = read_verified_artifact_snapshot_at(
-                lease.fd, ("workspace-manifest.json",), None
+        with _lease_context(
+            _open_absolute_directory(checked_paths.revision_root, create=False)
+        ) as revision_lease:
+            revision_lease.assert_intact()
+            anchor_snapshot = read_verified_artifact_snapshot_at(
+                revision_lease.fd, (_REVIEW_ANCHOR_NAME,), None
             )
-            raw = snapshot.raw
-            manifest = ReviewWorkspaceManifestV4.model_validate_json(raw)
-            canonical_raw = canonical_json_v4(manifest.model_dump(mode="json")).encode("utf-8")
-            if raw != canonical_raw:
-                raise ReviewBindingError("workspace manifest bytes are not canonical")
+            anchor_raw = anchor_snapshot.raw
+            anchor = ReviewWorkspaceAnchorV4.model_validate_json(anchor_raw)
+            canonical_anchor_raw = canonical_json_v4(
+                anchor.model_dump(mode="json")
+            ).encode("utf-8")
+            if anchor_raw != canonical_anchor_raw:
+                raise ReviewBindingError("review completion anchor bytes are not canonical")
             identity = checked_paths.identity
-            if (manifest.run_id, manifest.candidate_id, manifest.revision_id) != (
+            if (anchor.run_id, anchor.candidate_id, anchor.revision_id) != (
                 identity.run_id,
                 identity.candidate_id,
                 identity.revision_id,
             ):
-                raise ReviewBindingError("workspace manifest identity differs from ArtifactPaths")
-            _verify_workspace_fd(lease.fd, manifest, expected_manifest_raw=raw)
-            lease.assert_intact()
+                raise ReviewBindingError("review anchor identity differs from ArtifactPaths")
+            if anchor.mutable_intake_policy != _MUTABLE_INTAKE_POLICY:
+                raise ReviewBindingError("review anchor mutable intake policy is unsupported")
+
+            review_info = os.stat(
+                "review", dir_fd=revision_lease.fd, follow_symlinks=False
+            )
+            if stat.S_ISLNK(review_info.st_mode) or not stat.S_ISDIR(review_info.st_mode):
+                raise ReviewBindingError("review workspace root is unsafe")
+            review_fd: int | None = None
+            body_error: BaseException | None = None
+            try:
+                review_fd = os.open("review", _DIR_FLAGS, dir_fd=revision_lease.fd)
+                review_identity = os.fstat(review_fd)
+                if (review_identity.st_dev, review_identity.st_ino) != (
+                    review_info.st_dev,
+                    review_info.st_ino,
+                ):
+                    raise ReviewBindingError("review workspace entry changed during load")
+                if (review_info.st_dev, review_info.st_ino) != (
+                    anchor.review_root_device,
+                    anchor.review_root_inode,
+                ):
+                    raise ReviewBindingError("review workspace root differs from completion anchor")
+                snapshot = read_verified_artifact_snapshot_at(
+                    review_fd, ("workspace-manifest.json",), None
+                )
+                raw = snapshot.raw
+                manifest = ReviewWorkspaceManifestV4.model_validate_json(raw)
+                canonical_raw = canonical_json_v4(
+                    manifest.model_dump(mode="json")
+                ).encode("utf-8")
+                if raw != canonical_raw:
+                    raise ReviewBindingError("workspace manifest bytes are not canonical")
+                if _sha(raw) != anchor.workspace_manifest_raw_sha256:
+                    raise ReviewBindingError("workspace manifest bytes differ from completion anchor")
+                if manifest.canonical_sha256 != anchor.workspace_manifest_canonical_sha256:
+                    raise ReviewBindingError("workspace manifest identity differs from completion anchor")
+                if (manifest.run_id, manifest.candidate_id, manifest.revision_id) != (
+                    identity.run_id,
+                    identity.candidate_id,
+                    identity.revision_id,
+                ):
+                    raise ReviewBindingError("workspace manifest identity differs from ArtifactPaths")
+                _verify_workspace_fd(review_fd, manifest, expected_manifest_raw=raw)
+                actual_fingerprint = _static_tree_fingerprint(
+                    fingerprint_directory_at(review_fd)
+                )
+                expected_fingerprint = _artifact_fingerprint(anchor.tree_fingerprint)
+                if actual_fingerprint != expected_fingerprint:
+                    raise ReviewBindingError("review static tree differs from completion anchor")
+                if actual_fingerprint.canonical_sha256 != anchor.tree_fingerprint_sha256:
+                    raise ReviewBindingError("review static tree hash differs from completion anchor")
+                revision_lease.assert_intact()
+            except BaseException as error:
+                body_error = error
+                raise
+            finally:
+                close_error = _close_fd_once(review_fd)
+                review_fd = None
+                if close_error is not None:
+                    if body_error is not None:
+                        body_error.add_note(f"review descriptor cleanup failed: {close_error}")
+                    else:
+                        raise ArtifactIdentityError("review descriptor close failed") from close_error
+            revision_lease.assert_intact()
     except ReviewBindingError:
         raise
     except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError, TypeError) as error:
         raise ReviewBindingError("persisted review workspace is invalid or unsafe") from error
-    return ReviewWorkspaceV4(root, manifest, checked_paths, raw)
+    return ReviewWorkspaceV4(checked_paths.review_root, manifest, checked_paths, raw)
 
 
 def verify_review_workspace(workspace: ReviewWorkspaceV4) -> None:

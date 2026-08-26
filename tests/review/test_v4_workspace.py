@@ -38,6 +38,7 @@ from src.schemas.v4.quality import (
     DesignMetricsQAResultV4,
     DesignPlanQAResultV4,
 )
+from src.schemas.v4.review import ReviewWorkspaceAnchorV4
 
 
 def _inputs(
@@ -488,9 +489,11 @@ def test_workspace_file_url_chromium_smoke_with_asset_and_previous_revision(tmp_
         text = page.locator("body").inner_text()
         assert "source RenderManifest identity:" in text
         assert "provider=local-fixture" in text
+        assert "source=source_id=fixture-asset" in text
         assert "license=fixture license" in text
         assert "transaction_status=complete" in text
         assert "recovery=not-applicable" in text
+        assert "containment=no-follow evidence unavailable" in text
         assert "geometry=(" in page.locator("#q2-metrics").inner_text()
         assert not [url for url in requests if not url.startswith("file:")]
         assert not failed_responses
@@ -581,7 +584,8 @@ def test_workspace_rejects_forged_or_changed_typed_previous(tmp_path):
 
 def test_workspace_postpublish_failure_quarantines_result_and_retry_succeeds(tmp_path, monkeypatch):
     inputs = _inputs(tmp_path)
-    real_verify = verify_review_workspace
+    module = __import__("src.review.v4_workspace", fromlist=["_verify_review_contents"])
+    real_verify = module._verify_review_contents
     calls = {"count": 0}
 
     def fail_once(workspace):
@@ -590,7 +594,7 @@ def test_workspace_postpublish_failure_quarantines_result_and_retry_succeeds(tmp
             raise ReviewBindingError("injected postpublish verification failure")
         return real_verify(workspace)
 
-    monkeypatch.setattr("src.review.v4_workspace.verify_review_workspace", fail_once)
+    monkeypatch.setattr(module, "_verify_review_contents", fail_once)
     with pytest.raises(ReviewBindingError):
         build_review_workspace(inputs)
     assert not inputs.artifact_paths.review_root.exists()
@@ -601,8 +605,8 @@ def test_workspace_postpublish_failure_quarantines_result_and_retry_succeeds(tmp
 
 def test_workspace_cleanup_failure_uses_quarantine_and_retry_succeeds(tmp_path, monkeypatch):
     inputs = _inputs(tmp_path)
-    module = __import__("src.review.v4_workspace", fromlist=["_remove_tree_at"])
-    real_verify = verify_review_workspace
+    module = __import__("src.review.v4_workspace", fromlist=["_remove_tree_at", "_verify_review_contents"])
+    real_verify = module._verify_review_contents
     real_remove = module._remove_tree_at
     verify_calls = {"count": 0}
     remove_calls = {"count": 0}
@@ -619,7 +623,7 @@ def test_workspace_cleanup_failure_uses_quarantine_and_retry_succeeds(tmp_path, 
             raise OSError("injected cleanup failure")
         return real_remove(parent_fd, name)
 
-    monkeypatch.setattr(module, "verify_review_workspace", fail_verify)
+    monkeypatch.setattr(module, "_verify_review_contents", fail_verify)
     monkeypatch.setattr(module, "_remove_tree_at", fail_remove)
     with pytest.raises(ReviewBindingError):
         build_review_workspace(inputs)
@@ -630,8 +634,8 @@ def test_workspace_cleanup_failure_uses_quarantine_and_retry_succeeds(tmp_path, 
 
 def test_workspace_recovery_journal_records_contained_quarantine_outcome(tmp_path, monkeypatch):
     inputs = _inputs(tmp_path)
-    module = __import__("src.review.v4_workspace", fromlist=["_remove_tree_at"])
-    real_verify = verify_review_workspace
+    module = __import__("src.review.v4_workspace", fromlist=["_remove_tree_at", "_verify_review_contents"])
+    real_verify = module._verify_review_contents
     real_remove = module._remove_tree_at
     verify_calls = {"count": 0}
     remove_calls = {"count": 0}
@@ -648,7 +652,7 @@ def test_workspace_recovery_journal_records_contained_quarantine_outcome(tmp_pat
             raise OSError("injected cleanup failure")
         return real_remove(parent_fd, name)
 
-    monkeypatch.setattr(module, "verify_review_workspace", fail_verify)
+    monkeypatch.setattr(module, "_verify_review_contents", fail_verify)
     monkeypatch.setattr(module, "_remove_tree_at", fail_review_remove)
     with pytest.raises(ReviewBindingError):
         build_review_workspace(inputs)
@@ -669,8 +673,8 @@ def test_workspace_recovery_journal_records_contained_quarantine_outcome(tmp_pat
 
 def test_workspace_recovery_journal_failure_preserves_primary_and_retry(tmp_path, monkeypatch):
     inputs = _inputs(tmp_path)
-    module = __import__("src.review.v4_workspace", fromlist=["_write_recovery_journal"])
-    real_verify = verify_review_workspace
+    module = __import__("src.review.v4_workspace", fromlist=["_write_recovery_journal", "_verify_review_contents"])
+    real_verify = module._verify_review_contents
     verify_calls = {"count": 0}
 
     def fail_verify_once(workspace):
@@ -679,7 +683,7 @@ def test_workspace_recovery_journal_failure_preserves_primary_and_retry(tmp_path
             raise ReviewBindingError("injected postpublish failure")
         return real_verify(workspace)
 
-    monkeypatch.setattr(module, "verify_review_workspace", fail_verify_once)
+    monkeypatch.setattr(module, "_verify_review_contents", fail_verify_once)
     monkeypatch.setattr(
         module,
         "_write_recovery_journal",
@@ -690,7 +694,7 @@ def test_workspace_recovery_journal_failure_preserves_primary_and_retry(tmp_path
     assert not inputs.artifact_paths.review_root.exists()
     assert "recovery journal failed" in " ".join(getattr(error.value.__cause__, "__notes__", ()))
 
-    monkeypatch.setattr(module, "verify_review_workspace", real_verify)
+    monkeypatch.setattr(module, "_verify_review_contents", real_verify)
     workspace = build_review_workspace(inputs)
     real_verify(workspace)
 
@@ -884,6 +888,138 @@ def test_workspace_asset_evidence_is_html_escaped_and_path_safe(tmp_path):
             {"pages/01-page-1.png": "a" * 64},
             asset_paths={"fixture-asset": "assets/fixture-asset.png"},
         )
+
+
+def test_workspace_anchor_is_external_completion_marker_and_rejects_manifest_rehash(tmp_path):
+    workspace = build_review_workspace(_inputs(tmp_path))
+    anchor_path = workspace.artifact_paths.revision_root / "review-anchor.json"
+    assert anchor_path.is_file()
+    anchor = ReviewWorkspaceAnchorV4.model_validate_json(anchor_path.read_bytes())
+    assert anchor.workspace_manifest_raw_sha256 == __import__("hashlib").sha256(
+        workspace.manifest_raw
+    ).hexdigest()
+    page_path = workspace.root / "pages" / "01-page-1.png"
+    page_path.write_bytes(b"changed page bytes")
+    manifest_path = workspace.root / "workspace-manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    digest = __import__("hashlib").sha256(page_path.read_bytes()).hexdigest()
+    payload["page_sha256"]["pages/01-page-1.png"] = digest
+    payload["files"]["pages/01-page-1.png"] = digest
+    payload["canonical_sha256"] = canonical_sha256_v4(
+        {key: value for key, value in payload.items() if key != "canonical_sha256"}
+    )
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(workspace.artifact_paths)
+
+
+def test_workspace_without_external_anchor_is_not_consumable_and_retry_is_safe(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    module = __import__("src.review.v4_workspace", fromlist=["_write_review_anchor"])
+    monkeypatch.setattr(
+        module,
+        "_write_review_anchor",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("anchor write failure")),
+    )
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
+    assert not inputs.artifact_paths.review_root.exists()
+    assert not (inputs.artifact_paths.revision_root / "review-anchor.json").exists()
+    monkeypatch.undo()
+    workspace = build_review_workspace(inputs)
+    assert load_review_workspace(workspace.artifact_paths).manifest == workspace.manifest
+
+
+def test_workspace_retry_discards_unanchored_review_residue(tmp_path):
+    inputs = _inputs(tmp_path)
+    workspace = build_review_workspace(inputs)
+    (workspace.artifact_paths.revision_root / "review-anchor.json").unlink()
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(workspace.artifact_paths)
+    retried = build_review_workspace(inputs)
+    assert load_review_workspace(retried.artifact_paths).manifest == retried.manifest
+
+
+def test_workspace_refuses_review_mutation_between_verification_and_anchor(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    module = __import__("src.review.v4_workspace", fromlist=["_capture_review_anchor"])
+    original = module._capture_review_anchor
+
+    def mutate_before_anchor(paths, manifest, raw, **kwargs):
+        page = paths.review_root / "pages" / "01-page-1.png"
+        page.write_bytes(page.read_bytes() + b"mutated-before-anchor")
+        return original(paths, manifest, raw, **kwargs)
+
+    monkeypatch.setattr(module, "_capture_review_anchor", mutate_before_anchor)
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
+    assert not inputs.artifact_paths.review_root.exists()
+    assert not (inputs.artifact_paths.revision_root / "review-anchor.json").exists()
+
+
+def test_asset_resolution_partition_matches_current_page_directives(tmp_path):
+    from src.schemas.assets import AssetResolutionResult, AssetTransactionEvidence
+
+    inputs = _inputs(tmp_path)
+    result = AssetResolutionResult(
+        manifest=inputs.asset_manifest,
+        unresolved_optional_assets=(
+            {"directive_id": "fabricated", "page_id": "page-1", "reason": "missing"},
+        ),
+        transaction_evidence=AssetTransactionEvidence(
+            run_id=inputs.artifact_paths.identity.run_id,
+            transaction_id=inputs.artifact_paths.identity.revision_id,
+            transaction_root=str(inputs.artifact_paths.asset_root),
+            journal_path=str(inputs.artifact_paths.asset_root / "recovery.json"),
+            status="complete",
+            resolved_directive_ids=(),
+            unresolved_optional_directive_ids=("fabricated",),
+        ),
+    )
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs.model_copy(update={"asset_resolution_result": result}))
+
+
+def test_quarantine_move_then_durability_error_records_observed_truth(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    module = __import__("src.review.v4_workspace", fromlist=["_remove_tree_at", "_verify_review_contents"])
+    real_verify = module._verify_review_contents
+    real_remove = module._remove_tree_at
+    real_quarantine = module.quarantine_directory_at
+    verify_calls = {"count": 0}
+
+    def fail_verify(workspace):
+        verify_calls["count"] += 1
+        if verify_calls["count"] == 1:
+            raise ReviewBindingError("injected postpublish failure")
+        return real_verify(workspace)
+
+    def fail_remove(parent_fd, name):
+        if name == "review":
+            raise OSError("injected removal failure")
+        return real_remove(parent_fd, name)
+
+    def move_then_fail(*args, **kwargs):
+        real_quarantine(*args, **kwargs)
+        raise OSError("injected quarantine durability failure")
+
+    monkeypatch.setattr(module, "_verify_review_contents", fail_verify)
+    monkeypatch.setattr(module, "_remove_tree_at", fail_remove)
+    monkeypatch.setattr(module, "quarantine_directory_at", move_then_fail)
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
+    journals = tuple(inputs.artifact_paths.revision_root.glob("review-recovery-*.json"))
+    assert journals
+    cleanup = json.loads(journals[-1].read_text(encoding="utf-8"))["cleanup"]
+    assert cleanup["quarantine_path"]
+    assert cleanup["observed_source_exists"] is False
+    assert cleanup["observed_quarantine_exists"] is True
+    assert cleanup["move_succeeded"] is True
+    assert cleanup["durability_succeeded"] is False
+    assert "durability failure" in cleanup["durability_error"]
 
 
 def test_mutable_decision_intake_is_parseable_but_not_static_manifest_bound(tmp_path):

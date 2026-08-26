@@ -10,6 +10,7 @@ from __future__ import annotations
 import ctypes
 import errno
 import hashlib
+import json
 import os
 import platform
 import stat
@@ -93,6 +94,96 @@ class ArtifactPaths:
         """Compatibility/readability alias for the pinned base stat identity."""
 
         return self.trusted_base_identity
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryTreeEntry:
+    """One no-follow entry in a descriptor-pinned directory fingerprint."""
+
+    kind: str
+    relative_path: str
+    sha256: str | None
+    size: int | None
+    device: int
+    inode: int
+    nlink: int
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"directory", "file"}:
+            raise ArtifactIdentityError("directory fingerprint entry kind is invalid")
+        if (
+            type(self.relative_path) is not str
+            or not self.relative_path
+            or self.relative_path.startswith("/")
+            or any(
+                part in {"", ".", ".."}
+                or "/" in part
+                or "\\" in part
+                for part in self.relative_path.split("/")
+            )
+        ):
+            raise ArtifactIdentityError("directory fingerprint path is unsafe")
+        if type(self.device) is not int or self.device < 0:
+            raise ArtifactIdentityError("directory fingerprint device is invalid")
+        if type(self.inode) is not int or self.inode <= 0:
+            raise ArtifactIdentityError("directory fingerprint inode is invalid")
+        if type(self.nlink) is not int or self.nlink < 1:
+            raise ArtifactIdentityError("directory fingerprint link count is invalid")
+        if self.kind == "file":
+            if type(self.sha256) is not str or len(self.sha256) != 64:
+                raise ArtifactIdentityError("file fingerprint digest is invalid")
+            try:
+                int(self.sha256, 16)
+            except ValueError as error:
+                raise ArtifactIdentityError("file fingerprint digest is invalid") from error
+            if type(self.size) is not int or self.size < 0:
+                raise ArtifactIdentityError("file fingerprint size is invalid")
+        elif self.sha256 is not None or self.size is not None:
+            raise ArtifactIdentityError("directory fingerprint metadata is invalid")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "kind": self.kind,
+            "relative_path": self.relative_path,
+            "sha256": self.sha256,
+            "size": self.size,
+            "device": self.device,
+            "inode": self.inode,
+            "nlink": self.nlink,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class DirectoryTreeFingerprint:
+    """Typed, deterministic fingerprint for one complete directory tree."""
+
+    entries: tuple[DirectoryTreeEntry, ...]
+
+    def __post_init__(self) -> None:
+        entries = tuple(self.entries)
+        if any(not isinstance(entry, DirectoryTreeEntry) for entry in entries):
+            raise ArtifactIdentityError("directory fingerprint entries are invalid")
+        paths = tuple(entry.relative_path for entry in entries)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ArtifactIdentityError("directory fingerprint paths are not canonical")
+        object.__setattr__(self, "entries", entries)
+
+    @property
+    def canonical_sha256(self) -> str:
+        raw = json.dumps(
+            [entry.payload() for entry in self.entries],
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    def without_paths(self, excluded: set[str] | frozenset[str]) -> "DirectoryTreeFingerprint":
+        return DirectoryTreeFingerprint(
+            entries=tuple(
+                entry for entry in self.entries if entry.relative_path not in excluded
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -675,10 +766,10 @@ def read_verified_artifact_snapshot_at(
 def _fingerprint_directory_fd(
     root_fd: int,
     prefix: tuple[str, ...] = (),
-) -> tuple[tuple[object, ...], ...]:
+) -> list[DirectoryTreeEntry]:
     """Fingerprint a complete descriptor-pinned tree without following links."""
 
-    entries: list[tuple[object, ...]] = []
+    entries: list[DirectoryTreeEntry] = []
     for name in sorted(os.listdir(root_fd)):
         _safe_name(name, "tree entry")
         relative = prefix + (name,)
@@ -696,7 +787,17 @@ def _fingerprint_directory_fd(
                     info.st_nlink,
                 ):
                     raise ArtifactBindingError("fingerprinted directory changed during read")
-                entries.append(("directory", "/".join(relative), info.st_dev, info.st_ino, info.st_nlink))
+                entries.append(
+                    DirectoryTreeEntry(
+                        kind="directory",
+                        relative_path="/".join(relative),
+                        sha256=None,
+                        size=None,
+                        device=info.st_dev,
+                        inode=info.st_ino,
+                        nlink=info.st_nlink,
+                    )
+                )
                 entries.extend(_fingerprint_directory_fd(child_fd, relative))
             finally:
                 if child_fd is not None:
@@ -708,24 +809,24 @@ def _fingerprint_directory_fd(
         if snapshot.link_count != 1:
             raise ArtifactBindingError("fingerprinted file has unsafe hardlink count")
         entries.append(
-            (
-                "file",
-                "/".join(relative),
-                snapshot.sha256,
-                snapshot.size,
-                snapshot.identity[0],
-                snapshot.identity[1],
-                snapshot.link_count,
+            DirectoryTreeEntry(
+                kind="file",
+                relative_path="/".join(relative),
+                sha256=snapshot.sha256,
+                size=snapshot.size,
+                device=snapshot.identity[0],
+                inode=snapshot.identity[1],
+                nlink=snapshot.link_count,
             )
         )
-    return tuple(entries)
+    return entries
 
 
-def fingerprint_directory_at(root_fd: int) -> tuple[tuple[object, ...], ...]:
+def fingerprint_directory_at(root_fd: int) -> DirectoryTreeFingerprint:
     """Return a canonical bytes/inode fingerprint for a pinned directory tree."""
 
     try:
-        return _fingerprint_directory_fd(root_fd)
+        return DirectoryTreeFingerprint(entries=tuple(_fingerprint_directory_fd(root_fd)))
     except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError) as error:
         raise ArtifactBindingError("descriptor-relative tree fingerprint failed") from error
 
@@ -1209,7 +1310,7 @@ def publish_staged_directory_at(
     destination_name: str,
     *,
     expected_source_identity: tuple[int, int] | None = None,
-    expected_source_fingerprint: tuple[tuple[object, ...], ...] | None = None,
+    expected_source_fingerprint: DirectoryTreeFingerprint | None = None,
 ) -> Path:
     """Publish a staged directory using the exact caller-owned lease.
 
@@ -1330,6 +1431,8 @@ __all__ = [
     "ArtifactIdentity",
     "ArtifactIdentityError",
     "ArtifactPaths",
+    "DirectoryTreeEntry",
+    "DirectoryTreeFingerprint",
     "VerifiedArtifact",
     "bind_reused_artifact",
     "bind_staged_directory",

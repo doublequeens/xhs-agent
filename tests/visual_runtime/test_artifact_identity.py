@@ -10,10 +10,12 @@ import pytest
 from src.visual_runtime.artifact_identity import (
     ArtifactBindingError,
     ArtifactIdentity,
+    DirectoryTreeFingerprint,
     _open_absolute_directory,
     _read_file_at,
     bind_staged_directory,
     bind_reused_artifact,
+    fingerprint_directory_at,
     read_verified_artifact,
     resolve_artifact_paths,
 )
@@ -262,6 +264,28 @@ def test_staged_directory_source_substitution_race_fails_closed(
     assert (revision / ".staged-source-race.verified" / "page.png").read_bytes() == (
         b"verified-stage"
     )
+
+
+def test_directory_fingerprint_is_typed_roundtrip_and_detects_in_place_mutation(tmp_path: Path):
+    revision = tmp_path / "revision"
+    revision.mkdir()
+    staged = revision / ".staged"
+    staged.mkdir()
+    (staged / "page.png").write_bytes(b"verified")
+    fd = os.open(staged, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        first = fingerprint_directory_at(fd)
+    finally:
+        os.close(fd)
+    assert isinstance(first, DirectoryTreeFingerprint)
+    assert first == DirectoryTreeFingerprint(entries=first.entries)
+    (staged / "page.png").write_bytes(b"mutated")
+    fd = os.open(staged, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        second = fingerprint_directory_at(fd)
+    finally:
+        os.close(fd)
+    assert second != first
 
 def test_reuse_close_failure_is_typed_and_never_retries_fd(tmp_path: Path, monkeypatch):
     from src.visual_runtime import artifact_identity as module

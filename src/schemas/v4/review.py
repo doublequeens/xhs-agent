@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_serializer, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr, field_serializer, field_validator, model_validator
 
 from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.visual_style import deep_freeze, deep_thaw
@@ -29,6 +29,7 @@ _WORKSPACE_PATH = re.compile(
     r"previous-revision/(?:contact-sheet\.png|pages/[0-9]{2}-[A-Za-z0-9_.-]+\.png))$"
 )
 _ASSET_PATH = re.compile(r"^assets/[A-Za-z0-9_.-]+\.(?:png|jpe?g|webp|gif|bin)$")
+_FINGERPRINT_PATH = re.compile(r"^[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*$")
 _RFC3339_UTC = re.compile(
     r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?Z$"
 )
@@ -329,6 +330,118 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
         return self
 
 
+class ReviewWorkspaceFingerprintEntryV4(_FrozenReviewV4):
+    """One canonical static-tree entry retained by the revision anchor."""
+
+    kind: Literal["directory", "file"]
+    relative_path: StrictStr
+    sha256: StrictStr | None = None
+    size: StrictInt | None = None
+    device: StrictInt
+    inode: StrictInt
+    nlink: StrictInt
+
+    @field_validator("relative_path")
+    @classmethod
+    def fingerprint_path(cls, value: str) -> str:
+        if not _FINGERPRINT_PATH.fullmatch(value):
+            raise ValueError("fingerprint relative path is unsafe")
+        return value
+
+    @field_validator("sha256")
+    @classmethod
+    def fingerprint_hash(cls, value: str | None) -> str | None:
+        return None if value is None else _sha(value, "fingerprint sha256")
+
+    @model_validator(mode="after")
+    def fingerprint_shape(self) -> "ReviewWorkspaceFingerprintEntryV4":
+        if self.device < 0 or self.inode <= 0 or self.nlink < 1:
+            raise ValueError("fingerprint filesystem identity is invalid")
+        if self.kind == "file":
+            if self.sha256 is None or self.size is None or self.size < 0:
+                raise ValueError("file fingerprint entry requires bytes and size")
+        elif self.sha256 is not None or self.size is not None:
+            raise ValueError("directory fingerprint entry cannot carry file metadata")
+        return self
+
+
+class ReviewWorkspaceAnchorV4(_FrozenReviewV4):
+    """Revision-level completion marker stored outside the mutable review tree."""
+
+    workflow_version: Literal["llm_scene_v4"] = WORKFLOW_VERSION_V4
+    anchor_version: Literal["review-anchor-v1"] = "review-anchor-v1"
+    run_id: StrictStr
+    candidate_id: StrictStr
+    revision_id: StrictStr
+    workspace_manifest_canonical_sha256: StrictStr
+    workspace_manifest_raw_sha256: StrictStr
+    tree_fingerprint: tuple[ReviewWorkspaceFingerprintEntryV4, ...] = Field(min_length=1)
+    tree_fingerprint_sha256: StrictStr
+    mutable_intake_policy: Literal["decision-json-uncommitted-v1"] = "decision-json-uncommitted-v1"
+    review_root_device: StrictInt
+    review_root_inode: StrictInt
+    canonical_sha256: StrictStr
+
+    @classmethod
+    def create(cls, **payload: object) -> "ReviewWorkspaceAnchorV4":
+        normalized = dict(payload)
+        normalized.setdefault("workflow_version", WORKFLOW_VERSION_V4)
+        normalized.setdefault("anchor_version", "review-anchor-v1")
+        normalized.setdefault("mutable_intake_policy", "decision-json-uncommitted-v1")
+        entries = tuple(normalized.get("tree_fingerprint", ()))
+        normalized["tree_fingerprint"] = entries
+        normalized.setdefault(
+            "tree_fingerprint_sha256",
+            canonical_sha256_v4(
+                [
+                    entry.model_dump(mode="json")
+                    if isinstance(entry, BaseModel)
+                    else entry
+                    for entry in entries
+                ]
+            ),
+        )
+        return cls(**normalized, canonical_sha256=canonical_sha256_v4(normalized))
+
+    @field_validator("run_id", "candidate_id", "revision_id")
+    @classmethod
+    def identities(cls, value: str, info) -> str:
+        return _identity(value, info.field_name)
+
+    @field_validator(
+        "workspace_manifest_canonical_sha256",
+        "workspace_manifest_raw_sha256",
+        "tree_fingerprint_sha256",
+        "canonical_sha256",
+    )
+    @classmethod
+    def anchor_hashes(cls, value: str, info) -> str:
+        return _sha(value, info.field_name)
+
+    @field_validator("tree_fingerprint")
+    @classmethod
+    def fingerprint_entries(
+        cls, value: tuple[ReviewWorkspaceFingerprintEntryV4, ...]
+    ) -> tuple[ReviewWorkspaceFingerprintEntryV4, ...]:
+        paths = tuple(item.relative_path for item in value)
+        if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
+            raise ValueError("anchor fingerprint entries must be canonical and unique")
+        return value
+
+    @model_validator(mode="after")
+    def integrity(self) -> "ReviewWorkspaceAnchorV4":
+        if self.review_root_device < 0 or self.review_root_inode <= 0:
+            raise ValueError("review root identity is invalid")
+        expected_fingerprint = canonical_sha256_v4(
+            [entry.model_dump(mode="json") for entry in self.tree_fingerprint]
+        )
+        if self.tree_fingerprint_sha256 != expected_fingerprint:
+            raise ValueError("anchor tree fingerprint hash does not match entries")
+        if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
+            raise ValueError("review workspace anchor canonical sha256 does not match payload")
+        return self
+
+
 class ReviewWorkspaceManifestV4(_FrozenReviewV4):
     """The complete offline workspace, bound to the reviewed source contracts."""
 
@@ -470,6 +583,7 @@ class ReviewWorkspaceManifestV4(_FrozenReviewV4):
 
 __all__ = [
     "AssetReviewActionV4", "AssetReviewDecisionV4", "HumanReviewDecisionV4",
-    "HumanReviewIntentV4", "ReviewActionV4", "ReviewWorkspaceManifestV4",
+    "HumanReviewIntentV4", "ReviewActionV4", "ReviewWorkspaceAnchorV4",
+    "ReviewWorkspaceFingerprintEntryV4", "ReviewWorkspaceManifestV4",
     "WORKFLOW_VERSION_V4",
 ]
