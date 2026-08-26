@@ -56,7 +56,9 @@ def test_blind_provider_prompt_contains_allowlisted_page_context_not_hashes_or_p
 
 @pytest.mark.parametrize("field_name, bad_text", (
     ("role", "assets/layout.json"), ("role", "provider metadata"),
+    ("role", "Procfile"),
     ("duty", "C:work.txt"), ("duty", "prompt history"),
+    ("duty", "requirements"),
 ))
 def test_aesthetic_request_rejects_path_and_metadata_in_roles_and_duties(field_name, bad_text):
     kwargs = {
@@ -69,6 +71,16 @@ def test_aesthetic_request_rejects_path_and_metadata_in_roles_and_duties(field_n
             page_ids=("page-1",), image_bytes=(b"png-bytes",), image_mime_types=("image/png",),
             pass_kind="page", **kwargs,
         )
+
+
+def test_aesthetic_request_keeps_ordinary_role_and_duty_words():
+    request = build_aesthetic_request(
+        run_id="run-1", run_mode="shadow", candidate_id="candidate-1", revision_id="revision-1",
+        page_ids=("page-1", "page-2"), page_roles=("cover", "steps"),
+        page_duties=("introduce the promise", "explain the steps"),
+        image_bytes=(b"png", b"png"), image_mime_types=("image/png", "image/png"), pass_kind="page",
+    )
+    assert tuple(page["role"] for page in request.payload["pages"]) == ("cover", "steps")
 
 
 @dataclass
@@ -148,15 +160,22 @@ def test_evaluator_rejects_bad_pass_one_evidence_before_set_call(evidence):
         def evaluate_images(self, request, response_model, *args):
             self.calls.append((request, response_model))
             if response_model is AestheticPagePassV4:
-                return AestheticPagePassV4(pages=tuple(AestheticPageDraftV4(
+                bad_issue = AestheticIssueDraftV4.model_construct(
+                    severity="major", dimension="composition", page_ids=("page-1",), evidence=evidence,
+                )
+                pages = tuple(AestheticPageDraftV4.model_construct(
                     page_id=page_id, hierarchy=90, readability=90, composition=90,
                     whitespace=90, visual_focus=90, asset_integration=90,
-                    issues=(AestheticIssueDraftV4(severity="major", dimension="composition", page_ids=(page_id,), evidence=evidence),) if page_id == "page-1" else (),
-                ) for page_id in request.page_ids))
+                    issues=(bad_issue,) if page_id == "page-1" else (),
+                ) for page_id in request.page_ids)
+                self.page_result = AestheticPagePassV4.model_construct(pages=pages)
+                return self.page_result
             raise AssertionError("set pass must not run")
     gateway = Gateway()
     with pytest.raises(ValueError):
         evaluate_aesthetics(gateway=gateway, run_id="run-1", run_mode="shadow", candidate_id="candidate-1", revision_id="revision-1", page_ids=tuple(f"page-{i}" for i in range(1, 6)), page_roles=("cover",) * 5, page_duties=("semantic duty",) * 5, image_bytes=(b"bytes",) * 5, image_mime_types=("image/png",) * 5, render_manifest_sha256="a" * 64, render_qa_result_sha256="b" * 64, page_brief_set_sha256="c" * 64, semantic_content_model_sha256="d" * 64, authoring_model_identity=None, evaluator_model_identity=None)
+    assert type(gateway.page_result) is AestheticPagePassV4
+    assert gateway.calls[0][1] is AestheticPagePassV4
     assert len(gateway.calls) == 1
 
 

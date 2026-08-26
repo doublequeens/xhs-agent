@@ -35,7 +35,11 @@ _WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
 # extension allow/deny list: any safe extension is metadata rather than an
 # observable visual fact.  A Unicode basename is intentional (a page reviewer
 # can receive localized filenames), while the extension remains conservative.
-_BARE_PATH_FILE = re.compile(r"^(?:\.[^\s/\\]+|[^\s./\\]+(?:\.[A-Za-z0-9_-]+)+|README|LICENSE|Makefile|Dockerfile)$", re.I)
+_BARE_PATH_FILE = re.compile(r"^(?:\.[^\s/\\]+|[^\s./\\]+(?:\.[A-Za-z0-9_-]+)+)$", re.I)
+_WELL_KNOWN_BARE_FILENAMES = frozenset({
+    "readme", "license", "makefile", "dockerfile", "procfile", "gemfile", "rakefile",
+    "pipfile", "vagrantfile", "requirements",
+})
 
 
 class _Frozen(BaseModel):
@@ -59,7 +63,7 @@ def validate_blind_text_v4(value: str, field_name: str) -> str:
     if type(value) is not str or not value.strip() or len(value) > 240 or "\n" in value or "\r" in value:
         raise ValueError(f"{field_name} is not allowlisted blind text")
     value = value.strip()
-    if _BLIND_METADATA.search(value) or _WINDOWS_DRIVE.match(value) or _BARE_PATH_FILE.fullmatch(value) or value.startswith(("/", "\\")) or "\\" in value or "/" in value or ".." in value:
+    if _BLIND_METADATA.search(value) or _WINDOWS_DRIVE.match(value) or _BARE_PATH_FILE.fullmatch(value) or value.casefold() in _WELL_KNOWN_BARE_FILENAMES or value.startswith(("/", "\\")) or "\\" in value or "/" in value or ".." in value:
         raise ValueError(f"{field_name} is not allowlisted blind text")
     return value
 

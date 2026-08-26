@@ -154,7 +154,7 @@ def test_public_critic_failure_composes_into_revision_with_fresh_hard_gates(tmp_
             return AestheticSetPassV4(set_evaluation=AestheticSetDraftV4(
                 rhythm=60, repetition=90, family_consistency=90, cover_body_consistency=90,
                 issues=(AestheticIssueDraftV4(
-                    severity="major", dimension="rhythm", page_ids=tuple(request.page_ids),
+                    severity="major", dimension="rhythm", page_ids=("page-1",),
                     evidence="all pages repeat the same centered text stack without pacing",
                 ),),
             ))
@@ -176,6 +176,7 @@ def test_public_critic_failure_composes_into_revision_with_fresh_hard_gates(tmp_
     assert revision_result["revision_request_v4"].target_layer == "AESTHETIC"
     assert revision_result["revision_request_v4"].affected_pages == values["render_manifest"].page_ids
     assert len(critic_result["normalized_failures_v4"]) == len(values["render_manifest"].page_ids)
+    assert critic_result["visual_critique"].set_evaluation.issues[0].page_ids == ("page-1",)
 
 
 @pytest.mark.parametrize("attack", ("changed_bytes", "symlink"))

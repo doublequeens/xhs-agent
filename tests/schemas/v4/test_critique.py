@@ -152,3 +152,18 @@ def test_draft_and_durable_issues_share_the_same_blind_text_boundary(evidence):
         AestheticIssueV4.create(
             severity="major", dimension="composition", page_ids=("page-1",), evidence=evidence,
         )
+
+
+@pytest.mark.parametrize("filename", (
+    "README", "LICENSE", "Makefile", "Dockerfile", "Procfile", "Gemfile", "Rakefile",
+    "Pipfile", "Vagrantfile", "requirements",
+))
+def test_blind_text_rejects_well_known_extensionless_filenames_in_both_issue_forms(filename):
+    with pytest.raises(ValueError):
+        AestheticIssueDraftV4(
+            severity="major", dimension="composition", page_ids=("page-1",), evidence=filename,
+        )
+    with pytest.raises(ValueError):
+        AestheticIssueV4.create(
+            severity="major", dimension="composition", page_ids=("page-1",), evidence=filename,
+        )
