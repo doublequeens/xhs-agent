@@ -50,6 +50,11 @@ def _inputs(tmp_path: Path) -> ReviewWorkspaceInputsV4:
     return ReviewWorkspaceInputsV4(
         artifact_paths=world["artifact_paths"],
         content_lock=world["content_lock"],
+        content_atom_set=world["content_atom_set"],
+        semantic_content_model=world["semantic_content_model"],
+        carousel_narrative=world["visual_direction_plan"].narrative,
+        page_brief_set=world["page_brief_set"],
+        visual_direction_plan=world["visual_direction_plan"],
         asset_manifest=world["asset_manifest"],
         carousel_design_plan=world["design_plan"],
         design_plan_qa=world["design_plan_qa_result"],

@@ -110,6 +110,7 @@ class _FileSnapshot:
     sha256: str
     size: int
     identity: tuple[int, int]
+    link_count: int
 
 
 def _lexical_absolute(path: str | os.PathLike[str]) -> Path:
@@ -515,6 +516,7 @@ def _read_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> _FileSnaps
                 sha256=hashlib.sha256(raw).hexdigest(),
                 size=len(raw),
                 identity=(after.st_dev, after.st_ino),
+                link_count=after.st_nlink,
             )
             return snapshot
         except BaseException as error:
@@ -597,6 +599,46 @@ def read_verified_artifact(
     if snapshot.sha256 != declared_sha256.lower():
         raise ArtifactBindingError("source sha256 does not match declared sha256")
     return snapshot.raw
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedArtifact:
+    """One complete no-follow descriptor snapshot, including link identity."""
+
+    raw: bytes
+    sha256: str
+    size: int
+    identity: tuple[int, int]
+
+
+def read_verified_artifact_snapshot(
+    source: str | os.PathLike[str], declared_sha256: str | None, *,
+    containment_root: str | os.PathLike[str] | None = None,
+    require_nlink_one: bool = True,
+) -> VerifiedArtifact:
+    """Return a single descriptor-relative verified read without path re-reads."""
+    try:
+        source_path = _lexical_absolute(source)
+        if declared_sha256 is not None and (type(declared_sha256) is not str or len(declared_sha256) != 64):
+            raise ArtifactBindingError("declared sha256 must be a 64-character digest")
+        if declared_sha256 is not None:
+            int(declared_sha256, 16)
+        if containment_root is not None:
+            root = _canonical_open_path(_lexical_absolute(containment_root))
+            _check_existing_chain(root, require_directory=True)
+            source_path.relative_to(root)
+            source_path.resolve(strict=False).relative_to(root.resolve(strict=False))
+        lease = _open_absolute_directory(source_path.parent, create=False)
+        with _lease_context(lease):
+            snapshot = _read_file_at(lease.fd, (source_path.name,))
+            lease.assert_intact()
+    except (ArtifactBindingError, ArtifactIdentityError, OSError, RuntimeError, ValueError) as error:
+        raise ArtifactBindingError("source artifact is unreadable or unstable") from error
+    if declared_sha256 is not None and snapshot.sha256 != declared_sha256.lower():
+        raise ArtifactBindingError("source sha256 does not match declared sha256")
+    if require_nlink_one and snapshot.link_count != 1:
+        raise ArtifactBindingError("source artifact has unsafe hardlink count")
+    return VerifiedArtifact(snapshot.raw, snapshot.sha256, snapshot.size, snapshot.identity)
 
 
 @contextmanager
@@ -1112,10 +1154,12 @@ __all__ = [
     "ArtifactIdentity",
     "ArtifactIdentityError",
     "ArtifactPaths",
+    "VerifiedArtifact",
     "bind_reused_artifact",
     "bind_staged_directory",
     "ensure_artifact_paths",
     "read_verified_artifact",
+    "read_verified_artifact_snapshot",
     "revalidate_artifact_paths",
     "resolve_artifact_paths",
 ]

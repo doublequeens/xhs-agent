@@ -8,18 +8,20 @@ Task 16B must derive every identity, route and digest from current artifacts.
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from typing import Literal, Mapping
 
-from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_serializer, field_validator, model_validator
 
 from src.schemas.v4.content import canonical_sha256_v4
+from src.schemas.visual_style import deep_freeze, deep_thaw
 
 
 WORKFLOW_VERSION_V4 = "llm_scene_v4"
 _SHA = re.compile(r"^[0-9a-f]{64}$")
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$")
 _PAGE_PATH = re.compile(r"^pages/[0-9]{2}-[A-Za-z0-9_.-]+\.png$")
-_WORKSPACE_PATH = re.compile(r"^(?:index\.html|contact-sheet\.png|quality-report\.json|decision\.json|workspace-manifest\.json|pages/[0-9]{2}-[A-Za-z0-9_.-]+\.png|overlays/[0-9]{2}-[A-Za-z0-9_.-]+\.svg|previous-revision/(?:contact-sheet\.png|pages/[0-9]{2}-[A-Za-z0-9_.-]+\.png))$")
+_WORKSPACE_PATH = re.compile(r"^(?:index\.html|contact-sheet\.png|quality-report\.json|workspace-manifest\.json|pages/[0-9]{2}-[A-Za-z0-9_.-]+\.png|overlays/[0-9]{2}-[A-Za-z0-9_.-]+\.svg|assets/[A-Za-z0-9_.-]+\.bin|previous-revision/(?:contact-sheet\.png|pages/[0-9]{2}-[A-Za-z0-9_.-]+\.png))$")
 _ACTIONS = (
     "APPROVE", "AESTHETIC_OVERRIDE", "REQUEST_REVISION",
     "REJECT_OR_REPLACE_ASSET", "VISIBLE_COPY_EDIT",
@@ -161,6 +163,12 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
     def timestamp(cls, value: str) -> str:
         if not value.endswith("Z") or "T" not in value:
             raise ValueError("decided_at must be an explicit UTC timestamp")
+        try:
+            parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+        except ValueError as error:
+            raise ValueError("decided_at must be RFC3339 UTC") from error
+        if parsed.tzinfo != timezone.utc:
+            raise ValueError("decided_at must be UTC")
         return value
 
     @field_validator("rationale")
@@ -187,7 +195,11 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
             validated[path] = _sha(digest, "page sha256")
         if tuple(validated) != tuple(sorted(validated)):
             raise ValueError("review page paths must be in canonical order")
-        return validated
+        return deep_freeze(validated)
+
+    @field_serializer("page_sha256")
+    def serialize_pages(self, value):
+        return deep_thaw(value)
 
     @model_validator(mode="after")
     def integrity(self) -> "HumanReviewDecisionV4":
@@ -208,6 +220,11 @@ class ReviewWorkspaceManifestV4(_FrozenReviewV4):
     run_id: StrictStr
     candidate_id: StrictStr
     revision_id: StrictStr
+    content_atom_set_sha256: StrictStr
+    semantic_content_model_sha256: StrictStr
+    narrative_sha256: StrictStr
+    page_brief_set_sha256: StrictStr
+    visual_direction_plan_sha256: StrictStr
     content_lock_sha256: StrictStr
     asset_manifest_sha256: StrictStr
     carousel_design_plan_sha256: StrictStr
@@ -230,7 +247,7 @@ class ReviewWorkspaceManifestV4(_FrozenReviewV4):
     def identities(cls, value: str, info) -> str:
         return _identity(value, info.field_name)
 
-    @field_validator("content_lock_sha256", "asset_manifest_sha256", "carousel_design_plan_sha256",
+    @field_validator("content_atom_set_sha256", "semantic_content_model_sha256", "narrative_sha256", "page_brief_set_sha256", "visual_direction_plan_sha256", "content_lock_sha256", "asset_manifest_sha256", "carousel_design_plan_sha256",
                      "design_plan_qa_sha256", "render_manifest_sha256", "render_qa_sha256",
                      "visual_critique_sha256", "contact_sheet_sha256", "canonical_sha256")
     @classmethod
@@ -241,7 +258,7 @@ class ReviewWorkspaceManifestV4(_FrozenReviewV4):
     @classmethod
     def pages(cls, value: Mapping[str, str]) -> Mapping[str, str]:
         validated = HumanReviewDecisionV4.pages(value)
-        return dict(validated)
+        return deep_freeze(dict(validated))
 
     @field_validator("files")
     @classmethod
@@ -251,7 +268,11 @@ class ReviewWorkspaceManifestV4(_FrozenReviewV4):
             if type(path) is not str or not _WORKSPACE_PATH.fullmatch(path):
                 raise ValueError("workspace file path is not canonical")
             validated[path] = _sha(digest, "workspace file sha256")
-        return validated
+        return deep_freeze(validated)
+
+    @field_serializer("page_sha256", "files")
+    def serialize_mappings(self, value):
+        return deep_thaw(value)
 
     @model_validator(mode="after")
     def integrity(self) -> "ReviewWorkspaceManifestV4":
