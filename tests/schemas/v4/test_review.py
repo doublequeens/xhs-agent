@@ -10,6 +10,7 @@ from src.schemas.v4.review import (
     HumanReviewIntentV4,
     HumanReviewDecisionV4,
     ReviewWorkspaceManifestV4,
+    ReviewWorkspaceReferenceV4,
 )
 
 
@@ -45,6 +46,26 @@ def test_workspace_manifest_is_frozen_hash_bound_and_forbids_unsafe_paths():
         manifest.run_id = "another-run"  # type: ignore[misc]
     with pytest.raises(ValidationError, match="canonical"):
         ReviewWorkspaceManifestV4.create(**{**payload, "page_sha256": {"/tmp/page.png": SHA}})
+
+
+def test_workspace_reference_is_frozen_canonical_and_checkpoint_serializable():
+    reference = ReviewWorkspaceReferenceV4.create(
+        run_id="run-1",
+        candidate_id="candidate-1",
+        revision_id="revision-0",
+        anchor_raw_sha256=SHA,
+        anchor_canonical_sha256="b" * 64,
+    )
+    assert reference.reference_version == "review-reference-v1"
+    restored = ReviewWorkspaceReferenceV4.model_validate_json(reference.model_dump_json())
+    assert restored == reference
+    with pytest.raises(ValidationError):
+        reference.anchor_raw_sha256 = "c" * 64  # type: ignore[misc]
+    with pytest.raises(ValidationError, match="canonical"):
+        ReviewWorkspaceReferenceV4(**{
+            **reference.model_dump(mode="python"),
+            "canonical_sha256": SHA,
+        })
 
 
 def test_review_decision_rejects_forged_or_untrusted_attestation_fields():

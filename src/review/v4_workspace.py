@@ -37,6 +37,7 @@ from src.schemas.v4.review import (
     ReviewWorkspaceAnchorV4,
     ReviewWorkspaceFingerprintEntryV4,
     ReviewWorkspaceManifestV4,
+    ReviewWorkspaceReferenceV4,
 )
 from src.schemas.v4.semantic import SemanticContentModelV4
 from src.visual_runtime.artifact_identity import (
@@ -185,12 +186,15 @@ class ReviewCleanupOutcomeV4:
 
 @dataclass(frozen=True, slots=True)
 class ReviewWorkspaceV4:
-    """Typed handle for one persisted, verified immutable workspace."""
+    """Typed handle plus external authorization for one verified workspace."""
 
     root: Path
     manifest: ReviewWorkspaceManifestV4
     artifact_paths: ArtifactPaths
     manifest_raw: bytes = b""
+    # ``None`` is used only by the private pre-anchor publication check. Any
+    # handle returned by build/load carries external authorization material.
+    reference: ReviewWorkspaceReferenceV4 | None = None
 
 
 class ReviewWorkspaceInputsV4(BaseModel):
@@ -1594,7 +1598,12 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
         raise ReviewBindingError("review workspace transaction failed") from error
 
     assert manifest is not None
-    workspace = ReviewWorkspaceV4(paths.review_root, manifest, paths, manifest_raw)
+    workspace = ReviewWorkspaceV4(
+        paths.review_root,
+        manifest,
+        paths,
+        manifest_raw=manifest_raw,
+    )
     try:
         verified_root_identity, verified_fingerprint = _verify_review_contents(workspace)
         anchor = _capture_review_anchor(
@@ -1605,8 +1614,15 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
             expected_fingerprint=verified_fingerprint,
         )
         anchor_raw = canonical_json_v4(anchor.model_dump(mode="json")).encode("utf-8")
+        reference = ReviewWorkspaceReferenceV4.create(
+            run_id=paths.identity.run_id,
+            candidate_id=paths.identity.candidate_id,
+            revision_id=paths.identity.revision_id,
+            anchor_raw_sha256=_sha(anchor_raw),
+            anchor_canonical_sha256=anchor.canonical_sha256,
+        )
         _write_review_anchor(paths, anchor_raw)
-        return load_review_workspace(paths)
+        return load_review_workspace(paths, reference)
     except BaseException as error:
         cleanup = _remove_published_review(paths)
         try:
@@ -1619,15 +1635,29 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
         raise ReviewBindingError("published review workspace failed post-publish verification") from error
 
 
-def load_review_workspace(paths: ArtifactPaths) -> ReviewWorkspaceV4:
-    """Rehydrate one published workspace from its external completion anchor.
+def load_review_workspace(
+    paths: ArtifactPaths,
+    reference: ReviewWorkspaceReferenceV4,
+) -> ReviewWorkspaceV4:
+    """Rehydrate one workspace using caller-supplied checkpoint authorization.
 
     The revision-level anchor is intentionally read before any evidence in
-    ``review/``.  A manifest and tree can be made self-consistent after a
-    post-publish edit; only the independently persisted anchor is allowed to
-    establish which canonical bytes and static tree were actually committed.
+    ``review/``.  ``reference`` must come from a trusted checkpoint or
+    append-only run record; it is never reconstructed from this filesystem.
+    A manifest and tree can be made self-consistent after a post-publish edit;
+    only the external reference establishes which anchor bytes were authorized.
     """
 
+    if type(reference) is not ReviewWorkspaceReferenceV4:
+        raise ReviewBindingError(
+            "load_review_workspace requires a trusted persisted ReviewWorkspaceReferenceV4"
+        )
+    try:
+        reference = ReviewWorkspaceReferenceV4.model_validate(
+            reference.model_dump(mode="python")
+        )
+    except (TypeError, ValueError) as error:
+        raise ReviewBindingError("review workspace reference is malformed or stale") from error
     try:
         checked_paths = revalidate_artifact_paths(paths)
     except (ArtifactIdentityError, OSError) as error:
@@ -1654,6 +1684,16 @@ def load_review_workspace(paths: ArtifactPaths) -> ReviewWorkspaceV4:
                 identity.revision_id,
             ):
                 raise ReviewBindingError("review anchor identity differs from ArtifactPaths")
+            if (reference.run_id, reference.candidate_id, reference.revision_id) != (
+                identity.run_id,
+                identity.candidate_id,
+                identity.revision_id,
+            ):
+                raise ReviewBindingError("review reference identity differs from ArtifactPaths")
+            if _sha(anchor_raw) != reference.anchor_raw_sha256:
+                raise ReviewBindingError("review anchor bytes differ from trusted reference")
+            if anchor.canonical_sha256 != reference.anchor_canonical_sha256:
+                raise ReviewBindingError("review anchor identity differs from trusted reference")
             if anchor.mutable_intake_policy != _MUTABLE_INTAKE_POLICY:
                 raise ReviewBindingError("review anchor mutable intake policy is unsupported")
 
@@ -1723,7 +1763,13 @@ def load_review_workspace(paths: ArtifactPaths) -> ReviewWorkspaceV4:
         raise
     except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError, TypeError) as error:
         raise ReviewBindingError("persisted review workspace is invalid or unsafe") from error
-    return ReviewWorkspaceV4(checked_paths.review_root, manifest, checked_paths, raw)
+    return ReviewWorkspaceV4(
+        checked_paths.review_root,
+        manifest,
+        checked_paths,
+        manifest_raw=raw,
+        reference=reference,
+    )
 
 
 def verify_review_workspace(workspace: ReviewWorkspaceV4) -> None:
@@ -1731,10 +1777,16 @@ def verify_review_workspace(workspace: ReviewWorkspaceV4) -> None:
 
     if type(workspace) is not ReviewWorkspaceV4:
         raise ReviewBindingError("workspace must be a ReviewWorkspaceV4")
-    loaded = load_review_workspace(workspace.artifact_paths)
+    if type(workspace.reference) is not ReviewWorkspaceReferenceV4:
+        raise ReviewBindingError("workspace has no trusted persisted reference")
+    loaded = load_review_workspace(workspace.artifact_paths, workspace.reference)
     if workspace.root != loaded.root or workspace.artifact_paths != loaded.artifact_paths:
         raise ReviewBindingError("review workspace root or ArtifactPaths drifted")
-    if workspace.manifest != loaded.manifest or workspace.manifest_raw != loaded.manifest_raw:
+    if (
+        workspace.manifest != loaded.manifest
+        or workspace.manifest_raw != loaded.manifest_raw
+        or workspace.reference != loaded.reference
+    ):
         raise ReviewBindingError("review workspace handle does not match persisted evidence")
 
 

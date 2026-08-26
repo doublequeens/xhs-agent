@@ -20,7 +20,7 @@ from src.review.v4_workspace import (
     read_review_intent,
     verify_review_workspace,
 )
-from src.schemas.v4.content import canonical_sha256_v4
+from src.schemas.v4.content import canonical_json_v4, canonical_sha256_v4
 from src.schemas.content_atoms import canonical_sha256
 from src.schemas.v4.critique import (
     AestheticPageEvaluationV4,
@@ -38,7 +38,10 @@ from src.schemas.v4.quality import (
     DesignMetricsQAResultV4,
     DesignPlanQAResultV4,
 )
-from src.schemas.v4.review import ReviewWorkspaceAnchorV4
+from src.schemas.v4.review import (
+    ReviewWorkspaceAnchorV4,
+    ReviewWorkspaceReferenceV4,
+)
 
 
 def _inputs(
@@ -448,7 +451,11 @@ def test_workspace_file_url_chromium_smoke_with_asset_and_previous_revision(tmp_
     current_inputs = _inputs(tmp_path, revision=2, with_asset=True)
     current = build_review_workspace(
         current_inputs.model_copy(
-            update={"previous_review_workspace": load_review_workspace(previous.artifact_paths)}
+            update={
+                "previous_review_workspace": load_review_workspace(
+                    previous.artifact_paths, previous.reference
+                )
+            }
         )
     )
     requests: list[str] = []
@@ -770,7 +777,11 @@ def test_workspace_refuses_in_place_staging_content_mutation_before_publish(tmp_
 
 def test_workspace_loader_rehydrates_previous_without_process_trust(tmp_path):
     previous = build_review_workspace(_inputs(tmp_path, revision=1))
-    loaded = load_review_workspace(previous.artifact_paths)
+    assert previous.reference is not None
+    restored_reference = ReviewWorkspaceReferenceV4.model_validate_json(
+        previous.reference.model_dump_json()
+    )
+    loaded = load_review_workspace(previous.artifact_paths, restored_reference)
     assert loaded.manifest == previous.manifest
     assert loaded.manifest_raw == previous.manifest_raw
     verify_review_workspace(loaded)
@@ -783,14 +794,110 @@ def test_workspace_loader_rehydrates_previous_without_process_trust(tmp_path):
     verify_review_workspace(current)
 
 
+def test_workspace_reference_is_external_serializable_and_required(tmp_path):
+    workspace = build_review_workspace(_inputs(tmp_path))
+    assert isinstance(workspace.reference, ReviewWorkspaceReferenceV4)
+    assert workspace.reference.run_id == workspace.artifact_paths.identity.run_id
+    assert workspace.reference.candidate_id == workspace.artifact_paths.identity.candidate_id
+    assert workspace.reference.revision_id == workspace.artifact_paths.identity.revision_id
+    anchor_raw = (workspace.artifact_paths.revision_root / "review-anchor.json").read_bytes()
+    assert workspace.reference.anchor_raw_sha256 == hashlib.sha256(anchor_raw).hexdigest()
+    restored_reference = ReviewWorkspaceReferenceV4.model_validate_json(
+        workspace.reference.model_dump_json()
+    )
+    loaded = load_review_workspace(workspace.artifact_paths, restored_reference)
+    assert loaded.reference == restored_reference
+    with pytest.raises(TypeError):
+        load_review_workspace(workspace.artifact_paths)  # type: ignore[call-arg]
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(workspace.artifact_paths, None)  # type: ignore[arg-type]
+
+
+def test_workspace_reference_rejects_wrong_authorization_identity_or_digest(tmp_path):
+    workspace = build_review_workspace(_inputs(tmp_path))
+    reference = workspace.reference
+    assert reference is not None
+    wrong_identity = ReviewWorkspaceReferenceV4.create(
+        run_id=reference.run_id,
+        candidate_id="other-candidate",
+        revision_id=reference.revision_id,
+        anchor_raw_sha256=reference.anchor_raw_sha256,
+        anchor_canonical_sha256=reference.anchor_canonical_sha256,
+    )
+    wrong_digest = ReviewWorkspaceReferenceV4.create(
+        run_id=reference.run_id,
+        candidate_id=reference.candidate_id,
+        revision_id=reference.revision_id,
+        anchor_raw_sha256="0" * 64,
+        anchor_canonical_sha256=reference.anchor_canonical_sha256,
+    )
+    assert wrong_identity.canonical_sha256 != reference.canonical_sha256
+    assert wrong_digest.canonical_sha256 != reference.canonical_sha256
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(workspace.artifact_paths, wrong_identity)
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(workspace.artifact_paths, wrong_digest)
+
+
+def test_workspace_original_reference_rejects_coordinated_disk_rehash(tmp_path):
+    workspace = build_review_workspace(_inputs(tmp_path))
+    reference = workspace.reference
+    assert reference is not None
+    page_path = workspace.root / "pages" / "01-page-1.png"
+    page_path.write_bytes(b"coordinated changed page")
+    manifest_path = workspace.root / "workspace-manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    page_digest = hashlib.sha256(page_path.read_bytes()).hexdigest()
+    payload["page_sha256"]["pages/01-page-1.png"] = page_digest
+    payload["files"]["pages/01-page-1.png"] = page_digest
+    payload["canonical_sha256"] = canonical_sha256_v4(
+        {key: value for key, value in payload.items() if key != "canonical_sha256"}
+    )
+    manifest_path.write_text(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
+        encoding="utf-8",
+    )
+    module = __import__("src.review.v4_workspace", fromlist=["_capture_review_anchor"])
+    changed_manifest = workspace.manifest.__class__.model_validate_json(manifest_path.read_bytes())
+    changed_anchor = module._capture_review_anchor(
+        workspace.artifact_paths,
+        changed_manifest,
+        manifest_path.read_bytes(),
+    )
+    changed_anchor_raw = canonical_json_v4(
+        changed_anchor.model_dump(mode="json")
+    ).encode("utf-8")
+    (workspace.artifact_paths.revision_root / "review-anchor.json").write_bytes(
+        changed_anchor_raw
+    )
+    alternate_authorization = ReviewWorkspaceReferenceV4.create(
+        run_id=reference.run_id,
+        candidate_id=reference.candidate_id,
+        revision_id=reference.revision_id,
+        anchor_raw_sha256=hashlib.sha256(changed_anchor_raw).hexdigest(),
+        anchor_canonical_sha256=changed_anchor.canonical_sha256,
+    )
+    # This is validly shaped but different authorization material. It is
+    # deliberately not supplied to the loader in this attack test.
+    assert alternate_authorization != reference
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(workspace.artifact_paths, reference)
+
+
 def test_workspace_loader_rejects_wrong_paths_and_forged_manifest_bytes(tmp_path):
     from dataclasses import replace
 
     workspace = build_review_workspace(_inputs(tmp_path, revision=1))
     with pytest.raises(ReviewBindingError):
-        load_review_workspace(replace(workspace.artifact_paths, identity=workspace.artifact_paths.identity.__class__(
-            "run-a", "other-candidate", "revision-1"
-        )))
+        load_review_workspace(
+            replace(
+                workspace.artifact_paths,
+                identity=workspace.artifact_paths.identity.__class__(
+                    "run-a", "other-candidate", "revision-1"
+                ),
+            ),
+            workspace.reference,
+        )
     with pytest.raises(ReviewBindingError):
         verify_review_workspace(replace(workspace, manifest_raw=b"forged"))
 
@@ -913,7 +1020,7 @@ def test_workspace_anchor_is_external_completion_marker_and_rejects_manifest_reh
         encoding="utf-8",
     )
     with pytest.raises(ReviewBindingError):
-        load_review_workspace(workspace.artifact_paths)
+        load_review_workspace(workspace.artifact_paths, workspace.reference)
 
 
 def test_workspace_without_external_anchor_is_not_consumable_and_retry_is_safe(tmp_path, monkeypatch):
@@ -930,7 +1037,7 @@ def test_workspace_without_external_anchor_is_not_consumable_and_retry_is_safe(t
     assert not (inputs.artifact_paths.revision_root / "review-anchor.json").exists()
     monkeypatch.undo()
     workspace = build_review_workspace(inputs)
-    assert load_review_workspace(workspace.artifact_paths).manifest == workspace.manifest
+    assert load_review_workspace(workspace.artifact_paths, workspace.reference).manifest == workspace.manifest
 
 
 def test_workspace_retry_discards_unanchored_review_residue(tmp_path):
@@ -938,9 +1045,9 @@ def test_workspace_retry_discards_unanchored_review_residue(tmp_path):
     workspace = build_review_workspace(inputs)
     (workspace.artifact_paths.revision_root / "review-anchor.json").unlink()
     with pytest.raises(ReviewBindingError):
-        load_review_workspace(workspace.artifact_paths)
+        load_review_workspace(workspace.artifact_paths, workspace.reference)
     retried = build_review_workspace(inputs)
-    assert load_review_workspace(retried.artifact_paths).manifest == retried.manifest
+    assert load_review_workspace(retried.artifact_paths, retried.reference).manifest == retried.manifest
 
 
 def test_workspace_refuses_review_mutation_between_verification_and_anchor(tmp_path, monkeypatch):

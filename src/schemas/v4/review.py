@@ -442,6 +442,51 @@ class ReviewWorkspaceAnchorV4(_FrozenReviewV4):
         return self
 
 
+class ReviewWorkspaceReferenceV4(_FrozenReviewV4):
+    """External authorization material for one persisted review workspace.
+
+    This reference is intentionally path-independent and must be persisted by
+    a trusted checkpoint or append-only run record.  A loader never derives
+    this value from the reviewed revision or from ``review-anchor.json``.
+    """
+
+    workflow_version: Literal["llm_scene_v4"] = WORKFLOW_VERSION_V4
+    reference_version: Literal["review-reference-v1"] = "review-reference-v1"
+    run_id: StrictStr
+    candidate_id: StrictStr
+    revision_id: StrictStr
+    anchor_raw_sha256: StrictStr
+    anchor_canonical_sha256: StrictStr
+    canonical_sha256: StrictStr
+
+    @classmethod
+    def create(cls, **payload: object) -> "ReviewWorkspaceReferenceV4":
+        normalized = dict(payload)
+        normalized.setdefault("workflow_version", WORKFLOW_VERSION_V4)
+        normalized.setdefault("reference_version", "review-reference-v1")
+        normalized.pop("canonical_sha256", None)
+        return cls(
+            **normalized,
+            canonical_sha256=canonical_sha256_v4(normalized),
+        )
+
+    @field_validator("run_id", "candidate_id", "revision_id")
+    @classmethod
+    def identities(cls, value: str, info) -> str:
+        return _identity(value, info.field_name)
+
+    @field_validator("anchor_raw_sha256", "anchor_canonical_sha256", "canonical_sha256")
+    @classmethod
+    def reference_hashes(cls, value: str, info) -> str:
+        return _sha(value, info.field_name)
+
+    @model_validator(mode="after")
+    def integrity(self) -> "ReviewWorkspaceReferenceV4":
+        if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
+            raise ValueError("review workspace reference canonical sha256 does not match payload")
+        return self
+
+
 class ReviewWorkspaceManifestV4(_FrozenReviewV4):
     """The complete offline workspace, bound to the reviewed source contracts."""
 
@@ -585,5 +630,6 @@ __all__ = [
     "AssetReviewActionV4", "AssetReviewDecisionV4", "HumanReviewDecisionV4",
     "HumanReviewIntentV4", "ReviewActionV4", "ReviewWorkspaceAnchorV4",
     "ReviewWorkspaceFingerprintEntryV4", "ReviewWorkspaceManifestV4",
+    "ReviewWorkspaceReferenceV4",
     "WORKFLOW_VERSION_V4",
 ]
