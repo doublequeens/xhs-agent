@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import json
 from pathlib import Path
 
 import pytest
@@ -11,6 +13,7 @@ from src.review.v4_workspace import (
     ReviewWorkspaceInputsV4,
     _html_page,
     build_review_workspace,
+    read_review_intent,
     verify_review_workspace,
 )
 from src.schemas.v4.content import canonical_sha256_v4
@@ -138,3 +141,45 @@ def test_workspace_file_url_chromium_smoke_has_sections_and_no_network(tmp_path)
         assert not errors
         page.screenshot(path=str(tmp_path / "review.png"))
         browser.close()
+
+
+def test_mutable_decision_intake_is_parseable_but_not_static_manifest_bound(tmp_path):
+    """Editing the untrusted decision file must not alter immutable workspace evidence."""
+    workspace = build_review_workspace(_inputs(tmp_path))
+    (workspace.root / "decision.json").write_text('{"action":"REQUEST_REVISION","feedback":"adjust spacing","asset_ids":[],"rationale":null,"visible_copy_payload":null}', encoding="utf-8")
+    assert read_review_intent(workspace).action == "REQUEST_REVISION"
+    verify_review_workspace(workspace)
+
+
+def test_workspace_verifier_rejects_hardlinked_page_and_extra_file(tmp_path):
+    workspace = build_review_workspace(_inputs(tmp_path))
+    page = workspace.root / "pages" / "01-page-1.png"
+    outside = tmp_path / "hardlink.png"
+    page.unlink()
+    os.link(outside if outside.exists() else workspace.root / "contact-sheet.png", page)
+    with pytest.raises(ReviewBindingError):
+        verify_review_workspace(workspace)
+
+    workspace = build_review_workspace(_inputs(tmp_path / "second"))
+    (workspace.root / "unexpected.txt").write_bytes(b"unexpected")
+    with pytest.raises(ReviewBindingError):
+        verify_review_workspace(workspace)
+
+
+def test_workspace_manifest_self_rehash_cannot_remove_required_evidence(tmp_path):
+    workspace = build_review_workspace(_inputs(tmp_path))
+    manifest_path = workspace.root / "workspace-manifest.json"
+    payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    payload["files"].pop("quality-report.json")
+    payload["canonical_sha256"] = canonical_sha256_v4({key: value for key, value in payload.items() if key != "canonical_sha256"})
+    manifest_path.write_text(json.dumps(payload, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
+    with pytest.raises(ReviewBindingError):
+        verify_review_workspace(workspace)
+
+
+def test_workspace_build_rejects_hardlinked_render_source(tmp_path):
+    inputs = _inputs(tmp_path)
+    source = inputs.artifact_paths.revision_root / inputs.render_manifest.pages[0].path
+    os.link(source, tmp_path / "render-hardlink.png")
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
