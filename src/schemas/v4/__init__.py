@@ -58,6 +58,12 @@ from .critique import (
     AestheticSetPassV4,
     CarouselAestheticEvaluationV4,
 )
+from .review import (
+    AssetReviewDecisionV4,
+    HumanReviewDecisionV4,
+    HumanReviewIntentV4,
+    ReviewWorkspaceManifestV4,
+)
 
 __all__ = [
     "ATTEMPT_STATUSES",
@@ -108,4 +114,8 @@ __all__ = [
     "SetAestheticEvaluationV4",
     "AestheticSetPassV4",
     "CarouselAestheticEvaluationV4",
+    "AssetReviewDecisionV4",
+    "HumanReviewDecisionV4",
+    "HumanReviewIntentV4",
+    "ReviewWorkspaceManifestV4",
 ]
