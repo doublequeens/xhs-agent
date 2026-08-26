@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import os
 import json
+import hashlib
+from io import BytesIO
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from src.review.v4_workspace import (
     ReviewBindingError,
     ReviewWorkspaceInputsV4,
+    load_review_workspace,
     _html_page,
     build_review_workspace,
     read_review_intent,
@@ -42,6 +46,7 @@ def _inputs(
     revision: int = 1,
     run_id: str = "run-a",
     candidate_id: str = "candidate-a",
+    with_asset: bool = False,
 ) -> ReviewWorkspaceInputsV4:
     """Build a valid end-to-end source world for review-boundary tests.
 
@@ -57,9 +62,19 @@ def _inputs(
     from src.nodes.v4.layout import aggregate_layout_plan
     from src.rendering.scene.renderer import RenderedPageDraft
     from src.rendering.scene.v4_adapter import render_v4_revision
-    from src.schemas.assets import AssetManifest
+    from src.schemas.assets import (
+        AssetManifest,
+        AssetManifestItem,
+        AssetResolutionResult,
+        AssetTransactionEvidence,
+    )
     from src.schemas.v4.content import canonical_sha256_v4
-    from src.schemas.v4.direction import PageBriefSetV4, PageBriefV4, VisualDirectionPlanV4
+    from src.schemas.v4.direction import (
+        AssetDirectiveV4,
+        PageBriefSetV4,
+        PageBriefV4,
+        VisualDirectionPlanV4,
+    )
     from src.visual_design.v4.authoring_qa import evaluate_authoring
     from src.visual_design.v4.semantic_qa import evaluate_semantic_model
     from src.visual_design.v4.compiler import LayoutCompilerInputsV4, compile_layout
@@ -68,6 +83,69 @@ def _inputs(
     from src.visual_design.v4.render_qa import evaluate_v4_render
 
     fixture = _fixture()
+    paths = ensure_artifact_paths(
+        resolve_artifact_paths(
+            tmp_path,
+            ArtifactIdentity(run_id, candidate_id, f"revision-{revision}"),
+        )
+    )
+    asset_resolution_result = None
+    asset_manifest = AssetManifest(items=())
+    asset_directive = None
+    if with_asset:
+        output = BytesIO()
+        Image.new("RGB", (1080, 1440), "#F4A7BF").save(output, format="PNG")
+        asset_bytes = output.getvalue()
+        asset_path = paths.asset_root / "fixture-asset.png"
+        asset_path.write_bytes(asset_bytes)
+        asset_sha256 = hashlib.sha256(asset_bytes).hexdigest()
+        asset_directive = AssetDirectiveV4(
+            directive_id="fixture-asset",
+            page_id="page-1",
+            role="object",
+            purpose="supporting",
+            supports_fragment_refs=("fragment-1",),
+            required=True,
+            preferred_source="search",
+            query_or_prompt="text-free skincare texture",
+            orientation="portrait",
+            resolution=(1080, 1440),
+        )
+        asset_manifest = AssetManifest(
+            items=(
+                AssetManifestItem(
+                    asset_id="fixture-asset",
+                    directive_id=asset_directive.directive_id,
+                    page_id=asset_directive.page_id,
+                    source_kind="search",
+                    provider="local-fixture",
+                    license="fixture license",
+                    local_path=str(asset_path),
+                    width=1080,
+                    height=1440,
+                    sha256=asset_sha256,
+                    subject_focal_point=(0.5, 0.5),
+                    crop_guidance="center",
+                    security_status="approved",
+                    human_decision="pending",
+                    run_id=run_id,
+                    transaction_id=f"revision-{revision}",
+                    internal_provenance={"source_id": "fixture-asset"},
+                ),
+            )
+        )
+        asset_resolution_result = AssetResolutionResult(
+            manifest=asset_manifest,
+            transaction_evidence=AssetTransactionEvidence(
+                run_id=run_id,
+                transaction_id=f"revision-{revision}",
+                transaction_root=str(paths.asset_root),
+                journal_path=str(paths.asset_root / "recovery.json"),
+                status="complete",
+                resolved_directive_ids=(asset_directive.directive_id,),
+                unresolved_optional_directive_ids=(),
+            ),
+        )
     old_page_set = fixture["page_set"]
     preferred_compositions = (
         ("editorial_hero", "comparison_grid"),
@@ -83,6 +161,11 @@ def _inputs(
         payload.update(
             narrative_role=narrative_roles[index],
             preferred_compositions=preferred_compositions[index],
+            asset_directives=(
+                (asset_directive,)
+                if with_asset and index == 0
+                else ()
+            ),
         )
         payload.pop("canonical_sha256", None)
         pages.append(PageBriefV4(**payload, canonical_sha256=canonical_sha256_v4(payload)))
@@ -103,7 +186,6 @@ def _inputs(
         **direction_payload,
         canonical_sha256=canonical_sha256_v4(direction_payload),
     )
-    asset_manifest = AssetManifest(items=())
     compiled_pages = []
     for page in pages:
         program = build_layout_program(
@@ -161,25 +243,55 @@ def _inputs(
         visual_direction_plan=direction,
         asset_manifest=asset_manifest,
     )
-    paths = ensure_artifact_paths(
-        resolve_artifact_paths(
-            tmp_path,
-            ArtifactIdentity(run_id, candidate_id, f"revision-{revision}"),
-        )
-    )
     base_render = _render_stub(plan, fixture["semantic_model"])
 
     def render(compiled_page):
         draft = base_render(compiled_page)
         source_page = next(item for item in plan.pages if item.page_id == compiled_page.page_id)
         family = get_family_tokens(direction.template_family)
+        raw_by_id = {
+            raw["element_id"]: dict(raw)
+            for raw in draft.raw_probes
+            if isinstance(raw, dict) and isinstance(raw.get("element_id"), str)
+        }
         probes = []
-        for raw, element in zip(
-            draft.raw_probes,
-            sorted(source_page.scene.elements, key=lambda item: item.layer),
-        ):
+        for element in sorted(source_page.scene.elements, key=lambda item: item.layer):
+            raw = raw_by_id.get(element.element_id)
+            if raw is None and element.kind == "image":
+                asset = next(
+                    item
+                    for item in asset_manifest.items
+                    if item.sha256
+                    == next(
+                        binding.asset_sha256
+                        for binding in source_page.compiler_provenance.asset_binding_evidence.values()
+                        if binding.asset_ref == element.asset_ref
+                    )
+                )
+                raw = {
+                    "element_id": element.element_id,
+                    "content_ref": None,
+                    "asset_ref": element.asset_ref,
+                    "x": element.box.x,
+                    "y": element.box.y,
+                    "width": element.box.width,
+                    "height": element.box.height,
+                    "scroll_width": element.box.width,
+                    "scroll_height": element.box.height,
+                    "client_width": element.box.width,
+                    "client_height": element.box.height,
+                    "natural_width": asset.width,
+                    "natural_height": asset.height,
+                    "rendered_image_width": element.box.width,
+                    "rendered_image_height": element.box.height,
+                    "asset_loaded": True,
+                    "line_boxes": [],
+                    "color": "rgba(0, 0, 0, 0)",
+                    "background_color": "rgba(0, 0, 0, 0)",
+                }
+            if raw is None:
+                raise AssertionError(f"missing fixture probe for {element.element_id}")
             if element.kind == "text":
-                raw = dict(raw)
                 raw["font_family"] = getattr(family.font_roles, element.style.font_role)
             probes.append(raw)
         return RenderedPageDraft(
@@ -248,6 +360,7 @@ def _inputs(
         render_manifest=render,
         render_qa=q3,
         visual_critique=critique,
+        asset_resolution_result=asset_resolution_result,
     )
 
 
@@ -324,6 +437,65 @@ def test_workspace_file_url_chromium_smoke_has_sections_and_no_network(tmp_path)
         assert not [url for url in requests if not url.startswith("file:")]
         assert not errors
         page.screenshot(path=str(tmp_path / "review.png"))
+        browser.close()
+
+
+def test_workspace_file_url_chromium_smoke_with_asset_and_previous_revision(tmp_path):
+    """The browser must load bound asset bytes and both sides of a revision diff."""
+    playwright = pytest.importorskip("playwright.sync_api")
+    previous = build_review_workspace(_inputs(tmp_path, revision=1, with_asset=True))
+    current_inputs = _inputs(tmp_path, revision=2, with_asset=True)
+    current = build_review_workspace(
+        current_inputs.model_copy(
+            update={"previous_review_workspace": load_review_workspace(previous.artifact_paths)}
+        )
+    )
+    requests: list[str] = []
+    failed_responses: list[str] = []
+    errors: list[str] = []
+    console_errors: list[str] = []
+    with playwright.sync_playwright() as p:
+        browser = p.chromium.launch()
+        page = browser.new_page()
+        page.on("request", lambda request: requests.append(request.url))
+        page.on(
+            "response",
+            lambda response: failed_responses.append(
+                f"{response.status} {response.url}"
+            )
+            if response.status >= 400
+            else None,
+        )
+        page.on("pageerror", lambda error: errors.append(str(error)))
+        page.on(
+            "console",
+            lambda message: console_errors.append(message.text)
+            if message.type == "error"
+            else None,
+        )
+        page.goto((current.root / "index.html").as_uri())
+        page.wait_for_load_state("load")
+        assert page.locator("#asset-evidence .asset-preview").count() == 1
+        assert page.locator("#asset-evidence .asset-preview").evaluate(
+            "element => element.naturalWidth > 0 && element.naturalHeight > 0"
+        )
+        assert page.locator(".revision-pair").count() == 5
+        assert page.locator(".revision-pair .current-page img").count() == 5
+        assert page.locator(".revision-pair .previous-page img").count() == 5
+        assert page.locator(".revision-pair img").evaluate_all(
+            "elements => elements.every(element => element.naturalWidth > 0 && element.naturalHeight > 0)"
+        )
+        text = page.locator("body").inner_text()
+        assert "source RenderManifest identity:" in text
+        assert "provider=local-fixture" in text
+        assert "license=fixture license" in text
+        assert "transaction_status=complete" in text
+        assert "recovery=not-applicable" in text
+        assert "geometry=(" in page.locator("#q2-metrics").inner_text()
+        assert not [url for url in requests if not url.startswith("file:")]
+        assert not failed_responses
+        assert not errors
+        assert not console_errors
         browser.close()
 
 
@@ -456,6 +628,45 @@ def test_workspace_cleanup_failure_uses_quarantine_and_retry_succeeds(tmp_path, 
     real_verify(workspace)
 
 
+def test_workspace_recovery_journal_records_contained_quarantine_outcome(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    module = __import__("src.review.v4_workspace", fromlist=["_remove_tree_at"])
+    real_verify = verify_review_workspace
+    real_remove = module._remove_tree_at
+    verify_calls = {"count": 0}
+    remove_calls = {"count": 0}
+
+    def fail_verify(workspace):
+        verify_calls["count"] += 1
+        if verify_calls["count"] == 1:
+            raise ReviewBindingError("injected postpublish failure")
+        return real_verify(workspace)
+
+    def fail_review_remove(parent_fd, name):
+        if name == "review" and remove_calls["count"] == 0:
+            remove_calls["count"] += 1
+            raise OSError("injected cleanup failure")
+        return real_remove(parent_fd, name)
+
+    monkeypatch.setattr(module, "verify_review_workspace", fail_verify)
+    monkeypatch.setattr(module, "_remove_tree_at", fail_review_remove)
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
+    journals = tuple(inputs.artifact_paths.revision_root.glob("review-recovery-*.json"))
+    assert journals
+    evidence = json.loads(journals[-1].read_text(encoding="utf-8"))
+    cleanup = evidence["cleanup"]
+    assert cleanup["removal_attempted"] is True
+    assert cleanup["removal_succeeded"] is False
+    assert cleanup["quarantine_attempted"] is True
+    assert cleanup["quarantine_succeeded"] is True
+    assert cleanup["quarantine_path"].startswith(".review-recovery-")
+    assert "cleanup failure" in cleanup["cleanup_error"]
+    quarantine = inputs.artifact_paths.revision_root / cleanup["quarantine_path"]
+    assert quarantine.is_dir()
+    assert quarantine.parent == inputs.artifact_paths.revision_root
+
+
 def test_workspace_recovery_journal_failure_preserves_primary_and_retry(tmp_path, monkeypatch):
     inputs = _inputs(tmp_path)
     module = __import__("src.review.v4_workspace", fromlist=["_write_recovery_journal"])
@@ -530,6 +741,149 @@ def test_workspace_refuses_staging_inode_replacement_between_verify_and_publish(
     with pytest.raises(ReviewBindingError):
         build_review_workspace(inputs)
     assert not inputs.artifact_paths.review_root.exists()
+
+
+def test_workspace_refuses_in_place_staging_content_mutation_before_publish(tmp_path, monkeypatch):
+    inputs = _inputs(tmp_path)
+    module = __import__("src.review.v4_workspace", fromlist=["_verify_staging"])
+    original = module._publish_stage
+
+    def mutate_before_publish(lease, stage, identity, fingerprint):
+        page = inputs.artifact_paths.revision_root / stage / "pages" / "01-page-1.png"
+        page.write_bytes(page.read_bytes() + b"mutated")
+        return original(lease, stage, identity, fingerprint)
+
+    monkeypatch.setattr(module, "_publish_stage", mutate_before_publish)
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
+    assert not inputs.artifact_paths.review_root.exists()
+    assert not tuple(inputs.artifact_paths.revision_root.glob(".review-staging-*"))
+
+    monkeypatch.setattr(module, "_publish_stage", original)
+    workspace = build_review_workspace(inputs)
+    verify_review_workspace(workspace)
+
+
+def test_workspace_loader_rehydrates_previous_without_process_trust(tmp_path):
+    previous = build_review_workspace(_inputs(tmp_path, revision=1))
+    loaded = load_review_workspace(previous.artifact_paths)
+    assert loaded.manifest == previous.manifest
+    assert loaded.manifest_raw == previous.manifest_raw
+    verify_review_workspace(loaded)
+    assert read_review_intent(loaded).action == "APPROVE"
+
+    current_inputs = _inputs(tmp_path, revision=2)
+    current = build_review_workspace(
+        current_inputs.model_copy(update={"previous_review_workspace": loaded})
+    )
+    verify_review_workspace(current)
+
+
+def test_workspace_loader_rejects_wrong_paths_and_forged_manifest_bytes(tmp_path):
+    from dataclasses import replace
+
+    workspace = build_review_workspace(_inputs(tmp_path, revision=1))
+    with pytest.raises(ReviewBindingError):
+        load_review_workspace(replace(workspace.artifact_paths, identity=workspace.artifact_paths.identity.__class__(
+            "run-a", "other-candidate", "revision-1"
+        )))
+    with pytest.raises(ReviewBindingError):
+        verify_review_workspace(replace(workspace, manifest_raw=b"forged"))
+
+
+def test_workspace_binds_typed_asset_transaction_evidence(tmp_path):
+    from src.schemas.assets import AssetResolutionResult, AssetTransactionEvidence
+
+    inputs = _inputs(tmp_path)
+    evidence = AssetTransactionEvidence(
+        run_id=inputs.artifact_paths.identity.run_id,
+        transaction_id=inputs.artifact_paths.identity.revision_id,
+        transaction_root=str(inputs.artifact_paths.asset_root),
+        journal_path=str(inputs.artifact_paths.asset_root / "recovery.json"),
+        status="complete",
+        resolved_directive_ids=(),
+        unresolved_optional_directive_ids=(),
+    )
+    result = AssetResolutionResult(
+        manifest=inputs.asset_manifest,
+        transaction_evidence=evidence,
+    )
+    workspace = build_review_workspace(
+        inputs.model_copy(update={"asset_resolution_result": result})
+    )
+    assert "No external assets referenced." in (workspace.root / "index.html").read_text(encoding="utf-8")
+
+    bad_evidence = evidence.model_copy(update={"run_id": "wrong-run"})
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(
+            _inputs(tmp_path / "bad").model_copy(
+                update={
+                    "asset_resolution_result": AssetResolutionResult(
+                        manifest=inputs.asset_manifest,
+                        transaction_evidence=bad_evidence,
+                    )
+                }
+            )
+        )
+
+
+def test_workspace_rejects_mismatched_changed_or_unsafe_asset_evidence(tmp_path):
+    from src.schemas.assets import AssetManifest, AssetResolutionResult
+
+    inputs = _inputs(tmp_path, with_asset=True)
+    evidence = inputs.asset_resolution_result
+    assert evidence is not None
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(
+            inputs.model_copy(
+                update={
+                    "asset_resolution_result": AssetResolutionResult(
+                        manifest=AssetManifest(items=()),
+                        transaction_evidence=evidence.transaction_evidence,
+                    )
+                }
+            )
+        )
+
+    asset_path = Path(inputs.asset_manifest.items[0].local_path)
+    asset_path.write_bytes(b"changed asset bytes")
+    with pytest.raises(ReviewBindingError):
+        build_review_workspace(inputs)
+
+
+def test_workspace_asset_evidence_is_html_escaped_and_path_safe(tmp_path):
+    inputs = _inputs(tmp_path, with_asset=True)
+    item = inputs.asset_manifest.items[0].model_copy(
+        update={"provider": "<b>fixture</b>", "license": "<i>license</i>"}
+    )
+    manifest = inputs.asset_manifest.model_copy(update={"items": (item,)})
+    evidence = inputs.asset_resolution_result
+    assert evidence is not None
+    evidence = evidence.model_copy(update={"manifest": manifest})
+    html = _html_page(
+        inputs.model_copy(
+            update={
+                "asset_manifest": manifest,
+                "asset_resolution_result": evidence,
+            }
+        ),
+        None,
+        {"pages/01-page-1.png": "a" * 64},
+        asset_paths={"fixture-asset": "assets/fixture-asset.png"},
+    ).decode()
+    assert "&lt;b&gt;fixture&lt;/b&gt;" in html
+    assert "&lt;i&gt;license&lt;/i&gt;" in html
+    assert "<b>fixture</b>" not in html
+    assert "<i>license</i>" not in html
+    unsafe_item = item.model_copy(update={"provider": "/var/private/asset-source"})
+    unsafe_manifest = manifest.model_copy(update={"items": (unsafe_item,)})
+    with pytest.raises(ReviewBindingError):
+        _html_page(
+            inputs.model_copy(update={"asset_manifest": unsafe_manifest}),
+            None,
+            {"pages/01-page-1.png": "a" * 64},
+            asset_paths={"fixture-asset": "assets/fixture-asset.png"},
+        )
 
 
 def test_mutable_decision_intake_is_parseable_but_not_static_manifest_bound(tmp_path):

@@ -672,6 +672,64 @@ def read_verified_artifact_snapshot_at(
     return VerifiedArtifact(snapshot.raw, snapshot.sha256, snapshot.size, snapshot.identity)
 
 
+def _fingerprint_directory_fd(
+    root_fd: int,
+    prefix: tuple[str, ...] = (),
+) -> tuple[tuple[object, ...], ...]:
+    """Fingerprint a complete descriptor-pinned tree without following links."""
+
+    entries: list[tuple[object, ...]] = []
+    for name in sorted(os.listdir(root_fd)):
+        _safe_name(name, "tree entry")
+        relative = prefix + (name,)
+        info = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode):
+            raise ArtifactBindingError("fingerprinted tree contains a symlink")
+        if stat.S_ISDIR(info.st_mode):
+            child_fd: int | None = None
+            try:
+                child_fd = os.open(name, _DIR_FLAGS, dir_fd=root_fd)
+                child_info = os.fstat(child_fd)
+                if (child_info.st_dev, child_info.st_ino, child_info.st_nlink) != (
+                    info.st_dev,
+                    info.st_ino,
+                    info.st_nlink,
+                ):
+                    raise ArtifactBindingError("fingerprinted directory changed during read")
+                entries.append(("directory", "/".join(relative), info.st_dev, info.st_ino, info.st_nlink))
+                entries.extend(_fingerprint_directory_fd(child_fd, relative))
+            finally:
+                if child_fd is not None:
+                    os.close(child_fd)
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise ArtifactBindingError("fingerprinted tree contains a non-regular entry")
+        snapshot = _read_file_at(root_fd, (name,))
+        if snapshot.link_count != 1:
+            raise ArtifactBindingError("fingerprinted file has unsafe hardlink count")
+        entries.append(
+            (
+                "file",
+                "/".join(relative),
+                snapshot.sha256,
+                snapshot.size,
+                snapshot.identity[0],
+                snapshot.identity[1],
+                snapshot.link_count,
+            )
+        )
+    return tuple(entries)
+
+
+def fingerprint_directory_at(root_fd: int) -> tuple[tuple[object, ...], ...]:
+    """Return a canonical bytes/inode fingerprint for a pinned directory tree."""
+
+    try:
+        return _fingerprint_directory_fd(root_fd)
+    except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError) as error:
+        raise ArtifactBindingError("descriptor-relative tree fingerprint failed") from error
+
+
 @contextmanager
 def _open_file_at(parent_fd: int, relative_parts: tuple[str, ...]) -> Iterator[int]:
     """Yield one regular file descriptor opened below a pinned directory."""
@@ -1151,6 +1209,7 @@ def publish_staged_directory_at(
     destination_name: str,
     *,
     expected_source_identity: tuple[int, int] | None = None,
+    expected_source_fingerprint: tuple[tuple[object, ...], ...] | None = None,
 ) -> Path:
     """Publish a staged directory using the exact caller-owned lease.
 
@@ -1176,15 +1235,18 @@ def publish_staged_directory_at(
             raise ArtifactBindingError("staging directory identity changed before publication")
         _fsync_staged_tree_fd(source_fd)
         lease.assert_intact()
-        latest = os.stat(source_name, dir_fd=lease.fd, follow_symlinks=False)
-        if (latest.st_dev, latest.st_ino) != source_identity:
-            raise ArtifactBindingError("staging entry was replaced before publication")
         try:
             os.stat(destination_name, dir_fd=lease.fd, follow_symlinks=False)
         except FileNotFoundError:
             pass
         else:
             raise ArtifactBindingError("artifact destination directory already exists")
+        fingerprint = fingerprint_directory_at(source_fd)
+        if expected_source_fingerprint is not None and fingerprint != expected_source_fingerprint:
+            raise ArtifactBindingError("staging tree contents changed before publication")
+        latest = os.stat(source_name, dir_fd=lease.fd, follow_symlinks=False)
+        if (latest.st_dev, latest.st_ino) != source_identity:
+            raise ArtifactBindingError("staging entry was replaced before publication")
         _rename_noreplace(source_name, destination_name, lease.fd, lease.fd)
         destination_info = os.stat(destination_name, dir_fd=lease.fd, follow_symlinks=False)
         destination_identity = (destination_info.st_dev, destination_info.st_ino)
@@ -1272,6 +1334,7 @@ __all__ = [
     "bind_reused_artifact",
     "bind_staged_directory",
     "ensure_artifact_paths",
+    "fingerprint_directory_at",
     "read_verified_artifact",
     "read_verified_artifact_snapshot",
     "read_verified_artifact_snapshot_at",

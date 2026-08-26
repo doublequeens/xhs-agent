@@ -16,13 +16,13 @@ import json
 import os
 import re
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict
 
-from src.schemas.assets import AssetManifest, AssetManifestItem
+from src.schemas.assets import AssetManifest, AssetManifestItem, AssetResolutionResult
 from src.schemas.content_atoms import canonical_sha256
 from src.schemas.content_lock import ContentLock
 from src.schemas.v4.content import ContentAtomSetV4, canonical_json_v4
@@ -41,6 +41,7 @@ from src.visual_runtime.artifact_identity import (
     _lease_context,
     _open_absolute_directory,
     _remove_tree_at,
+    fingerprint_directory_at,
     publish_staged_directory_at,
     quarantine_directory_at,
     read_verified_artifact_snapshot,
@@ -58,20 +59,67 @@ class ReviewBindingError(RuntimeError):
     """A review source or materialized workspace is stale, forged, or unsafe."""
 
 
-_WORKSPACE_TRUST_TOKEN = object()
-_WORKSPACE_TRUST_SECRET = uuid.uuid4().hex
+_PRIVATE_ERROR_TEXT = re.compile(
+    r"(?:[A-Za-z]:[\\/][^\s]+|(?<![A-Za-z0-9])/(?:[^\s/]+/)+[^\s]+|\\\\[^\s]+|"
+    r"(?:api[_ -]?key|secret|password|authorization|bearer)\s*[:=]?\s*[^\s]+)",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_error(error: BaseException | str | None) -> str | None:
+    if error is None:
+        return None
+    text = str(error) if isinstance(error, str) else f"{type(error).__name__}: {error}"
+    return _PRIVATE_ERROR_TEXT.sub("<redacted>", text).strip()[:512] or type(error).__name__
+
+
+def _asset_display_text(value: str, field_name: str) -> str:
+    if (
+        type(value) is not str
+        or not value.strip()
+        or len(value.strip()) > 240
+        or "\x00" in value
+        or "\n" in value
+        or "\r" in value
+        or _PRIVATE_ERROR_TEXT.search(value)
+        or re.search(r"https?://|(?:^|[\s/\\])\.\.(?:[\s/\\]|$)", value, re.IGNORECASE)
+    ):
+        raise ReviewBindingError(f"asset {field_name} evidence is not sanitized")
+    return " ".join(value.split())
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewCleanupOutcomeV4:
+    """Bounded immutable evidence for post-publish cleanup/recovery."""
+
+    removal_attempted: bool
+    removal_succeeded: bool
+    quarantine_attempted: bool
+    quarantine_succeeded: bool
+    quarantine_path: str | None = None
+    cleanup_error: str | None = None
+    recovery_error: str | None = None
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "removal_attempted": self.removal_attempted,
+            "removal_succeeded": self.removal_succeeded,
+            "quarantine_attempted": self.quarantine_attempted,
+            "quarantine_succeeded": self.quarantine_succeeded,
+            "quarantine_path": self.quarantine_path,
+            "cleanup_error": self.cleanup_error,
+            "recovery_error": self.recovery_error,
+        }
 
 
 @dataclass(frozen=True, slots=True)
 class ReviewWorkspaceV4:
-    """Typed, application-issued handle for one verified immutable workspace."""
+    """Typed handle for one persisted, verified immutable workspace."""
 
     root: Path
     manifest: ReviewWorkspaceManifestV4
     artifact_paths: ArtifactPaths
     manifest_raw: bytes = b""
-    _trust_token: object | None = field(default=None, repr=False, compare=False)
-    _attestation: str | None = field(default=None, repr=False, compare=False)
 
 
 class ReviewWorkspaceInputsV4(BaseModel):
@@ -91,6 +139,7 @@ class ReviewWorkspaceInputsV4(BaseModel):
     render_manifest: RenderManifestV4
     render_qa: RenderQAResultV4
     visual_critique: CarouselAestheticEvaluationV4
+    asset_resolution_result: AssetResolutionResult | None = None
     previous_review_workspace: ReviewWorkspaceV4 | None = None
 
 
@@ -131,6 +180,50 @@ def _content_lock_hash(lock: ContentLock) -> str:
     return expected
 
 
+def _check_asset_resolution_evidence(
+    inputs: ReviewWorkspaceInputsV4,
+    paths: ArtifactPaths,
+) -> None:
+    result = inputs.asset_resolution_result
+    if result is None:
+        if inputs.asset_manifest.items:
+            raise ReviewBindingError("external assets require typed resolution evidence")
+        return
+    try:
+        result.manifest.require_unique_bindings()
+        tx = result.transaction_evidence
+        identity = paths.identity
+        if result.manifest != inputs.asset_manifest:
+            raise ReviewBindingError("asset resolution manifest differs from AssetManifest")
+        for item in inputs.asset_manifest.items:
+            _asset_display_text(item.provider, "provider")
+            _asset_display_text(item.license, "license")
+        if (tx.run_id, tx.transaction_id) != (identity.run_id, identity.revision_id):
+            raise ReviewBindingError("asset transaction identity differs from ArtifactPaths")
+        if Path(tx.transaction_root) != paths.asset_root:
+            raise ReviewBindingError("asset transaction root is not the bound asset root")
+        if Path(tx.journal_path) != paths.asset_root / "recovery.json":
+            raise ReviewBindingError("asset transaction journal path is not canonical")
+        resolved = tuple(item.directive_id for item in result.manifest.items)
+        if tuple(tx.resolved_directive_ids) != resolved:
+            raise ReviewBindingError("asset transaction resolved directives are stale")
+        unresolved = tuple(
+            item.directive_id for item in result.unresolved_optional_assets
+        )
+        if tuple(tx.unresolved_optional_directive_ids) != unresolved:
+            raise ReviewBindingError("asset transaction unresolved directives are stale")
+        if set(tx.unresolved_optional_directive_ids) & set(resolved):
+            raise ReviewBindingError("asset transaction has conflicting directive evidence")
+        if tx.status == "interrupted":
+            read_verified_artifact_snapshot(
+                Path(tx.journal_path), None, containment_root=paths.asset_root
+            )
+    except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError, TypeError) as error:
+        if isinstance(error, ReviewBindingError):
+            raise
+        raise ReviewBindingError("asset transaction evidence is invalid or unsafe") from error
+
+
 def _require_equal(label: str, *values: object) -> None:
     if not values or any(value != values[0] for value in values[1:]):
         raise ReviewBindingError(f"review source equality binding failed: {label}")
@@ -145,25 +238,6 @@ def _revision_number(revision_id: str) -> int:
 
 def _canonical_bytes(value: BaseModel) -> bytes:
     return canonical_json_v4(value.model_dump(mode="json")).encode("utf-8")
-
-
-def _workspace_attestation(workspace: ReviewWorkspaceV4) -> str:
-    if not isinstance(workspace.manifest_raw, bytes):
-        return ""
-    try:
-        payload = {
-            "root": workspace.root.as_posix(),
-            "base_root": workspace.artifact_paths.base_root.as_posix(),
-            "run_id": workspace.artifact_paths.identity.run_id,
-            "candidate_id": workspace.artifact_paths.identity.candidate_id,
-            "revision_id": workspace.artifact_paths.identity.revision_id,
-            "manifest_raw_sha256": _sha(workspace.manifest_raw),
-        }
-    except (AttributeError, TypeError, ValueError):
-        return ""
-    return hashlib.sha256(
-        (_WORKSPACE_TRUST_SECRET + canonical_json_v4(payload)).encode("utf-8")
-    ).hexdigest()
 
 
 def _fresh_hard_gates(
@@ -256,6 +330,7 @@ def _checked(inputs: ReviewWorkspaceInputsV4) -> tuple[ArtifactPaths, dict[str, 
         raise ReviewBindingError("review source contracts are invalid") from error
 
     identity = paths.identity
+    _check_asset_resolution_evidence(inputs, paths)
     atoms = inputs.content_atom_set
     semantic = inputs.semantic_content_model
     narrative = inputs.carousel_narrative
@@ -578,24 +653,41 @@ def _html_page(
         )
 
     rendered_paths = asset_paths or {}
+    asset_transaction = (
+        None
+        if inputs.asset_resolution_result is None
+        else inputs.asset_resolution_result.transaction_evidence
+    )
+    transaction_status = "unavailable" if asset_transaction is None else asset_transaction.status
+    recovery_status = (
+        "unavailable"
+        if asset_transaction is None
+        else "recorded" if asset_transaction.status == "interrupted" else "not-applicable"
+    )
     asset_items: list[str] = []
     for item in inputs.asset_manifest.items:
+        asset_id = _asset_display_text(item.asset_id, "asset_id")
+        provider = _asset_display_text(item.provider, "provider")
+        license_text = _asset_display_text(item.license, "license")
+        transaction_id = _asset_display_text(item.transaction_id, "transaction_id")
         preview = rendered_paths.get(item.asset_id)
         if preview and not preview.endswith(".bin"):
             image = ('<img class="asset-preview" src="' + html.escape(preview, quote=True)
-                     + '" alt="local preview of ' + html.escape(item.asset_id, quote=True) + '">')
+                     + '" alt="local preview of ' + html.escape(asset_id, quote=True) + '">')
         elif preview:
             image = '<a class="asset-preview-link" href="' + html.escape(preview, quote=True) + '">local verified bytes</a>'
         else:
             image = "<span>not rendered</span>"
         asset_items.append(
-            '<li class="asset-item"><b>' + html.escape(item.asset_id, quote=True) + '</b>' + image
-            + '<span>provider=' + html.escape(item.provider, quote=True)
+            '<li class="asset-item"><b>' + html.escape(asset_id, quote=True) + '</b>' + image
+            + '<span>provider=' + html.escape(provider, quote=True)
             + ' source_kind=' + html.escape(item.source_kind, quote=True)
-            + ' license=' + html.escape(item.license, quote=True)
+            + ' license=' + html.escape(license_text, quote=True)
             + ' security=' + html.escape(item.security_status, quote=True)
-            + ' transaction_id=' + html.escape(item.transaction_id, quote=True)
-            + ' recovery=unavailable human=' + html.escape(item.human_decision, quote=True)
+            + ' transaction_id=' + html.escape(transaction_id, quote=True)
+            + ' transaction_status=' + html.escape(transaction_status, quote=True)
+            + ' recovery=' + html.escape(recovery_status, quote=True)
+            + ' human=' + html.escape(item.human_decision, quote=True)
             + ' sha256=' + html.escape(item.sha256, quote=True) + '</span></li>'
         )
     assets = "".join(asset_items) or "<li>No external assets referenced.</li>"
@@ -733,7 +825,12 @@ def _stage_write(lease: Any, stage: str, name: str, raw: bytes) -> None:
     _atomic_write_at(lease.fd, (stage, *Path(name).parts), raw)
 
 
-def _publish_stage(lease: Any, stage: str, expected_source_identity: tuple[int, int]) -> None:
+def _publish_stage(
+    lease: Any,
+    stage: str,
+    expected_source_identity: tuple[int, int],
+    expected_source_fingerprint: tuple[tuple[object, ...], ...],
+) -> None:
     """Publish the already verified stage without reopening its pathname."""
 
     publish_staged_directory_at(
@@ -741,6 +838,7 @@ def _publish_stage(lease: Any, stage: str, expected_source_identity: tuple[int, 
         stage,
         "review",
         expected_source_identity=expected_source_identity,
+        expected_source_fingerprint=expected_source_fingerprint,
     )
 
 
@@ -888,7 +986,7 @@ def _verify_staging(
     manifest: ReviewWorkspaceManifestV4,
     raw: bytes,
     lease: Any,
-) -> tuple[int, int]:
+) -> tuple[tuple[int, int], tuple[tuple[object, ...], ...]]:
     """Verify staging through the same pinned revision lease used to publish."""
 
     if type(stage) is not str or not stage or Path(stage).name != stage or stage in {".", ".."}:
@@ -904,7 +1002,7 @@ def _verify_staging(
         info = os.fstat(stage_fd)
         _verify_workspace_fd(stage_fd, manifest, expected_manifest_raw=raw)
         lease.assert_intact()
-        return (info.st_dev, info.st_ino)
+        return (info.st_dev, info.st_ino), fingerprint_directory_at(stage_fd)
     except (OSError, ArtifactBindingError) as error:
         raise ReviewBindingError("staging workspace is invalid or unsafe") from error
     finally:
@@ -918,8 +1016,6 @@ def _previous_files(inputs: ReviewWorkspaceInputsV4) -> _PreviousReview | None:
         return None
     if type(supplied_workspace) is not ReviewWorkspaceV4:
         raise ReviewBindingError("previous review must be a typed ReviewWorkspaceV4")
-    if supplied_workspace._trust_token is not _WORKSPACE_TRUST_TOKEN:
-        raise ReviewBindingError("previous review workspace was not issued by the verifier")
     verify_review_workspace(supplied_workspace)
     previous_paths = revalidate_artifact_paths(supplied_workspace.artifact_paths)
     if supplied_workspace.root != previous_paths.review_root:
@@ -954,41 +1050,67 @@ def _cleanup_stage(paths: ArtifactPaths, stage: str) -> BaseException | None:
     return None
 
 
-def _remove_published_review(paths: ArtifactPaths) -> BaseException | None:
-    """Remove only the exact failed review destination through a pinned lease."""
+def _remove_published_review(paths: ArtifactPaths) -> ReviewCleanupOutcomeV4:
+    """Remove or quarantine only the exact failed review destination."""
 
+    removal_error: str | None = None
+    quarantine_error: str | None = None
+    quarantine_path: str | None = None
+    removal_succeeded = False
+    quarantine_attempted = False
+    quarantine_succeeded = False
     try:
         with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
             lease.assert_intact()
             try:
                 _remove_tree_at(lease.fd, "review")
+                removal_succeeded = True
             except FileNotFoundError:
-                pass
+                removal_succeeded = True
             except BaseException as primary:
+                removal_error = _sanitize_error(primary)
                 try:
                     info = os.stat("review", dir_fd=lease.fd, follow_symlinks=False)
-                    quarantine = ".review-recovery-" + uuid.uuid4().hex
+                    quarantine_path = ".review-recovery-" + uuid.uuid4().hex
+                    quarantine_attempted = True
                     quarantine_directory_at(
                         lease,
                         "review",
-                        quarantine,
+                        quarantine_path,
                         expected_source_identity=(info.st_dev, info.st_ino),
                     )
-                    primary.add_note(f"failed review quarantined as {quarantine}")
-                except BaseException as quarantine_error:
-                    primary.add_note(f"failed review quarantine failed: {quarantine_error}")
-                raise
+                    quarantine_succeeded = True
+                except BaseException as error:
+                    quarantine_error = _sanitize_error(error)
             lease.assert_intact()
     except BaseException as error:
-        return error
-    return None
+        if removal_error is None:
+            removal_error = _sanitize_error(error)
+        elif quarantine_error is None:
+            quarantine_error = _sanitize_error(error)
+    cleanup_error = "; ".join(
+        item for item in (removal_error, quarantine_error) if item
+    ) or None
+    return ReviewCleanupOutcomeV4(
+        removal_attempted=True,
+        removal_succeeded=removal_succeeded,
+        quarantine_attempted=quarantine_attempted,
+        quarantine_succeeded=quarantine_succeeded,
+        quarantine_path=quarantine_path,
+        cleanup_error=cleanup_error,
+    )
 
 
-def _write_recovery_journal(paths: ArtifactPaths, message: str) -> None:
+def _write_recovery_journal(
+    paths: ArtifactPaths,
+    message: str,
+    cleanup: ReviewCleanupOutcomeV4,
+) -> None:
     payload = canonical_json_v4({
         "workflow_version": "llm_scene_v4", "run_id": paths.identity.run_id,
         "candidate_id": paths.identity.candidate_id, "revision_id": paths.identity.revision_id,
-        "error": message[:1000],
+        "error": _sanitize_error(message) or "review workspace post-publish failure",
+        "cleanup": cleanup.payload(),
     }).encode("utf-8")
     name = "review-recovery-" + uuid.uuid4().hex + ".json"
     with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
@@ -1015,6 +1137,7 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
     manifest: ReviewWorkspaceManifestV4 | None = None
     manifest_raw = b""
     stage_identity: tuple[int, int] | None = None
+    stage_fingerprint: tuple[tuple[object, ...], ...] | None = None
     try:
         with _lease_context(_open_absolute_directory(paths.revision_root, create=False)) as lease:
             lease.assert_intact()
@@ -1078,11 +1201,18 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
                 manifest_raw = canonical_json_v4(manifest.model_dump(mode="json")).encode("utf-8")
                 _stage_write(lease, stage, "workspace-manifest.json", manifest_raw)
                 lease.assert_intact()
-                stage_identity = _verify_staging(paths, stage, manifest, manifest_raw, lease)
-                prepublish_identity = _verify_staging(paths, stage, manifest, manifest_raw, lease)
-                if prepublish_identity != stage_identity:
-                    raise ReviewBindingError("staging directory identity changed before publication")
-                _publish_stage(lease, stage, stage_identity)
+                stage_identity, stage_fingerprint = _verify_staging(
+                    paths, stage, manifest, manifest_raw, lease
+                )
+                prepublish_identity, prepublish_fingerprint = _verify_staging(
+                    paths, stage, manifest, manifest_raw, lease
+                )
+                if (
+                    prepublish_identity != stage_identity
+                    or prepublish_fingerprint != stage_fingerprint
+                ):
+                    raise ReviewBindingError("staging directory changed before publication")
+                _publish_stage(lease, stage, stage_identity, stage_fingerprint)
                 published = True
             except BaseException as transaction_error:
                 if not published:
@@ -1103,60 +1233,75 @@ def build_review_workspace(inputs: ReviewWorkspaceInputsV4) -> ReviewWorkspaceV4
         raise ReviewBindingError("review workspace transaction failed") from error
 
     assert manifest is not None
-    workspace = ReviewWorkspaceV4(
-        paths.review_root,
-        manifest,
-        paths,
-        manifest_raw,
-        _WORKSPACE_TRUST_TOKEN,
-    )
-    object.__setattr__(workspace, "_attestation", _workspace_attestation(workspace))
+    workspace = ReviewWorkspaceV4(paths.review_root, manifest, paths, manifest_raw)
     try:
         verify_review_workspace(workspace)
     except BaseException as error:
-        cleanup_error = _remove_published_review(paths)
-        if cleanup_error is not None:
-            error.add_note(f"failed review quarantine/cleanup: {cleanup_error}")
+        cleanup = _remove_published_review(paths)
         try:
             notes = " ".join(str(note) for note in getattr(error, "__notes__", ()))
-            _write_recovery_journal(paths, (str(error) + " " + notes).strip())
+            _write_recovery_journal(paths, (str(error) + " " + notes).strip(), cleanup)
         except BaseException as recovery_error:
-            error.add_note(f"recovery journal failed: {recovery_error}")
+            cleanup = replace(cleanup, recovery_error=_sanitize_error(recovery_error))
+            error.add_note(f"recovery outcome: {canonical_json_v4(cleanup.payload())}")
+            error.add_note(f"recovery journal failed: {_sanitize_error(recovery_error)}")
         raise ReviewBindingError("published review workspace failed post-publish verification") from error
-    return workspace
+    return load_review_workspace(paths)
+
+
+def load_review_workspace(paths: ArtifactPaths) -> ReviewWorkspaceV4:
+    """Rehydrate one published workspace from its persisted canonical evidence."""
+
+    try:
+        checked_paths = revalidate_artifact_paths(paths)
+    except (ArtifactIdentityError, OSError) as error:
+        raise ReviewBindingError("review workspace artifact root changed") from error
+    root = checked_paths.review_root
+    try:
+        if root.is_symlink() or not root.is_dir():
+            raise ReviewBindingError("review workspace root is unsafe")
+        with _lease_context(_open_absolute_directory(root, create=False)) as lease:
+            lease.assert_intact()
+            snapshot = read_verified_artifact_snapshot_at(
+                lease.fd, ("workspace-manifest.json",), None
+            )
+            raw = snapshot.raw
+            manifest = ReviewWorkspaceManifestV4.model_validate_json(raw)
+            canonical_raw = canonical_json_v4(manifest.model_dump(mode="json")).encode("utf-8")
+            if raw != canonical_raw:
+                raise ReviewBindingError("workspace manifest bytes are not canonical")
+            identity = checked_paths.identity
+            if (manifest.run_id, manifest.candidate_id, manifest.revision_id) != (
+                identity.run_id,
+                identity.candidate_id,
+                identity.revision_id,
+            ):
+                raise ReviewBindingError("workspace manifest identity differs from ArtifactPaths")
+            _verify_workspace_fd(lease.fd, manifest, expected_manifest_raw=raw)
+            lease.assert_intact()
+    except ReviewBindingError:
+        raise
+    except (ArtifactBindingError, ArtifactIdentityError, OSError, ValueError, TypeError) as error:
+        raise ReviewBindingError("persisted review workspace is invalid or unsafe") from error
+    return ReviewWorkspaceV4(root, manifest, checked_paths, raw)
 
 
 def verify_review_workspace(workspace: ReviewWorkspaceV4) -> None:
-    """Re-read a published workspace through no-follow, trusted-manifest reads."""
+    """Re-read a published workspace through no-follow, persisted evidence."""
 
-    if not isinstance(workspace, ReviewWorkspaceV4):
+    if type(workspace) is not ReviewWorkspaceV4:
         raise ReviewBindingError("workspace must be a ReviewWorkspaceV4")
-    if workspace._trust_token is not _WORKSPACE_TRUST_TOKEN:
-        raise ReviewBindingError("workspace handle was not issued by the verifier")
-    if workspace._attestation != _workspace_attestation(workspace):
-        raise ReviewBindingError("workspace handle attestation does not bind its manifest and paths")
-    try:
-        paths = revalidate_artifact_paths(workspace.artifact_paths)
-    except (ArtifactIdentityError, OSError) as error:
-        raise ReviewBindingError("review workspace artifact root changed") from error
-    if workspace.root != paths.review_root:
-        raise ReviewBindingError("review workspace root drifted")
-    expected_raw = workspace.manifest_raw
-    canonical_manifest_raw = canonical_json_v4(workspace.manifest.model_dump(mode="json")).encode("utf-8")
-    if expected_raw != canonical_manifest_raw:
-        raise ReviewBindingError("workspace manifest raw bytes are not the trusted canonical payload")
-    _verify_workspace_root(workspace.root, workspace.manifest, expected_manifest_raw=expected_raw)
+    loaded = load_review_workspace(workspace.artifact_paths)
+    if workspace.root != loaded.root or workspace.artifact_paths != loaded.artifact_paths:
+        raise ReviewBindingError("review workspace root or ArtifactPaths drifted")
+    if workspace.manifest != loaded.manifest or workspace.manifest_raw != loaded.manifest_raw:
+        raise ReviewBindingError("review workspace handle does not match persisted evidence")
 
 
 def read_review_intent(workspace: ReviewWorkspaceV4) -> HumanReviewIntentV4:
     """Safely parse mutable review/decision.json without binding it to approval."""
 
-    if (
-        type(workspace) is not ReviewWorkspaceV4
-        or workspace._trust_token is not _WORKSPACE_TRUST_TOKEN
-        or workspace._attestation != _workspace_attestation(workspace)
-    ):
-        raise ReviewBindingError("workspace handle was not issued by the verifier")
+    verify_review_workspace(workspace)
     try:
         paths = revalidate_artifact_paths(workspace.artifact_paths)
         snapshot = read_verified_artifact_snapshot(paths.review_root / "decision.json", None, containment_root=paths.review_root)
@@ -1166,6 +1311,7 @@ def read_review_intent(workspace: ReviewWorkspaceV4) -> HumanReviewIntentV4:
 
 
 __all__ = [
-    "ReviewBindingError", "ReviewWorkspaceInputsV4", "ReviewWorkspaceV4",
-    "build_review_workspace", "verify_review_workspace", "read_review_intent",
+    "ReviewBindingError", "ReviewCleanupOutcomeV4", "ReviewWorkspaceInputsV4",
+    "ReviewWorkspaceV4", "build_review_workspace", "load_review_workspace",
+    "verify_review_workspace", "read_review_intent",
 ]
