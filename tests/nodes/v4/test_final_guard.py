@@ -37,7 +37,11 @@ def test_approve_state_yields_attestation_embedding_the_complete_decision(tmp_pa
         == workspace.reference.canonical_sha256
     )
     # The complete reviewed decision is embedded, not just its identity.
-    assert dict(attestation.human_review_decision) == dict(
+    # (Compare through the canonical JSON form: frozen maps store tuples
+    # while json-mode dumps produce lists — canonically identical.)
+    from src.schemas.v4.content import canonical_json_v4
+
+    assert canonical_json_v4(dict(attestation.human_review_decision)) == canonical_json_v4(
         result.decision.model_dump(mode="json")
     )
     # The json-mode twin in the patch round-trips through the strict schema.

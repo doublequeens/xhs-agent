@@ -19,12 +19,14 @@ from pydantic import (
     StrictBool,
     StrictInt,
     StrictStr,
+    field_serializer,
     field_validator,
     model_validator,
 )
 
 from src.schemas.v4.content import canonical_sha256_v4
 from src.schemas.v4.review import ReviewActionV4
+from src.schemas.visual_style import deep_freeze, deep_thaw
 
 WORKFLOW_VERSION_V4 = "llm_scene_v4"
 
@@ -101,6 +103,17 @@ class FinalPolicyAttestationV4(_FrozenPublishingV4):
     workspace_reference_canonical_sha256: StrictStr
     human_review_decision: Mapping[StrictStr, Any]
     canonical_sha256: StrictStr
+
+    @field_validator("human_review_decision")
+    @classmethod
+    def frozen_decision(cls, value):
+        if not isinstance(value, Mapping):
+            raise ValueError("human_review_decision must be a JSON mapping")
+        return deep_freeze(dict(value))
+
+    @field_serializer("human_review_decision")
+    def thawed_decision(self, value):
+        return deep_thaw(value)
 
     @classmethod
     def create(cls, **payload: object) -> "FinalPolicyAttestationV4":
@@ -198,7 +211,11 @@ class PublishAttestationV4(_FrozenPublishingV4):
             _sha_value(digest, "page_sha256 value")
         if "contact-sheet.png" not in value:
             raise ValueError("page_sha256 must cover the contact sheet")
-        return value
+        return deep_freeze(dict(value))
+
+    @field_serializer("page_sha256")
+    def thawed_pages(self, value):
+        return deep_thaw(value)
 
     @model_validator(mode="after")
     def integrity(self) -> "PublishAttestationV4":
@@ -227,6 +244,17 @@ class ShadowManifestV4(_FrozenPublishingV4):
     page_sha256: Mapping[StrictStr, StrictStr] = Field(min_length=1)
     page_count: StrictInt
     canonical_sha256: StrictStr
+
+    @field_validator("contract_sha256", "page_sha256")
+    @classmethod
+    def frozen_maps(cls, value):
+        if not isinstance(value, Mapping):
+            raise ValueError("shadow manifest maps must be JSON mappings")
+        return deep_freeze(dict(value))
+
+    @field_serializer("contract_sha256", "page_sha256")
+    def thawed_maps(self, value):
+        return deep_thaw(value)
 
     @classmethod
     def create(cls, **payload: object) -> "ShadowManifestV4":
