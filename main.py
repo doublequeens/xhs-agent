@@ -198,6 +198,16 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--subdomain", type=str, help="Explicit subdomain for the selected domain")
     run_group = parser.add_mutually_exclusive_group()
     run_group.add_argument("--new", action="store_true", help="Force a new agent run")
+    run_group.add_argument(
+        "--visual-workflow",
+        choices=("llm_scene_v3", "llm_scene_v4"),
+        help="Select the visual workflow for a new run (default llm_scene_v3)",
+    )
+    run_group.add_argument(
+        "--shadow-v4-from",
+        metavar="RUN",
+        help="Seed a new linked llm_scene_v4 shadow run from a v3 run's assembler copy",
+    )
     run_group.add_argument("--resume", nargs="?", const="", metavar="RUN", help="Resume by run ID or thread ID")
     run_group.add_argument("--thread-id", type=str, help="Existing conversation thread ID to resume")
     parser.add_argument("--runs", action="store_true", help="List the latest 20 runs and exit")
@@ -1018,10 +1028,22 @@ def collect_domain_confirmation(interrupt_value: dict) -> dict:
         return {"domain": selected_domain, "subdomain": selected_subdomain}
 
 
+class V4ReviewRequired(RuntimeError):
+    """A v4 run paused at the hash-bound Human Review interrupt."""
+
+    def __init__(self, payload: dict):
+        super().__init__("v4 human review required")
+        self.payload = payload
+
+
 def collect_interrupt_response(interrupt_value: dict) -> dict:
     kind = interrupt_value.get("kind")
     if kind == "domain_confirmation":
         return collect_domain_confirmation(interrupt_value)
+    if kind == "v4_human_review":
+        # The v4 review boundary is the local CLI (Task 16B); the interactive
+        # v3 questionnaire must never answer it.
+        raise V4ReviewRequired(interrupt_value)
     if kind in {None, "publish_review"}:
         return collect_human_review(interrupt_value)
     raise ValueError(f"Unsupported interrupt kind: {kind}")
@@ -1032,6 +1054,16 @@ def export_completed_publish_package(graph, config) -> bool:
     if not hasattr(graph, "get_state"):
         return False
     completed_state = graph.get_state(config)
+    values = completed_state.values if completed_state is not None else None
+    if isinstance(values, Mapping) and "final_policy_attestation_v4" in values:
+        from src.publishing.v4_artifacts import export_v4_publish_package
+
+        publish_package = values.get("publish_package")
+        if isinstance(publish_package, Mapping):
+            print("The final publish package title is:")
+            print(publish_package["title"])
+        export_v4_publish_package(dict(values))
+        return True
     try:
         publish_package = completed_state.values["publish_package"]
         print("The final publish package title is:")
@@ -1074,6 +1106,7 @@ def stream_graph_until_stop(
 
     while True:
         interrupted = False
+        v4_review_wait = False
         for output in graph.stream(next_input, config=config):
             for key, value in output.items():
                 if key == "__interrupt__":
@@ -1090,7 +1123,27 @@ def stream_graph_until_stop(
                         )
                     if review_input_state is not None:
                         review_input_state["bound"] = True
-                    response = collect_interrupt_response(payload)
+                    try:
+                        response = collect_interrupt_response(payload)
+                    except V4ReviewRequired as pending:
+                        # v4 review happens through the local review CLI
+                        # (Task 16B); resume later with --resume after
+                        # --review-submit has appended the decision.
+                        if registry is not None and thread_id is not None:
+                            _update_run_lifecycle(
+                                registry,
+                                thread_id,
+                                status="awaiting_review",
+                                execution_state="WAITING_HUMAN",
+                            )
+                        index = pending.payload.get("workspace_index")
+                        print(
+                            "v4 人工审核已就绪：先用 --review-show 查看 "
+                            f"(index: {index})，再 --review-submit 提交决定，"
+                            f"最后 --resume {thread_id} 继续。"
+                        )
+                        v4_review_wait = True
+                        break
                     if review_input_state is not None:
                         review_input_state["bound"] = False
                     next_input = Command(resume=response)
@@ -1109,8 +1162,53 @@ def stream_graph_until_stop(
             if interrupted:
                 break
 
+        if interrupted and not v4_review_wait:
+            continue
+        if v4_review_wait:
+            return None
+
         if not interrupted:
             return export_completed_publish_package(graph, config)
+
+
+def _extract_v3_assembler_copy(source_thread_id: str):
+    """Read one validated assembler copy from a frozen v3 run checkpoint."""
+
+    graph = _create_v3_graph()
+    state = graph.get_state({"configurable": {"thread_id": source_thread_id}})
+    values = state.values if state is not None else None
+    package = values.get("publish_package") if isinstance(values, Mapping) else None
+    if not isinstance(package, Mapping) or not package:
+        return None
+    resolve_publish_package_profile(package)
+    return dict(package)
+
+
+def _seed_v4_shadow_run(registry: RunRegistry, args: argparse.Namespace):
+    """Create one linked v4 shadow run seeded from a v3 source run.
+
+    Returns ``(thread_id, seed_package, source_run_id)``.  The source run's
+    registry row and frozen v3 graph are only read, never mutated.
+    """
+
+    source_run = _resolve_run(registry, args.shadow_v4_from)
+    if source_run is None:
+        raise RunRegistryError(f"找不到 shadow 源任务：{args.shadow_v4_from}")
+    if source_run.workflow_version != "llm_scene_v3":
+        raise RunRegistryError("--shadow-v4-from requires an llm_scene_v3 source run")
+    seed_package = _extract_v3_assembler_copy(source_run.thread_id)
+    if seed_package is None:
+        raise RunRegistryError(
+            f"源任务 {source_run.thread_id} 的 checkpoint 缺少可用的 assembler 副本"
+        )
+    thread_id = build_thread_id(None)
+    registry.create_run(
+        thread_id,
+        args.focus_keyword,
+        workflow_version="llm_scene_v4",
+        run_mode="shadow",
+    )
+    return thread_id, seed_package, str(source_run.run_id)
 
 
 def main():
@@ -1147,10 +1245,17 @@ def main():
             run_v4_review_cli(args, registry)
             return
 
-        selection = select_run(registry, args)
-        if selection is None:
-            return
-        thread_id, is_new = selection
+        seed_package = None
+        source_run_id = None
+        shadow_mode = getattr(args, "shadow_v4_from", None) is not None
+        if shadow_mode:
+            thread_id, seed_package, source_run_id = _seed_v4_shadow_run(registry, args)
+            is_new = True
+        else:
+            selection = select_run(registry, args)
+            if selection is None:
+                return
+            thread_id, is_new = selection
 
         init_message = "Starting Xiaohongshu Agent"
         if args.provider:
@@ -1172,8 +1277,12 @@ def main():
         workflow_context = select_workflow_context(
             registry,
             thread_id,
-            requested_version=None,
-            run_mode=None,
+            requested_version=(
+                "llm_scene_v4"
+                if shadow_mode
+                else getattr(args, "visual_workflow", None)
+            ),
+            run_mode="shadow" if shadow_mode else None,
         )
         if persisted_run is None:
             graph = build_graph_for_context(
@@ -1189,6 +1298,19 @@ def main():
         database.init_db("memory/schema.sql")
         initial_state = create_initial_state(args)
         initial_state["run_output_dir"] = _resolve_run_output_dir(thread_id)
+        if workflow_context.workflow_version == "llm_scene_v4":
+            initial_state.update(
+                {
+                    "run_id": thread_id,
+                    "run_mode": workflow_context.run_mode,
+                    "candidate_id": "candidate-1",
+                    "revision_id": "revision-1",
+                    "revision": 1,
+                    "source_run_id": source_run_id,
+                }
+            )
+            if seed_package is not None:
+                initial_state["publish_package"] = dict(seed_package)
         config = build_run_config(thread_id)
         current_state, run_input = load_versioned_run(
             graph,

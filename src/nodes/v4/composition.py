@@ -6,7 +6,13 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.schemas.v4.content import canonical_sha256_v4
-from src.schemas.v4.direction import CarouselNarrativeV4, PageBriefV4, TemplateFamilyV4
+from src.schemas.v4.direction import (
+    CarouselNarrativeV4,
+    PageBriefSetV4,
+    PageBriefV4,
+    TemplateFamilyV4,
+    VisualDirectionPlanV4,
+)
 from src.schemas.v4.layout import (
     AssetPlacementV4,
     EmphasisRuleV4,
@@ -238,6 +244,76 @@ def build_layout_program(
         **payload,
         canonical_sha256=canonical_sha256_v4(canonical_source),
     )
+
+
+def composition_planning_node(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Select one grammar per page deterministically and emit layout programs.
+
+    For each durable page brief, the first entry of
+    ``preferred_compositions`` that survives ``build_layout_program``'s full
+    compatibility validation (task kind, derived page role, density) wins;
+    there is no fallback beyond the page's own ordered preferences.  The node
+    also persists the family tokens the layout compiler and renderer share.
+    """
+
+    if not isinstance(state, Mapping):
+        raise TypeError("v4 composition planning requires a state mapping")
+    plan_value = state.get("visual_direction_plan")
+    raw_plan = (
+        plan_value.model_dump(mode="python")
+        if isinstance(plan_value, VisualDirectionPlanV4)
+        else plan_value
+    )
+    if not isinstance(raw_plan, Mapping):
+        raise ValueError("v4 composition planning requires one hash-bound direction plan")
+    try:
+        plan = VisualDirectionPlanV4.model_validate(_tupleize(raw_plan))
+        plan.validate_integrity()
+    except Exception:
+        raise ValueError("v4 composition direction plan is stale or invalid") from None
+    narrative = plan.narrative
+    raw_pages = state.get("page_brief_set", state.get("page_briefs"))
+    raw_pages = (
+        raw_pages.model_dump(mode="python")
+        if isinstance(raw_pages, PageBriefSetV4)
+        else raw_pages
+    )
+    if not isinstance(raw_pages, Mapping):
+        raise ValueError("v4 composition planning requires one durable page brief set")
+    try:
+        page_set = PageBriefSetV4.model_validate(_tupleize(raw_pages))
+        page_set.validate_integrity()
+    except Exception:
+        raise ValueError("v4 composition page brief set is stale or invalid") from None
+    family = plan.template_family
+    programs = []
+    for page in page_set.pages:
+        errors: list[str] = []
+        for grammar_id in page.preferred_compositions:
+            try:
+                programs.append(
+                    build_layout_program(
+                        page, grammar_id, family=family, narrative=narrative
+                    )
+                )
+                break
+            except ValueError as error:
+                errors.append(f"{grammar_id}: {error}")
+        else:
+            raise ValueError(
+                f"no preferred composition is valid for page {page.page_id!r}: "
+                + "; ".join(errors)
+            )
+    return {
+        "layout_programs": tuple(programs),
+        "family_tokens": get_family_tokens(family),
+        "current_node": "V4_COMPOSITION_PLANNING",
+        "route": "layout_compiler",
+        "visual_route": "layout_compiler",
+    }
+
+
+v4_composition_planning_node = composition_planning_node
 
 
 __all__ = ["build_layout_program"]

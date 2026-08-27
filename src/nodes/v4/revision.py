@@ -6,11 +6,17 @@ from collections.abc import Mapping
 from typing import Any
 
 from src.schemas.v4.direction import AuthoringQAResultV4
+from src.schemas.v4.layout import CarouselDesignPlanV4
 from src.schemas.v4.quality import DesignPlanQAResultV4
 from src.schemas.v4.rendering import RenderManifestV4, RenderQAResultV4
 from src.schemas.v4.direction import PageBriefSetV4
 from src.schemas.v4.semantic import SemanticContentModelV4
-from src.schemas.v4.revision import FailureFingerprintV4, NormalizedFailureV4, RevisionEventV4
+from src.schemas.v4.revision import (
+    FailureFingerprintV4,
+    NormalizedFailureV4,
+    RevisionEventV4,
+    RevisionRequestV4,
+)
 from src.schemas.v4.semantic import SemanticQAResultV4
 from src.visual_design.v4.revisions import append_revision_event, layer_for_failure_code, route_revision
 
@@ -19,6 +25,75 @@ _ROUTE_FOR_LAYER = {
     "SEMANTIC": "semantic_reviser", "AUTHORING": "authoring_reviser", "ASSET": "asset_resolver",
     "COMPOSITION": "composition_reviser", "LAYOUT": "layout_reviser", "RENDER": "render", "AESTHETIC": "visual_critic",
 }
+
+
+def _canonical(value: Any, model_type: type, label: str) -> Any:
+    """Revalidate one contract through its strict canonical-JSON boundary.
+
+    LangGraph checkpoints rebuild pydantic contracts with ``model_construct``
+    (nested models left as dicts, tuples as lists), so exact-class identity is
+    not enough after any checkpoint hop.
+    """
+
+    from src.schemas.v4.content import canonical_json_v4
+    import warnings
+
+    if isinstance(value, Mapping):
+        payload = dict(value)
+    elif isinstance(value, model_type):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            payload = value.model_dump(mode="json")
+    else:
+        raise ValueError(f"v4 revision {label} must be an exact {model_type.__name__}")
+    try:
+        restored = model_type.model_validate_json(
+            canonical_json_v4(payload).encode("utf-8")
+        )
+    except Exception:
+        raise ValueError(f"v4 revision {label} is stale or invalid") from None
+    return restored
+
+
+_CANONICAL_CHANNELS: tuple[tuple[tuple[str, ...], type], ...] = (
+    (("render_qa_result_v4", "render_qa_result"), RenderQAResultV4),
+    (("design_plan_qa_result_v4", "design_plan_qa_result"), DesignPlanQAResultV4),
+    (("authoring_qa_result", "authoring_qa"), AuthoringQAResultV4),
+    (("semantic_qa_result", "semantic_qa"), SemanticQAResultV4),
+    (("page_brief_set", "page_briefs"), PageBriefSetV4),
+    (("carousel_design_plan_v4", "carousel_design_plan"), CarouselDesignPlanV4),
+    (("render_manifest_v4", "render_manifest"), RenderManifestV4),
+    (("semantic_content_model", "semantic_model"), SemanticContentModelV4),
+)
+
+
+def _canonical_state(state: Mapping[str, Any]) -> dict[str, Any]:
+    """Rebuild every checkpoint-carried contract the revision node checks."""
+
+    mapping = dict(state)
+    for aliases, model_type in _CANONICAL_CHANNELS:
+        for alias in aliases:
+            value = mapping.get(alias)
+            if value is not None:
+                mapping[alias] = _canonical(value, model_type, alias)
+    history = mapping.get("revision_history_v4")
+    if history:
+        mapping["revision_history_v4"] = tuple(
+            _canonical(event, RevisionEventV4, "revision event")
+            for event in history
+        )
+    existing_request = mapping.get("revision_request_v4")
+    if existing_request is not None:
+        mapping["revision_request_v4"] = _canonical(
+            existing_request, RevisionRequestV4, "revision request"
+        )
+    failures = mapping.get("normalized_failures_v4")
+    if failures:
+        mapping["normalized_failures_v4"] = tuple(
+            _canonical(item, NormalizedFailureV4, "normalized failure")
+            for item in failures
+        )
+    return mapping
 
 
 def _first_value(state: Mapping[str, Any], *keys: str) -> Any:
@@ -141,8 +216,25 @@ def revision_node(state: Mapping[str, Any]) -> dict[str, Any]:
     """Derive one repair request, append one event, and publish no human route."""
     if not isinstance(state, Mapping):
         raise TypeError("v4 revision node requires a state mapping")
-    if "revision_request_v4" in state:
-        raise ValueError("v4 revision node derives requests and rejects caller-supplied requests")
+    state = _canonical_state(state)
+    existing_request = state.get("revision_request_v4")
+    if existing_request is not None:
+        # The boundary derives requests and never accepts caller-supplied
+        # ones — but its own previous derivation legitimately persists in
+        # graph state when a repair loop re-enters this node.  Its own prior
+        # request is identifiable: it binds exactly the fingerprints of the
+        # last durable history event.
+        history_for_check = tuple(state.get("revision_history_v4", ()))
+        last_event = history_for_check[-1] if history_for_check else None
+        last_fingerprints = (
+            {fp.canonical_sha256 for fp in last_event.fingerprints}
+            if last_event is not None
+            else set()
+        )
+        if set(existing_request.failure_fingerprints) != last_fingerprints:
+            raise ValueError(
+                "v4 revision node derives requests and rejects caller-supplied requests"
+            )
     candidate_id = state.get("candidate_id")
     if type(candidate_id) is not str:
         raise ValueError("v4 revision node requires a candidate_id")

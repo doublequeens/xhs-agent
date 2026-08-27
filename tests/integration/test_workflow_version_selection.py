@@ -104,13 +104,17 @@ def test_main_import_does_not_require_v4_graph_module(monkeypatch):
     assert loaded_main is sys.modules["main"]
 
 
-def test_v4_graph_import_fails_only_at_the_lazy_factory_boundary(monkeypatch):
+def test_v4_graph_resolves_only_at_the_lazy_factory_boundary(monkeypatch):
     monkeypatch.delitem(sys.modules, "src.graph_v4", raising=False)
 
-    with pytest.raises(ModuleNotFoundError, match="src.graph_v4"):
-        main_module._create_v4_graph()
-
+    # The v4 graph module now exists; the lazy boundary still holds —
+    # importing main never pulls it in, and the factory module resolves on
+    # demand.  (Building a real graph is covered by tests/test_graph_v4.py
+    # with an injected memory checkpointer.)
     assert "src.graph_v4" not in sys.modules
+    graph_module = importlib.import_module("src.graph_v4")
+    assert callable(graph_module.create_graph_v4)
+    assert "src.graph_v4" in sys.modules
 
 
 def test_main_builds_persisted_graph_before_first_checkpoint_read(monkeypatch, tmp_path):

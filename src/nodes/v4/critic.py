@@ -36,18 +36,24 @@ def _identity(state: Mapping[str, Any], key: str) -> str:
 
 
 def _checked(value: Any, model: type, name: str):
-    if type(value) is not model:
+    from src.schemas.v4.content import canonical_json_v4
+    import warnings
+
+    if not isinstance(value, model) and not isinstance(value, Mapping):
         raise ValueError(f"v4 aesthetic critic requires exact {name}")
     try:
-        if hasattr(value, "validate_integrity"):
-            value.validate_integrity()
-        else:
-            checked = model.model_validate(value.model_dump(mode="python"))
-            if checked != value:
-                raise ValueError
+        # LangGraph checkpoints rebuild pydantic contracts either as plain
+        # mappings (unregistered) or model_construct instances with nested
+        # dicts/lists (registered), so identity or python-mode revalidation
+        # would spuriously reject serialized state.  Revalidate through the
+        # canonical JSON boundary instead — and return the rebuilt instance
+        # so downstream attribute access never sees degraded forms.
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            payload = value.model_dump(mode="json") if isinstance(value, model) else dict(value)
+        return model.model_validate_json(canonical_json_v4(payload).encode("utf-8"))
     except Exception:
         raise ValueError(f"v4 aesthetic critic received invalid {name}") from None
-    return value
 
 
 def _q3_sources(state: Mapping[str, Any]) -> dict[str, Any]:
@@ -74,6 +80,21 @@ def _q3_sources(state: Mapping[str, Any]) -> dict[str, Any]:
     }
     for name, model in expected.items():
         sources[name] = _checked(sources[name], model, name)
+    paths = sources["artifact_paths"]
+    if paths is not None and (
+        type(paths) is not ArtifactPaths
+        or not isinstance(paths.trusted_base_identity, tuple)
+    ):
+        # Checkpoints degrade the paths dataclass to a mapping (or rebuild it
+        # with tuple fields as lists); rehydrate it through the same strict
+        # rebuild the review loader uses.
+        from src.review.v4_checkpoint import V4ReviewCheckpointError, _rehydrate_paths
+
+        try:
+            paths = _rehydrate_paths(paths)
+        except V4ReviewCheckpointError as error:
+            raise ValueError("v4 aesthetic critic artifact paths are stale") from error
+        sources["artifact_paths"] = paths
     if type(sources["artifact_paths"]) is not ArtifactPaths:
         raise ValueError("v4 aesthetic critic requires exact artifact_paths")
     paths = sources["artifact_paths"]

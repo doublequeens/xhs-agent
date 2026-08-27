@@ -55,6 +55,46 @@ def _first(state: Mapping[str, Any], *names: str) -> Any:
     return None
 
 
+def _canonical_contract(value: Any, contract_type: type, name: str) -> Any:
+    """Revalidate one contract through its strict canonical-JSON boundary.
+
+    LangGraph persists every channel value through its msgpack serializer,
+    which rebuilds pydantic contracts with ``model_construct`` (validators
+    skipped, nested models left as raw dicts).  Exact-class identity is
+    therefore not enough after any checkpoint hop: the payload is dumped
+    back to canonical JSON and revalidated so every nested model and hash
+    self-check runs again.
+    """
+
+    from src.schemas.v4.content import canonical_json_v4
+
+    if isinstance(value, Mapping):
+        payload = dict(value)
+    elif isinstance(value, contract_type):
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            payload = value.model_dump(mode="json")
+    else:
+        raise HumanReviewDecisionError(
+            f"v4 Human Review {name} must be an exact source contract"
+        )
+    try:
+        restored = contract_type.model_validate_json(
+            canonical_json_v4(payload).encode("utf-8")
+        )
+    except Exception as error:
+        raise HumanReviewDecisionError(
+            f"v4 Human Review {name} is not an exact source contract"
+        ) from error
+    if type(restored) is not contract_type:
+        raise HumanReviewDecisionError(
+            f"v4 Human Review {name} is not an exact source contract"
+        )
+    return restored
+
+
 def _coerce_inputs(state: Mapping[str, Any]) -> ReviewWorkspaceInputsV4:
     direct = _first(state, "review_workspace_inputs_v4", "review_inputs_v4", "review_inputs")
     if type(direct) is ReviewWorkspaceInputsV4:
@@ -82,8 +122,15 @@ def _coerce_inputs(state: Mapping[str, Any]) -> ReviewWorkspaceInputsV4:
     }
     if any(value is None for key, value in fields.items() if key != "asset_resolution_result" and key != "previous_review_workspace"):
         raise HumanReviewDecisionError("v4 Human Review state lacks exact review source contracts")
+    from src.review.v4_checkpoint import V4ReviewCheckpointError, _rehydrate_paths
+
+    try:
+        fields["artifact_paths"] = _rehydrate_paths(fields["artifact_paths"])
+    except V4ReviewCheckpointError as error:
+        raise HumanReviewDecisionError(
+            "v4 Human Review artifact paths are stale or unsafe"
+        ) from error
     expected = {
-        "artifact_paths": ArtifactPaths,
         "content_lock": ContentLock,
         "content_atom_set": ContentAtomSetV4,
         "semantic_content_model": SemanticContentModelV4,
@@ -98,18 +145,16 @@ def _coerce_inputs(state: Mapping[str, Any]) -> ReviewWorkspaceInputsV4:
         "visual_critique": CarouselAestheticEvaluationV4,
     }
     for name, contract_type in expected.items():
-        if type(fields[name]) is not contract_type:
-            raise HumanReviewDecisionError(
-                f"v4 Human Review {name} must be an exact source contract"
-            )
+        fields[name] = _canonical_contract(fields[name], contract_type, name)
     for name in ("asset_resolution_result", "previous_review_workspace"):
         value = fields[name]
-        if value is not None and type(value) not in (
-            AssetResolutionResult if name == "asset_resolution_result" else ReviewWorkspaceV4,
-        ):
-            raise HumanReviewDecisionError(
-                f"v4 Human Review {name} must be an exact optional contract"
+        if value is not None:
+            optional_type = (
+                AssetResolutionResult
+                if name == "asset_resolution_result"
+                else ReviewWorkspaceV4
             )
+            fields[name] = _canonical_contract(value, optional_type, name)
     try:
         return ReviewWorkspaceInputsV4(**fields)
     except Exception as error:
@@ -120,20 +165,32 @@ def _coerce_workspace(
     state: Mapping[str, Any],
     inputs: ReviewWorkspaceInputsV4,
 ) -> ReviewWorkspaceV4:
+    from src.review.v4_checkpoint import V4ReviewCheckpointError, _rehydrate_paths
+
     workspace = _first(state, "review_workspace", "review_workspace_v4")
     reference = _first(
         state, "review_workspace_reference", "review_workspace_reference_v4"
     )
+    paths = inputs.artifact_paths
     if type(workspace) is ReviewWorkspaceV4:
+        # LangGraph checkpoints rebuild dataclasses with tuple fields as
+        # lists, so a state-carried handle can never be trusted directly:
+        # its authorization is re-derived from the anchored filesystem.
         if type(workspace.reference) is not ReviewWorkspaceReferenceV4:
             raise HumanReviewDecisionError("state workspace has no externally-authorized reference")
         if reference is not None and reference != workspace.reference:
             raise HumanReviewDecisionError("state workspace reference differs from loaded workspace")
-        return workspace
+        try:
+            paths = _rehydrate_paths(workspace.artifact_paths)
+        except V4ReviewCheckpointError as error:
+            raise HumanReviewDecisionError(
+                "state workspace artifact paths are stale or unsafe"
+            ) from error
+        reference = workspace.reference
     if type(reference) is not ReviewWorkspaceReferenceV4:
         raise HumanReviewDecisionError("v4 Human Review requires persisted workspace reference")
     try:
-        return load_review_workspace(inputs.artifact_paths, reference)
+        return load_review_workspace(paths, reference)
     except ReviewBindingError as error:
         raise HumanReviewDecisionError("persisted v4 review workspace is stale or unauthorized") from error
 

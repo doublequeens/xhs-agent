@@ -1914,3 +1914,98 @@ def test_v4_review_cli_submit_and_verify_use_same_apis_without_graph_or_memory(t
     assert verify_calls[0][0] is checked
     assert '"action":"APPROVE"' in verify_output[0]
     registry.close()
+
+
+def test_visual_workflow_and_shadow_cli_flags_parse_additively(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    ns = main.parse_cli_args(["--visual-workflow", "llm_scene_v4"])
+    assert ns.visual_workflow == "llm_scene_v4"
+    ns = main.parse_cli_args(["--new"])
+    assert ns.visual_workflow is None and ns.shadow_v4_from is None
+    ns = main.parse_cli_args(["--shadow-v4-from", "3"])
+    assert ns.shadow_v4_from == "3"
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--visual-workflow", "llm_scene_v4", "--resume", "1"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--shadow-v4-from", "3", "--visual-workflow", "llm_scene_v3"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--visual-workflow", "llm_scene_v9"])
+
+
+def test_v4_human_review_interrupt_requires_local_cli(monkeypatch):
+    main = _load_main(monkeypatch)
+
+    with pytest.raises(main.V4ReviewRequired) as pending:
+        main.collect_interrupt_response({"kind": "v4_human_review", "workspace_index": "review/index.html"})
+    assert pending.value.payload["workspace_index"] == "review/index.html"
+
+
+def test_seed_v4_shadow_run_links_and_freezes_source(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "runs.sqlite")
+    registry.create_run("source-thread", workflow_version="llm_scene_v3")
+    source = registry.get_by_thread_id("source-thread")
+
+    captured = {}
+
+    def fake_extract(thread_id):
+        captured["thread"] = thread_id
+        return {"title": "源标题", "content": "正文", "domain": "beauty"}
+
+    monkeypatch.setattr(main, "_extract_v3_assembler_copy", fake_extract)
+    args = main.parse_cli_args(["--shadow-v4-from", str(source.run_id)])
+
+    thread_id, seed, source_run_id = main._seed_v4_shadow_run(registry, args)
+
+    assert captured["thread"] == "source-thread"
+    assert seed["title"] == "源标题"
+    assert source_run_id == str(source.run_id)
+    shadow = registry.get_by_thread_id(thread_id)
+    assert shadow is not None
+    assert shadow.workflow_version == "llm_scene_v4"
+    assert shadow.run_mode == "shadow"
+    assert registry.get_by_thread_id("source-thread").workflow_version == "llm_scene_v3"
+    registry.close()
+
+
+def test_seed_v4_shadow_run_rejects_missing_or_v3_less_sources(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    registry = RunRegistry(tmp_path / "runs.sqlite")
+    registry.create_run("v4-source", workflow_version="llm_scene_v4")
+
+    monkeypatch.setattr(main, "_extract_v3_assembler_copy", lambda _t: {"title": "t"})
+    with pytest.raises(main.RunRegistryError, match="llm_scene_v3"):
+        main._seed_v4_shadow_run(
+            registry, main.parse_cli_args(["--shadow-v4-from", "v4-source"])
+        )
+    with pytest.raises(main.RunRegistryError, match="找不到"):
+        main._seed_v4_shadow_run(
+            registry, main.parse_cli_args(["--shadow-v4-from", "missing"])
+        )
+    registry.close()
+
+
+def test_export_dispatches_v4_terminal_state_to_v4_exporter(monkeypatch, tmp_path):
+    main = _load_main(monkeypatch)
+    calls = []
+
+    class FakeState:
+        values = {
+            "final_policy_attestation_v4": object(),
+            "publish_package": {"title": "v4 标题"},
+        }
+
+    class FakeGraph:
+        def get_state(self, _config):
+            return FakeState()
+
+    import src.publishing.v4_artifacts as v4_artifacts
+
+    monkeypatch.setattr(
+        v4_artifacts,
+        "export_v4_publish_package",
+        lambda values: calls.append(dict(values)),
+    )
+    assert main.export_completed_publish_package(FakeGraph(), {}) is True
+    assert len(calls) == 1 and "publish_package" in calls[0]
