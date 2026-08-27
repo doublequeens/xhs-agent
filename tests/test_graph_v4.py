@@ -96,3 +96,68 @@ def test_v4_visual_routing_is_not_shared_with_v3():
         "route_after_human_review,",  # v3 human-review router import
     ):
         assert banned not in source, banned
+
+
+def test_composition_planning_node_selects_programs_and_fails_closed(tmp_path):
+    from src.nodes.v4.composition import composition_planning_node
+    from tests.review.test_v4_workspace import _inputs
+
+    inputs = _inputs(tmp_path, run_id="thread-1")
+    state = {
+        "visual_direction_plan": inputs.visual_direction_plan,
+        "page_brief_set": inputs.page_brief_set,
+    }
+    patch = composition_planning_node(state)
+    assert len(patch["layout_programs"]) == len(inputs.page_brief_set.pages)
+    assert patch["family_tokens"].family == inputs.visual_direction_plan.template_family
+    assert patch["route"] == "layout_compiler"
+    import pytest as _pytest
+
+    with _pytest.raises(ValueError):
+        composition_planning_node({"page_brief_set": inputs.page_brief_set})
+
+
+def test_extract_v3_assembler_copy_validates_profile_and_missing_copy(monkeypatch):
+    import main as main_module
+
+    class _State:
+        def __init__(self, values):
+            self.values = values
+
+    class _Graph:
+        def __init__(self, values):
+            self._values = values
+
+        def get_state(self, config):
+            assert config["configurable"]["thread_id"] == "src"
+            return _State(self._values)
+
+    valid = {
+        "title": "标题",
+        "content": "正文",
+        "hashtags": [],
+        "focus_keyword": "kw",
+        "topic": "t",
+        "angle": "a",
+        "cover_copy": "c",
+        "domain": "beauty",
+        "profile_version": "beauty-v1",
+    }
+    monkeypatch.setattr(main_module, "_create_v3_graph", lambda: _Graph({"publish_package": valid}))
+    extracted = main_module._extract_v3_assembler_copy("src")
+    assert extracted == valid
+    monkeypatch.setattr(
+        main_module, "_create_v3_graph", lambda: _Graph({"publish_package": {"title": "无元数据"}})
+    )
+    import pytest as _pytest
+
+    with _pytest.raises(Exception):
+        main_module._extract_v3_assembler_copy("src")
+    monkeypatch.setattr(main_module, "_create_v3_graph", lambda: _Graph({}))
+    assert main_module._extract_v3_assembler_copy("src") is None
+    monkeypatch.setattr(
+        main_module,
+        "_create_v3_graph",
+        lambda: _Graph({"publish_package": {}}),
+    )
+    assert main_module._extract_v3_assembler_copy("src") is None
