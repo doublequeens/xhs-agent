@@ -16,12 +16,12 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Literal
 from uuid import uuid4
 
 from src.schemas.v4.content import canonical_json_v4, canonical_sha256_v4
-from src.schemas.v4.critique import CarouselAestheticEvaluationV4
 from src.schemas.v4.revision import (
     FailureFingerprintV4,
     NormalizedFailureV4,
@@ -34,6 +34,9 @@ from src.schemas.v4.review import (
     HumanReviewDecisionReferenceV4,
     HumanReviewDecisionV4,
     HumanReviewIntentV4,
+    HumanReviewRouteContextV4,
+    HumanReviewRouteEvidenceV4,
+    ReviewWorkspaceManifestV4,
     ReviewWorkspaceReferenceV4,
     ReviewActionV4,
 )
@@ -54,7 +57,23 @@ from src.visual_runtime.artifact_identity import (
     _open_absolute_directory,
     read_verified_artifact_snapshot,
     revalidate_artifact_paths,
+    resolve_artifact_paths,
+    ArtifactIdentity,
+    ArtifactPaths,
 )
+from src.schemas.content_lock import ContentLock
+from src.schemas.assets import AssetManifest, AssetResolutionResult
+from src.schemas.v4.content import ContentAtomSetV4
+from src.schemas.v4.critique import CarouselAestheticEvaluationV4
+from src.schemas.v4.direction import (
+    CarouselNarrativeV4,
+    PageBriefSetV4,
+    VisualDirectionPlanV4,
+)
+from src.schemas.v4.layout import CarouselDesignPlanV4
+from src.schemas.v4.quality import DesignPlanQAResultV4
+from src.schemas.v4.rendering import RenderManifestV4, RenderQAResultV4
+from src.schemas.v4.semantic import SemanticContentModelV4
 
 
 class HumanReviewDecisionError(ReviewBindingError):
@@ -131,6 +150,8 @@ class HumanReviewActionResultV4:
     decision: HumanReviewDecisionV4
     reference: HumanReviewDecisionReferenceV4
     route: HumanReviewRouteV4
+    route_context: HumanReviewRouteContextV4
+    route_evidence: HumanReviewRouteEvidenceV4
     state_patch: Mapping[str, Any]
     revision_request: RevisionRequestV4 | None = None
     normalized_failures: tuple[NormalizedFailureV4, ...] = ()
@@ -268,7 +289,7 @@ def _require_substantive_rationale(intent: HumanReviewIntentV4) -> str:
 def _visible_copy_edit(
     intent: HumanReviewIntentV4,
     current_package: Mapping[str, Any] | None,
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], str, str]:
     if not isinstance(current_package, Mapping):
         raise HumanReviewDecisionError("visible-copy edit requires the current publish package")
     try:
@@ -294,7 +315,11 @@ def _visible_copy_edit(
         merged[key] = value
     if not changed:
         raise HumanReviewDecisionError("visible-copy payload does not change the current package")
-    return merged, canonical_sha256_v4(payload)
+    # The changed payload hash is useful for explaining the edit, but the
+    # immutable decision must additionally bind the complete resulting R2
+    # package.  Otherwise verification against an unrelated package that still
+    # contains the same changed field would incorrectly succeed.
+    return merged, canonical_sha256_v4(payload), canonical_sha256_v4(merged)
 
 
 def _page_ids_for_aesthetic(inputs: ReviewWorkspaceInputsV4) -> tuple[str, ...]:
@@ -428,8 +453,11 @@ def _decision_from_intent(
             raise HumanReviewDecisionError("AESTHETIC_OVERRIDE is valid only for a failed Q4")
     edited_package: Mapping[str, Any] | None = None
     visible_hash: str | None = None
+    visible_result_hash: str | None = None
     if intent.action == "VISIBLE_COPY_EDIT":
-        edited_package, visible_hash = _visible_copy_edit(intent, current_package)
+        edited_package, visible_hash, visible_result_hash = _visible_copy_edit(
+            intent, current_package
+        )
     decision_id = decision_id_factory() if decision_id_factory is not None else f"decision-{uuid4().hex}"
     decision_id = _identity(decision_id, "decision_id")
     rationale = intent.feedback if intent.action == "REQUEST_REVISION" else intent.rationale
@@ -456,8 +484,9 @@ def _decision_from_intent(
         contact_sheet_sha256=inputs.render_manifest.contact_sheet_sha256,
         asset_decisions=_asset_decisions(intent, assets),
         visible_copy_payload_sha256=visible_hash,
+        visible_copy_result_sha256=visible_result_hash,
     )
-    return decision, edited_package, visible_hash
+    return decision, edited_package, visible_result_hash
 
 
 def _append_decision_record(paths: Any, raw: bytes) -> None:
@@ -593,8 +622,19 @@ def _verify_decision_binding(
         expected_by_id = {asset.item.asset_id: asset.sha256 for asset in assets}
         if any(item.asset_sha256 != expected_by_id.get(item.asset_id) for item in decision.asset_decisions):
             raise HumanReviewDecisionError("asset replacement decision binds stale asset bytes")
-    elif decision.action == "VISIBLE_COPY_EDIT" and not decision.visible_copy_payload_sha256:
-        raise HumanReviewDecisionError("visible-copy decision has no derived payload hash")
+    elif decision.action == "VISIBLE_COPY_EDIT":
+        if not decision.visible_copy_payload_sha256:
+            raise HumanReviewDecisionError("visible-copy decision has no derived payload hash")
+        if not decision.visible_copy_result_sha256:
+            raise HumanReviewDecisionError("visible-copy decision has no resulting package hash")
+        if not isinstance(current_package, Mapping):
+            raise HumanReviewDecisionError(
+                "visible-copy decision verification requires the exact resulting package"
+            )
+        if decision.visible_copy_result_sha256 != canonical_sha256_v4(current_package):
+            raise HumanReviewDecisionError(
+                "visible-copy decision resulting package hash differs from current package"
+            )
     if decision.action == "APPROVE" and not inputs.visual_critique.passed:
         raise HumanReviewDecisionError("approved decision is not allowed for failed Q4")
     if decision.action == "AESTHETIC_OVERRIDE":
@@ -649,6 +689,269 @@ def _action_route(action: ReviewActionV4) -> HumanReviewRouteV4:
     }[action]
 
 
+_ROUTE_SOURCE_CONTRACTS = (
+    "content_lock", "content_atom_set", "semantic_content_model",
+    "carousel_narrative", "page_brief_set", "visual_direction_plan",
+    "asset_manifest", "carousel_design_plan", "design_plan_qa",
+    "render_manifest", "render_qa", "visual_critique",
+    "asset_resolution_result", "previous_review_workspace",
+)
+_ROUTE_PATH_FIELDS = (
+    "base_root", "run_root", "candidate_root", "revision_root", "asset_root",
+    "render_root", "review_root", "artifact_root",
+)
+_ROUTE_CONTRACT_TYPES = {
+    "content_lock": ContentLock,
+    "content_atom_set": ContentAtomSetV4,
+    "semantic_content_model": SemanticContentModelV4,
+    "carousel_narrative": CarouselNarrativeV4,
+    "page_brief_set": PageBriefSetV4,
+    "visual_direction_plan": VisualDirectionPlanV4,
+    "asset_manifest": AssetManifest,
+    "carousel_design_plan": CarouselDesignPlanV4,
+    "design_plan_qa": DesignPlanQAResultV4,
+    "render_manifest": RenderManifestV4,
+    "render_qa": RenderQAResultV4,
+    "visual_critique": CarouselAestheticEvaluationV4,
+    "asset_resolution_result": AssetResolutionResult,
+}
+
+
+def _route_paths_payload(paths: ArtifactPaths) -> dict[str, Any]:
+    """Serialize every exact path identity needed to rehydrate a route context."""
+
+    if type(paths) is not ArtifactPaths or paths.trusted_base_identity is None:
+        raise HumanReviewDecisionError("route context requires pinned ArtifactPaths")
+    payload: dict[str, Any] = {
+        field: str(getattr(paths, field)) for field in _ROUTE_PATH_FIELDS
+    }
+    payload["identity"] = {
+        "run_id": paths.identity.run_id,
+        "candidate_id": paths.identity.candidate_id,
+        "revision_id": paths.identity.revision_id,
+    }
+    payload["trusted_base_identity"] = list(paths.trusted_base_identity)
+    return payload
+
+
+def _route_workspace_payload(workspace: ReviewWorkspaceV4) -> dict[str, Any]:
+    if (
+        type(workspace) is not ReviewWorkspaceV4
+        or type(workspace.reference) is not ReviewWorkspaceReferenceV4
+    ):
+        raise HumanReviewDecisionError(
+            "route context requires an externally-authorized workspace"
+        )
+    try:
+        manifest_raw = workspace.manifest_raw.decode("utf-8")
+    except (AttributeError, UnicodeDecodeError) as error:
+        raise HumanReviewDecisionError(
+            "route context workspace manifest is not canonical UTF-8"
+        ) from error
+    return {
+        "root": str(workspace.root),
+        "artifact_paths": _route_paths_payload(workspace.artifact_paths),
+        "manifest": _route_json_payload(workspace.manifest),
+        "manifest_raw": manifest_raw,
+        "reference": _route_json_payload(workspace.reference),
+    }
+
+
+def _route_json_payload(value: Any) -> Any:
+    if value is None:
+        return None
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _route_json_payload(model_dump(mode="json"))
+    if isinstance(value, Mapping):
+        return {str(key): _route_json_payload(item) for key, item in value.items()}
+    if isinstance(value, (tuple, list)):
+        return [_route_json_payload(item) for item in value]
+    return value
+
+
+def _build_route_context(
+    decision: HumanReviewDecisionV4,
+    reference: HumanReviewDecisionReferenceV4,
+    workspace: ReviewWorkspaceV4,
+    inputs: ReviewWorkspaceInputsV4,
+    *,
+    route: HumanReviewRouteV4,
+    edited_package: Mapping[str, Any] | None,
+) -> HumanReviewRouteContextV4:
+    source_contracts = {
+        name: (
+            None
+            if getattr(inputs, name) is None
+            else (
+                _route_workspace_payload(getattr(inputs, name))
+                if name == "previous_review_workspace"
+                else _route_json_payload(getattr(inputs, name))
+            )
+        )
+        for name in _ROUTE_SOURCE_CONTRACTS
+    }
+    try:
+        return HumanReviewRouteContextV4.create(
+            route=route,
+            decision=decision,
+            reference=reference,
+            workspace_reference=workspace.reference,
+            artifact_paths=_route_paths_payload(inputs.artifact_paths),
+            workspace_manifest=_route_json_payload(workspace.manifest),
+            workspace_manifest_raw=workspace.manifest_raw.decode("utf-8"),
+            source_contracts=source_contracts,
+            current_package=(
+                None if edited_package is None else _route_json_payload(edited_package)
+            ),
+        )
+    except (UnicodeDecodeError, TypeError, ValueError) as error:
+        raise HumanReviewDecisionError(
+            "verified Human Review action could not be retained as route context"
+        ) from error
+
+
+def _restore_route_paths(payload: Mapping[str, Any]) -> ArtifactPaths:
+    if not isinstance(payload, Mapping):
+        raise HumanReviewDecisionError("route context ArtifactPaths are malformed")
+    identity_payload = payload.get("identity")
+    if not isinstance(identity_payload, Mapping):
+        raise HumanReviewDecisionError("route context ArtifactPaths identity is missing")
+    try:
+        identity = ArtifactIdentity(
+            run_id=identity_payload["run_id"],
+            candidate_id=identity_payload["candidate_id"],
+            revision_id=identity_payload["revision_id"],
+        )
+        expected = resolve_artifact_paths(payload["base_root"], identity)
+    except (KeyError, ArtifactIdentityError, TypeError, ValueError) as error:
+        raise HumanReviewDecisionError(
+            "route context ArtifactPaths are unsafe or malformed"
+        ) from error
+    if any(
+        type(payload.get(field)) is not str
+        or Path(payload[field]) != getattr(expected, field)
+        for field in _ROUTE_PATH_FIELDS
+    ):
+        raise HumanReviewDecisionError("route context ArtifactPaths drifted")
+    trusted = payload.get("trusted_base_identity")
+    if not isinstance(trusted, (tuple, list)) or tuple(trusted) != expected.trusted_base_identity:
+        raise HumanReviewDecisionError("route context ArtifactPaths base identity drifted")
+    try:
+        return revalidate_artifact_paths(expected)
+    except (ArtifactIdentityError, ArtifactBindingError, OSError) as error:
+        raise HumanReviewDecisionError("route context ArtifactPaths are stale or unsafe") from error
+
+
+def _restore_route_model(name: str, value: Any) -> Any:
+    contract_type = _ROUTE_CONTRACT_TYPES.get(name)
+    if contract_type is None:
+        raise HumanReviewDecisionError("route context contains an unknown source contract")
+    if not isinstance(value, Mapping):
+        raise HumanReviewDecisionError(f"route context source contract is missing: {name}")
+    try:
+        restored = contract_type.model_validate_json(canonical_json_v4(value).encode("utf-8"))
+    except Exception as error:
+        raise HumanReviewDecisionError(
+            f"route context source contract is malformed: {name}"
+        ) from error
+    if type(restored) is not contract_type:
+        raise HumanReviewDecisionError(f"route context source contract is not exact: {name}")
+    return restored
+
+
+def _restore_route_workspace(
+    payload: Mapping[str, Any],
+) -> ReviewWorkspaceV4:
+    if not isinstance(payload, Mapping):
+        raise HumanReviewDecisionError("previous route workspace is malformed")
+    paths = _restore_route_paths(payload.get("artifact_paths"))
+    try:
+        manifest = ReviewWorkspaceManifestV4.model_validate_json(
+            canonical_json_v4(payload["manifest"]).encode("utf-8")
+        )
+        reference = ReviewWorkspaceReferenceV4.model_validate_json(
+            canonical_json_v4(payload["reference"]).encode("utf-8")
+        )
+        root = Path(payload["root"])
+        raw = payload["manifest_raw"].encode("utf-8")
+    except (KeyError, TypeError, ValueError, UnicodeError) as error:
+        raise HumanReviewDecisionError("route workspace payload is malformed") from error
+    if root != paths.review_root or raw != canonical_json_v4(
+        manifest.model_dump(mode="json")
+    ).encode("utf-8"):
+        raise HumanReviewDecisionError("route workspace manifest bytes are stale")
+    return ReviewWorkspaceV4(
+        root,
+        manifest,
+        paths,
+        manifest_raw=raw,
+        reference=reference,
+    )
+
+
+def _restore_route_context_inputs(
+    context: HumanReviewRouteContextV4,
+) -> tuple[ReviewWorkspaceV4, ReviewWorkspaceInputsV4]:
+    paths = _restore_route_paths(context.artifact_paths)
+    try:
+        manifest = ReviewWorkspaceManifestV4.model_validate_json(
+            canonical_json_v4(context.workspace_manifest).encode("utf-8")
+        )
+        manifest_raw = context.workspace_manifest_raw.encode("utf-8")
+    except (TypeError, ValueError, UnicodeError) as error:
+        raise HumanReviewDecisionError("route context workspace manifest is malformed") from error
+    if manifest_raw != canonical_json_v4(manifest.model_dump(mode="json")).encode("utf-8"):
+        raise HumanReviewDecisionError("route context workspace manifest bytes are stale")
+    workspace = ReviewWorkspaceV4(
+        paths.review_root,
+        manifest,
+        paths,
+        manifest_raw=manifest_raw,
+        reference=context.workspace_reference,
+    )
+    source = context.source_contracts
+    values: dict[str, Any] = {
+        "artifact_paths": paths,
+        **{
+            name: (
+                None
+                if source[name] is None
+                else _restore_route_model(name, source[name])
+            )
+            for name in _ROUTE_SOURCE_CONTRACTS
+            if name not in {"previous_review_workspace"}
+        },
+        "previous_review_workspace": (
+            None
+            if source["previous_review_workspace"] is None
+            else _restore_route_workspace(source["previous_review_workspace"])
+        ),
+    }
+    try:
+        inputs = ReviewWorkspaceInputsV4(**values)
+    except Exception as error:
+        raise HumanReviewDecisionError("route context source contracts are malformed") from error
+    return workspace, inputs
+
+
+def _route_context_evidence(
+    context: HumanReviewRouteContextV4,
+) -> HumanReviewRouteEvidenceV4:
+    return HumanReviewRouteEvidenceV4.create(
+        run_id=context.decision.run_id,
+        candidate_id=context.decision.candidate_id,
+        revision_id=context.decision.revision_id,
+        decision_id=context.decision.decision_id,
+        action=context.decision.action,
+        route=context.route,
+        workspace_reference_sha256=context.reference.workspace_reference_sha256,
+        decision_raw_sha256=context.reference.decision_raw_sha256,
+        decision_canonical_sha256=context.decision.canonical_sha256,
+        route_context_sha256=context.canonical_sha256,
+    )
+
+
 def _state_patch(
     decision: HumanReviewDecisionV4,
     reference: HumanReviewDecisionReferenceV4,
@@ -658,6 +961,8 @@ def _state_patch(
     request: RevisionRequestV4 | None,
     failures: tuple[NormalizedFailureV4, ...],
     edited_package: Mapping[str, Any] | None,
+    route_context: HumanReviewRouteContextV4,
+    route_evidence: HumanReviewRouteEvidenceV4,
 ) -> dict[str, Any]:
     patch: dict[str, Any] = {
         "human_review_decision": decision,
@@ -666,6 +971,14 @@ def _state_patch(
         "route": route,
         "visual_route": route,
         "current_node": "V4_HUMAN_REVIEW",
+        # These are historical/transient route evidence.  They intentionally
+        # remain separate from the current artifact slots that non-final
+        # actions invalidate, so downstream routing can re-open verification.
+        "human_review_route_context_v4": route_context,
+        "human_review_route_evidence_v4": route_evidence,
+        "human_review_history_v4": reference,
+        "human_review_terminal_decision_v4": decision,
+        "human_review_terminal_reference_v4": reference,
     }
     if route == "final_policy_guard":
         patch.update(
@@ -808,9 +1121,18 @@ def submit_human_review_intent(
         reference,
         workspace,
         inputs,
-        current_package=current_package,
+        current_package=edited_package if edited_package is not None else current_package,
     )
     route = _action_route(decision.action)
+    route_context = _build_route_context(
+        decision,
+        reference,
+        workspace,
+        inputs,
+        route=route,
+        edited_package=edited_package,
+    )
+    route_evidence = _route_context_evidence(route_context)
     patch = _state_patch(
         decision,
         reference,
@@ -819,11 +1141,15 @@ def submit_human_review_intent(
         request=request,
         failures=failures,
         edited_package=edited_package,
+        route_context=route_context,
+        route_evidence=route_evidence,
     )
     return HumanReviewActionResultV4(
         decision=decision,
         reference=reference,
         route=route,
+        route_context=route_context,
+        route_evidence=route_evidence,
         state_patch=MappingProxyType(patch),
         revision_request=request,
         normalized_failures=failures,
@@ -838,34 +1164,96 @@ def approve_workspace(*args: Any, **kwargs: Any) -> HumanReviewActionResultV4:
     return submit_human_review_intent(*args, **kwargs)
 
 
-def route_after_human_review_v4(state: Mapping[str, Any]) -> HumanReviewRouteV4:
-    """Derive a closed route from exact decision/action evidence only."""
+def _verified_route_context(
+    context: HumanReviewRouteContextV4,
+    evidence: HumanReviewRouteEvidenceV4,
+) -> HumanReviewRouteV4:
+    """Rebuild exact inputs and invoke the public verifier before routing.
 
-    if not isinstance(state, Mapping):
-        raise HumanReviewDecisionError("v4 Human Review route requires a state mapping")
-    decision = state.get("human_review_decision")
-    reference = state.get("human_review_decision_reference")
-    if type(decision) is not HumanReviewDecisionV4 or type(reference) is not HumanReviewDecisionReferenceV4:
-        raise HumanReviewDecisionError("v4 Human Review route requires exact decision and reference")
+    Route evidence is checked as an internal consistency record only.  It is
+    never accepted as a capability: the decision record, external workspace
+    reference, fresh Q0-Q3 source, page/contact/asset bytes and raw digest are
+    reopened by ``verify_human_review_decision`` on every invocation.
+    """
+
+    if type(context) is not HumanReviewRouteContextV4 or type(evidence) is not HumanReviewRouteEvidenceV4:
+        raise HumanReviewDecisionError(
+            "v4 Human Review route requires a verified action context and evidence"
+        )
+    expected_route = _action_route(context.decision.action)
+    if context.route != expected_route:
+        raise HumanReviewDecisionError("verified action route evidence is stale")
     try:
-        HumanReviewDecisionV4.model_validate(decision.model_dump(mode="python"))
-        HumanReviewDecisionReferenceV4.model_validate(
-            reference.model_dump(mode="python")
-        )
+        expected_evidence = _route_context_evidence(context)
     except Exception as error:
-        raise HumanReviewDecisionError("decision integrity is invalid") from error
-    if (
-        reference.decision_id != decision.decision_id
-        or (reference.run_id, reference.candidate_id, reference.revision_id)
-        != (decision.run_id, decision.candidate_id, decision.revision_id)
-        or reference.decision_canonical_sha256 != decision.canonical_sha256
-        or reference.canonical_sha256
-        != canonical_sha256_v4(
-            reference.model_dump(mode="json", exclude={"canonical_sha256"})
+        raise HumanReviewDecisionError("verified action route evidence is malformed") from error
+    if evidence != expected_evidence:
+        raise HumanReviewDecisionError("verified action route evidence is stale")
+    workspace, inputs = _restore_route_context_inputs(context)
+    package = context.current_package
+    try:
+        checked = verify_human_review_decision(
+            context.decision,
+            context.reference,
+            workspace,
+            inputs,
+            current_package=package,
         )
-    ):
-        raise HumanReviewDecisionError("v4 Human Review route evidence is stale")
-    return _action_route(decision.action)
+    except HumanReviewDecisionError:
+        raise
+    except Exception as error:
+        raise HumanReviewDecisionError(
+            "verified action could not be revalidated against current bytes"
+        ) from error
+    if _action_route(checked.action) != context.route:
+        raise HumanReviewDecisionError("verified action route differs from context")
+    return context.route
+
+
+def route_after_human_review_v4(
+    value: HumanReviewActionResultV4 | Mapping[str, Any],
+) -> HumanReviewRouteV4:
+    """Derive a closed route from a retained exact terminal action context.
+
+    Non-final state patches clear current decision/workspace slots, so callers
+    must use the historical ``human_review_route_context_v4`` and its matching
+    evidence.  Legacy/synthetic mappings containing only decision hashes are
+    intentionally rejected.
+    """
+
+    if type(value) is HumanReviewActionResultV4:
+        context = value.route_context
+        evidence = value.route_evidence
+        if value.route != context.route:
+            raise HumanReviewDecisionError("verified action route evidence is stale")
+    elif isinstance(value, Mapping):
+        context = value.get("human_review_route_context_v4")
+        evidence = value.get("human_review_route_evidence_v4")
+        if type(context) is not HumanReviewRouteContextV4 or type(evidence) is not HumanReviewRouteEvidenceV4:
+            raise HumanReviewDecisionError(
+                "v4 Human Review route requires a verified action context and evidence"
+            )
+        for route_key in ("route", "review_route", "visual_route"):
+            route_hint = value.get(route_key)
+            if route_hint is not None and route_hint != context.route:
+                raise HumanReviewDecisionError("verified action route evidence is stale")
+    else:
+        raise HumanReviewDecisionError(
+            "v4 Human Review route requires a verified action context and evidence"
+        )
+    return _verified_route_context(context, evidence)
+
+
+def clear_human_review_route_context_v4() -> dict[str, None]:
+    """Return the explicit downstream patch that retires historical route evidence."""
+
+    return _state_clears(
+        "human_review_route_context_v4",
+        "human_review_route_evidence_v4",
+        "human_review_history_v4",
+        "human_review_terminal_decision_v4",
+        "human_review_terminal_reference_v4",
+    )
 
 
 __all__ = [
@@ -873,6 +1261,7 @@ __all__ = [
     "HumanReviewDecisionError",
     "HumanReviewRouteV4",
     "approve_workspace",
+    "clear_human_review_route_context_v4",
     "read_human_review_decision",
     "route_after_human_review_v4",
     "submit_human_review_intent",

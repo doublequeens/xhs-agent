@@ -8,6 +8,7 @@ Task 16B must derive every identity, route and digest from current artifacts.
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any, Literal, Mapping
 
@@ -56,9 +57,34 @@ _ACTIONS = (
     "APPROVE", "AESTHETIC_OVERRIDE", "REQUEST_REVISION",
     "REJECT_OR_REPLACE_ASSET", "VISIBLE_COPY_EDIT",
 )
+_ROUTES = (
+    "final_policy_guard", "revision", "asset_resolver", "r2_compliance",
+)
+_ROUTE_BY_ACTION = {
+    "APPROVE": "final_policy_guard",
+    "AESTHETIC_OVERRIDE": "final_policy_guard",
+    "REQUEST_REVISION": "revision",
+    "REJECT_OR_REPLACE_ASSET": "asset_resolver",
+    "VISIBLE_COPY_EDIT": "r2_compliance",
+}
+_ROUTE_CONTEXT_SOURCE_KEYS = (
+    "content_lock", "content_atom_set", "semantic_content_model",
+    "carousel_narrative", "page_brief_set", "visual_direction_plan",
+    "asset_manifest", "carousel_design_plan", "design_plan_qa",
+    "render_manifest", "render_qa", "visual_critique",
+    "asset_resolution_result", "previous_review_workspace",
+)
+_ROUTE_CONTEXT_PATH_KEYS = (
+    "base_root", "run_root", "candidate_root", "revision_root", "asset_root",
+    "render_root", "review_root", "artifact_root", "identity",
+    "trusted_base_identity",
+)
 ReviewActionV4 = Literal[
     "APPROVE", "AESTHETIC_OVERRIDE", "REQUEST_REVISION",
     "REJECT_OR_REPLACE_ASSET", "VISIBLE_COPY_EDIT",
+]
+HumanReviewRouteV4 = Literal[
+    "final_policy_guard", "revision", "asset_resolver", "r2_compliance",
 ]
 AssetReviewActionV4 = Literal["approved", "rejected"]
 
@@ -278,14 +304,18 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
     asset_decisions: tuple[AssetReviewDecisionV4, ...] = Field(default=(), max_length=128)
     # A visible-copy edit is intentionally carried only as a hash in the
     # terminal audit record.  The edited package is an R2 input, never part of
-    # the immutable visual/review contracts.
+    # the immutable visual/review contracts.  The payload hash identifies the
+    # changed fields while the result hash binds the complete merged package
+    # that downstream R2 receives.
     visible_copy_payload_sha256: StrictStr | None = None
+    visible_copy_result_sha256: StrictStr | None = None
     canonical_sha256: StrictStr
 
     @classmethod
     def create(cls, **payload: object) -> "HumanReviewDecisionV4":
         normalized = _normalized_payload(payload, workflow_version=WORKFLOW_VERSION_V4)
         normalized.setdefault("visible_copy_payload_sha256", None)
+        normalized.setdefault("visible_copy_result_sha256", None)
         return cls(**normalized, canonical_sha256=canonical_sha256_v4(normalized))
 
     @field_validator("decision_id", "run_id", "candidate_id", "revision_id")
@@ -305,10 +335,13 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
 
     @field_validator("content_lock_sha256", "asset_manifest_sha256", "carousel_design_plan_sha256",
                      "design_plan_qa_sha256", "render_manifest_sha256", "render_qa_sha256",
-                     "visual_critique_sha256", "contact_sheet_sha256", "visible_copy_payload_sha256", "canonical_sha256")
+                     "visual_critique_sha256", "contact_sheet_sha256", "visible_copy_payload_sha256",
+                     "visible_copy_result_sha256", "canonical_sha256")
     @classmethod
     def hashes(cls, value: str | None, info) -> str | None:
-        if value is None and info.field_name == "visible_copy_payload_sha256":
+        if value is None and info.field_name in {
+            "visible_copy_payload_sha256", "visible_copy_result_sha256",
+        }:
             return None
         return _sha(value, info.field_name)
 
@@ -353,8 +386,12 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
             raise ValueError("revision request requires feedback")
         if self.action == "VISIBLE_COPY_EDIT" and self.visible_copy_payload_sha256 is None:
             raise ValueError("visible copy edit requires a payload hash")
+        if self.action == "VISIBLE_COPY_EDIT" and self.visible_copy_result_sha256 is None:
+            raise ValueError("visible copy edit requires a resulting package hash")
         if self.action != "VISIBLE_COPY_EDIT" and self.visible_copy_payload_sha256 is not None:
             raise ValueError("only visible copy edits may carry a payload hash")
+        if self.action != "VISIBLE_COPY_EDIT" and self.visible_copy_result_sha256 is not None:
+            raise ValueError("only visible copy edits may carry a resulting package hash")
         if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
             raise ValueError("human review decision canonical sha256 does not match payload")
         return self
@@ -408,6 +445,191 @@ class HumanReviewDecisionReferenceV4(_FrozenReviewV4):
         if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
             raise ValueError("human review decision reference canonical sha256 does not match payload")
         return self
+
+
+class HumanReviewRouteEvidenceV4(_FrozenReviewV4):
+    """Serializable audit evidence for one derived Human Review route.
+
+    This object is deliberately *not* an authorization capability.  It is a
+    consistency record that lets a checkpoint carry the action/route identity
+    alongside :class:`HumanReviewRouteContextV4`; the route helper must still
+    reconstruct that context and reopen the append-only decision/workspace
+    bytes before returning a route.
+    """
+
+    workflow_version: Literal["llm_scene_v4"] = WORKFLOW_VERSION_V4
+    evidence_version: Literal["human-review-route-evidence-v1"] = (
+        "human-review-route-evidence-v1"
+    )
+    run_id: StrictStr
+    candidate_id: StrictStr
+    revision_id: StrictStr
+    decision_id: StrictStr
+    action: ReviewActionV4
+    route: HumanReviewRouteV4
+    workspace_reference_sha256: StrictStr
+    decision_raw_sha256: StrictStr
+    decision_canonical_sha256: StrictStr
+    route_context_sha256: StrictStr
+    canonical_sha256: StrictStr
+
+    @classmethod
+    def create(cls, **payload: object) -> "HumanReviewRouteEvidenceV4":
+        normalized = dict(payload)
+        normalized.setdefault("workflow_version", WORKFLOW_VERSION_V4)
+        normalized.setdefault("evidence_version", "human-review-route-evidence-v1")
+        normalized.pop("canonical_sha256", None)
+        return cls(**normalized, canonical_sha256=canonical_sha256_v4(normalized))
+
+    @field_validator("run_id", "candidate_id", "revision_id", "decision_id")
+    @classmethod
+    def identities(cls, value: str, info) -> str:
+        return _identity(value, info.field_name)
+
+    @field_validator(
+        "workspace_reference_sha256", "decision_raw_sha256",
+        "decision_canonical_sha256", "route_context_sha256", "canonical_sha256",
+    )
+    @classmethod
+    def evidence_hashes(cls, value: str, info) -> str:
+        return _sha(value, info.field_name)
+
+    @model_validator(mode="after")
+    def integrity(self) -> "HumanReviewRouteEvidenceV4":
+        if self.route != _ROUTE_BY_ACTION[self.action]:
+            raise ValueError("human review route does not match action")
+        if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
+            raise ValueError("human review route evidence canonical sha256 does not match payload")
+        return self
+
+
+class HumanReviewRouteContextV4(_FrozenReviewV4):
+    """Exact serializable inputs retained for closed post-invalidation routing.
+
+    The context is intentionally a transport envelope, not a trust token.  It
+    contains the source-contract JSON, external workspace reference and exact
+    ArtifactPaths identity needed to reconstruct a fresh verifier call.  A
+    caller can construct a syntactically valid envelope; authorization only
+    succeeds when the decision/workspace/source bytes still pass the public
+    verification seam.
+    """
+
+    workflow_version: Literal["llm_scene_v4"] = WORKFLOW_VERSION_V4
+    context_version: Literal["human-review-route-context-v1"] = (
+        "human-review-route-context-v1"
+    )
+    route: HumanReviewRouteV4
+    decision: HumanReviewDecisionV4
+    reference: HumanReviewDecisionReferenceV4
+    workspace_reference: ReviewWorkspaceReferenceV4
+    artifact_paths: Mapping[StrictStr, Any] = Field(
+        min_length=len(_ROUTE_CONTEXT_PATH_KEYS),
+        max_length=len(_ROUTE_CONTEXT_PATH_KEYS),
+    )
+    workspace_manifest: Mapping[StrictStr, Any] = Field(min_length=1)
+    workspace_manifest_raw: StrictStr = Field(min_length=1)
+    source_contracts: Mapping[StrictStr, Any] = Field(
+        min_length=len(_ROUTE_CONTEXT_SOURCE_KEYS),
+        max_length=len(_ROUTE_CONTEXT_SOURCE_KEYS),
+    )
+    current_package: Mapping[StrictStr, Any] | None = None
+    canonical_sha256: StrictStr
+
+    @classmethod
+    def create(cls, **payload: object) -> "HumanReviewRouteContextV4":
+        normalized = dict(payload)
+        normalized.setdefault("workflow_version", WORKFLOW_VERSION_V4)
+        normalized.setdefault("context_version", "human-review-route-context-v1")
+        normalized.setdefault("current_package", None)
+        normalized.pop("canonical_sha256", None)
+        return cls(**normalized, canonical_sha256=canonical_sha256_v4(normalized))
+
+    @field_validator("artifact_paths", "workspace_manifest", "source_contracts", "current_package")
+    @classmethod
+    def immutable_maps(cls, value):
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise ValueError("route context fields must be JSON mappings")
+        return deep_freeze(dict(value))
+
+    @field_serializer(
+        "artifact_paths", "workspace_manifest", "source_contracts", "current_package"
+    )
+    def serialize_maps(self, value):
+        return None if value is None else deep_thaw(value)
+
+    @field_validator("workspace_manifest_raw")
+    @classmethod
+    def manifest_raw_text(cls, value: str) -> str:
+        if type(value) is not str or not value:
+            raise ValueError("route context workspace manifest raw bytes are required")
+        return value
+
+    @model_validator(mode="after")
+    def integrity(self) -> "HumanReviewRouteContextV4":
+        if self.route != _ROUTE_BY_ACTION[self.decision.action]:
+            raise ValueError("human review route context route does not match action")
+        if self.reference != self.decision_reference_from_identity():
+            # This branch is intentionally not used as authorization; it only
+            # rejects an internally inconsistent envelope before reconstruction.
+            raise ValueError("human review route context decision/reference identity differs")
+        expected_source_keys = set(_ROUTE_CONTEXT_SOURCE_KEYS)
+        if set(self.source_contracts) != expected_source_keys:
+            raise ValueError("route context source contracts are incomplete")
+        if set(self.artifact_paths) != set(_ROUTE_CONTEXT_PATH_KEYS):
+            raise ValueError("route context ArtifactPaths payload is incomplete")
+        identity = self.artifact_paths.get("identity")
+        if not isinstance(identity, Mapping) or set(identity) != {
+            "run_id", "candidate_id", "revision_id"
+        }:
+            raise ValueError("route context ArtifactPaths identity is incomplete")
+        if (identity.get("run_id"), identity.get("candidate_id"), identity.get("revision_id")) != (
+            self.decision.run_id, self.decision.candidate_id, self.decision.revision_id
+        ):
+            raise ValueError("route context ArtifactPaths identity differs from decision")
+        trusted = self.artifact_paths.get("trusted_base_identity")
+        if not isinstance(trusted, (tuple, list)) or len(trusted) != 2 or any(
+            type(item) is not int or item < 0 for item in trusted
+        ):
+            raise ValueError("route context ArtifactPaths base identity is invalid")
+        for field in _ROUTE_CONTEXT_PATH_KEYS[:-2]:
+            value = self.artifact_paths.get(field)
+            if type(value) is not str or not Path(value).is_absolute() or "\x00" in value:
+                raise ValueError("route context ArtifactPaths must be absolute local paths")
+        manifest_identity = tuple(
+            self.workspace_manifest.get(name)
+            for name in ("run_id", "candidate_id", "revision_id")
+        )
+        if manifest_identity != (
+            self.decision.run_id, self.decision.candidate_id, self.decision.revision_id
+        ):
+            raise ValueError("route context workspace manifest identity differs from decision")
+        if self.decision.action == "VISIBLE_COPY_EDIT" and self.current_package is None:
+            raise ValueError("visible-copy route context requires the resulting package")
+        if self.decision.action != "VISIBLE_COPY_EDIT" and self.current_package is not None:
+            raise ValueError("non-copy route context cannot carry an R2 package")
+        if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
+            raise ValueError("human review route context canonical sha256 does not match payload")
+        return self
+
+    def decision_reference_from_identity(self) -> HumanReviewDecisionReferenceV4:
+        """Build only a shape-comparison reference from context identity.
+
+        The route helper never treats this value as authorization; the actual
+        persisted reference carried by ``self.reference`` is passed to the
+        append-only verifier after the source workspace is reconstructed.
+        """
+
+        return HumanReviewDecisionReferenceV4.create(
+            run_id=self.decision.run_id,
+            candidate_id=self.decision.candidate_id,
+            revision_id=self.decision.revision_id,
+            decision_id=self.decision.decision_id,
+            workspace_reference_sha256=self.workspace_reference.canonical_sha256,
+            decision_raw_sha256=self.reference.decision_raw_sha256,
+            decision_canonical_sha256=self.decision.canonical_sha256,
+        )
 
 
 class ReviewWorkspaceFingerprintEntryV4(_FrozenReviewV4):

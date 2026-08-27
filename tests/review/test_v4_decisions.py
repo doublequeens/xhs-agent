@@ -24,6 +24,7 @@ from src.schemas.v4.critique import (
     SetAestheticEvaluationV4,
 )
 from src.schemas.v4.review import HumanReviewIntentV4
+from src.schemas.v4.review import HumanReviewRouteContextV4, HumanReviewRouteEvidenceV4
 from src.visual_design.v4.revisions import route_revision
 from src.schemas.v4.revision import VisualExecutionInterrupted
 
@@ -98,10 +99,82 @@ def test_approve_derives_every_identity_and_reopens_record_without_assets(tmp_pa
     assert verify_human_review_decision(
         result.decision, result.reference, workspace, inputs
     ) == result.decision
-    # A stale caller-provided route cannot steer the closed helper.
+    assert route_after_human_review_v4(result) == "final_policy_guard"
+    # A stale caller-provided route or synthetic decision mapping cannot steer
+    # the closed helper without the exact verified action result.
+    with pytest.raises(HumanReviewDecisionError, match="verified action"):
+        route_after_human_review_v4({**result.state_patch, "route": "asset_resolver"})
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_route"),
+    (
+        ("APPROVE", "final_policy_guard"),
+        ("AESTHETIC_OVERRIDE", "final_policy_guard"),
+        ("REQUEST_REVISION", "revision"),
+        ("REJECT_OR_REPLACE_ASSET", "asset_resolver"),
+        ("VISIBLE_COPY_EDIT", "r2_compliance"),
+    ),
+)
+def test_all_actions_route_from_verified_result_and_keep_history_after_invalidation(
+    tmp_path, action, expected_route
+):
+    with_asset = action == "REJECT_OR_REPLACE_ASSET"
+    inputs = (
+        _failed_inputs(tmp_path, with_asset=with_asset)
+        if action in {"AESTHETIC_OVERRIDE", "REQUEST_REVISION"}
+        else _inputs(tmp_path, with_asset=with_asset)
+    )
+    workspace = build_review_workspace(inputs)
+    package = _package(inputs)
+    intent = {
+        "APPROVE": HumanReviewIntentV4(action="APPROVE"),
+        "AESTHETIC_OVERRIDE": HumanReviewIntentV4(
+            action="AESTHETIC_OVERRIDE", rationale="明确接受当前审美问题并继续审核。"
+        ),
+        "REQUEST_REVISION": HumanReviewIntentV4(
+            action="REQUEST_REVISION", feedback="第 2 页层级需要拉开，减少重复节奏。"
+        ),
+        "REJECT_OR_REPLACE_ASSET": HumanReviewIntentV4(
+            action="REJECT_OR_REPLACE_ASSET",
+            asset_ids=("fixture-asset",),
+            rationale="素材主体与当前页面重点不匹配，需要替换。",
+        ),
+        "VISIBLE_COPY_EDIT": HumanReviewIntentV4(
+            action="VISIBLE_COPY_EDIT",
+            visible_copy_payload=json.dumps({"title": "已更新的标题"}, ensure_ascii=False),
+        ),
+    }[action]
+    result = _submit(
+        workspace,
+        inputs,
+        intent,
+        decision_id=f"decision-{action.lower()}",
+        current_package=package if action == "VISIBLE_COPY_EDIT" else None,
+    )
+
+    assert route_after_human_review_v4(result) == expected_route
+    evidence = result.state_patch["human_review_route_evidence_v4"]
+    assert type(evidence) is HumanReviewRouteEvidenceV4
+    assert HumanReviewRouteEvidenceV4.model_validate_json(evidence.model_dump_json()) == evidence
+    context = result.state_patch["human_review_route_context_v4"]
+    assert type(context) is HumanReviewRouteContextV4
+    restored_context = HumanReviewRouteContextV4.model_validate_json(context.model_dump_json())
+    restored_evidence = HumanReviewRouteEvidenceV4.model_validate_json(evidence.model_dump_json())
+    assert restored_context == context
     assert route_after_human_review_v4(
-        {**result.state_patch, "route": "asset_resolver"}
-    ) == "final_policy_guard"
+        {
+            **result.state_patch,
+            "human_review_route_context_v4": restored_context,
+            "human_review_route_evidence_v4": restored_evidence,
+        }
+    ) == expected_route
+    assert evidence.action == action
+    assert result.state_patch["human_review_history_v4"] == result.reference
+    assert result.state_patch["human_review_terminal_reference_v4"] == result.reference
+    if expected_route != "final_policy_guard":
+        assert result.state_patch["human_review_decision"] is None
+        assert result.state_patch["human_review_decision_reference"] is None
 
 
 def test_approve_override_q4_matrix_is_closed(tmp_path):
@@ -380,6 +453,67 @@ def test_visible_copy_payload_cannot_smuggle_visual_contract_fields(tmp_path):
             current_package=package,
         )
     assert not (inputs.artifact_paths.revision_root / "human-review-decision.json").exists()
+
+
+def test_visible_copy_verification_binds_exact_resulting_r2_package(tmp_path):
+    inputs = _inputs(tmp_path)
+    workspace = build_review_workspace(inputs)
+    original = _package(inputs)
+    result = _submit(
+        workspace,
+        inputs,
+        HumanReviewIntentV4(
+            action="VISIBLE_COPY_EDIT",
+            visible_copy_payload=json.dumps({"title": "结果包中的标题"}, ensure_ascii=False),
+        ),
+        current_package=original,
+    )
+
+    assert verify_human_review_decision(
+        result.decision,
+        result.reference,
+        workspace,
+        inputs,
+        current_package=result.edited_publish_package,
+    ) == result.decision
+    with pytest.raises(HumanReviewDecisionError, match="package|payload"):
+        verify_human_review_decision(
+            result.decision,
+            result.reference,
+            workspace,
+            inputs,
+            current_package=original,
+        )
+    unrelated = dict(result.edited_publish_package)
+    unrelated["title"] = "另一个 R2 结果"
+    with pytest.raises(HumanReviewDecisionError, match="package|payload"):
+        verify_human_review_decision(
+            result.decision,
+            result.reference,
+            workspace,
+            inputs,
+            current_package=unrelated,
+        )
+
+
+def test_route_helper_rejects_forged_or_stale_verified_action_evidence(tmp_path):
+    inputs = _inputs(tmp_path)
+    workspace = build_review_workspace(inputs)
+    result = _submit(workspace, inputs, HumanReviewIntentV4(action="APPROVE"))
+
+    forged_route = replace(result, route="asset_resolver")
+    with pytest.raises(HumanReviewDecisionError, match="route|evidence"):
+        route_after_human_review_v4(forged_route)
+    forged_evidence = replace(
+        result,
+        route_evidence=result.route_evidence.model_copy(update={"route": "asset_resolver"}),
+    )
+    with pytest.raises(HumanReviewDecisionError, match="route|evidence"):
+        route_after_human_review_v4(forged_evidence)
+    with pytest.raises(HumanReviewDecisionError, match="verified action"):
+        route_after_human_review_v4(
+            {"human_review_route_evidence_v4": result.route_evidence}
+        )
 
 
 def test_asset_hardlink_and_cross_workspace_reference_are_rejected(tmp_path):
