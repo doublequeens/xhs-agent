@@ -317,7 +317,7 @@ def _rehydrate_previous_workspace(value: Any) -> ReviewWorkspaceV4:
 def load_v4_review_checkpoint_bundle(
     thread_id: str,
     *,
-    checkpoint_path,
+    checkpoint_path: str | Path,
 ) -> V4ReviewCheckpointBundle:
     """Load one WAITING_HUMAN v4 review bundle from the SQLite checkpoint.
 
