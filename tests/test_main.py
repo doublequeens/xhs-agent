@@ -1736,3 +1736,181 @@ def test_parse_cli_args_clear_flags_are_mutually_exclusive(monkeypatch):
     assert ns.clear == "3" and ns.clear_all is False
     ns = main.parse_cli_args(["--clear-all", "--yes"])
     assert ns.clear_all is True and ns.yes is True
+
+
+def test_v4_review_cli_help_and_conflicts_are_additive(monkeypatch, capsys):
+    main = _load_main(monkeypatch)
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--help"])
+    help_text = capsys.readouterr().out
+    assert "--review-materialize" in help_text
+    assert "--review-submit" in help_text
+    assert "--review-verify" in help_text
+
+    assert main.parse_cli_args(["--review-show", "run-1"]).review_show == "run-1"
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--review-show", "run-1", "--runs"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--review-show", "run-1", "--verbose"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--review-submit", "run-1"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--review-verify", "run-1"])
+    with pytest.raises(SystemExit):
+        main.parse_cli_args(["--review-intent", "intent.json"])
+
+
+def test_v4_review_cli_requires_v4_run_and_only_shows_local_workspace(tmp_path, monkeypatch):
+    main = _load_main(monkeypatch)
+    workspace_root = tmp_path / "review"
+    workspace_root.mkdir()
+    (workspace_root / "index.html").write_text("<html></html>", encoding="utf-8")
+    workspace = SimpleNamespace(root=workspace_root)
+    registry = RunRegistry(tmp_path / "runs.sqlite")
+    registry.create_run(
+        "v4-thread",
+        workflow_version="llm_scene_v4",
+        status="awaiting_review",
+        execution_state="WAITING_HUMAN",
+    )
+    output: list[str] = []
+    loaded = []
+    result = main.run_v4_review_cli(
+        main.parse_cli_args(["--review-show", "v4-thread"]),
+        registry,
+        workspace_loader=lambda run: loaded.append(run.thread_id) or workspace,
+        output_fn=output.append,
+    )
+    assert result is workspace
+    assert loaded == ["v4-thread"]
+    assert output == [(workspace_root / "index.html").as_uri()]
+    assert str(tmp_path) not in output[0].replace((workspace_root / "index.html").as_uri(), "")
+
+    registry.create_run("v3-thread", workflow_version="llm_scene_v3")
+    with pytest.raises(main.RunRegistryError, match="llm_scene_v4"):
+        main.run_v4_review_cli(
+            main.parse_cli_args(["--review-show", "v3-thread"]),
+            registry,
+            workspace_loader=lambda run: (_ for _ in ()).throw(AssertionError("must not load")),
+            output_fn=output.append,
+        )
+    registry.close()
+
+
+def test_v4_review_cli_requires_production_waiting_human_run(tmp_path, monkeypatch):
+    main = _load_main(monkeypatch)
+    workspace_root = tmp_path / "review"
+    workspace_root.mkdir()
+    (workspace_root / "index.html").write_text("<html></html>", encoding="utf-8")
+    workspace = SimpleNamespace(root=workspace_root)
+    registry = RunRegistry(tmp_path / "runs.sqlite")
+    registry.create_run(
+        "shadow-thread",
+        workflow_version="llm_scene_v4",
+        run_mode="shadow",
+        execution_state="WAITING_HUMAN",
+    )
+    with pytest.raises(main.RunRegistryError, match="shadow"):
+        main.run_v4_review_cli(
+            main.parse_cli_args(["--review-show", "shadow-thread"]),
+            registry,
+            workspace_loader=lambda _run: workspace,
+        )
+    registry.create_run(
+        "running-thread",
+        workflow_version="llm_scene_v4",
+        execution_state="RUNNING",
+    )
+    with pytest.raises(main.RunRegistryError, match="WAITING_HUMAN"):
+        main.run_v4_review_cli(
+            main.parse_cli_args(["--review-show", "running-thread"]),
+            registry,
+            workspace_loader=lambda _run: workspace,
+        )
+    registry.close()
+
+
+def test_v4_review_cli_submit_and_verify_use_same_apis_without_graph_or_memory(tmp_path, monkeypatch):
+    main = _load_main(monkeypatch)
+    workspace_root = tmp_path / "review"
+    workspace_root.mkdir()
+    (workspace_root / "index.html").write_text("<html></html>", encoding="utf-8")
+    workspace = SimpleNamespace(root=workspace_root)
+    inputs = object()
+    registry = RunRegistry(tmp_path / "runs.sqlite")
+    registry.create_run(
+        "v4-thread",
+        workflow_version="llm_scene_v4",
+        status="awaiting_review",
+        execution_state="WAITING_HUMAN",
+    )
+    intent_path = tmp_path / "intent.json"
+    intent_path.write_text('{"action":"APPROVE"}', encoding="utf-8")
+    from src.schemas.v4.review import HumanReviewDecisionReferenceV4
+
+    reference = HumanReviewDecisionReferenceV4.create(
+        run_id="run-1",
+        candidate_id="candidate-1",
+        revision_id="revision-1",
+        decision_id="decision-1",
+        workspace_reference_sha256="a" * 64,
+        decision_raw_sha256="b" * 64,
+        decision_canonical_sha256="c" * 64,
+    )
+    calls = []
+
+    class Result:
+        def __init__(self, value):
+            self.reference = value
+
+    def submitter(workspace_value, inputs_value, intent):
+        calls.append(("submit", workspace_value, inputs_value, intent))
+        return Result(reference)
+
+    output: list[str] = []
+    args = main.parse_cli_args(
+        ["--review-submit", "v4-thread", "--review-intent", str(intent_path)]
+    )
+    main.run_v4_review_cli(
+        args,
+        registry,
+        workspace_loader=lambda run: (workspace, inputs),
+        submitter=submitter,
+        output_fn=output.append,
+    )
+    assert calls[0][0] == "submit"
+    assert '"decision_id":"decision-1"' in output[0]
+
+    reference_path = tmp_path / "reference.json"
+    reference_path.write_text(reference.model_dump_json(), encoding="utf-8")
+    checked = SimpleNamespace(
+        run_id="run-1",
+        candidate_id="candidate-1",
+        revision_id="revision-1",
+        decision_id="decision-1",
+        canonical_sha256="d" * 64,
+        action="APPROVE",
+    )
+    verify_calls = []
+
+    def decision_loader(workspace_value, reference_value):
+        return checked
+
+    def verifier(decision, reference_value, workspace_value, inputs_value):
+        verify_calls.append((decision, reference_value, workspace_value, inputs_value))
+        return decision
+
+    verify_output: list[str] = []
+    main.run_v4_review_cli(
+        main.parse_cli_args(
+            ["--review-verify", "v4-thread", "--review-reference", str(reference_path)]
+        ),
+        registry,
+        workspace_loader=lambda run: (workspace, inputs),
+        decision_loader=decision_loader,
+        verifier=verifier,
+        output_fn=verify_output.append,
+    )
+    assert verify_calls[0][0] is checked
+    assert '"action":"APPROVE"' in verify_output[0]
+    registry.close()

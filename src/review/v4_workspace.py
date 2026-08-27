@@ -219,7 +219,9 @@ class ReviewWorkspaceInputsV4(BaseModel):
 
 
 @dataclass(frozen=True, slots=True)
-class _RenderedAsset:
+class RenderedAssetEvidenceV4:
+    """Application-derived bytes for one asset actually used by the render."""
+
     item: AssetManifestItem
     sha256: str
     raw: bytes
@@ -731,6 +733,21 @@ def _checked(inputs: ReviewWorkspaceInputsV4) -> tuple[ArtifactPaths, dict[str, 
     return paths, hashes
 
 
+def validate_review_workspace_inputs(
+    inputs: ReviewWorkspaceInputsV4,
+) -> tuple[ArtifactPaths, dict[str, str]]:
+    """Public source-boundary seam for Task 16B decision verification.
+
+    The returned hashes are derived from the exact current contracts after
+    fresh deterministic Q0-Q3 recomputation; callers must not accept hashes
+    supplied by an interrupt or CLI payload.
+    """
+
+    if type(inputs) is not ReviewWorkspaceInputsV4:
+        raise ReviewBindingError("review source inputs must be exact ReviewWorkspaceInputsV4")
+    return _checked(inputs)
+
+
 def _read_revision(paths: ArtifactPaths, relative: str, digest: str) -> bytes:
     if relative.startswith("/") or ".." in Path(relative).parts:
         raise ReviewBindingError("review artifact path is not revision-relative")
@@ -764,7 +781,7 @@ def _asset_extension(raw: bytes) -> str:
     return "bin"
 
 
-def _rendered_assets(inputs: ReviewWorkspaceInputsV4, paths: ArtifactPaths) -> tuple[_RenderedAsset, ...]:
+def _rendered_assets(inputs: ReviewWorkspaceInputsV4, paths: ArtifactPaths) -> tuple[RenderedAssetEvidenceV4, ...]:
     """Derive exact rendered assets from Scene Plan and RenderManifest."""
 
     by_directive = {item.directive_id: item for item in inputs.asset_manifest.items}
@@ -779,7 +796,7 @@ def _rendered_assets(inputs: ReviewWorkspaceInputsV4, paths: ArtifactPaths) -> t
     }
     if set(bindings) != set(render_bindings):
         raise ReviewBindingError("Scene Plan and RenderManifest rendered asset sets differ")
-    seen: list[_RenderedAsset] = []
+    seen: list[RenderedAssetEvidenceV4] = []
     for directive_id in sorted(bindings):
         binding = bindings[directive_id]
         item = by_directive.get(directive_id)
@@ -803,9 +820,18 @@ def _rendered_assets(inputs: ReviewWorkspaceInputsV4, paths: ArtifactPaths) -> t
         except ArtifactBindingError as error:
             raise ReviewBindingError("rendered asset bytes changed or are unsafe") from error
         seen.append(
-            _RenderedAsset(item, snapshot.sha256, snapshot.raw, f"assets/{item.asset_id}.{_asset_extension(snapshot.raw)}")
+            RenderedAssetEvidenceV4(item, snapshot.sha256, snapshot.raw, f"assets/{item.asset_id}.{_asset_extension(snapshot.raw)}")
         )
     return tuple(seen)
+
+
+def read_rendered_asset_evidence(
+    inputs: ReviewWorkspaceInputsV4,
+) -> tuple[RenderedAssetEvidenceV4, ...]:
+    """Return exact, no-follow bytes for assets used by Scene Plan + RenderManifest."""
+
+    paths, _ = validate_review_workspace_inputs(inputs)
+    return _rendered_assets(inputs, paths)
 
 
 def _quality_report(inputs: ReviewWorkspaceInputsV4, hashes: Mapping[str, str]) -> bytes:
@@ -1804,6 +1830,7 @@ def read_review_intent(workspace: ReviewWorkspaceV4) -> HumanReviewIntentV4:
 
 __all__ = [
     "ReviewBindingError", "ReviewCleanupOutcomeV4", "ReviewWorkspaceInputsV4",
-    "ReviewWorkspaceV4", "build_review_workspace", "load_review_workspace",
-    "verify_review_workspace", "read_review_intent",
+    "ReviewWorkspaceV4", "RenderedAssetEvidenceV4", "build_review_workspace",
+    "load_review_workspace", "read_rendered_asset_evidence",
+    "read_review_intent", "validate_review_workspace_inputs", "verify_review_workspace",
 ]

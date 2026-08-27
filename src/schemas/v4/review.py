@@ -209,7 +209,7 @@ class HumanReviewIntentV4(_FrozenReviewV4):
     action: ReviewActionV4
     rationale: StrictStr | None = Field(default=None, max_length=1000)
     feedback: StrictStr | None = Field(default=None, max_length=4000)
-    asset_ids: tuple[StrictStr, ...] = ()
+    asset_ids: tuple[StrictStr, ...] = Field(default=(), max_length=128)
     visible_copy_payload: StrictStr | None = Field(default=None, max_length=20000)
 
     @field_validator("rationale", "feedback", "visible_copy_payload")
@@ -223,6 +223,8 @@ class HumanReviewIntentV4(_FrozenReviewV4):
     def assets(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if len(value) != len(set(value)):
             raise ValueError("asset_ids must be unique")
+        if any(len(item) > 160 for item in value):
+            raise ValueError("asset_ids must be bounded identities")
         return tuple(_identity(item, "asset_id") for item in value)
 
     @model_validator(mode="after")
@@ -260,7 +262,10 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
     candidate_id: StrictStr
     revision_id: StrictStr
     action: ReviewActionV4
-    rationale: StrictStr | None = Field(default=None, max_length=1000)
+    # Human revision feedback is internal sanitized evidence and may be longer
+    # than a short asset/override rationale, but remains bounded by the intent
+    # contract's 4k limit.
+    rationale: StrictStr | None = Field(default=None, max_length=4000)
     content_lock_sha256: StrictStr
     asset_manifest_sha256: StrictStr
     carousel_design_plan_sha256: StrictStr
@@ -270,12 +275,17 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
     visual_critique_sha256: StrictStr
     page_sha256: Mapping[StrictStr, StrictStr] = Field(min_length=1)
     contact_sheet_sha256: StrictStr
-    asset_decisions: tuple[AssetReviewDecisionV4, ...] = ()
+    asset_decisions: tuple[AssetReviewDecisionV4, ...] = Field(default=(), max_length=128)
+    # A visible-copy edit is intentionally carried only as a hash in the
+    # terminal audit record.  The edited package is an R2 input, never part of
+    # the immutable visual/review contracts.
+    visible_copy_payload_sha256: StrictStr | None = None
     canonical_sha256: StrictStr
 
     @classmethod
     def create(cls, **payload: object) -> "HumanReviewDecisionV4":
         normalized = _normalized_payload(payload, workflow_version=WORKFLOW_VERSION_V4)
+        normalized.setdefault("visible_copy_payload_sha256", None)
         return cls(**normalized, canonical_sha256=canonical_sha256_v4(normalized))
 
     @field_validator("decision_id", "run_id", "candidate_id", "revision_id")
@@ -291,13 +301,15 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
     @field_validator("rationale")
     @classmethod
     def decision_text(cls, value: str | None) -> str | None:
-        return _text(value, "rationale", max_length=1000, min_length=2)
+        return _text(value, "rationale", max_length=4000, min_length=2)
 
     @field_validator("content_lock_sha256", "asset_manifest_sha256", "carousel_design_plan_sha256",
                      "design_plan_qa_sha256", "render_manifest_sha256", "render_qa_sha256",
-                     "visual_critique_sha256", "contact_sheet_sha256", "canonical_sha256")
+                     "visual_critique_sha256", "contact_sheet_sha256", "visible_copy_payload_sha256", "canonical_sha256")
     @classmethod
-    def hashes(cls, value: str, info) -> str:
+    def hashes(cls, value: str | None, info) -> str | None:
+        if value is None and info.field_name == "visible_copy_payload_sha256":
+            return None
         return _sha(value, info.field_name)
 
     @field_validator("page_sha256")
@@ -323,10 +335,78 @@ class HumanReviewDecisionV4(_FrozenReviewV4):
         assets = tuple(item.asset_id for item in self.asset_decisions)
         if len(assets) != len(set(assets)):
             raise ValueError("asset decisions must be unique")
+        if self.action in {"APPROVE", "AESTHETIC_OVERRIDE"}:
+            if any(item.decision != "approved" for item in self.asset_decisions):
+                raise ValueError("approval decisions cannot contain rejected assets")
+        elif self.action == "REJECT_OR_REPLACE_ASSET":
+            if not self.asset_decisions or not any(
+                item.decision == "rejected" for item in self.asset_decisions
+            ):
+                raise ValueError("asset replacement requires a rejected asset decision")
+            if self.rationale is None:
+                raise ValueError("asset replacement requires a rationale")
+        elif self.asset_decisions:
+            raise ValueError("only asset actions may carry asset decisions")
         if self.action == "AESTHETIC_OVERRIDE" and self.rationale is None:
             raise ValueError("aesthetic override requires a rationale")
+        if self.action == "REQUEST_REVISION" and self.rationale is None:
+            raise ValueError("revision request requires feedback")
+        if self.action == "VISIBLE_COPY_EDIT" and self.visible_copy_payload_sha256 is None:
+            raise ValueError("visible copy edit requires a payload hash")
+        if self.action != "VISIBLE_COPY_EDIT" and self.visible_copy_payload_sha256 is not None:
+            raise ValueError("only visible copy edits may carry a payload hash")
         if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
             raise ValueError("human review decision canonical sha256 does not match payload")
+        return self
+
+
+class HumanReviewDecisionReferenceV4(_FrozenReviewV4):
+    """Checkpoint/run-state reference for one append-only terminal decision.
+
+    The reference is intentionally separate from the mutable ``decision.json``
+    intake and the immutable review workspace.  A loader must receive this
+    object from an external trusted checkpoint/run record; it must never
+    reconstruct authorization from the decision file itself.
+    """
+
+    workflow_version: Literal["llm_scene_v4"] = WORKFLOW_VERSION_V4
+    reference_version: Literal["human-review-reference-v1"] = "human-review-reference-v1"
+    run_id: StrictStr
+    candidate_id: StrictStr
+    revision_id: StrictStr
+    decision_id: StrictStr
+    workspace_reference_sha256: StrictStr
+    decision_raw_sha256: StrictStr
+    decision_canonical_sha256: StrictStr
+    record_path: Literal["human-review-decision.json"] = "human-review-decision.json"
+    canonical_sha256: StrictStr
+
+    @classmethod
+    def create(cls, **payload: object) -> "HumanReviewDecisionReferenceV4":
+        normalized = dict(payload)
+        normalized.setdefault("workflow_version", WORKFLOW_VERSION_V4)
+        normalized.setdefault("reference_version", "human-review-reference-v1")
+        normalized.setdefault("record_path", "human-review-decision.json")
+        normalized.pop("canonical_sha256", None)
+        return cls(**normalized, canonical_sha256=canonical_sha256_v4(normalized))
+
+    @field_validator("run_id", "candidate_id", "revision_id", "decision_id")
+    @classmethod
+    def identities(cls, value: str, info) -> str:
+        return _identity(value, info.field_name)
+
+    @field_validator(
+        "workspace_reference_sha256", "decision_raw_sha256",
+        "decision_canonical_sha256", "canonical_sha256",
+    )
+    @classmethod
+    def reference_hashes(cls, value: str, info) -> str:
+        return _sha(value, info.field_name)
+
+    @model_validator(mode="after")
+    def integrity(self) -> "HumanReviewDecisionReferenceV4":
+        if self.canonical_sha256 != canonical_sha256_v4(_payload(self)):
+            raise ValueError("human review decision reference canonical sha256 does not match payload")
         return self
 
 
@@ -628,7 +708,7 @@ class ReviewWorkspaceManifestV4(_FrozenReviewV4):
 
 __all__ = [
     "AssetReviewActionV4", "AssetReviewDecisionV4", "HumanReviewDecisionV4",
-    "HumanReviewIntentV4", "ReviewActionV4", "ReviewWorkspaceAnchorV4",
+    "HumanReviewDecisionReferenceV4", "HumanReviewIntentV4", "ReviewActionV4", "ReviewWorkspaceAnchorV4",
     "ReviewWorkspaceFingerprintEntryV4", "ReviewWorkspaceManifestV4",
     "ReviewWorkspaceReferenceV4",
     "WORKFLOW_VERSION_V4",

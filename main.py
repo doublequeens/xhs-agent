@@ -1,6 +1,7 @@
 import argparse
 import sys
 import json
+import stat
 import warnings
 from collections.abc import Mapping
 from datetime import datetime, timezone
@@ -207,7 +208,44 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--focus_keyword", type=str, help="Focus keyword for the post")
     parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
     parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
+    review_group = parser.add_mutually_exclusive_group()
+    review_group.add_argument(
+        "--review-materialize", metavar="RUN",
+        help="Materialize/show an existing local v4 review workspace for RUN",
+    )
+    review_group.add_argument(
+        "--review-show", metavar="RUN",
+        help="Show the existing local v4 review workspace for RUN",
+    )
+    review_group.add_argument(
+        "--review-submit", metavar="RUN",
+        help="Submit the current local v4 review intent for RUN",
+    )
+    review_group.add_argument(
+        "--review-verify", metavar="RUN",
+        help="Verify an existing local v4 review decision for RUN",
+    )
+    parser.add_argument(
+        "--review-intent", metavar="JSON",
+        help="JSON file containing an untrusted v4 HumanReviewIntentV4",
+    )
+    parser.add_argument(
+        "--review-reference", metavar="JSON",
+        help="JSON file containing an externally persisted v4 decision reference",
+    )
     args = parser.parse_args() if argv is None else parser.parse_args(argv)
+    # Keep the parser seam backwards-compatible with tests and embedders that
+    # provide a pre-review Namespace rather than argparse's full result.
+    for review_arg in (
+        "review_materialize",
+        "review_show",
+        "review_submit",
+        "review_verify",
+        "review_intent",
+        "review_reference",
+    ):
+        if not hasattr(args, review_arg):
+            setattr(args, review_arg, None)
     if args.runs and (args.new or args.resume is not None or args.thread_id):
         parser.error("--runs cannot be combined with --new, --resume, or --thread-id")
     clear_flags_active = args.clear is not None or args.clear_all
@@ -221,6 +259,46 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error("--subdomain requires --domain")
     if args.focus_keyword is not None and not args.focus_keyword.strip():
         parser.error("--focus_keyword must be non-empty when provided")
+    review_run = next(
+        (
+            value
+            for value in (
+                args.review_materialize,
+                args.review_show,
+                args.review_submit,
+                args.review_verify,
+            )
+            if value is not None
+        ),
+        None,
+    )
+    review_active = review_run is not None
+    if review_active and (
+        args.new
+        or args.resume is not None
+        or args.thread_id
+        or args.runs
+        or args.verbose
+        or args.clear is not None
+        or args.clear_all
+        or args.yes
+        or args.domain
+        or args.subdomain
+        or args.focus_keyword is not None
+        or args.provider
+        or args.topic_num != 10
+    ):
+        parser.error("v4 review operations require only an existing RUN identity")
+    if not review_active and (args.review_intent or args.review_reference):
+        parser.error("--review-intent/--review-reference require a v4 review operation")
+    if args.review_submit and not args.review_intent:
+        parser.error("--review-submit requires --review-intent")
+    if args.review_verify and not args.review_reference:
+        parser.error("--review-verify requires --review-reference")
+    if args.review_intent and not args.review_submit:
+        parser.error("--review-intent is valid only with --review-submit")
+    if args.review_reference and not args.review_verify:
+        parser.error("--review-reference is valid only with --review-verify")
     if args.domain and args.subdomain:
         profile = get_domain_profile(args.domain)
         if args.subdomain not in profile.allowed_subdomains:
@@ -487,6 +565,193 @@ def _resolve_run(registry: RunRegistry, ref: str) -> AgentRun | None:
     if run is None and ref.isdigit():
         run = registry.get_by_run_id(int(ref))
     return run
+
+
+def run_v4_review_cli(
+    args: argparse.Namespace,
+    registry: RunRegistry,
+    *,
+    workspace_loader=None,
+    inputs_loader=None,
+    package_loader=None,
+    submitter=None,
+    verifier=None,
+    decision_loader=None,
+    output_fn=print,
+):
+    """Run one additive, local-only v4 review operation.
+
+    Task 18 owns graph/checkpoint orchestration.  Until then the loaders are
+    explicit dependencies: the CLI refuses to guess a graph, checkpoint,
+    workspace, or source contract from an arbitrary filesystem path.
+    """
+
+    from src.review.v4_decisions import (
+        read_human_review_decision,
+        submit_human_review_intent,
+        verify_human_review_decision,
+    )
+    from src.review.v4_workspace import (
+        read_review_intent,
+    )
+    from src.schemas.v4.review import HumanReviewDecisionReferenceV4
+
+    def call_with_optional_package(function, *positional, package):
+        """Keep dependency-injected test seams compatible with lean fakes."""
+
+        import inspect
+
+        try:
+            parameters = inspect.signature(function).parameters.values()
+        except (TypeError, ValueError):
+            parameters = ()
+        accepts_keyword = any(
+            parameter.kind is inspect.Parameter.VAR_KEYWORD
+            or parameter.name == "current_package"
+            for parameter in parameters
+        )
+        if accepts_keyword:
+            return function(*positional, current_package=package)
+        return function(*positional)
+
+    operation_values = {
+        "materialize": args.review_materialize,
+        "show": args.review_show,
+        "submit": args.review_submit,
+        "verify": args.review_verify,
+    }
+    active = tuple((name, value) for name, value in operation_values.items() if value is not None)
+    if len(active) != 1:
+        raise RunRegistryError("exactly one local v4 review operation is required")
+    operation, run_ref = active[0]
+    run = _resolve_run(registry, run_ref)
+    if run is None:
+        raise RunRegistryError(f"找不到 v4 review 任务：{run_ref}")
+    if run.workflow_version != "llm_scene_v4":
+        raise RunRegistryError("local review operations require workflow_version=llm_scene_v4")
+    if run.run_mode != "production":
+        raise RunRegistryError("local review operations do not accept shadow runs")
+    if run.execution_state != "WAITING_HUMAN" or run.status != "awaiting_review":
+        raise RunRegistryError(
+            "local v4 review operations require an exact WAITING_HUMAN/awaiting_review run"
+        )
+    if workspace_loader is None:
+        raise RunRegistryError(
+            "v4 review workspace loader is not configured; refusing to start a graph or guess checkpoint state"
+        )
+    try:
+        loaded = workspace_loader(run)
+    except Exception as error:
+        raise RunRegistryError("v4 review workspace checkpoint is unavailable") from error
+    if isinstance(loaded, tuple) and len(loaded) == 2:
+        workspace, inputs = loaded
+    else:
+        workspace = loaded
+        inputs = None
+        if inputs_loader is not None:
+            try:
+                inputs = inputs_loader(run, workspace)
+            except Exception as error:
+                raise RunRegistryError("v4 review source-contract checkpoint is unavailable") from error
+
+    if workspace is None or not hasattr(workspace, "root"):
+        raise RunRegistryError("v4 review checkpoint lacks a workspace handle")
+    # A production loader returns the exact Task 16A handle.  Keep the
+    # dependency-injected test seam permissive, but verify real handles before
+    # exposing an index or accepting mutable intake.
+    try:
+        from src.review.v4_workspace import ReviewWorkspaceV4, verify_review_workspace
+
+        if type(workspace) is ReviewWorkspaceV4:
+            verify_review_workspace(workspace)
+    except Exception as error:
+        if isinstance(error, RunRegistryError):
+            raise
+        raise RunRegistryError("v4 review workspace is stale or unauthorized") from error
+
+    if operation in {"materialize", "show"}:
+        index = workspace.root / "index.html"
+        try:
+            index_info = index.lstat()
+        except OSError as error:
+            raise RunRegistryError("v4 review workspace index is missing") from error
+        if stat.S_ISLNK(index_info.st_mode) or not stat.S_ISREG(index_info.st_mode):
+            raise RunRegistryError("v4 review workspace index is missing")
+        try:
+            uri = index.as_uri()
+        except ValueError as error:
+            raise RunRegistryError("v4 review workspace index is not an absolute local file") from error
+        output_fn(uri)
+        return workspace
+
+    if operation == "submit":
+        if inputs is None:
+            raise RunRegistryError("v4 review source-contract loader is not configured")
+        if args.review_intent:
+            try:
+                intent = json.loads(Path(args.review_intent).read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError) as error:
+                raise RunRegistryError("v4 review intent file is unreadable or malformed") from error
+        else:
+            intent = read_review_intent(workspace)
+        package = package_loader(run, workspace, inputs) if package_loader is not None else None
+        submit = submitter or submit_human_review_intent
+        try:
+            result = call_with_optional_package(
+                submit, workspace, inputs, intent, package=package
+            )
+            reference_value = result.reference
+        except Exception as error:
+            raise RunRegistryError("v4 review intent was rejected by the decision boundary") from error
+        output_fn(
+            json.dumps(
+                reference_value.model_dump(mode="json"),
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        return result
+
+    try:
+        reference_payload = json.loads(
+            Path(args.review_reference).read_text(encoding="utf-8")
+        )
+        reference = HumanReviewDecisionReferenceV4.model_validate(reference_payload)
+    except (OSError, UnicodeError, ValueError) as error:
+        raise RunRegistryError("v4 review decision reference is unreadable or malformed") from error
+    load_decision = decision_loader or read_human_review_decision
+    if inputs is None:
+        raise RunRegistryError("v4 review source-contract loader is not configured")
+    try:
+        decision = load_decision(workspace, reference)
+    except Exception as error:
+        raise RunRegistryError("v4 review decision record is missing or stale") from error
+    package = package_loader(run, workspace, inputs) if package_loader is not None else None
+    check = verifier or verify_human_review_decision
+    try:
+        checked = call_with_optional_package(
+            check, decision, reference, workspace, inputs, package=package
+        )
+    except Exception as error:
+        raise RunRegistryError("v4 review decision failed source and byte verification") from error
+    output_fn(
+        json.dumps(
+            {
+                "workflow_version": "llm_scene_v4",
+                "run_id": checked.run_id,
+                "candidate_id": checked.candidate_id,
+                "revision_id": checked.revision_id,
+                "decision_id": checked.decision_id,
+                "decision_canonical_sha256": checked.canonical_sha256,
+                "action": checked.action,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return checked
 
 
 def clear_runs(
@@ -841,6 +1106,18 @@ def main():
 
         if args.clear_all or args.clear is not None:
             clear_runs(registry, args)
+            return
+
+        if any(
+            value is not None
+            for value in (
+                args.review_materialize,
+                args.review_show,
+                args.review_submit,
+                args.review_verify,
+            )
+        ):
+            run_v4_review_cli(args, registry)
             return
 
         selection = select_run(registry, args)
