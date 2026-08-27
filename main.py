@@ -577,13 +577,16 @@ def run_v4_review_cli(
     submitter=None,
     verifier=None,
     decision_loader=None,
+    checkpoint_path: Path | None = None,
     output_fn=print,
 ):
     """Run one additive, local-only v4 review operation.
 
-    Task 18 owns graph/checkpoint orchestration.  Until then the loaders are
-    explicit dependencies: the CLI refuses to guess a graph, checkpoint,
-    workspace, or source contract from an arbitrary filesystem path.
+    Without an injected ``workspace_loader`` the real production entry loads
+    the run's exact review contracts, external workspace reference, and
+    publish package from the LangGraph SQLite checkpoint through the
+    graph-free ``src.review.v4_checkpoint`` loader.  The injected loaders
+    remain a unit-test seam only; they never authorize production routing.
     """
 
     from src.review.v4_decisions import (
@@ -635,24 +638,40 @@ def run_v4_review_cli(
         raise RunRegistryError(
             "local v4 review operations require an exact WAITING_HUMAN/awaiting_review run"
         )
+    default_package = None
     if workspace_loader is None:
-        raise RunRegistryError(
-            "v4 review workspace loader is not configured; refusing to start a graph or guess checkpoint state"
-        )
-    try:
-        loaded = workspace_loader(run)
-    except Exception as error:
-        raise RunRegistryError("v4 review workspace checkpoint is unavailable") from error
-    if isinstance(loaded, tuple) and len(loaded) == 2:
-        workspace, inputs = loaded
+        # Real production entry: a graph-free, read-only checkpoint load.
+        from src.review.v4_checkpoint import load_v4_review_checkpoint_bundle
+
+        try:
+            bundle = load_v4_review_checkpoint_bundle(
+                run.thread_id,
+                checkpoint_path=(
+                    DEFAULT_CHECKPOINT_PATH if checkpoint_path is None else checkpoint_path
+                ),
+            )
+        except Exception as error:
+            raise RunRegistryError(
+                "v4 review workspace checkpoint is unavailable"
+            ) from error
+        workspace = bundle.workspace
+        inputs = bundle.inputs
+        default_package = bundle.publish_package
     else:
-        workspace = loaded
-        inputs = None
-        if inputs_loader is not None:
-            try:
-                inputs = inputs_loader(run, workspace)
-            except Exception as error:
-                raise RunRegistryError("v4 review source-contract checkpoint is unavailable") from error
+        try:
+            loaded = workspace_loader(run)
+        except Exception as error:
+            raise RunRegistryError("v4 review workspace checkpoint is unavailable") from error
+        if isinstance(loaded, tuple) and len(loaded) == 2:
+            workspace, inputs = loaded
+        else:
+            workspace = loaded
+            inputs = None
+            if inputs_loader is not None:
+                try:
+                    inputs = inputs_loader(run, workspace)
+                except Exception as error:
+                    raise RunRegistryError("v4 review source-contract checkpoint is unavailable") from error
 
     if workspace is None or not hasattr(workspace, "root"):
         raise RunRegistryError("v4 review checkpoint lacks a workspace handle")
@@ -694,7 +713,11 @@ def run_v4_review_cli(
                 raise RunRegistryError("v4 review intent file is unreadable or malformed") from error
         else:
             intent = read_review_intent(workspace)
-        package = package_loader(run, workspace, inputs) if package_loader is not None else None
+        package = (
+            package_loader(run, workspace, inputs)
+            if package_loader is not None
+            else default_package
+        )
         submit = submitter or submit_human_review_intent
         try:
             result = call_with_optional_package(
@@ -727,7 +750,11 @@ def run_v4_review_cli(
         decision = load_decision(workspace, reference)
     except Exception as error:
         raise RunRegistryError("v4 review decision record is missing or stale") from error
-    package = package_loader(run, workspace, inputs) if package_loader is not None else None
+    package = (
+        package_loader(run, workspace, inputs)
+        if package_loader is not None
+        else default_package
+    )
     check = verifier or verify_human_review_decision
     try:
         checked = call_with_optional_package(
