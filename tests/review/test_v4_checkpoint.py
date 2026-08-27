@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import subprocess
 import sys
 from pathlib import Path
 
@@ -396,7 +397,12 @@ def test_default_loader_closes_connections_and_never_writes(tmp_path, monkeypatc
     assert len(opened) == 2
     assert [conn.closed for conn in opened] == [True, True]
     assert hashlib.sha256(cp.read_bytes()).hexdigest() == digest_before
-    assert list(tmp_path.glob("checkpoints.sqlite-*")) == []
+    # A read-only reader on a WAL-mode database materializes the SQLite
+    # coordination files; the guarantee is that no frame is ever checkpointed
+    # into the database (digest above) and the WAL stays empty.
+    wal_sidecar = tmp_path / "checkpoints.sqlite-wal"
+    if wal_sidecar.exists():
+        assert wal_sidecar.stat().st_size == 0
     registry.close()
 
 
@@ -523,6 +529,59 @@ def test_default_loader_rehydrates_previous_revision_workspace(tmp_path, monkeyp
 # ---------------------------------------------------------------------------
 # graph-free and local-only guarantees
 # ---------------------------------------------------------------------------
+
+
+def test_default_loader_never_mutates_a_crashed_writers_database(tmp_path, monkeypatch):
+    """A crashed writer's WAL must be read, never checkpointed or deleted.
+
+    The graph's SQLite checkpointer runs in WAL mode.  A read-write reader
+    connection would, on close, checkpoint the leftover WAL into the main
+    database and delete the sidecars — silently mutating exactly the crash
+    evidence a review CLI must preserve.  The loader must instead read the
+    last committed state and leave the database and WAL bytes untouched.
+    """
+
+    main = _load_main(monkeypatch)
+    thread_id = "thread-1"
+    inputs, workspace = _world(tmp_path, thread_id=thread_id)
+    cp = tmp_path / "checkpoints.sqlite"
+    _write_checkpoint(cp, thread_id, _channels(inputs, workspace, thread_id=thread_id))
+    registry = _waiting_registry(tmp_path, thread_id)
+
+    crash = (
+        "import os, sqlite3\n"
+        f"conn = sqlite3.connect({str(cp)!r})\n"
+        # A tiny page cache forces real page spills into the WAL so the
+        # crashed transaction leaves frames behind.
+        "conn.execute('PRAGMA cache_size=1')\n"
+        "conn.execute('BEGIN IMMEDIATE')\n"
+        "conn.execute('CREATE TABLE crash_marker(x)')\n"
+        "conn.executemany('INSERT INTO crash_marker VALUES (?)', [(b'x' * 4096,)] * 200)\n"
+        "os._exit(9)\n"
+    )
+    completed = subprocess.run(
+        [sys.executable, "-c", crash], capture_output=True, check=False
+    )
+    assert completed.returncode == 9
+    wal = cp.with_name(cp.name + "-wal")
+    assert wal.exists() and wal.stat().st_size > 0, "crash must leave WAL frames"
+    db_digest = hashlib.sha256(cp.read_bytes()).hexdigest()
+    wal_digest = hashlib.sha256(wal.read_bytes()).hexdigest()
+
+    # The committed checkpoint stays readable while the uncommitted frames
+    # are ignored — no silent recovery, no exception.
+    output: list[str] = []
+    main.run_v4_review_cli(
+        main.parse_cli_args(["--review-show", thread_id]),
+        registry,
+        checkpoint_path=cp,
+        output_fn=output.append,
+    )
+    assert output == [(workspace.root / "index.html").as_uri()]
+    assert hashlib.sha256(cp.read_bytes()).hexdigest() == db_digest
+    assert wal.exists(), "a read-only loader must not checkpoint or delete the WAL"
+    assert hashlib.sha256(wal.read_bytes()).hexdigest() == wal_digest
+    registry.close()
 
 
 def test_v4_checkpoint_loader_module_is_graph_free_and_local_only():

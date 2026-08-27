@@ -13,6 +13,7 @@ import pytest
 
 from src.review.v4_decisions import (
     HumanReviewDecisionError,
+    clear_human_review_route_context_v4,
     route_after_human_review_v4,
     submit_human_review_intent,
     verify_human_review_decision,
@@ -23,8 +24,14 @@ from src.schemas.v4.critique import (
     CarouselAestheticEvaluationV4,
     SetAestheticEvaluationV4,
 )
-from src.schemas.v4.review import HumanReviewIntentV4
-from src.schemas.v4.review import HumanReviewRouteContextV4, HumanReviewRouteEvidenceV4
+from src.schemas.v4.review import (
+    HumanReviewDecisionReferenceV4,
+    HumanReviewDecisionV4,
+    HumanReviewIntentV4,
+    HumanReviewRouteContextV4,
+    HumanReviewRouteEvidenceV4,
+    ReviewWorkspaceReferenceV4,
+)
 from src.visual_design.v4.revisions import route_revision
 from src.schemas.v4.revision import VisualExecutionInterrupted
 
@@ -514,6 +521,125 @@ def test_route_helper_rejects_forged_or_stale_verified_action_evidence(tmp_path)
         route_after_human_review_v4(
             {"human_review_route_evidence_v4": result.route_evidence}
         )
+
+
+def test_self_consistent_forged_route_envelope_cannot_route(tmp_path):
+    """A fully self-consistent attacker-built envelope must not authorize.
+
+    Every canonical hash below is recomputed, so schema integrity checks
+    pass; authorization must still fail because the decision differs from
+    the append-only on-disk record, and a swapped workspace reference
+    cannot satisfy the anchored workspace verification.
+    """
+
+    inputs = _inputs(tmp_path)
+    workspace = build_review_workspace(inputs)
+    result = _submit(workspace, inputs, HumanReviewIntentV4(action="APPROVE"))
+    payload = result.route_context.model_dump(mode="json")
+    payload.pop("canonical_sha256", None)
+
+    # Variant A: a tampered decision whose every canonical hash is
+    # recomputed (decided_at differs from the append-only record).
+    tampered = dict(payload["decision"])
+    tampered["decided_at"] = "2027-01-01T00:00:00Z"
+    tampered["asset_decisions"] = tuple(tampered["asset_decisions"])
+    tampered.pop("canonical_sha256", None)
+    forged_decision = HumanReviewDecisionV4.create(**tampered)
+    forged_reference = HumanReviewDecisionReferenceV4.create(
+        run_id=forged_decision.run_id,
+        candidate_id=forged_decision.candidate_id,
+        revision_id=forged_decision.revision_id,
+        decision_id=forged_decision.decision_id,
+        workspace_reference_sha256=payload["reference"]["workspace_reference_sha256"],
+        decision_raw_sha256=payload["reference"]["decision_raw_sha256"],
+        decision_canonical_sha256=forged_decision.canonical_sha256,
+    )
+    forged_payload = dict(payload)
+    forged_payload["decision"] = forged_decision
+    forged_payload["reference"] = forged_reference
+    forged_context = HumanReviewRouteContextV4.create(**forged_payload)
+    forged_evidence = HumanReviewRouteEvidenceV4.create(
+        run_id=forged_decision.run_id,
+        candidate_id=forged_decision.candidate_id,
+        revision_id=forged_decision.revision_id,
+        decision_id=forged_decision.decision_id,
+        action=forged_decision.action,
+        route=forged_context.route,
+        workspace_reference_sha256=forged_reference.workspace_reference_sha256,
+        decision_raw_sha256=forged_reference.decision_raw_sha256,
+        decision_canonical_sha256=forged_decision.canonical_sha256,
+        route_context_sha256=forged_context.canonical_sha256,
+    )
+    with pytest.raises(HumanReviewDecisionError):
+        route_after_human_review_v4(
+            {
+                "human_review_route_context_v4": forged_context,
+                "human_review_route_evidence_v4": forged_evidence,
+            }
+        )
+
+    # Variant B: the genuine on-disk decision, but a self-consistently
+    # rebuilt workspace reference whose anchor hashes point elsewhere.
+    forged_ws_reference = ReviewWorkspaceReferenceV4.create(
+        run_id=payload["decision"]["run_id"],
+        candidate_id=payload["decision"]["candidate_id"],
+        revision_id=payload["decision"]["revision_id"],
+        anchor_raw_sha256="e" * 64,
+        anchor_canonical_sha256="f" * 64,
+    )
+    swapped_reference = HumanReviewDecisionReferenceV4.create(
+        run_id=payload["decision"]["run_id"],
+        candidate_id=payload["decision"]["candidate_id"],
+        revision_id=payload["decision"]["revision_id"],
+        decision_id=payload["decision"]["decision_id"],
+        workspace_reference_sha256=forged_ws_reference.canonical_sha256,
+        decision_raw_sha256=payload["reference"]["decision_raw_sha256"],
+        decision_canonical_sha256=payload["decision"]["canonical_sha256"],
+    )
+    swapped_payload = dict(payload)
+    swapped_payload["decision"] = result.decision
+    swapped_payload["workspace_reference"] = forged_ws_reference
+    swapped_payload["reference"] = swapped_reference
+    swapped_context = HumanReviewRouteContextV4.create(**swapped_payload)
+    swapped_evidence = HumanReviewRouteEvidenceV4.create(
+        run_id=payload["decision"]["run_id"],
+        candidate_id=payload["decision"]["candidate_id"],
+        revision_id=payload["decision"]["revision_id"],
+        decision_id=payload["decision"]["decision_id"],
+        action=payload["decision"]["action"],
+        route=swapped_context.route,
+        workspace_reference_sha256=swapped_reference.workspace_reference_sha256,
+        decision_raw_sha256=swapped_reference.decision_raw_sha256,
+        decision_canonical_sha256=swapped_reference.decision_canonical_sha256,
+        route_context_sha256=swapped_context.canonical_sha256,
+    )
+    with pytest.raises(HumanReviewDecisionError):
+        route_after_human_review_v4(
+            {
+                "human_review_route_context_v4": swapped_context,
+                "human_review_route_evidence_v4": swapped_evidence,
+            }
+        )
+
+
+def test_clear_human_review_route_context_retires_route_authorization(tmp_path):
+    """The downstream clear patch removes every retained route capability."""
+
+    inputs = _inputs(tmp_path)
+    workspace = build_review_workspace(inputs)
+    result = _submit(workspace, inputs, HumanReviewIntentV4(action="APPROVE"))
+
+    patch = clear_human_review_route_context_v4()
+    assert set(patch) == {
+        "human_review_route_context_v4",
+        "human_review_route_evidence_v4",
+        "human_review_history_v4",
+        "human_review_terminal_decision_v4",
+        "human_review_terminal_reference_v4",
+    }
+    assert all(value is None for value in patch.values())
+    with pytest.raises(HumanReviewDecisionError, match="verified action"):
+        route_after_human_review_v4({**result.state_patch, **patch})
 
 
 def test_asset_hardlink_and_cross_workspace_reference_are_rejected(tmp_path):

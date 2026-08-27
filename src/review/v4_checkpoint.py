@@ -343,7 +343,12 @@ def load_v4_review_checkpoint_bundle(
         ) from error
     from src.checkpoint_serde import checkpoint_serializer
 
-    conn = sqlite3.connect(path.resolve())
+    # mode=ro: a default read-write connection would checkpoint a leftover
+    # WAL into the main database and delete the sidecars on close — silently
+    # mutating exactly the crash evidence a review CLI must preserve.  A
+    # read-only connection ignores uncommitted frames and leaves every
+    # database/write-ahead-log byte untouched.
+    conn = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)
     try:
         checkpointer = SqliteSaver(conn, serde=checkpoint_serializer())
         try:
