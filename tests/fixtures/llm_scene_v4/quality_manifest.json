@@ -1,187 +1,247 @@
 {
+  "campaign": {
+    "max_aesthetic_revisions": 2,
+    "max_attempts_per_candidate": 14,
+    "max_request_ms": 60000,
+    "min_better_or_equal_ratio": 0.8,
+    "min_pages": 75,
+    "min_topics": 10,
+    "note": "Predeclared G4 thresholds; the release gate reads them from here and cannot be widened by callers."
+  },
   "cases": [
     {
       "case_id": "beauty-20260805",
       "critic": {
-        "contains_images": true,
-        "overall": 92,
-        "hierarchy": 95,
-        "legibility": 98,
-        "composition": 90,
-        "family_consistency": 95,
-        "page_variation": 90,
-        "page_rhythm": 95,
         "color": 95,
-        "spacing": 92,
+        "composition": 90,
+        "contains_images": true,
+        "family_consistency": 95,
+        "hierarchy": 95,
         "image_relevance": 98,
+        "issues": [],
+        "legibility": 98,
+        "overall": 92,
+        "page_rhythm": 95,
+        "page_variation": 90,
         "passed": true,
         "revision_round": 2,
-        "issues": []
-      },
-      "source_contract": {
-        "path": "beauty-20260805/source-contracts.json",
-        "sha256": "ca9eea01c6963b4ce29e2cae8f672f0e7e93bd51329a072162afdbe33d15219e"
+        "spacing": 92
       },
       "pages": [
         {
-          "page_id": "page-1",
-          "label": "positive",
           "human_issues": [],
+          "label": "positive",
+          "page_id": "page-1",
           "path": "pages/page-1.png",
           "sha256": "71b13d22481c72471c7789acc5a8bf2443783bfcf0e9ca46715376062d9f05be"
         },
         {
-          "page_id": "page-2",
+          "human_issues": [
+            "excessive_empty_space",
+            "weak_hierarchy"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "weak_hierarchy"],
+          "page_id": "page-2",
           "path": "pages/page-2.png",
           "sha256": "40dab133ba1261bb29914a734fdf381d73bbf8181d706dcfd59516ec3406b436"
         },
         {
-          "page_id": "page-3",
+          "human_issues": [
+            "excessive_empty_space",
+            "poor_information_design"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "poor_information_design"],
+          "page_id": "page-3",
           "path": "pages/page-3.png",
           "sha256": "b1f729651b1907e7d8f4531892fc631694045abef4ab89d4ffc39998ff7b5583"
         },
         {
-          "page_id": "page-4",
+          "human_issues": [
+            "excessive_empty_space",
+            "weak_visual_anchor"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "weak_visual_anchor"],
+          "page_id": "page-4",
           "path": "pages/page-4.png",
           "sha256": "327fa2dabeadbee95ad373752076bfbd2844504357dd76b69311f38514d1f2fe"
         },
         {
-          "page_id": "page-5",
+          "human_issues": [
+            "inconsistent_scale",
+            "unbalanced_composition"
+          ],
           "label": "negative",
-          "human_issues": ["inconsistent_scale", "unbalanced_composition"],
+          "page_id": "page-5",
           "path": "pages/page-5.png",
           "sha256": "17744ecc544517346bb4ebf5f12a4c90f4093ca0c80e377f43badcc91cdb5ede"
         },
         {
-          "page_id": "page-6",
+          "human_issues": [
+            "inconsistent_scale",
+            "unbalanced_composition"
+          ],
           "label": "negative",
-          "human_issues": ["inconsistent_scale", "unbalanced_composition"],
+          "page_id": "page-6",
           "path": "pages/page-6.png",
           "sha256": "a17eeba0d165abe29a79fd5dc7e649f0460c117fa6faa6f2044beca1251a043e"
         },
         {
-          "page_id": "page-7",
+          "human_issues": [
+            "excessive_empty_space",
+            "repetitive_layout"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "repetitive_layout"],
+          "page_id": "page-7",
           "path": "pages/page-7.png",
           "sha256": "057d726f27e382c828bd72b2dfea8a2703c50363949ee93f486227c82c3be3b5"
         },
         {
-          "page_id": "page-8",
+          "human_issues": [
+            "excessive_empty_space",
+            "poor_information_design"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "poor_information_design"],
+          "page_id": "page-8",
           "path": "pages/page-8.png",
           "sha256": "d9bcf88549c6679500ecabed3579314697ad1e50987bc936d6d271ae11d3495b"
         },
         {
-          "page_id": "page-9",
+          "human_issues": [
+            "excessive_empty_space",
+            "weak_visual_anchor"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "weak_visual_anchor"],
+          "page_id": "page-9",
           "path": "pages/page-9.png",
           "sha256": "65001f5bd743a49724681000e4e2c31db4dc74baab85c1685a394bab8b609d16"
         },
         {
-          "page_id": "page-10",
+          "human_issues": [
+            "excessive_empty_space",
+            "weak_visual_anchor",
+            "poor_information_design"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "weak_visual_anchor", "poor_information_design"],
+          "page_id": "page-10",
           "path": "pages/page-10.png",
           "sha256": "5919abdf5d6e66593681082402377bccc98f86dc2a6241aabc55fcce00c5a666"
         }
-      ]
+      ],
+      "source_contract": {
+        "path": "beauty-20260805/source-contracts.json",
+        "sha256": "ca9eea01c6963b4ce29e2cae8f672f0e7e93bd51329a072162afdbe33d15219e"
+      }
     },
     {
       "case_id": "beauty-20260806",
       "critic": {
-        "contains_images": true,
-        "overall": 91,
-        "hierarchy": 90,
-        "legibility": 93,
-        "composition": 92,
-        "family_consistency": 89,
-        "page_variation": 95,
-        "page_rhythm": 90,
         "color": 95,
-        "spacing": 88,
+        "composition": 92,
+        "contains_images": true,
+        "family_consistency": 89,
+        "hierarchy": 90,
         "image_relevance": 92,
+        "issues": [],
+        "legibility": 93,
+        "overall": 91,
+        "page_rhythm": 90,
+        "page_variation": 95,
         "passed": true,
         "revision_round": 0,
-        "issues": []
-      },
-      "source_contract": {
-        "path": "beauty-20260806/source-contracts.json",
-        "sha256": "03be5c48cd313762f43837e105dfeb452538613d871e6adcfcd4868c33ad0fa3"
+        "spacing": 88
       },
       "pages": [
         {
-          "page_id": "page-1",
-          "label": "positive",
           "human_issues": [],
+          "label": "positive",
+          "page_id": "page-1",
           "path": "pages/page-1.png",
           "sha256": "c9dd7433232e0c8fe4035804a61ed2b61ff69c86d163d6bc44fd0162180d828e"
         },
         {
-          "page_id": "page-2",
+          "human_issues": [
+            "excessive_empty_space",
+            "weak_hierarchy"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "weak_hierarchy"],
+          "page_id": "page-2",
           "path": "pages/page-2.png",
           "sha256": "b80a54b9c433856d76bbe22dd1234c35a7ac7f9337fded8eb0d30e1ab70fc906"
         },
         {
-          "page_id": "page-3",
+          "human_issues": [
+            "excessive_empty_space",
+            "weak_visual_anchor"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "weak_visual_anchor"],
+          "page_id": "page-3",
           "path": "pages/page-3.png",
           "sha256": "163ddef25526a77cd57aa6c2a62d7f0fe1ccc0ca7f761977741236ea8c8b7508"
         },
         {
-          "page_id": "page-4",
+          "human_issues": [
+            "excessive_empty_space",
+            "unbalanced_composition"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space", "unbalanced_composition"],
+          "page_id": "page-4",
           "path": "pages/page-4.png",
           "sha256": "12c78ed3ec6eb46ea8a6f5a0da044fc6f1ae45edd598778641212497e45d020c"
         },
         {
-          "page_id": "page-5",
+          "human_issues": [
+            "inconsistent_scale",
+            "awkward_spacing"
+          ],
           "label": "negative",
-          "human_issues": ["inconsistent_scale", "awkward_spacing"],
+          "page_id": "page-5",
           "path": "pages/page-5.png",
           "sha256": "7e033913bec84eac5c8a41be1bbb25cccf2b56229905fec82bb435b1bd2408d9"
         },
         {
-          "page_id": "page-6",
+          "human_issues": [
+            "inconsistent_scale",
+            "awkward_spacing"
+          ],
           "label": "negative",
-          "human_issues": ["inconsistent_scale", "awkward_spacing"],
+          "page_id": "page-6",
           "path": "pages/page-6.png",
           "sha256": "be3ad872ccd2bf57cf905813f2aa47e111c7d15eb41264145213f2c552c060ee"
         },
         {
-          "page_id": "page-7",
+          "human_issues": [
+            "content_visual_mismatch",
+            "poor_information_design"
+          ],
           "label": "negative",
-          "human_issues": ["content_visual_mismatch", "poor_information_design"],
+          "page_id": "page-7",
           "path": "pages/page-7.png",
           "sha256": "4e95c39074233b152da44f585f69088cc3d36466a814b3c8e3516205aaba9fc0"
         },
         {
-          "page_id": "page-8",
+          "human_issues": [
+            "poor_information_design",
+            "low_legibility"
+          ],
           "label": "negative",
-          "human_issues": ["poor_information_design", "low_legibility"],
+          "page_id": "page-8",
           "path": "pages/page-8.png",
           "sha256": "b6f9dc5e3a9fb62a00f694d63c780c22e8f35519e11168bceec4d1dcde5c237d"
         },
         {
-          "page_id": "page-9",
+          "human_issues": [
+            "excessive_empty_space"
+          ],
           "label": "negative",
-          "human_issues": ["excessive_empty_space"],
+          "page_id": "page-9",
           "path": "pages/page-9.png",
           "sha256": "8d87222d1b422a95419aea62419ffc22ea96bd63d87fad7fbcde790605968806"
         }
-      ]
+      ],
+      "source_contract": {
+        "path": "beauty-20260806/source-contracts.json",
+        "sha256": "03be5c48cd313762f43837e105dfeb452538613d871e6adcfcd4868c33ad0fa3"
+      }
     }
   ]
 }

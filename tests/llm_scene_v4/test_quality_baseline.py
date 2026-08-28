@@ -139,7 +139,14 @@ def _assert_source_contract(
 def test_quality_manifest_binds_every_fixture_page() -> None:
     assert MANIFEST_PATH.is_file(), "fixture manifest must exist before it is loaded"
     manifest = load_json(MANIFEST_PATH)
-    assert set(manifest) == {"cases"}
+    # Task 20 added the predeclared ``campaign`` thresholds alongside the
+    # immutable case corpus; the release gate reads them from here.
+    assert set(manifest) == {"cases", "campaign"}
+    assert set(manifest["campaign"]) == {
+        "min_topics", "min_pages", "min_better_or_equal_ratio",
+        "max_attempts_per_candidate", "max_aesthetic_revisions",
+        "max_request_ms", "note",
+    }
     cases = manifest["cases"]
     assert [case["case_id"] for case in cases] == list(EXPECTED_CASES)
     assert {case["case_id"] for case in cases} == set(EXPECTED_CASES)
