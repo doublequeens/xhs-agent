@@ -42,3 +42,27 @@ outputs/publish/<date>-<domain>-<title>/
 ## 故障处理
 
 普通超时或人工审核暂停应通过 run registry 和 `--resume` 继续，不要删除 checkpoint、run registry 或素材恢复记录。视觉阶段的 `VisualProductionInterrupted`（Design Plan QA 或 Render QA 连续失败达到上限）也会 checkpoint，允许 `--resume`。遇到发布导出异常，先读取审计与 recovery 证据，再决定是否重试；不要直接覆盖已生成的 canonical 文件或把未审核外部素材复制进最终 images 目录。
+
+## llm_scene_v4 持久化（预发布）
+
+### 候选/修订工件存储
+
+v4 视觉工件以 `ArtifactPaths`（`<base>/<run_id>/<candidate_id>/<revision_id>/`）为唯一事务边界，revision 下分 `assets/`、`render/`、`review/`、`artifacts/`。base root 不允许落在 `outputs/` 下；路径对象携带 trusted base 身份（dev/inode）并在每次消费前 `revalidate_artifact_paths` 重钉。渲染 manifest 只存 revision 相对路径；读取一律经 descriptor-relative 验证快照（哈希 + containment + no-follow + nlink）。
+
+### Attempt Ledger 与网关
+
+所有 v4 结构化/图像/审美请求经过唯一 `VisualLLMGateway`：单层重试、可取消、有界执行；`AttemptLedger`（append-only，存 `data/agent_runs.sqlite` 同库）记录每次尝试的状态/时延/结果指纹。失败预算（同一 revision fingerprint 重复次数）持久在图状态：v4 `--resume` 不重置失败计数；v3 的复位行为冻结不变。
+
+### Review Workspace 与 review CLI
+
+`review/` 是不可变评估树（HTML 索引、页面对比、素材证据、Q0–Q4 报告），发布前先在 staging 验证再原子提升；外部授权引用 `ReviewWorkspaceReferenceV4` 持久在图 state，`review-anchor.json` 绑定完整树指纹。本地 review CLI（`--review-show/--review-submit/--review-verify`）是 graph-free 只读 checkpoint loader：以 `mode=ro` 打开 `checkpoints.sqlite`（不 setup、不缓存连接、成功与异常路径都关闭；崩溃写者的 WAL 保持字节不动），从 channel values canonical 重验证全部合同（LangGraph 序列化会把合同重建为半成品）并只经 checkpoint 携带的外部引用加载 workspace。决定以 append-only `human-review-decision.json` 落在 revision 目录外。
+
+### v4 发布包与 shadow 隔离
+
+production 终端导出（`src/publishing/v4_artifacts.py`）：与 v3 相同的十个合同文件名 + `publish-attestation.json`，目录 `<date>-<run_id>-<title>`（按 run 身份命名，v3/v4 包互不覆盖）；导出时重验 Final Guard、Q0–Q3 聚合与每个页面/contact/素材字节。shadow bundle（`src/publishing/shadow_artifacts.py`）只写 `outputs/shadow/<date>-shadow-<run>-<revision>/`：合同 + 页面 + `shadow-manifest.json`（`run_mode=shadow`、`publishable=false`），永不携带发布 attestation，永不触碰 `outputs/publish/`、`data/xhs_memory.db` 或 `data/chroma`。
+
+### 版本选择、发布门与回滚
+
+- 版本身份在 checkpoint 之前由 `workflow_selection` 解析：registry 行权威，新 run `--visual-workflow` 显式选择（默认 v3），进行中的 run 不能切换版本。
+- 发布门 G0–G5 见 workflow 文档；G4 阈值预声明在 `tests/fixtures/llm_scene_v4/quality_manifest.json` 的 `campaign` 节（不可调用方放宽）；盲评证据工具在 `src/evaluation/`（匿名 A/B payload + 私有身份分离 + contact sheets + 校准/发布门）。
+- 回滚只改默认选择器，只影响未来新 run：已存在的 v4 checkpoint 永远用 v4 图恢复（版本不可中途切换），v3 checkpoint、schema 路径与导出格式全程冻结。

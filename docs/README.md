@@ -30,7 +30,7 @@
 | Editorial carousel | `docs/superpowers/specs/2026-07-13-editorial-carousel-workflow-design.md` | `docs/superpowers/plans/2026-07-14-editorial-carousel-workflow.md` | 已实施 |
 | Adaptive six-template content workflow | `docs/superpowers/specs/2026-07-16-adaptive-six-template-content-workflow-design.md` | `docs/superpowers/plans/2026-07-16-adaptive-six-template-content-workflow.md` | 已实施（已被 llm_scene_v3 取代） |
 | LLM-directed dynamic visual production | `docs/superpowers/specs/2026-07-31-llm-directed-dynamic-visual-production-design.md` | `docs/superpowers/plans/2026-07-31-llm-directed-dynamic-visual-production.md` | 已实施（当前 `llm_scene_v3` 生产路径） |
-| Constrained hybrid visual production v4 | `docs/superpowers/specs/2026-08-20-llm-scene-v4-visual-production-design.md` | `docs/superpowers/plans/2026-08-20-llm-scene-v4-visual-production.md` | 已批准，待实施；v3 仍为当前生产路径 |
+| Constrained hybrid visual production v4 | `docs/superpowers/specs/2026-08-20-llm-scene-v4-visual-production-design.md` | `docs/superpowers/plans/2026-08-20-llm-scene-v4-visual-production.md` | 已实施（G0–G3 离线门通过）；v3 仍是默认生产路径，v4 切换等待 G4 盲评人工批准 |
 | LLM timeout and retry guard | `docs/superpowers/specs/2026-07-22-llm-timeout-retry-guard-design.md` | `docs/superpowers/plans/2026-07-22-llm-timeout-retry-guard.md` | 已实施 |
 | Modern editorial integration tests | `docs/superpowers/specs/2026-07-22-modernize-stale-editorial-integration-tests-design.md` | `docs/superpowers/plans/2026-07-22-modernize-stale-editorial-integration-tests.md` | 已实施 |
 | Project documentation | `docs/superpowers/specs/2026-07-15-project-documentation-design.md` | `docs/superpowers/plans/2026-07-15-project-documentation.md` | 当前任务 |

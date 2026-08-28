@@ -74,3 +74,46 @@ domain_router -> domain_confirmation -> memory_retriever
 - `RUN_LIVE_VISUAL_AI_TESTS=1` 配合 `GEMINI_API_KEY`：Gemini 结构化视觉与图像生成。
 
 这些 live smoke 不进入默认离线验证门。
+
+## 版本选择与 llm_scene_v4（预发布）
+
+`llm_scene_v4` 已实现并通过 G0–G3 离线门（含真实 Chromium 三/八 Grammar 渲染与独立 Q3），但**尚未切换为默认**。默认仍是 `llm_scene_v3`；只有在 G4 shadow 盲评报告经人工批准后才会把新运行默认切到 v4（切换只改选择器，见回滚）。
+
+### checkpoint 之前的版本选择
+
+`src/editorial_carousel/workflow_selection.py` 在读取任何 checkpoint 之前解析不可变的工作流身份：registry 行是权威来源，新 run 可通过 `--visual-workflow {llm_scene_v3,llm_scene_v4}` 显式选择；已存在的 thread 不能切换版本或 run mode（mismatch fail-closed）。`src/graph.py`（v3）与 `src/graph_v4.py` 共享 `graph_common.py` 提取的内容链（domain routing 到 assembler，含 R1/R2 回路），v3 的节点/边签名冻结在 `tests/fixtures/graph/v3-signature.json` 并被逐字节断言；视觉路由两个版本完全不共享。
+
+### v4 视觉链
+
+```text
+assembler -> content_atomizer -> content_lock_builder
+-> semantic_modeling(Q0) -> visual_authoring(Q1) -> asset_resolver
+-> composition_planning -> layout_compiler -> design_plan_qa(Q2)
+-> generic_scene_renderer -> render_qa(Q3) -> visual_critic(Q4)
+-> review_workspace_builder -> human_review -> final_policy_guard
+-> content_writer(production) | shadow_artifact_writer(shadow)
+```
+
+- **Q0–Q3 是硬门**，全部从当前合同与字节重新计算；类型化修订边界（Task 14）拥有全部修复重入：同一 fingerprint 第三次出现（非 LAYOUT 层第二次）抛 `VisualExecutionInterrupted` 候选耗尽，预算持久在 checkpoint 状态里，v4 恢复**不重置**失败预算。
+- **八个 Composition Grammar**（`editorial_hero`、`comparison_grid`、`step_flow`、`diagnostic_matrix`、`checklist`、`evidence_card`、`image_annotation`、`summary_closing`）各有独立确定性 solver，全部通过真实 Chromium 渲染与独立 Q3。
+- **Review Workspace**（`review_workspace_builder`）在 Human Review 中断之前构建：`build_review_workspace` 把整套 Q0–Q4 证据、页面 contact sheet 和素材证据写进 revision 目录的 `review/`，外部授权引用 `ReviewWorkspaceReferenceV4` 持久在 state——review 文件系统永远不能自我授权。
+- **Human Review 五种动作**（APPROVE/AESTHETIC_OVERRIDE/REQUEST_REVISION/REJECT_OR_REPLACE_ASSET/VISIBLE_COPY_EDIT）都从不可信 intent 派生、追加 append-only 决定记录，并在路由前经 `verify_human_review_decision` 重开决定记录、workspace、Q0–Q3 与全部页面/contact/素材字节。
+- **双终端**：production 走 `content_writer`（写记忆/Chroma，发布包由 CLI 在终端 checkpoint 后经 v4 exporter 导出）；shadow 走 `shadow_artifact_writer`，把非发布评估 bundle 写到 `outputs/shadow/`（`shadow-manifest.json` 标记 `run_mode=shadow`、`publishable=false`），**绝不触碰** publish root、记忆或 Chroma。
+
+### v4 人工审核 CLI
+
+v4 的 Human Review 中断后，主程序把 run 标记为 `WAITING_HUMAN` 并提示使用本地 review CLI（graph-free，只读 checkpoint）：
+
+```bash
+python main.py --review-show <run>      # 打印 review/index.html 的 file:// URI
+python main.py --review-submit <run> --review-intent intent.json   # 追加 append-only 决定
+python main.py --review-verify <run> --review-reference reference.json  # 重开全部字节验证
+python main.py --resume <run>           # 决定写入 decision.json 后恢复图
+```
+
+`--shadow-v4-from <run-id>` 从一个 v3 run 的 checkpoint 提取并验证 assembler 副本，创建链接的 v4 shadow run（源 run 行与图只读不改动）。
+
+### 发布门与回滚
+
+- **G0** 基线 fixture replay / v3 恢复 / shadow 隔离；**G1** timeout/retry/resume/crash 注入；**G2** 三 Grammar 真实渲染过全部硬 QA；**G3** 已知坏页被拦截、已审核字节即发布字节；**G4** shadow 盲评（≥10 主题约 80 页、≥80% better-or-equal、零 critical 回归、尝试/修订/时延预算内，阈值预声明在 `tests/fixtures/llm_scene_v4/quality_manifest.json` 且调用方不可放宽）；**G5** 文档、回滚演练与全套验证。G0–G3 已离线通过；G4 等待凭证背书的手动战役与人工报告批准。
+- **回滚**：因为默认选择器是唯一开关，回滚只影响未来新 run——把默认（或建议的 `--visual-workflow`）改回 `llm_scene_v3` 即可；已存在的 v4 checkpoint 继续用 v4 图恢复（版本不可中途切换），v3 checkpoint 与 schema 路径全程冻结不受影响。

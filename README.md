@@ -123,6 +123,26 @@ outputs/publish/<date>-<domain>-<title>/
 
 不要手工修改 canonical JSON、ContentLock、manifest 或已验证图片后声称它们仍然通过审核。需要改变内容时，应从 Human Review 或重新运行工作流开始。
 
+## llm_scene_v4（预发布，默认仍为 v3）
+
+`llm_scene_v4` 是下一代视觉生产链（语义建模 → 作者化 → 构图/布局 → Q0–Q3 硬门 → 盲评审美 → 哈希绑定人工审核 → Final Guard），已通过 G0–G3 离线门，但**默认工作流仍是 `llm_scene_v3`**。只有在 G4 shadow 盲评报告经人工批准后才会切换默认（切换只改选择器，回滚同样只改选择器）。v4 的命令面：
+
+```bash
+# 新 run 显式选择 v4（默认不传即 v3）
+python main.py --visual-workflow llm_scene_v4 --new --domain beauty ...
+
+# 从一个 v3 run 的 assembler 副本派生链接的 v4 shadow run（源 run 只读）
+python main.py --shadow-v4-from <run_id>
+
+# v4 人工审核（WAITING_HUMAN 后的本地 review CLI，graph-free）
+python main.py --review-show <run>
+python main.py --review-submit <run> --review-intent intent.json
+python main.py --review-verify <run> --review-reference reference.json
+python main.py --resume <run>
+```
+
+v4 的人工审核在本地 review workspace（`file://.../review/index.html`）完成；`--review-submit` 追加 append-only 决定记录并绑定全部合同/页面/素材字节哈希，`--review-verify` 重开决定与字节验证，`--resume` 从决定记录继续图。shadow run 的评估 bundle 只写 `outputs/shadow/`，绝不写发布目录、记忆或 Chroma。详细架构见 [workflow 文档](docs/architecture/workflow.md) 的"版本选择与 llm_scene_v4"章节。
+
 ## 测试与质量检查
 
 默认测试不访问真实模型、Pexels、Unsplash、Gemini 或小红书网络服务：

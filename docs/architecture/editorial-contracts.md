@@ -55,3 +55,32 @@ Final Guard 仍在 Human Review 之后执行，硬门每个 attestation：审美
 ## 迁移边界
 
 旧运行的迁移边界只有 `src/editorial_carousel/legacy.py`。迁移器把可识别的旧 v1/v2 状态丢弃旧视觉槽位、标记 `llm_scene_v3`、在 `assembler` 之后重新进入图，由 `content_atomizer → visual_director` 重新派生视觉计划；业务节点不得直接依赖删除的旧 text-card 合同或旧 prompt，迁移器也不执行旧 node 或把旧固定布局转换成 scene graph。
+
+## llm_scene_v4 合同（预发布）
+
+v4 视觉链以自己的严格冻结 Pydantic 合同连接语义建模、作者化、素材、构图、布局、渲染、审美复核、人工审核、Final Guard 和发布。所有合同自绑定 `canonical_sha256`；在图内每个 checkpoint 跳变后，消费边界（human review、critic 路由、revision）都通过 canonical JSON 重验证重建合同——LangGraph 序列化器会把 pydantic 合同重建为"类保留、嵌套 dict/列表"的半成品，身份检查不足以信任。
+
+### v4 producer/consumer
+
+| Contract | Producer | Consumer | Required invariant |
+| --- | --- | --- | --- |
+| `ContentAtomSetV4` / `VisibleCopyProjectionV4` | `content_atomizer` | `content_lock_builder`、semantic/authoring QA、workspace、publish | 可见文字逐字符投影；表格/步骤结构保留；lock 绑定 `content_atom_set_sha256`。 |
+| `ContentLock` | `content_lock_builder` | Q0–Q4、review、Final Guard、publish | 锁定全部可见源文并绑定 atom 集；可见文案编辑使全部下游合同失效。 |
+| `SemanticContentModelV4` + Q0 | `semantic_modeling` | authoring、Q2 聚合、workspace、publish | fragment 与 atom 逐字符一致；文字守恒/边界/哈希硬门。 |
+| `PageBriefSetV4` + `CarouselNarrativeV4` + `VisualDirectionPlanV4` + Q1 | `visual_authoring` | asset resolver、composition、Q2、workspace、publish | 每页语义任务/beat/fragment 归属全局精确一次；构图偏好与密度预算类型化。 |
+| `AssetManifest` / `AssetResolutionResultV4` | `asset_resolver` | composition、layout、Q2/Q3、review、publish | directive→manifest item→渲染字节三级绑定；`security_status=approved` 且 `human_decision=pending` 到审核为止，批准字节绑定在审核决定里。 |
+| `LayoutProgramV4` | `composition_planning` | `layout_compiler` | 八个 Composition Grammar 之一、区域/关系/约束类型化；solver 几何确定性。 |
+| `CarouselDesignPlanV4` + `DesignPlanQAResultV4`（Q2） | `layout_compiler` / `design_plan_qa` | renderer、Q3、workspace、publish | Q2 聚合 Q0/Q1 并按 grammar 类型化策略重算（留白/密度/对齐/层级底线），policy 阈值不可调用方放宽。 |
+| `RenderManifestV4` + `RenderQAResultV4`（Q3） | `generic_scene_renderer` / `render_qa` | critic、workspace、publish | revision 根相对路径；每页 PNG/DOM/字体/文字/素材证据哈希绑定；Q3 从最终文件独立重算。 |
+| `CarouselAestheticEvaluationV4`（Q4） | `visual_critic` | human review、publish | 盲评两遍（页级+整套）；source 哈希绑定；独立于 Q0–Q3，不可覆盖硬门。 |
+| `ReviewWorkspaceManifestV4` + `ReviewWorkspaceAnchorV4` + `ReviewWorkspaceReferenceV4` | `review_workspace_builder`（Task 16A/16B） | human review、review CLI、Final Guard、publish | workspace 是不可变树；外部授权引用必须来自 checkpoint/run 记录，review 文件系统不能自我授权；anchor 绑定完整树指纹。 |
+| `HumanReviewDecisionV4` + `HumanReviewDecisionReferenceV4` | 决定边界（从不可信 intent 派生） | 路由助手、Final Guard、publish、review CLI | append-only 决定记录绑定全套合同/页面/contact/素材字节哈希；同 revision 第二个终局动作 fail-closed；路由前必须重开记录与全部字节验证。 |
+| `FinalPolicyAttestationV4` + `PublishAttestationV4` | v4 Final Guard / `src/publishing/v4_artifacts.py` | publish | attestation 嵌入完整审核决定与 reference/workspace 哈希；publisher 重验后导出与 v3 相同的十个合同文件名 + `publish-attestation.json`（`workflow_version=llm_scene_v4`，包目录按 run 身份命名）。 |
+| `ShadowManifestV4` | `src/publishing/shadow_artifacts.py` | 评估工具（Task 20） | `run_mode=shadow`、`publishable=false` 字面量；永不携带发布 attestation。 |
+
+### v4 关键规则
+
+- **可见文字零改写**与 v3 相同：视觉阶段只能换行、分组、强调、按语义边界分页；`VISIBLE_COPY_EDIT` 走公共失效 seam 清空全部视觉合同与 atoms 回 R2。
+- **修订预算类型化**（Task 14）：`NormalizedFailureV4`/`RevisionRequestV4`/`RevisionEventV4` 携带 fingerprint 与升级阶梯；同一 fingerprint 第三次出现（非 LAYOUT 第二次）耗尽候选并 `VisualExecutionInterrupted`；预算在 checkpoint 状态中持久，v4 恢复不重置。
+- **审核决定是信任根**：`route_after_human_review_v4` 对 Mapping 和 action result 两种入口都在返回路由前调用公共 verifier 重开 append-only 记录、外部 workspace 引用与当前合同/字节；自洽 route evidence 只是审计传输，不是授权 capability。
+- **G4 发布门阈值预声明**在 quality manifest 的 `campaign` 节（≥10 主题、≥75 页、≥0.80 better-or-equal、≤14 尝试、≤2 审美修订、≤60s 请求时限），`evaluate_release_gate` 读取且调用方不可放宽；盲评 payload 完全匿名（无版本/主题泄漏），身份映射单独保存。
