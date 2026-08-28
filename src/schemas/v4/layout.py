@@ -35,8 +35,26 @@ from src.schemas.scene_graph import Box, ImageElement, LineElement, PageScene, T
 from src.schemas.visual_style import deep_freeze, deep_thaw
 
 
-GRAMMAR_IDS_V4 = ("editorial_hero", "comparison_grid", "step_flow")
-ImplementedGrammarIDV4 = Literal["editorial_hero", "comparison_grid", "step_flow"]
+GRAMMAR_IDS_V4 = (
+    "editorial_hero",
+    "comparison_grid",
+    "step_flow",
+    "diagnostic_matrix",
+    "checklist",
+    "evidence_card",
+    "image_annotation",
+    "summary_closing",
+)
+ImplementedGrammarIDV4 = Literal[
+    "editorial_hero",
+    "comparison_grid",
+    "step_flow",
+    "diagnostic_matrix",
+    "checklist",
+    "evidence_card",
+    "image_annotation",
+    "summary_closing",
+]
 PAGE_ROLES_V4 = ("cover", "body", "closing")
 PageRoleV4 = Literal["cover", "body", "closing"]
 CANONICAL_COMPILER_VERSION_V4 = "v4-layout-compiler-2"

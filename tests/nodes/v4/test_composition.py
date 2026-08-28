@@ -150,12 +150,13 @@ def test_composition_rejects_grammar_not_allowed_by_page_brief() -> None:
         )
 
 
-def test_composition_rejects_allowed_but_not_yet_implemented_grammar() -> None:
+def test_composition_rejects_unknown_grammar_ids() -> None:
+    """All five Task 19 grammars are implemented; unknown ids still fail."""
     page = _page_brief(preferred=("diagnostic_matrix",))
-    with pytest.raises(ValueError, match="implemented"):
+    with pytest.raises(ValueError, match="preferred compositions"):
         build_layout_program(
             page,
-            grammar_id="diagnostic_matrix",
+            grammar_id="not_a_registered_grammar",
             family="pink_red",
             narrative=_narrative(page, task_kind="diagnosis"),
         )

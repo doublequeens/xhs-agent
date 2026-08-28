@@ -490,7 +490,16 @@ def test_compiler_is_deterministic() -> None:
 
 @pytest.mark.parametrize(
     ("grammar", "task_kind"),
-    (("editorial_hero", "context"), ("comparison_grid", "comparison"), ("step_flow", "step")),
+    (
+        ("editorial_hero", "context"),
+        ("comparison_grid", "comparison"),
+        ("step_flow", "step"),
+        ("diagnostic_matrix", "diagnosis"),
+        ("checklist", "checklist"),
+        ("evidence_card", "evidence"),
+        ("image_annotation", "context"),
+        ("summary_closing", "summary"),
+    ),
 )
 def test_each_implemented_grammar_returns_safe_flat_scene(
     grammar: str, task_kind: str

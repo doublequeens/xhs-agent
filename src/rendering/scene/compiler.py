@@ -108,6 +108,7 @@ _PAGE_DOCUMENT = (
     "position:relative;overflow:hidden;}}\n"
     ".scene-element{{position:absolute;}}\n"
     ".scene-image-inner{{display:block;width:100%;height:100%;}}\n"
+    ".scene-icon svg{{display:block;}}\n"
     "{font_faces}"
     "</style>\n"
     "</head>\n"

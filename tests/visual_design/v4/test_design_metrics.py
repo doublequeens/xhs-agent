@@ -418,7 +418,7 @@ def test_page_brief_and_typed_role_are_required_for_direct_evaluation() -> None:
     with pytest.raises(TypeError):
         evaluate_page_metrics(page, page_brief=inputs.page_brief, narrative_role="comparison")
     with pytest.raises(DesignMetricsInvariantError):
-        get_quality_policy("checklist", "body", "checklist")
+        get_quality_policy("checklist", "body", "diagnosis")
 
 
 def test_policy_page_role_cannot_be_injected_wider_than_typed_beat() -> None:

@@ -140,6 +140,123 @@ STEP_FLOW = _grammar(
     ),
 )
 
+DIAGNOSTIC_MATRIX = _grammar(
+    "diagnostic_matrix",
+    page_roles=("body",),
+    narrative_roles=("diagnosis", "comparison"),
+    regions=(
+        ("heading", "primary"),
+        ("matrix", "ordered_grid"),
+        ("support", "supporting"),
+    ),
+    relationships=(
+        ("heading-matrix", "stack", "heading", "matrix"),
+        ("matrix-support", "anchor", "matrix", "support"),
+    ),
+    axes=(
+        ("matrix-block", "block", ("heading", "matrix", "support")),
+        ("matrix-grid", "inline", ("matrix",)),
+    ),
+    behavior=(
+        ("grid-cells", "ordered_regions", ("matrix",), ("matrix-grid",), "preserve_sequence"),
+        ("matrix-reflow", "reflow_order", ("heading", "matrix", "support"), ("matrix-block",), "preserve_named_order"),
+    ),
+)
+
+CHECKLIST = _grammar(
+    "checklist",
+    page_roles=("body",),
+    narrative_roles=("checklist", "step"),
+    regions=(
+        ("heading", "primary"),
+        ("items", "checklist_rows"),
+        ("support", "supporting"),
+    ),
+    relationships=(
+        ("heading-items", "stack", "heading", "items"),
+        ("items-support", "anchor", "items", "support"),
+    ),
+    axes=(
+        ("list-block", "block", ("heading", "items", "support")),
+        ("list-inline", "inline", ("items",)),
+    ),
+    behavior=(
+        ("check-rows", "ordered_regions", ("items",), ("list-block",), "preserve_sequence"),
+        ("list-reflow", "reflow_order", ("heading", "items", "support"), ("list-block",), "preserve_named_order"),
+    ),
+)
+
+EVIDENCE_CARD = _grammar(
+    "evidence_card",
+    page_roles=("body",),
+    narrative_roles=("diagnosis", "evidence"),
+    regions=(
+        ("heading", "primary"),
+        ("cards", "data_cards"),
+        ("support", "supporting"),
+    ),
+    relationships=(
+        ("heading-cards", "stack", "heading", "cards"),
+        ("cards-support", "anchor", "cards", "support"),
+    ),
+    axes=(
+        ("cards-block", "block", ("heading", "cards", "support")),
+        ("cards-inline", "inline", ("cards",)),
+    ),
+    behavior=(
+        ("card-grid", "ordered_regions", ("cards",), ("cards-inline",), "preserve_sequence"),
+        ("card-reflow", "reflow_order", ("heading", "cards", "support"), ("cards-block",), "preserve_named_order"),
+    ),
+)
+
+IMAGE_ANNOTATION = _grammar(
+    "image_annotation",
+    page_roles=("body",),
+    narrative_roles=("context", "diagnosis", "evidence"),
+    regions=(
+        ("heading", "primary"),
+        ("feature", "supporting"),
+        ("callouts", "annotations"),
+        ("support", "footnote"),
+    ),
+    relationships=(
+        ("heading-feature", "stack", "heading", "feature"),
+        ("feature-callouts", "anchor", "feature", "callouts"),
+        ("callouts-support", "contrast", "callouts", "support"),
+    ),
+    axes=(
+        ("annotation-block", "block", ("heading", "feature", "callouts", "support")),
+        ("annotation-inline", "inline", ("feature", "callouts")),
+    ),
+    behavior=(
+        ("annotation-pairing", "paired_regions", ("feature", "callouts"), ("annotation-inline",), "preserve_pairing"),
+        ("annotation-reflow", "reflow_order", ("heading", "feature", "callouts", "support"), ("annotation-block",), "preserve_named_order"),
+    ),
+)
+
+SUMMARY_CLOSING = _grammar(
+    "summary_closing",
+    page_roles=("closing", "body"),
+    narrative_roles=("summary", "closing"),
+    regions=(
+        ("headline", "primary"),
+        ("takeaways", "key_points"),
+        ("note", "closing_note"),
+    ),
+    relationships=(
+        ("headline-takeaways", "stack", "headline", "takeaways"),
+        ("takeaways-note", "anchor", "takeaways", "note"),
+    ),
+    axes=(
+        ("closing-block", "block", ("headline", "takeaways", "note")),
+        ("closing-inline", "inline", ("takeaways", "note")),
+    ),
+    behavior=(
+        ("takeaway-rows", "ordered_regions", ("takeaways",), ("closing-block",), "preserve_sequence"),
+        ("closing-reflow", "reflow_order", ("headline", "takeaways", "note"), ("closing-block",), "preserve_named_order"),
+    ),
+)
+
 
 def build_grammar_registry(
     definitions: Iterable[CompositionGrammarV4],
@@ -155,7 +272,18 @@ def build_grammar_registry(
     return MappingProxyType(registry)
 
 
-GRAMMARS = build_grammar_registry((EDITORIAL_HERO, COMPARISON_GRID, STEP_FLOW))
+GRAMMARS = build_grammar_registry(
+    (
+        EDITORIAL_HERO,
+        COMPARISON_GRID,
+        STEP_FLOW,
+        DIAGNOSTIC_MATRIX,
+        CHECKLIST,
+        EVIDENCE_CARD,
+        IMAGE_ANNOTATION,
+        SUMMARY_CLOSING,
+    )
+)
 GRAMMAR_REGISTRY = GRAMMARS
 COMPOSITION_GRAMMARS = GRAMMARS
 
@@ -168,13 +296,18 @@ def get_grammar(grammar_id: str) -> CompositionGrammarV4:
 
 
 __all__ = [
+    "CHECKLIST",
     "COMPARISON_GRID",
     "COMPOSITION_GRAMMARS",
+    "DIAGNOSTIC_MATRIX",
     "EDITORIAL_HERO",
+    "EVIDENCE_CARD",
     "GRAMMAR_REGISTRY",
     "GRAMMARS",
     "GRAMMAR_IDS_V4",
+    "IMAGE_ANNOTATION",
     "STEP_FLOW",
+    "SUMMARY_CLOSING",
     "build_grammar_registry",
     "get_grammar",
 ]

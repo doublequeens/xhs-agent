@@ -51,6 +51,11 @@ def test_grammar_registry_is_exact_and_read_only() -> None:
         "editorial_hero",
         "comparison_grid",
         "step_flow",
+        "diagnostic_matrix",
+        "checklist",
+        "evidence_card",
+        "image_annotation",
+        "summary_closing",
     )
     with pytest.raises(TypeError):
         GRAMMARS["other"] = get_grammar("editorial_hero")  # type: ignore[index]
