@@ -122,6 +122,7 @@ def evaluate_release_gate(
     pages: int,
     max_attempts_per_candidate: int,
     max_request_ms: int,
+    max_aesthetic_revisions: int = 0,
     human_regressions: Sequence[str] = (),
 ) -> ReleaseGateResult:
     campaign = manifest.get("campaign", {})
@@ -148,6 +149,11 @@ def evaluate_release_gate(
         reasons.append(
             f"candidate used {max_attempts_per_candidate} attempts; "
             f"budget is {thresholds['max_attempts_per_candidate']}"
+        )
+    if max_aesthetic_revisions > thresholds["max_aesthetic_revisions"]:
+        reasons.append(
+            f"candidate consumed {max_aesthetic_revisions} aesthetic revisions; "
+            f"budget is {thresholds['max_aesthetic_revisions']}"
         )
     if max_request_ms > thresholds["max_request_ms"]:
         reasons.append(

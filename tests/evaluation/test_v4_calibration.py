@@ -121,3 +121,31 @@ def test_load_quality_manifest_verifies_corpus_integrity():
     assert loaded is not None
     with pytest.raises(Exception):
         load_quality_manifest(MANIFEST, expect_sha256="0" * 64)
+
+
+def test_release_gate_enforces_the_predeclared_aesthetic_revision_budget():
+    manifest = quality_manifest()
+    runs = honest_critic(manifest)
+    over_budget = evaluate_release_gate(
+        manifest,
+        runs,
+        better_or_equal_ratio=0.9,
+        topics=10,
+        pages=80,
+        max_attempts_per_candidate=9,
+        max_request_ms=30_000,
+        max_aesthetic_revisions=3,
+    )
+    assert over_budget.gate_passed is False
+    assert any("aesthetic" in reason for reason in over_budget.reasons)
+    within_budget = evaluate_release_gate(
+        manifest,
+        runs,
+        better_or_equal_ratio=0.9,
+        topics=10,
+        pages=80,
+        max_attempts_per_candidate=9,
+        max_request_ms=30_000,
+        max_aesthetic_revisions=2,
+    )
+    assert within_budget.gate_passed is True
