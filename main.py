@@ -296,7 +296,7 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
         or args.subdomain
         or args.focus_keyword is not None
         or args.provider
-        or args.topic_num != 10
+        or args.topic_num != parser.get_default("topic_num")
     ):
         parser.error("v4 review operations require only an existing RUN identity")
     if not review_active and (args.review_intent or args.review_reference):
