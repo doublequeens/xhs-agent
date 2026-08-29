@@ -56,7 +56,7 @@ Final Guard 仍在 Human Review 之后执行，硬门每个 attestation：审美
 
 旧运行的迁移边界只有 `src/editorial_carousel/legacy.py`。迁移器把可识别的旧 v1/v2 状态丢弃旧视觉槽位、标记 `llm_scene_v3`、在 `assembler` 之后重新进入图，由 `content_atomizer → visual_director` 重新派生视觉计划；业务节点不得直接依赖删除的旧 text-card 合同或旧 prompt，迁移器也不执行旧 node 或把旧固定布局转换成 scene graph。
 
-## llm_scene_v4 合同（预发布）
+## llm_scene_v4 合同（预发布；默认仍为 llm_scene_v3）
 
 v4 视觉链以自己的严格冻结 Pydantic 合同连接语义建模、作者化、素材、构图、布局、渲染、审美复核、人工审核、Final Guard 和发布。所有合同自绑定 `canonical_sha256`；在图内每个 checkpoint 跳变后，消费边界（human review、critic 路由、revision）都通过 canonical JSON 重验证重建合同——LangGraph 序列化器会把 pydantic 合同重建为"类保留、嵌套 dict/列表"的半成品，身份检查不足以信任。
 
