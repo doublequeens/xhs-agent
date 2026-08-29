@@ -216,7 +216,7 @@ def parse_cli_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--clear-all", action="store_true", help="Delete ALL runs and checkpoints, then exit")
     parser.add_argument("--yes", "-y", action="store_true", help="Skip the confirmation prompt for --clear-all")
     parser.add_argument("--focus_keyword", type=str, help="Focus keyword for the post")
-    parser.add_argument("--topic_num", type=int, default=10, help="Topic of the post")
+    parser.add_argument("--topic_num", type=int, default=5, help="Topic of the post")
     parser.add_argument("--provider", type=str, help="Model provider (glm, gemini, deepseek)")
     review_group = parser.add_mutually_exclusive_group()
     review_group.add_argument(
