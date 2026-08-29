@@ -9,7 +9,7 @@ from src.models._guard import invoke_with_hard_timeout
 import os, getpass
 
 class DeepSeekModel(BaseLLMModel):
-    def __init__(self, model_name: str = "deepseek-v4-pro", tools: list = None, temperature: float = 1.3, **kwargs):
+    def __init__(self, model_name: str = "deepseek-v4-flash", tools: list = None, temperature: float = 1.3, **kwargs):
         self._chat_model = None
         self.model_name = model_name
         self.api_key = os.getenv("DEEPSEEK_API_KEY")
@@ -37,6 +37,11 @@ class DeepSeekModel(BaseLLMModel):
                 max_retries=0,
                 reasoning_effort="max",
                 extra_body={"thinking": {"type": "enabled"}},
+                # Same idle-gateway hazard as the GLM path: thinking-enabled
+                # generations must stream so long thinking phases keep bytes
+                # flowing; reasoning stays in additional_kwargs.reasoning_content
+                # and never pollutes the parsed JSON content.
+                streaming=True,
                 **self.extra_kwargs
             )
             if self.tools:
@@ -47,11 +52,12 @@ class DeepSeekModel(BaseLLMModel):
     
     def execute(self, messages: List[BaseMessage]) -> dict:
         chat_model = self.get_chat_model()
-        # deepseek-v4-pro runs with reasoning_effort="max" + thinking, so a
-        # legitimate review call is slower than a plain chat call; give it a
-        # generous wall-clock cap (480s) but still bound true hangs via the
-        # shared guard so a stalled call retries instead of freezing the run.
-        response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=480)
+        # deepseek-v4-pro runs with reasoning_effort="max" + thinking, the
+        # same long-generation class as GLM-5.3: measured peers complete in
+        # 6-8 minutes.  Give it a wall-clock cap (900s) above the real
+        # generation envelope; streaming keeps bytes flowing so only true
+        # hangs hit this bound.
+        response = invoke_with_hard_timeout(chat_model, messages, hard_timeout=900)
 
         content = response.content
 

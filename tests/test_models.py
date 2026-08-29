@@ -59,7 +59,12 @@ def test_zhipu_client_has_one_bounded_retry_owner(mock_chat_openai, monkeypatch)
     kwargs = mock_chat_openai.call_args.kwargs
     assert kwargs["timeout"] == 480
     assert kwargs["max_retries"] == 0
-    assert kwargs["streaming"] is False
+    # GLM thinking models spend minutes generating before the first byte in
+    # non-streaming mode, and the provider gateway drops idle non-streaming
+    # connections long before that — measured as a zero-byte stall until the
+    # 480s hard timeout (2026-08-29 incident at angle_strategist).  Streaming
+    # keeps bytes flowing during thinking; do not flip this back to False.
+    assert kwargs["streaming"] is True
 
 
 @patch("src.models.deepseek_model.ChatDeepSeek")
@@ -71,3 +76,7 @@ def test_deepseek_client_has_one_bounded_retry_owner(mock_chat_deepseek, monkeyp
     assert kwargs["max_retries"] == 0
     assert kwargs["reasoning_effort"] == "max"
     assert kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+    # Same idle-gateway hazard as the GLM path: thinking-enabled calls must
+    # stream so long generations keep bytes flowing; langchain aggregates
+    # the chunks and keeps reasoning out of ``content``.
+    assert kwargs["streaming"] is True
